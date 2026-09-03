@@ -1,11 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import {
   sendMessageToConversation,
   SendMessageError,
+  resolveOutboundTransport,
   type SendMessageParams,
 } from './send-message';
+import { ManyChatApiError } from '@/lib/manychat/api';
 
 // A db that explodes if touched — these tests cover the param
 // validation that MUST short-circuit before any query runs.
@@ -193,6 +195,15 @@ vi.mock('@/lib/flows/admin-client', () => ({
   }),
 }));
 
+// Mock only `sendManyChatText` — keep the real `ManyChatApiError` class so
+// send-message.ts's `instanceof ManyChatApiError` checks still work.
+const sendManyChatTextMock = vi.fn(async () => ({ raw: { status: 'success' } }));
+vi.mock('@/lib/manychat/api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  sendManyChatText: (...args: unknown[]) =>
+    (sendManyChatTextMock as unknown as (...a: unknown[]) => unknown)(...args),
+}));
+
 interface CapturedWrites {
   message?: Record<string, unknown>;
   conversation?: Record<string, unknown>;
@@ -344,5 +355,436 @@ describe('sendMessageToConversation — template persistence (#483)', () => {
     // name rather than inventing a body.
     expect(captured.message?.content_text).toBeNull();
     expect(captured.conversation?.last_message_text).toBe('[template]');
+  });
+});
+
+// ============================================================
+// Outbound transport selection (ManyChat coexistence bridge).
+// ============================================================
+
+interface ManyChatCaptured {
+  message?: Record<string, unknown>;
+  conversation?: Record<string, unknown>;
+  linkLookup?: { accountId: string; contactId: string };
+}
+
+const MC_CONVERSATION = {
+  id: 'cv-mc-1',
+  account_id: 'acct-mc',
+  contact_id: 'ct-mc-1',
+  contact: { id: 'ct-mc-1', phone: '+15559990000' },
+};
+
+/**
+ * Minimal fake covering only the tables the ManyChat branch touches
+ * (conversations, manychat_contact_links, messages) — deliberately NOT
+ * whatsapp_config or message_templates, since the whole point of this
+ * branch is to never need them.
+ */
+function manyChatSendDb(opts: {
+  conversation?: typeof MC_CONVERSATION | null;
+  link?: { manychat_contact_id: string } | null;
+  linkError?: { message: string } | null;
+  captured: ManyChatCaptured;
+}): SupabaseClient {
+  const conversation =
+    opts.conversation === undefined ? MC_CONVERSATION : opts.conversation;
+
+  return {
+    from(table: string) {
+      if (table === 'conversations') {
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                single: async () =>
+                  conversation
+                    ? { data: conversation, error: null }
+                    : { data: null, error: { message: 'not found' } },
+              }),
+            }),
+          }),
+          update: (row: Record<string, unknown>) => ({
+            eq: async () => {
+              opts.captured.conversation = row;
+              return { error: null };
+            },
+          }),
+        };
+      }
+      if (table === 'manychat_contact_links') {
+        return {
+          select: () => ({
+            eq: (_col: string, accountId: string) => ({
+              eq: (_col2: string, contactId: string) => ({
+                maybeSingle: async () => {
+                  opts.captured.linkLookup = { accountId, contactId };
+                  return { data: opts.link ?? null, error: opts.linkError ?? null };
+                },
+              }),
+            }),
+          }),
+        };
+      }
+      if (table === 'messages') {
+        return {
+          insert: (row: Record<string, unknown>) => ({
+            select: () => ({
+              single: async () => {
+                opts.captured.message = row;
+                return { data: { id: 'msg-out-1', ...row }, error: null };
+              },
+            }),
+          }),
+        };
+      }
+      throw new Error(`unexpected table: ${table}`);
+    },
+  } as unknown as SupabaseClient;
+}
+
+describe('resolveOutboundTransport(accountId) — per-account scoping', () => {
+  const originalTransport = process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+  const originalBridgeAccount = process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+
+  afterEach(() => {
+    if (originalTransport === undefined) delete process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+    else process.env.WHATSAPP_OUTBOUND_TRANSPORT = originalTransport;
+    if (originalBridgeAccount === undefined) delete process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+    else process.env.MANYCHAT_INGEST_ACCOUNT_ID = originalBridgeAccount;
+  });
+
+  it('transport=manychat + accountId === MANYCHAT_INGEST_ACCOUNT_ID → manychat', () => {
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT = 'manychat';
+    process.env.MANYCHAT_INGEST_ACCOUNT_ID = 'acct-bridge';
+    expect(resolveOutboundTransport('acct-bridge')).toBe('manychat');
+  });
+
+  it('transport=manychat + a DIFFERENT accountId → meta (never global)', () => {
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT = 'manychat';
+    process.env.MANYCHAT_INGEST_ACCOUNT_ID = 'acct-bridge';
+    expect(resolveOutboundTransport('some-other-account')).toBe('meta');
+  });
+
+  it('transport=meta (regardless of accountId) → meta', () => {
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT = 'meta';
+    process.env.MANYCHAT_INGEST_ACCOUNT_ID = 'acct-bridge';
+    expect(resolveOutboundTransport('acct-bridge')).toBe('meta');
+  });
+
+  it('transport unset/garbage → meta', () => {
+    delete process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+    process.env.MANYCHAT_INGEST_ACCOUNT_ID = 'acct-bridge';
+    expect(resolveOutboundTransport('acct-bridge')).toBe('meta');
+
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT = 'carrier-pigeon';
+    expect(resolveOutboundTransport('acct-bridge')).toBe('meta');
+  });
+
+  it('transport=manychat but MANYCHAT_INGEST_ACCOUNT_ID unset → meta for every account', () => {
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT = 'manychat';
+    delete process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+    expect(resolveOutboundTransport('acct-bridge')).toBe('meta');
+    expect(resolveOutboundTransport('')).toBe('meta');
+  });
+});
+
+describe('sendMessageToConversation — WHATSAPP_OUTBOUND_TRANSPORT=meta (unchanged behavior)', () => {
+  const originalTransport = process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+  const originalApiKey = process.env.MANYCHAT_API_KEY;
+  const originalBridgeAccount = process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+
+  beforeEach(() => {
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT = 'meta';
+    sendManyChatTextMock.mockClear();
+  });
+
+  afterEach(() => {
+    if (originalTransport === undefined) delete process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+    else process.env.WHATSAPP_OUTBOUND_TRANSPORT = originalTransport;
+    if (originalApiKey === undefined) delete process.env.MANYCHAT_API_KEY;
+    else process.env.MANYCHAT_API_KEY = originalApiKey;
+    if (originalBridgeAccount === undefined) delete process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+    else process.env.MANYCHAT_INGEST_ACCOUNT_ID = originalBridgeAccount;
+  });
+
+  it('still sends via Meta (sendTemplateMessage) and never touches ManyChat', async () => {
+    const captured: CapturedWrites = {};
+    const result = await sendMessageToConversation(
+      sendPathDb([TEMPLATE_ROW], captured),
+      'acct-1',
+      {
+        conversationId: 'cv-1',
+        messageType: 'template',
+        templateName: 'order_update',
+        templateParams: ['A123', 'Friday'],
+      },
+    );
+    expect(result.whatsappMessageId).toBe('wamid.1');
+    expect(sendManyChatTextMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendMessageToConversation — tenancy: manychat transport never leaks to other accounts', () => {
+  const originalTransport = process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+  const originalApiKey = process.env.MANYCHAT_API_KEY;
+  const originalBridgeAccount = process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+
+  beforeEach(() => {
+    // Globally "armed" for ManyChat, and MANYCHAT_INGEST_ACCOUNT_ID names
+    // a DIFFERENT account than the one this test sends from — this is
+    // the exact shape of the bug being fixed: a global env flip must not
+    // change transport for an account it wasn't scoped to.
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT = 'manychat';
+    process.env.MANYCHAT_INGEST_ACCOUNT_ID = 'acct-bridge-account';
+    process.env.MANYCHAT_API_KEY = 'mc-key-test';
+    sendManyChatTextMock.mockClear();
+  });
+
+  afterEach(() => {
+    if (originalTransport === undefined) delete process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+    else process.env.WHATSAPP_OUTBOUND_TRANSPORT = originalTransport;
+    if (originalApiKey === undefined) delete process.env.MANYCHAT_API_KEY;
+    else process.env.MANYCHAT_API_KEY = originalApiKey;
+    if (originalBridgeAccount === undefined) delete process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+    else process.env.MANYCHAT_INGEST_ACCOUNT_ID = originalBridgeAccount;
+  });
+
+  it('an unrelated account still sends via Meta even while WHATSAPP_OUTBOUND_TRANSPORT=manychat is set', async () => {
+    const captured: CapturedWrites = {};
+    const result = await sendMessageToConversation(
+      sendPathDb([TEMPLATE_ROW], captured),
+      // NOT 'acct-bridge-account' — a different account on the same deployment.
+      'acct-1',
+      {
+        conversationId: 'cv-1',
+        messageType: 'template',
+        templateName: 'order_update',
+        templateParams: ['A123', 'Friday'],
+      },
+    );
+    expect(result.whatsappMessageId).toBe('wamid.1');
+    expect(sendManyChatTextMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('sendMessageToConversation — WHATSAPP_OUTBOUND_TRANSPORT=manychat', () => {
+  const originalTransport = process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+  const originalApiKey = process.env.MANYCHAT_API_KEY;
+  const originalBridgeAccount = process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+
+  beforeEach(() => {
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT = 'manychat';
+    // Every test below sends from accountId 'acct-mc' — must match for
+    // the manychat branch to activate at all (see the tenancy suite
+    // above for the case where it deliberately does NOT match).
+    process.env.MANYCHAT_INGEST_ACCOUNT_ID = 'acct-mc';
+    process.env.MANYCHAT_API_KEY = 'mc-key-test';
+    sendManyChatTextMock.mockReset();
+    sendManyChatTextMock.mockResolvedValue({ raw: { status: 'success' } });
+  });
+
+  afterEach(() => {
+    if (originalTransport === undefined) delete process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+    else process.env.WHATSAPP_OUTBOUND_TRANSPORT = originalTransport;
+    if (originalApiKey === undefined) delete process.env.MANYCHAT_API_KEY;
+    else process.env.MANYCHAT_API_KEY = originalApiKey;
+    if (originalBridgeAccount === undefined) delete process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+    else process.env.MANYCHAT_INGEST_ACCOUNT_ID = originalBridgeAccount;
+  });
+
+  it('sends a text message through ManyChat and never calls Meta', async () => {
+    const captured: ManyChatCaptured = {};
+    const result = await sendMessageToConversation(
+      manyChatSendDb({
+        link: { manychat_contact_id: 'mc-contact-1' },
+        captured,
+      }),
+      'acct-mc',
+      { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+    );
+
+    expect(sendManyChatTextMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        apiKey: 'mc-key-test',
+        manyChatContactId: 'mc-contact-1',
+        text: 'Hola!',
+      }),
+    );
+    expect(result.messageId).toBe('msg-out-1');
+    expect(result.whatsappMessageId).toMatch(/^manychat-out:/);
+  });
+
+  it('persists exactly one message row, sender_type agent, status sent', async () => {
+    const captured: ManyChatCaptured = {};
+    await sendMessageToConversation(
+      manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+      'acct-mc',
+      { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+    );
+
+    expect(captured.message).toMatchObject({
+      conversation_id: 'cv-mc-1',
+      sender_type: 'agent',
+      content_type: 'text',
+      content_text: 'Hola!',
+      status: 'sent',
+    });
+    expect(String(captured.message?.message_id)).toMatch(/^manychat-out:/);
+    // Never Meta's wamid shape.
+    expect(String(captured.message?.message_id)).not.toMatch(/^wamid\./);
+  });
+
+  it('looks up the mapping scoped to BOTH account_id and contact_id', async () => {
+    const captured: ManyChatCaptured = {};
+    await sendMessageToConversation(
+      manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+      'acct-mc',
+      { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+    );
+    expect(captured.linkLookup).toEqual({ accountId: 'acct-mc', contactId: 'ct-mc-1' });
+  });
+
+  it('does not send when no mapping exists for this contact (no fallback to Meta)', async () => {
+    const captured: ManyChatCaptured = {};
+    await expect(
+      sendMessageToConversation(
+        manyChatSendDb({ link: null, captured }),
+        'acct-mc',
+        { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+      ),
+    ).rejects.toMatchObject({ code: 'manychat_contact_not_linked' });
+
+    expect(sendManyChatTextMock).not.toHaveBeenCalled();
+    expect(captured.message).toBeUndefined();
+  });
+
+  it('a mapping row from another account is invisible — the lookup itself is account-scoped', async () => {
+    // The fake DB always filters by the accountId/contactId passed to
+    // .eq() — simulate "another account's mapping" by returning null,
+    // exactly what a real account_id-scoped query would do for a link
+    // that belongs to a different account.
+    const captured: ManyChatCaptured = {};
+    await expect(
+      sendMessageToConversation(
+        manyChatSendDb({ link: null, captured }),
+        'acct-mc',
+        { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+      ),
+    ).rejects.toMatchObject({ code: 'manychat_contact_not_linked' });
+    // Proves tenancy: the lookup was scoped to THIS account, not run
+    // account-agnostically.
+    expect(captured.linkLookup?.accountId).toBe('acct-mc');
+  });
+
+  it('errors before sending when MANYCHAT_API_KEY is missing', async () => {
+    delete process.env.MANYCHAT_API_KEY;
+    const captured: ManyChatCaptured = {};
+    await expect(
+      sendMessageToConversation(
+        manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+        'acct-mc',
+        { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+      ),
+    ).rejects.toMatchObject({ code: 'manychat_not_configured', status: 503 });
+
+    expect(sendManyChatTextMock).not.toHaveBeenCalled();
+    expect(captured.message).toBeUndefined();
+  });
+
+  it.each([401, 403, 429, 500])(
+    'does not persist a message when ManyChat responds %i',
+    async (status) => {
+      sendManyChatTextMock.mockRejectedValue(
+        new ManyChatApiError(status, `ManyChat error ${status}`),
+      );
+      const captured: ManyChatCaptured = {};
+      await expect(
+        sendMessageToConversation(
+          manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+          'acct-mc',
+          { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+        ),
+      ).rejects.toMatchObject({ code: 'manychat_error', status: 502 });
+
+      expect(captured.message).toBeUndefined();
+    },
+  );
+
+  it('rejects template messages — no fallback to Meta', async () => {
+    const captured: ManyChatCaptured = {};
+    await expect(
+      sendMessageToConversation(
+        manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+        'acct-mc',
+        { conversationId: 'cv-mc-1', messageType: 'template', templateName: 'order_update' },
+      ),
+    ).rejects.toMatchObject({ code: 'manychat_unsupported_type' });
+    expect(sendManyChatTextMock).not.toHaveBeenCalled();
+    expect(captured.message).toBeUndefined();
+  });
+
+  it('rejects media messages — no fallback to Meta', async () => {
+    const captured: ManyChatCaptured = {};
+    await expect(
+      sendMessageToConversation(
+        manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+        'acct-mc',
+        { conversationId: 'cv-mc-1', messageType: 'image', mediaUrl: 'https://x/y.jpg' },
+      ),
+    ).rejects.toMatchObject({ code: 'manychat_unsupported_type' });
+    expect(sendManyChatTextMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects interactive messages — no fallback to Meta', async () => {
+    const captured: ManyChatCaptured = {};
+    await expect(
+      sendMessageToConversation(
+        manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+        'acct-mc',
+        {
+          conversationId: 'cv-mc-1',
+          messageType: 'interactive',
+          interactivePayload: { kind: 'buttons', body: 'Pick one', buttons: [{ id: 'a', title: 'A' }] },
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'manychat_unsupported_type' });
+    expect(sendManyChatTextMock).not.toHaveBeenCalled();
+  });
+
+  it('updates last_message_text/last_message_at and pauses active flow runs, same as the Meta path', async () => {
+    const captured: ManyChatCaptured = {};
+    await sendMessageToConversation(
+      manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+      'acct-mc',
+      { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+    );
+    expect(captured.conversation).toMatchObject({ last_message_text: 'Hola!' });
+    expect(captured.conversation?.last_message_at).toBeTruthy();
+    // Flow-pause goes through the mocked @/lib/flows/admin-client, which
+    // always resolves { error: null } — reaching it without throwing is
+    // the signal the best-effort pause step ran.
+  });
+
+  it('never logs MANYCHAT_API_KEY, even when ManyChat rejects the send', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    sendManyChatTextMock.mockRejectedValue(new ManyChatApiError(401, 'unauthorized'));
+
+    const captured: ManyChatCaptured = {};
+    await sendMessageToConversation(
+      manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+      'acct-mc',
+      { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+    ).catch(() => {});
+
+    const logged = [...errorSpy.mock.calls, ...warnSpy.mock.calls]
+      .flat()
+      .map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
+      .join('\n');
+    expect(logged).not.toContain('mc-key-test');
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });

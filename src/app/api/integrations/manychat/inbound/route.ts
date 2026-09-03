@@ -185,6 +185,29 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Failed to resolve contact' }, { status: 500 })
   }
 
+  // Persist the ManyChat↔CRM contact mapping the outbound bridge relies
+  // on (src/lib/whatsapp/send-message.ts, WHATSAPP_OUTBOUND_TRANSPORT=
+  // manychat). Runs on EVERY delivery, including retries — the mapping
+  // has nothing to do with message idempotency, and a retry should
+  // still refresh `whatsapp_id`/`updated_at` if either changed. Kept
+  // outside the message-dedup branch below on purpose. Best-effort: a
+  // failed link write must not drop the inbound message from the Inbox.
+  const { error: linkError } = await admin
+    .from('manychat_contact_links')
+    .upsert(
+      {
+        account_id: config.account_id,
+        contact_id: contactOutcome.contact.id,
+        manychat_contact_id: payload.contact_id,
+        whatsapp_id: payload.whatsapp_id,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'account_id,contact_id' },
+    )
+  if (linkError) {
+    console.error('[manychat-inbound] manychat_contact_links upsert failed:', linkError.message)
+  }
+
   const convResult = await findOrCreateConversation(
     admin,
     config.account_id,

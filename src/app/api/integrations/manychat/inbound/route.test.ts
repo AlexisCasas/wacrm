@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
     messageUpsertError: null as { message: string } | null,
     upsertCalls: [] as { row: Record<string, unknown>; options: unknown }[],
     rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
+    linkUpsertCalls: [] as { row: Record<string, unknown>; options: unknown }[],
+    linkUpsertError: null as { message: string } | null,
   },
 }))
 
@@ -55,6 +57,13 @@ vi.mock('@/lib/automations/admin-client', () => ({
                     error: h.state.messageUpsertError,
                   }),
               }
+            },
+          }
+        case 'manychat_contact_links':
+          return {
+            upsert: (row: Record<string, unknown>, options: unknown) => {
+              h.state.linkUpsertCalls.push({ row, options })
+              return Promise.resolve({ data: null, error: h.state.linkUpsertError })
             },
           }
         default:
@@ -116,6 +125,8 @@ beforeEach(() => {
   h.state.messageUpsertError = null
   h.state.upsertCalls = []
   h.state.rpcCalls = []
+  h.state.linkUpsertCalls = []
+  h.state.linkUpsertError = null
   h.findOrCreateContact.mockResolvedValue({
     contact: { id: 'contact-1', name: 'Ada Lovelace', phone: '15551230000' },
     wasCreated: false,
@@ -322,6 +333,60 @@ describe('new message', () => {
     ).getTime()
     expect(createdAt).toBeGreaterThanOrEqual(before)
     expect(createdAt).toBeLessThanOrEqual(after)
+  })
+})
+
+describe('manychat_contact_links mapping', () => {
+  it('upserts the ManyChat↔CRM contact mapping on a new message', async () => {
+    await POST(inboundRequest(VALID_PAYLOAD))
+
+    expect(h.state.linkUpsertCalls).toHaveLength(1)
+    expect(h.state.linkUpsertCalls[0].options).toMatchObject({
+      onConflict: 'account_id,contact_id',
+    })
+    expect(h.state.linkUpsertCalls[0].row).toMatchObject({
+      account_id: 'acc-1',
+      contact_id: 'contact-1',
+      manychat_contact_id: VALID_PAYLOAD.contact_id,
+      whatsapp_id: VALID_PAYLOAD.whatsapp_id,
+    })
+    expect(typeof h.state.linkUpsertCalls[0].row.updated_at).toBe('string')
+  })
+
+  it('also upserts the mapping on a retry/duplicate delivery', async () => {
+    await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-link' }))
+    expect(h.state.linkUpsertCalls).toHaveLength(1)
+
+    // Simulate the retry: the message upsert conflicts and returns zero rows.
+    h.state.messageUpsertResult = []
+    const res = await POST(
+      inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-link' }),
+    )
+
+    expect(res.status).toBe(200)
+    // The mapping write still ran a second time — it's independent of
+    // message idempotency.
+    expect(h.state.linkUpsertCalls).toHaveLength(2)
+  })
+
+  it('still mirrors the message into the Inbox even if the mapping write fails', async () => {
+    h.state.linkUpsertError = { message: 'constraint violation' }
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+
+    expect(res.status).toBe(201)
+    expect(h.state.upsertCalls).toHaveLength(1)
+  })
+
+  it('never trusts a manychat_contact_id other than payload.contact_id', async () => {
+    await POST(
+      inboundRequest({
+        ...VALID_PAYLOAD,
+        manychat_contact_id: 'attacker-controlled',
+      }),
+    )
+    expect(h.state.linkUpsertCalls[0].row.manychat_contact_id).toBe(
+      VALID_PAYLOAD.contact_id,
+    )
   })
 })
 
