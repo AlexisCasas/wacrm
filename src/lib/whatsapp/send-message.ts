@@ -19,6 +19,7 @@
 // without duplicating ~250 lines of Meta plumbing.
 // ============================================================
 
+import { randomUUID } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import {
@@ -48,6 +49,7 @@ import {
   templateBodyParams,
   templateContentText,
 } from '@/lib/whatsapp/template-body';
+import { sendManyChatText, ManyChatApiError } from '@/lib/manychat/api';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -93,8 +95,48 @@ export interface SendMessageParams {
 export interface SendMessageResult {
   /** Our `messages.id` (the persisted row). */
   messageId: string;
-  /** Meta's `wamid` for the delivered message. */
+  /**
+   * The transport's own message id — Meta's `wamid` when sent via Meta,
+   * or `manychat-out:<id>` when sent via the ManyChat bridge (see
+   * `resolveOutboundTransport`). Always what's stored in
+   * `messages.message_id`.
+   */
   whatsappMessageId: string;
+}
+
+// ============================================================
+// Outbound transport selection (ManyChat coexistence bridge, temporary).
+//
+// While a WhatsApp number is still operated in ManyChat (see
+// src/app/api/integrations/manychat/inbound/route.ts for the inbound
+// half), WHATSAPP_OUTBOUND_TRANSPORT=manychat routes agent-composed
+// sends through ManyChat's Public API instead of Meta's Cloud API.
+//
+// This is deliberately scoped to ONE account, not global: wacrm is
+// multi-account, and MANYCHAT_INGEST_ACCOUNT_ID already names the
+// single account this temporary bridge exists for (the inbound route
+// resolves its whatsapp_config from the same var). Reusing it here
+// means flipping WHATSAPP_OUTBOUND_TRANSPORT=manychat can never change
+// outbound behavior for any OTHER account on this deployment — every
+// other account keeps sending via Meta regardless of this env var.
+//
+// Resolution:
+//   transport=manychat AND accountId === MANYCHAT_INGEST_ACCOUNT_ID → manychat
+//   transport=manychat AND any other accountId                      → meta
+//   transport=meta (or unset/garbage)                                → meta
+// ============================================================
+export type WhatsAppOutboundTransport = 'meta' | 'manychat';
+
+export function resolveOutboundTransport(accountId: string): WhatsAppOutboundTransport {
+  const bridgeAccountId = process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+  if (
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT === 'manychat' &&
+    !!bridgeAccountId &&
+    accountId === bridgeAccountId
+  ) {
+    return 'manychat';
+  }
+  return 'meta';
 }
 
 /**
@@ -231,6 +273,23 @@ export async function sendMessageToConversation(
 
   if (convError || !conversation) {
     throw new SendMessageError('not_found', 'Conversation not found', 404);
+  }
+
+  // Transport branch — MUST come before any Meta-specific validation
+  // below (phone format, whatsapp_config lookup) since accounts bridged
+  // through ManyChat deliberately have no whatsapp_config row yet
+  // (the number isn't registered directly in WA CRM during this
+  // coexistence phase). Everything from here to the end of this
+  // function, when this branch is NOT taken, is byte-for-byte the
+  // pre-existing Meta send path.
+  if (resolveOutboundTransport(accountId) === 'manychat') {
+    return sendViaManyChat(db, accountId, {
+      conversationId,
+      contactId: conversation.contact_id as string,
+      messageType,
+      contentText,
+      replyToMessageId,
+    });
   }
 
   const contact = conversation.contact;
@@ -533,4 +592,164 @@ export async function sendMessageToConversation(
   }
 
   return { messageId: messageRecord.id, whatsappMessageId: waMessageId };
+}
+
+// ============================================================
+// ManyChat outbound path (temporary coexistence bridge).
+//
+// Mirrors the shape of the Meta path above — validate → send →
+// persist → update conversation → pause flows — but:
+//   - text only, no phone/whatsapp_config lookup (ManyChat targets a
+//     subscriber id, not a phone number through Meta);
+//   - the contact must already be linked via `manychat_contact_links`
+//     (populated by the inbound bridge) — no mapping means no send,
+//     ever, with no fallback to Meta;
+//   - a message is persisted ONLY after ManyChat accepts the send —
+//     same ordering guarantee as the Meta path, so a failed send never
+//     shows up as delivered in the Inbox.
+// ============================================================
+interface ManyChatSendArgs {
+  conversationId: string;
+  contactId: string;
+  messageType: string;
+  contentText?: string | null;
+  replyToMessageId?: string | null;
+}
+
+async function sendViaManyChat(
+  db: SupabaseClient,
+  accountId: string,
+  args: ManyChatSendArgs,
+): Promise<SendMessageResult> {
+  const { conversationId, contactId, messageType, contentText, replyToMessageId } = args;
+
+  // No silent fallback to Meta for anything ManyChat can't carry yet —
+  // a clear, typed rejection instead.
+  if (messageType !== 'text') {
+    throw new SendMessageError(
+      'manychat_unsupported_type',
+      `ManyChat outbound only supports text messages while WHATSAPP_OUTBOUND_TRANSPORT=manychat (got "${messageType}")`,
+      409,
+    );
+  }
+
+  const apiKey = process.env.MANYCHAT_API_KEY;
+  if (!apiKey) {
+    throw new SendMessageError(
+      'manychat_not_configured',
+      'ManyChat outbound is not configured (MANYCHAT_API_KEY missing)',
+      503,
+    );
+  }
+
+  // Scoped to BOTH account_id and contact_id — never contact_id alone —
+  // so account A can never reach account B's ManyChat mapping.
+  const { data: link, error: linkError } = await db
+    .from('manychat_contact_links')
+    .select('manychat_contact_id')
+    .eq('account_id', accountId)
+    .eq('contact_id', contactId)
+    .maybeSingle();
+
+  if (linkError) {
+    console.error(
+      '[send-message] manychat_contact_links lookup failed:',
+      linkError.message,
+    );
+    throw new SendMessageError('db_error', 'Failed to resolve the ManyChat mapping', 500);
+  }
+  if (!link) {
+    throw new SendMessageError(
+      'manychat_contact_not_linked',
+      'This contact has not been synced from ManyChat yet — an inbound message must arrive first.',
+      409,
+    );
+  }
+
+  let sendResult: Awaited<ReturnType<typeof sendManyChatText>>;
+  try {
+    sendResult = await sendManyChatText({
+      apiKey,
+      manyChatContactId: link.manychat_contact_id as string,
+      text: contentText!,
+    });
+  } catch (err) {
+    const message =
+      err instanceof ManyChatApiError
+        ? err.message
+        : err instanceof Error
+          ? err.message
+          : 'Unknown ManyChat API error';
+    console.error('[send-message] ManyChat send failed:', message);
+    throw new SendMessageError('manychat_error', `ManyChat API error: ${message}`, 502);
+  }
+
+  // ManyChat's documented sendContent response is `{ "status": "success" }`
+  // with no confirmed message-id field. Use one opportunistically if a
+  // future/undocumented shape carries it; otherwise generate our own —
+  // never invent a wamid-shaped id.
+  const raw = sendResult.raw as Record<string, unknown> | null;
+  const nestedData = raw && typeof raw.data === 'object' ? (raw.data as Record<string, unknown>) : null;
+  const returnedId = raw?.message_id ?? nestedData?.message_id;
+  const messageId =
+    typeof returnedId === 'string' && returnedId.trim()
+      ? `manychat-out:${returnedId.trim()}`
+      : `manychat-out:${randomUUID()}`;
+
+  const { data: messageRecord, error: msgError } = await db
+    .from('messages')
+    .insert({
+      conversation_id: conversationId,
+      sender_type: 'agent',
+      content_type: 'text',
+      content_text: contentText,
+      message_id: messageId,
+      status: 'sent',
+      reply_to_message_id: replyToMessageId || null,
+    })
+    .select()
+    .single();
+
+  if (msgError) {
+    console.error('[send-message] error inserting sent (manychat) message:', msgError);
+    throw new SendMessageError(
+      'db_error',
+      `Message sent via ManyChat but failed to save to DB: ${msgError.message}`,
+      500,
+    );
+  }
+
+  await db
+    .from('conversations')
+    .update({
+      last_message_text: contentText || '[text]',
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', conversationId);
+
+  // Pause any active Flow run — same "agent stepped in" signal as the
+  // Meta path. Best-effort.
+  try {
+    const { error: pauseErr } = await supabaseAdmin()
+      .from('flow_runs')
+      .update({
+        status: 'paused_by_agent',
+        ended_at: new Date().toISOString(),
+        end_reason: 'agent_replied',
+      })
+      .eq('account_id', accountId)
+      .eq('contact_id', contactId)
+      .eq('status', 'active');
+    if (pauseErr) {
+      console.error('[flows] pause-on-agent-send failed:', pauseErr.message);
+    }
+  } catch (err) {
+    console.error(
+      '[flows] pause-on-agent-send threw:',
+      err instanceof Error ? err.message : err,
+    );
+  }
+
+  return { messageId: messageRecord.id, whatsappMessageId: messageId };
 }
