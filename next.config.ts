@@ -2,7 +2,33 @@ import type { NextConfig } from "next";
 import createNextIntlPlugin from "next-intl/plugin";
 
 const withNextIntl = createNextIntlPlugin("./src/i18n/request.ts");
+const SUPABASE_CSP_ORIGINS = (() => {
+  const rawUrl = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim();
 
+  if (!rawUrl) {
+    return {
+      http: "https://*.supabase.co",
+      ws: "wss://*.supabase.co",
+    };
+  }
+
+  try {
+    const url = new URL(rawUrl);
+    const http = url.origin;
+
+    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+
+    return {
+      http,
+      ws: url.origin,
+    };
+  } catch {
+    return {
+      http: "https://*.supabase.co",
+      ws: "wss://*.supabase.co",
+    };
+  }
+})();
 /**
  * Baseline security headers applied to every response.
  *
@@ -51,11 +77,11 @@ const SECURITY_HEADERS = [
       "img-src 'self' data: blob: https:",
       // Outbound media previews (blob: from MediaRecorder + file picker)
       // and Supabase public-bucket audio/video the inbox renders.
-      "media-src 'self' blob: https://*.supabase.co",
+      `media-src 'self' blob: ${SUPABASE_CSP_ORIGINS.http}`,
       "font-src 'self' data:",
       // Supabase REST + realtime (WSS). All Meta API calls happen
       // server-side, so graph.facebook.com does not belong here.
-      "connect-src 'self' https://*.supabase.co wss://*.supabase.co",
+      `connect-src 'self' ${SUPABASE_CSP_ORIGINS.http} ${SUPABASE_CSP_ORIGINS.ws}`,
       "frame-ancestors 'none'",
       "base-uri 'self'",
       "form-action 'self'",
