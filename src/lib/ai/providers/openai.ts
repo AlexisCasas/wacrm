@@ -50,7 +50,7 @@ export async function generateOpenAi(args: ProviderArgs): Promise<ProviderResult
   }
 
   if (!res.ok) {
-    throw await providerHttpError('OpenAI', res)
+    throw await providerHttpError('OpenAI', res, { redact: [apiKey] })
   }
 
   const data = (await res.json().catch(() => null)) as OpenAiResponse | null

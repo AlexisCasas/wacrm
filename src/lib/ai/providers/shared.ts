@@ -51,11 +51,41 @@ export function toNetworkError(err: unknown): AiError {
   })
 }
 
-/** Build a typed AiError from a non-2xx provider response, pulling the
- *  provider's own error message out of the JSON body when present. */
+/**
+ * Replace every occurrence of each secret in `text` with `[REDACTED]`.
+ * Uses split/join rather than a regex built from the secret, so special
+ * regex characters that can legally appear in an API key (`.`, `*`,
+ * `(`, `+`, …) never produce a broken or wrong-matching pattern.
+ * Falsy/empty secrets are ignored (nothing to redact, and an empty
+ * needle would otherwise "match" between every character).
+ */
+export function redactSecrets(
+  text: string,
+  secrets: readonly (string | null | undefined)[],
+): string {
+  let out = text
+  for (const secret of secrets) {
+    if (!secret) continue
+    out = out.split(secret).join('[REDACTED]')
+  }
+  return out
+}
+
+/**
+ * Build a typed AiError from a non-2xx provider response, pulling the
+ * provider's own error message out of the JSON body when present.
+ *
+ * `redact` — secrets (typically the caller's own apiKey) that must
+ * never reach the constructed AiError even if the upstream response
+ * happens to echo one back (accidentally, or via a misconfigured
+ * proxy). Redaction runs on the extracted detail text BEFORE the
+ * AiError is built, so there is no path from an unsanitized value to
+ * the thrown error, an HTTP response, or a log line.
+ */
 export async function providerHttpError(
   provider: string,
   res: Response,
+  opts: { redact?: readonly (string | null | undefined)[] } = {},
 ): Promise<AiError> {
   let detail = ''
   try {
@@ -66,6 +96,10 @@ export async function providerHttpError(
         : (body?.error?.message ?? '')
   } catch {
     // Non-JSON error body — fall back to the status line.
+  }
+
+  if (opts.redact && opts.redact.length > 0) {
+    detail = redactSecrets(detail, opts.redact)
   }
 
   const { status } = res
