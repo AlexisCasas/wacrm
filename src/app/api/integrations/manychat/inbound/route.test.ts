@@ -6,6 +6,7 @@ const h = vi.hoisted(() => ({
   findOrCreateContact: vi.fn(),
   findOrCreateConversation: vi.fn(),
   reopenClosedConversation: vi.fn(),
+  dispatchInboundToAiReply: vi.fn(),
   state: {
     configRow: { account_id: 'acc-1', user_id: 'user-1' } as
       | { account_id: string; user_id: string }
@@ -18,6 +19,8 @@ const h = vi.hoisted(() => ({
     rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
     linkUpsertCalls: [] as { row: Record<string, unknown>; options: unknown }[],
     linkUpsertError: null as { message: string } | null,
+    /** Callbacks registered via after() — drain explicitly in a test to simulate post-response work. */
+    afterCallbacks: [] as (() => Promise<void> | void)[],
   },
 }))
 
@@ -28,6 +31,13 @@ vi.mock('next/server', () => ({
       status: init?.status ?? 200,
     }),
   },
+  after: (cb: () => Promise<void> | void) => {
+    h.state.afterCallbacks.push(cb)
+  },
+}))
+
+vi.mock('@/lib/ai/auto-reply', () => ({
+  dispatchInboundToAiReply: h.dispatchInboundToAiReply,
 }))
 
 vi.mock('@/lib/automations/admin-client', () => ({
@@ -115,6 +125,11 @@ const VALID_PAYLOAD = {
   last_interaction: '2026-01-01T12:00:00.000Z',
 }
 
+/** Runs every after() callback registered so far, exactly as the runtime would post-response. */
+async function drainAfterCallbacks() {
+  for (const cb of h.state.afterCallbacks) await cb()
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   process.env.MANYCHAT_INGEST_SECRET = VALID_SECRET
@@ -127,6 +142,7 @@ beforeEach(() => {
   h.state.rpcCalls = []
   h.state.linkUpsertCalls = []
   h.state.linkUpsertError = null
+  h.state.afterCallbacks = []
   h.findOrCreateContact.mockResolvedValue({
     contact: { id: 'contact-1', name: 'Ada Lovelace', phone: '15551230000' },
     wasCreated: false,
@@ -136,11 +152,13 @@ beforeEach(() => {
     created: false,
   })
   h.reopenClosedConversation.mockResolvedValue(false)
+  h.dispatchInboundToAiReply.mockResolvedValue(undefined)
 })
 
 afterEach(() => {
   delete process.env.MANYCHAT_INGEST_SECRET
   delete process.env.MANYCHAT_INGEST_ACCOUNT_ID
+  delete process.env.MANYCHAT_AI_AUTOREPLY_ENABLED
 })
 
 describe('auth', () => {
@@ -415,17 +433,228 @@ describe('retry / duplicate delivery', () => {
   })
 })
 
-describe('never dispatches AI / Flows / Automations / outbound sends', () => {
-  it('does not import the AI reply, Flows, or Automations engines, or any WhatsApp send path', () => {
+describe('never dispatches Flows / Automations / public webhooks / direct WhatsApp sends', () => {
+  it('imports dispatchInboundToAiReply (feature-flagged), but never Flows, Automations, public webhook fan-out, or any WhatsApp send path', () => {
     const source = readFileSync(join(__dirname, 'route.ts'), 'utf8')
-    expect(source).not.toMatch(/dispatchInboundToAiReply/)
+    // AI is intentionally wired in as of this change — locked in as a
+    // positive assertion so a future edit can't silently rip it back
+    // out along with something else.
+    expect(source).toMatch(/dispatchInboundToAiReply/)
+    expect(source).toMatch(/@\/lib\/ai\/auto-reply/)
+    // Everything else stays forbidden — this route is still a mirror
+    // for everything except AI.
     expect(source).not.toMatch(/dispatchInboundToFlows/)
     expect(source).not.toMatch(/runAutomationsForTrigger/)
     expect(source).not.toMatch(/dispatchWebhookEvent/)
     expect(source).not.toMatch(/@\/lib\/whatsapp\/meta-api/)
-    expect(source).not.toMatch(/@\/lib\/ai\//)
     expect(source).not.toMatch(/@\/lib\/flows\//)
     expect(source).not.toMatch(/@\/lib\/automations\/engine/)
+  })
+})
+
+describe('AI auto-reply dispatch (MANYCHAT_AI_AUTOREPLY_ENABLED)', () => {
+  it('feature flag absent → does not schedule AI', async () => {
+    delete process.env.MANYCHAT_AI_AUTOREPLY_ENABLED
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+    expect(res.status).toBe(201)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+  })
+
+  it('feature flag "false" → does not schedule AI', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'false'
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(0)
+  })
+
+  it('feature flag any value other than the exact string "true" → does not schedule AI', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'TRUE'
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(0)
+  })
+
+  it('flag=true + a genuine new message → schedules AI exactly once, via after()', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+
+    expect(res.status).toBe(201)
+    // The response resolved WITHOUT the after() callback having run —
+    // proves the HTTP response never waited on the LLM call.
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+    expect(h.state.afterCallbacks).toHaveLength(1)
+
+    await drainAfterCallbacks()
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('duplicate/retry → does not schedule AI a second time', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-ai' }))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+
+    // Simulate the retry: the message upsert conflicts and returns zero rows.
+    h.state.afterCallbacks = []
+    h.state.messageUpsertResult = []
+    const res = await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-ai' }))
+
+    expect(res.status).toBe(200)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+  })
+
+  it('invalid payload → does not schedule AI', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    const res = await POST(inboundRequest({ ...VALID_PAYLOAD, text: '' }))
+    expect(res.status).toBe(400)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+  })
+
+  it('the ManyChat↔CRM mapping upsert still runs exactly as before', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.linkUpsertCalls).toHaveLength(1)
+  })
+
+  it('the unread bump (RPC) still runs exactly once', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.rpcCalls).toHaveLength(1)
+  })
+
+  it('reopen still runs for a closed conversation', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    h.findOrCreateConversation.mockResolvedValue({
+      conversation: { id: 'conv-1', status: 'closed', account_id: 'acc-1' },
+      created: false,
+    })
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.reopenClosedConversation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'conv-1', status: 'closed' }),
+    )
+  })
+
+  it('AI receives exactly the server-resolved accountId/conversationId/contactId/configOwnerUserId — never client-supplied ids', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    h.findOrCreateContact.mockResolvedValue({
+      contact: { id: 'contact-xyz', name: 'Ada', phone: '15551230000' },
+      wasCreated: false,
+    })
+    h.findOrCreateConversation.mockResolvedValue({
+      conversation: { id: 'conv-xyz', status: 'open', account_id: 'acc-1' },
+      created: false,
+    })
+
+    await POST(
+      inboundRequest({
+        ...VALID_PAYLOAD,
+        account_id: 'attacker-acc',
+        user_id: 'attacker-user',
+        conversation_id: 'attacker-conv',
+      }),
+    )
+    await drainAfterCallbacks()
+
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledWith({
+      accountId: 'acc-1',
+      conversationId: 'conv-xyz',
+      contactId: 'contact-xyz',
+      configOwnerUserId: 'user-1',
+      suppressWhenAutomationsActive: false,
+    })
+  })
+})
+
+describe('AI auto-reply allowlist (MANYCHAT_AI_AUTOREPLY_CONTACT_IDS)', () => {
+  afterEach(() => {
+    delete process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS
+  })
+
+  it('enabled + allowlist contains the current contact_id → schedules AI', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS = 'mc-contact-1'
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+    expect(res.status).toBe(201)
+    expect(h.state.afterCallbacks).toHaveLength(1)
+  })
+
+  it('enabled + allowlist does NOT contain the current contact_id → does not schedule AI', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS = 'someone-else,another-one'
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+    // The message itself still mirrors into the Inbox fine — only the
+    // AI dispatch is withheld.
+    expect(res.status).toBe(201)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+    expect(h.state.upsertCalls).toHaveLength(1)
+  })
+
+  it('parses whitespace/comma-separated ids correctly (trim + exact match)', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS = '  someone-else , mc-contact-1 ,, another '
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+  })
+
+  it('an empty allowlist string ("") falls back to normal (all eligible contacts) behavior', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS = ''
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+  })
+
+  it('an allowlist that trims to nothing (only commas/whitespace) falls back to normal behavior', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS = ' , , '
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+  })
+
+  it('variable absent → normal (all eligible contacts) behavior', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    delete process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+  })
+
+  it('a retry/duplicate never schedules AI, even for an allowlisted contact', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS = 'mc-contact-1'
+    await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-allow' }))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+
+    // Simulate the retry: the message upsert conflicts and returns zero rows.
+    h.state.afterCallbacks = []
+    h.state.messageUpsertResult = []
+    const res = await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-allow' }))
+
+    expect(res.status).toBe(200)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+  })
+
+  it('an invalid payload never schedules AI, even for an allowlisted contact', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS = 'mc-contact-1'
+    const res = await POST(inboundRequest({ ...VALID_PAYLOAD, text: '' }))
+    expect(res.status).toBe(400)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+  })
+
+  it('only payload.contact_id is checked against the allowlist — other body fields cannot spoof a match', async () => {
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS = 'mc-contact-1'
+    // The real contact_id ('mc-other') is NOT allowlisted; smuggling
+    // 'mc-contact-1' under unrelated field names must not count.
+    const res = await POST(
+      inboundRequest({
+        ...VALID_PAYLOAD,
+        contact_id: 'mc-other',
+        manychat_contact_id: 'mc-contact-1',
+        account_id: 'mc-contact-1',
+      }),
+    )
+    expect(res.status).toBe(201)
+    expect(h.state.afterCallbacks).toHaveLength(0)
   })
 })
 

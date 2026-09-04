@@ -107,9 +107,18 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
         args: { conversation_id: 'conv-1', max_replies: 3 },
       },
     ])
-    expect(h.engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ conversationId: 'conv-1', text: 'Hello!' }),
-    )
+    // Exact args, not just a partial match — proves accountId,
+    // conversationId, contactId, and configOwnerUserId all flow through
+    // dispatchInboundToAiReply → sendAiTextToConversation → the Meta
+    // sender unchanged, and that aiGenerated is always set.
+    expect(h.engineSendText).toHaveBeenCalledWith({
+      accountId: 'acct-1',
+      userId: 'user-1',
+      conversationId: 'conv-1',
+      contactId: 'contact-1',
+      text: 'Hello!',
+      aiGenerated: true,
+    })
   })
 
   it('grounds the reply in retrieved knowledge', async () => {
@@ -124,6 +133,30 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     h.state.autoResponders = [{ id: 'auto-1' }]
     await dispatchInboundToAiReply(ARGS)
     expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('suppressWhenAutomationsActive: true (explicit) behaves identically to the default — native Meta webhook call shape, unchanged', async () => {
+    h.state.autoResponders = [{ id: 'auto-1' }]
+    await dispatchInboundToAiReply({ ...ARGS, suppressWhenAutomationsActive: true })
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('suppressWhenAutomationsActive: false skips the automations check entirely and continues to send (ManyChat bridge)', async () => {
+    h.state.autoResponders = [{ id: 'auto-1' }]
+    await dispatchInboundToAiReply({ ...ARGS, suppressWhenAutomationsActive: false })
+    expect(h.generateReply).toHaveBeenCalled()
+    expect(h.engineSendText).toHaveBeenCalled()
+  })
+
+  it('the native/default call shape (no suppressWhenAutomationsActive arg at all) is unaffected by this change', async () => {
+    // ARGS never sets the new field — proves the Meta webhook's
+    // existing call site (which never passes it) keeps suppressing on
+    // an active automation without needing any code change there.
+    expect(ARGS).not.toHaveProperty('suppressWhenAutomationsActive')
+    h.state.autoResponders = [{ id: 'auto-1' }]
+    await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).not.toHaveBeenCalled()
   })
 
