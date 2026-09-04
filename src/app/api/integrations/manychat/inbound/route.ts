@@ -1,21 +1,45 @@
 import { createHash, timingSafeEqual } from 'node:crypto'
-import { NextResponse } from 'next/server'
+import { NextResponse, after } from 'next/server'
 import { supabaseAdmin } from '@/lib/automations/admin-client'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 import { findOrCreateContact } from '@/lib/contacts/find-or-create'
 import { findOrCreateConversation } from '@/lib/conversations/find-or-create'
 import { reopenClosedConversation } from '@/lib/conversations/reopen'
+import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 
 /**
  * TEMPORARY bridge: mirrors inbound WhatsApp messages from ManyChat
  * (still the live-sending platform during this migration window) into
- * the WA CRM Inbox — contact, conversation, message only.
+ * the WA CRM Inbox — contact, conversation, message, mapping, and
+ * (optionally) AI auto-reply.
  *
- * Deliberately does NOT: send to WhatsApp, run AI auto-reply, run
- * Flows, or run Automations. This route is a read-only mirror of
- * ManyChat's own inbound handling, so those engines must never see a
- * message that originated here — remove this route once ManyChat is
- * decommissioned.
+ * Deliberately does NOT: send to WhatsApp directly, run Flows, or run
+ * Automations. This route is a read-only mirror of ManyChat's own
+ * inbound handling for everything except AI — those two engines must
+ * never see a message that originated here — remove this route once
+ * ManyChat is decommissioned.
+ *
+ * AI auto-reply IS wired up, but only when ALL of these hold:
+ *   - MANYCHAT_AI_AUTOREPLY_ENABLED === 'true' (server-only flag,
+ *     default/absent = false — see .env.local.example);
+ *   - this delivery was a genuine new message, not a retry/duplicate
+ *     (the idempotent message upsert below already tells us this);
+ *   - there's non-empty text (already guaranteed by payload validation,
+ *     re-checked here for clarity of the gate);
+ *   - MANYCHAT_AI_AUTOREPLY_CONTACT_IDS is either unset/empty (normal
+ *     production behavior — every eligible contact), or it's set and
+ *     the ManyChat contact_id THIS ROUTE ALREADY VALIDATED is exactly
+ *     in that list (controlled rollout — see `isManyChatAiAutoreplyAllowed`).
+ * When it fires, the LLM call is deferred via `after()` (same pattern
+ * the native Meta webhook uses) so ManyChat's External Request gets its
+ * 201 immediately and never blocks on OpenAI/Anthropic latency.
+ * `dispatchInboundToAiReply` owns its own eligibility gates (auto-reply
+ * enabled for the account, no human assigned, reply cap, etc.) and
+ * never throws — this route doesn't duplicate any of that logic. It's
+ * called with `suppressWhenAutomationsActive: false` — unlike the
+ * native Meta webhook, this route never dispatches Automations for the
+ * same inbound, so an active CRM automation here is irrelevant noise,
+ * not a competing responder.
  *
  * Auth: `Authorization: Bearer <MANYCHAT_INGEST_SECRET>`, compared with
  * `timingSafeEqual` (same pattern as GET /api/automations/cron). No
@@ -96,6 +120,31 @@ function buildMessageId(payload: ManyChatInboundPayload): string {
     .update(`${payload.contact_id}\u0000${payload.last_interaction ?? ''}\u0000${payload.text}`)
     .digest('hex')
   return `manychat:${hash}`
+}
+
+/**
+ * Controlled-rollout allowlist for `MANYCHAT_AI_AUTOREPLY_ENABLED`.
+ *
+ * `MANYCHAT_AI_AUTOREPLY_CONTACT_IDS` is a comma-separated list of
+ * ManyChat contact/subscriber ids. Absent or empty (after trimming each
+ * entry) → normal production behavior, every eligible contact. Present
+ * with at least one entry → AI only fires for an EXACT match against
+ * `manyChatContactId` — the value THIS ROUTE already validated as
+ * `payload.contact_id`, never anything else from the request body.
+ *
+ * Defensive parsing only: split on comma, trim, drop empty entries,
+ * exact string match. Never logs the parsed list (it's not a secret,
+ * but there's no reason to print it either).
+ */
+function isManyChatAiAutoreplyAllowed(manyChatContactId: string): boolean {
+  const raw = process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS
+  if (!raw) return true
+  const allowlist = raw
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0)
+  if (allowlist.length === 0) return true
+  return allowlist.includes(manyChatContactId)
 }
 
 export async function POST(request: Request) {
@@ -262,6 +311,34 @@ export async function POST(request: Request) {
   }
 
   await reopenClosedConversation(admin, conversation)
+
+  // AI auto-reply — gated behind the feature flag (+ optional allowlist
+  // for a controlled rollout), and registered ONLY now that we know
+  // this was a genuine new message (past the duplicate/retry
+  // early-return above). Deferred via after() so the LLM call never
+  // delays ManyChat's response. Tenancy args come entirely from
+  // server-resolved state (config.account_id/user_id, the
+  // contact/conversation just created or found) — never from the
+  // request body. `payload.contact_id` is the ManyChat contact id this
+  // route already validated — the only value the allowlist check is
+  // ever compared against.
+  if (
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED === 'true' &&
+    payload.text.trim() &&
+    isManyChatAiAutoreplyAllowed(payload.contact_id)
+  ) {
+    const aiArgs = {
+      accountId: config.account_id,
+      conversationId: conversation.id,
+      contactId: contactOutcome.contact.id,
+      configOwnerUserId: config.user_id,
+      // This route never dispatches Automations for this same inbound
+      // (unlike the native Meta webhook) — an active CRM automation
+      // here must not silence the AI.
+      suppressWhenAutomationsActive: false,
+    }
+    after(() => dispatchInboundToAiReply(aiArgs))
+  }
 
   return NextResponse.json({ status: 'created' }, { status: 201 })
 }

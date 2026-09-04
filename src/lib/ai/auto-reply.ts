@@ -7,7 +7,7 @@ import { buildSystemPrompt } from './defaults'
 import { buildHandoffSummary } from './handoff'
 import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
-import { engineSendText } from '@/lib/flows/meta-send'
+import { sendAiTextToConversation } from './send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 
 interface DispatchArgs {
@@ -18,6 +18,19 @@ interface DispatchArgs {
   /** The account's WhatsApp config owner, used for the outbound send's
    *  audit columns (mirrors how the flow runner passes it through). */
   configOwnerUserId: string
+  /**
+   * Stand down when the account has an active `new_message_received` /
+   * `keyword_match` automation, to avoid double-texting the customer.
+   * Default `true` — the correct behavior for any inbound path that
+   * ALSO dispatches Automations for this same message (the native Meta
+   * webhook: `runAutomationsForTrigger` runs alongside this call).
+   *
+   * The ManyChat bridge (`POST /api/integrations/manychat/inbound`)
+   * deliberately never dispatches Automations at all — a CRM automation
+   * being "active" there is irrelevant noise, not a real competing
+   * responder — so it passes `false` to skip this check entirely.
+   */
+  suppressWhenAutomationsActive?: boolean
 }
 
 /**
@@ -42,7 +55,13 @@ interface DispatchArgs {
 export async function dispatchInboundToAiReply(
   args: DispatchArgs,
 ): Promise<void> {
-  const { accountId, conversationId, contactId, configOwnerUserId } = args
+  const {
+    accountId,
+    conversationId,
+    contactId,
+    configOwnerUserId,
+    suppressWhenAutomationsActive,
+  } = args
 
   try {
     const db = supabaseAdmin()
@@ -50,22 +69,29 @@ export async function dispatchInboundToAiReply(
     const config = await loadAiConfig(db, accountId)
     if (!config || !config.autoReplyEnabled) return
 
-    // Deterministic, user-configured responders win over the LLM — the
-    // caller already excludes messages a Flow consumed. Message-level
-    // automations (`new_message_received` / `keyword_match`) are
-    // dispatched independently for this same inbound and may send their
-    // own reply, so if the account has any active one we stand down to
-    // avoid double-texting the customer. (Relationship triggers like
-    // `first_inbound_message` don't count — they're not per-message
-    // auto-responders.)
-    const { data: autoResponders } = await db
-      .from('automations')
-      .select('id')
-      .eq('account_id', accountId)
-      .eq('is_active', true)
-      .in('trigger_type', ['new_message_received', 'keyword_match'])
-      .limit(1)
-    if (autoResponders && autoResponders.length > 0) return
+    // Deterministic, user-configured responders win over the LLM — but
+    // only on paths that actually dispatch Automations for this same
+    // inbound (the native Meta webhook). Message-level automations
+    // (`new_message_received` / `keyword_match`) are dispatched
+    // independently there and may send their own reply, so if the
+    // account has any active one we stand down to avoid double-texting
+    // the customer. (Relationship triggers like `first_inbound_message`
+    // don't count — they're not per-message auto-responders.)
+    //
+    // Skipped entirely when `suppressWhenAutomationsActive === false`
+    // (the ManyChat bridge): that route never runs Automations at all,
+    // so an active automation there is irrelevant — checking it would
+    // only ever silence the AI for no reason.
+    if (suppressWhenAutomationsActive !== false) {
+      const { data: autoResponders } = await db
+        .from('automations')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('is_active', true)
+        .in('trigger_type', ['new_message_received', 'keyword_match'])
+        .limit(1)
+      if (autoResponders && autoResponders.length > 0) return
+    }
 
     const { data: conv, error: convErr } = await db
       .from('conversations')
@@ -179,13 +205,17 @@ export async function dispatchInboundToAiReply(
     }
     if (claimed !== true) return // lost the per-conversation cap race
 
-    await engineSendText({
+    // Transport-aware: sends via ManyChat while this account is bridged
+    // (WHATSAPP_OUTBOUND_TRANSPORT=manychat + MANYCHAT_INGEST_ACCOUNT_ID
+    // matches), or via Meta's engineSendText otherwise — see
+    // src/lib/ai/send.ts for the full contract. Either way this persists
+    // sender_type='bot' + ai_generated=true and never pauses flow_runs.
+    await sendAiTextToConversation({
       accountId,
-      userId: configOwnerUserId,
       conversationId,
       contactId,
       text,
-      aiGenerated: true,
+      configOwnerUserId,
     })
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)

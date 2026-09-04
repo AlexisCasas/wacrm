@@ -19,7 +19,6 @@
 // without duplicating ~250 lines of Meta plumbing.
 // ============================================================
 
-import { randomUUID } from 'node:crypto';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import {
@@ -49,7 +48,13 @@ import {
   templateBodyParams,
   templateContentText,
 } from '@/lib/whatsapp/template-body';
-import { sendManyChatText, ManyChatApiError } from '@/lib/manychat/api';
+import { ManyChatApiError } from '@/lib/manychat/api';
+import {
+  sendManyChatTextToContact,
+  ManyChatNotConfiguredError,
+  ManyChatContactNotLinkedError,
+  ManyChatMappingLookupError,
+} from '@/lib/manychat/contact-send';
 
 export const MEDIA_KINDS = ['image', 'video', 'document', 'audio'] as const;
 export const VALID_MESSAGE_TYPES = [
@@ -633,68 +638,34 @@ async function sendViaManyChat(
     );
   }
 
-  const apiKey = process.env.MANYCHAT_API_KEY;
-  if (!apiKey) {
-    throw new SendMessageError(
-      'manychat_not_configured',
-      'ManyChat outbound is not configured (MANYCHAT_API_KEY missing)',
-      503,
-    );
-  }
-
-  // Scoped to BOTH account_id and contact_id — never contact_id alone —
-  // so account A can never reach account B's ManyChat mapping.
-  const { data: link, error: linkError } = await db
-    .from('manychat_contact_links')
-    .select('manychat_contact_id')
-    .eq('account_id', accountId)
-    .eq('contact_id', contactId)
-    .maybeSingle();
-
-  if (linkError) {
-    console.error(
-      '[send-message] manychat_contact_links lookup failed:',
-      linkError.message,
-    );
-    throw new SendMessageError('db_error', 'Failed to resolve the ManyChat mapping', 500);
-  }
-  if (!link) {
-    throw new SendMessageError(
-      'manychat_contact_not_linked',
-      'This contact has not been synced from ManyChat yet — an inbound message must arrive first.',
-      409,
-    );
-  }
-
-  let sendResult: Awaited<ReturnType<typeof sendManyChatText>>;
+  // Transport only — mapping lookup + the ManyChat wire call, shared
+  // with the AI send path (src/lib/ai/send.ts). Carries no opinion
+  // about sender_type; that's decided right here, below.
+  let messageId: string;
   try {
-    sendResult = await sendManyChatText({
-      apiKey,
-      manyChatContactId: link.manychat_contact_id as string,
+    const result = await sendManyChatTextToContact({
+      db,
+      accountId,
+      contactId,
       text: contentText!,
     });
+    messageId = result.whatsappMessageId;
   } catch (err) {
-    const message =
-      err instanceof ManyChatApiError
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : 'Unknown ManyChat API error';
-    console.error('[send-message] ManyChat send failed:', message);
-    throw new SendMessageError('manychat_error', `ManyChat API error: ${message}`, 502);
+    if (err instanceof ManyChatNotConfiguredError) {
+      throw new SendMessageError('manychat_not_configured', err.message, 503);
+    }
+    if (err instanceof ManyChatContactNotLinkedError) {
+      throw new SendMessageError('manychat_contact_not_linked', err.message, 409);
+    }
+    if (err instanceof ManyChatMappingLookupError) {
+      throw new SendMessageError('db_error', err.message, 500);
+    }
+    if (err instanceof ManyChatApiError) {
+      console.error('[send-message] ManyChat send failed:', err.message);
+      throw new SendMessageError('manychat_error', `ManyChat API error: ${err.message}`, 502);
+    }
+    throw err;
   }
-
-  // ManyChat's documented sendContent response is `{ "status": "success" }`
-  // with no confirmed message-id field. Use one opportunistically if a
-  // future/undocumented shape carries it; otherwise generate our own —
-  // never invent a wamid-shaped id.
-  const raw = sendResult.raw as Record<string, unknown> | null;
-  const nestedData = raw && typeof raw.data === 'object' ? (raw.data as Record<string, unknown>) : null;
-  const returnedId = raw?.message_id ?? nestedData?.message_id;
-  const messageId =
-    typeof returnedId === 'string' && returnedId.trim()
-      ? `manychat-out:${returnedId.trim()}`
-      : `manychat-out:${randomUUID()}`;
 
   const { data: messageRecord, error: msgError } = await db
     .from('messages')
