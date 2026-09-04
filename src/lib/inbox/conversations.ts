@@ -42,6 +42,23 @@ export function normalizeConversations(
   return rows.map(normalizeConversation);
 }
 
+/**
+ * A conversation "needs human attention" only when the bot is paused
+ * AND left an actual handoff note — never for a bare manual pause
+ * (`ai_autoreply_disabled` with no summary, e.g. an agent just took
+ * over via "Take over"). That distinction is what keeps this indicator
+ * meaningful: it means "the bot stopped because it needed a human",
+ * not "a human happens to be looking at this thread already".
+ */
+export function needsHumanAttention(
+  conversation: Pick<Conversation, 'ai_autoreply_disabled' | 'ai_handoff_summary'>,
+): boolean {
+  return (
+    conversation.ai_autoreply_disabled === true &&
+    !!conversation.ai_handoff_summary?.trim()
+  )
+}
+
 export interface ContactFilters {
   /** Tag ids; a conversation matches if its contact has ANY of them (OR). */
   tagIds: string[];

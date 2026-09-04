@@ -140,6 +140,7 @@
       "searchPlaceholder": "Search conversations...",
       "filterAll": "All",
       "filterUnread": "Unread",
+      "filterNeedsHuman": "Needs human",
       "filterOpen": "Open",
       "filterPending": "Pending",
       "filterClosed": "Closed",
@@ -149,7 +150,8 @@
       "clearAll": "Clear all",
       "noConversations": "No conversations found",
       "noMessagesYet": "No messages yet",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "needsHumanAttention": "Needs human attention"
     },
     "messageThread": {
       "backToConversations": "Back to conversations",
@@ -296,7 +298,8 @@
       "tookOver": "You’ve taken over this chat.",
       "resumed": "AI resumed.",
       "updateError": "Couldn’t update the AI assistant.",
-      "networkError": "Couldn’t reach the server."
+      "networkError": "Couldn’t reach the server.",
+      "handoffTitle": "Needs human attention"
     }
   },
   "Contacts": {

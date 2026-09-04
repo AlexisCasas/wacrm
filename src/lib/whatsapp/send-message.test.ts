@@ -788,3 +788,125 @@ describe('sendMessageToConversation — WHATSAPP_OUTBOUND_TRANSPORT=manychat', (
     warnSpy.mockRestore();
   });
 });
+
+// ============================================================
+// A human agent's manual send clears the "needs human attention"
+// marker (ai_handoff_summary), but never re-enables the bot
+// (ai_autoreply_disabled stays untouched) — that requires the explicit
+// "Resume AI" flow. See src/lib/ai/handoff.ts / auto-reply.ts for how
+// the marker gets set in the first place.
+// ============================================================
+describe('sendMessageToConversation — a successful manual send clears ai_handoff_summary (Meta path)', () => {
+  it('clears ai_handoff_summary after the send is confirmed and persisted', async () => {
+    const captured: CapturedWrites = {};
+    await sendMessageToConversation(sendPathDb([], captured), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'text',
+      contentText: 'On it — let me check that for you.',
+    });
+    expect(captured.conversation).toMatchObject({ ai_handoff_summary: null });
+  });
+
+  it('does NOT set ai_autoreply_disabled — the human keeps ownership until an explicit Resume AI', async () => {
+    const captured: CapturedWrites = {};
+    await sendMessageToConversation(sendPathDb([], captured), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'text',
+      contentText: 'On it — let me check that for you.',
+    });
+    expect(captured.conversation).not.toHaveProperty('ai_autoreply_disabled');
+  });
+
+  it('does NOT clear the summary when the Meta send fails', async () => {
+    const { sendTextMessage } = await import('@/lib/whatsapp/meta-api');
+    (sendTextMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new Error('Meta API error: 500'),
+    );
+    const captured: CapturedWrites = {};
+    await expect(
+      sendMessageToConversation(sendPathDb([], captured), 'acct-1', {
+        conversationId: 'cv-1',
+        messageType: 'text',
+        contentText: 'On it — let me check that for you.',
+      }),
+    ).rejects.toThrow();
+    // The conversation update (which carries the clear) never ran.
+    expect(captured.conversation).toBeUndefined();
+  });
+});
+
+describe('sendMessageToConversation — a successful manual send clears ai_handoff_summary (ManyChat path)', () => {
+  const originalTransport = process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+  const originalApiKey = process.env.MANYCHAT_API_KEY;
+  const originalBridgeAccount = process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+
+  beforeEach(() => {
+    process.env.WHATSAPP_OUTBOUND_TRANSPORT = 'manychat';
+    process.env.MANYCHAT_INGEST_ACCOUNT_ID = 'acct-mc';
+    process.env.MANYCHAT_API_KEY = 'mc-key-test';
+    sendManyChatTextMock.mockReset();
+    sendManyChatTextMock.mockResolvedValue({ raw: { status: 'success' } });
+  });
+
+  afterEach(() => {
+    if (originalTransport === undefined) delete process.env.WHATSAPP_OUTBOUND_TRANSPORT;
+    else process.env.WHATSAPP_OUTBOUND_TRANSPORT = originalTransport;
+    if (originalApiKey === undefined) delete process.env.MANYCHAT_API_KEY;
+    else process.env.MANYCHAT_API_KEY = originalApiKey;
+    if (originalBridgeAccount === undefined) delete process.env.MANYCHAT_INGEST_ACCOUNT_ID;
+    else process.env.MANYCHAT_INGEST_ACCOUNT_ID = originalBridgeAccount;
+  });
+
+  it('clears ai_handoff_summary after the send is confirmed and persisted', async () => {
+    const captured: ManyChatCaptured = {};
+    await sendMessageToConversation(
+      manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+      'acct-mc',
+      { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+    );
+    expect(captured.conversation).toMatchObject({ ai_handoff_summary: null });
+  });
+
+  it('does NOT set ai_autoreply_disabled', async () => {
+    const captured: ManyChatCaptured = {};
+    await sendMessageToConversation(
+      manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+      'acct-mc',
+      { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+    );
+    expect(captured.conversation).not.toHaveProperty('ai_autoreply_disabled');
+  });
+
+  it('does NOT clear the summary when the ManyChat send fails', async () => {
+    sendManyChatTextMock.mockRejectedValueOnce(new ManyChatApiError(500, 'ManyChat error 500'));
+    const captured: ManyChatCaptured = {};
+    await expect(
+      sendMessageToConversation(
+        manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+        'acct-mc',
+        { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
+      ),
+    ).rejects.toMatchObject({ code: 'manychat_error' });
+    expect(captured.conversation).toBeUndefined();
+  });
+});
+
+describe('the bot/AI send path (src/lib/ai/send.ts) never clears ai_handoff_summary through this code', () => {
+  it('src/lib/ai/send.ts never references ai_handoff_summary at all', async () => {
+    // Structural guarantee, not a mock assertion: the AI auto-reply /
+    // handoff-notice sender is a separate module (src/lib/ai/send.ts,
+    // covered by send.test.ts) whose only conversation write is
+    // last_message_text/last_message_at (see send.test.ts, "updates
+    // last_message_text and last_message_at"). This asserts it doesn't
+    // even mention the column, so a future edit can't accidentally wire
+    // a bot/AI send into clearing the "needs human attention" marker —
+    // only a confirmed HUMAN send (this file) may do that.
+    const fs = await import('node:fs/promises');
+    const path = await import('node:path');
+    const source = await fs.readFile(
+      path.join(process.cwd(), 'src/lib/ai/send.ts'),
+      'utf8',
+    );
+    expect(source).not.toContain('ai_handoff_summary');
+  });
+});

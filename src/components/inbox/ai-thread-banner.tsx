@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Sparkles, Hand, Undo2, Loader2 } from "lucide-react";
+import { Sparkles, Hand, Undo2, Loader2, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
@@ -65,10 +65,15 @@ interface AiThreadBannerProps {
 /**
  * Inbox banner that surfaces + controls the AI auto-reply bot per
  * conversation:
+ *   - paused AND a handoff note was left → amber "Needs human attention"
+ *     + [Resume AI]. Shown unconditionally — see the `isHandoff` check
+ *     below for why this ignores autoReplyOn/assignedAgentId entirely.
+ *   - paused with no note (a plain manual take-over) → muted "AI paused"
+ *     + [Resume AI]
  *   - bot active here → "AI is replying automatically" + [Take over]
- *   - bot paused here → the handoff note (if any) + [Resume AI]
  * Renders nothing when the account has no auto-reply configured, or when
- * the bot is active but a human already owns the thread (nothing to do).
+ * the bot is active but a human already owns the thread (nothing to do)
+ * — UNLESS it's a real handoff, which always renders regardless.
  */
 export function AiThreadBanner({
   conversationId,
@@ -134,20 +139,47 @@ export function AiThreadBanner({
     [conversationId, currentUserId, onChange, t],
   );
 
-  // Account has no auto-reply → nothing to show. (Still loading → nothing.)
+  // A real handoff — paused AND the bot left an actual note — wins over
+  // EVERYTHING else below: the account-wide autoReplyOn status (which
+  // can be stale/cached, or the feature flag can be off mid-rollout),
+  // and an assigned agent (a handoff pending doesn't stop being pending
+  // just because someone was assigned to the thread). This must never
+  // be hidden, so it's checked before any of those gates, not after.
+  const isHandoff = paused && !!handoffSummary?.trim();
+  if (isHandoff) {
+    return (
+      <Banner tone="handoff">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <TriangleAlert className="h-3.5 w-3.5 flex-shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="min-w-0">
+            <p className="font-medium text-amber-900 dark:text-amber-200">
+              {t("handoffTitle")}
+            </p>
+            <p
+              className="truncate text-amber-800/80 dark:text-amber-300/80"
+              title={handoffSummary ?? undefined}
+            >
+              {handoffSummary}
+            </p>
+          </div>
+        </div>
+        <BannerButton onClick={() => toggle(false)} busy={busy} icon={Undo2}>
+          {t("resume")}
+        </BannerButton>
+      </Banner>
+    );
+  }
+
+  // Account has no auto-reply → nothing else to show. (Still loading → nothing.)
   if (!autoReplyOn) return null;
 
-  // Paused here (a human took over, or the model handed off).
+  // Paused here with no handoff note — a plain manual pause/take-over,
+  // not "needs human attention" (the human is already looking at it).
   if (paused) {
     return (
       <Banner tone="muted">
         <div className="min-w-0 flex-1">
           <p className="font-medium text-foreground">{t("pausedTitle")}</p>
-          {handoffSummary && (
-            <p className="truncate text-muted-foreground" title={handoffSummary}>
-              {handoffSummary}
-            </p>
-          )}
         </div>
         <BannerButton onClick={() => toggle(false)} busy={busy} icon={Undo2}>
           {t("resume")}
@@ -179,16 +211,20 @@ function Banner({
   tone,
   children,
 }: {
-  tone: "primary" | "muted";
+  tone: "primary" | "muted" | "handoff";
   children: React.ReactNode;
 }) {
   return (
     <div
       className={cn(
         "flex items-center gap-3 border-b px-3 py-2 text-xs sm:px-4",
-        tone === "primary"
-          ? "border-primary/20 bg-primary/5"
-          : "border-border bg-muted/40",
+        tone === "primary" && "border-primary/20 bg-primary/5",
+        tone === "muted" && "border-border bg-muted/40",
+        // Distinct amber warning treatment — deliberately NOT the same
+        // muted style as a plain manual pause, so a handoff reads as
+        // something that needs attention, not routine state.
+        tone === "handoff" &&
+          "border-amber-500/30 bg-amber-500/10 dark:border-amber-400/30 dark:bg-amber-400/10",
       )}
     >
       {children}
