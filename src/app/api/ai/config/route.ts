@@ -8,6 +8,7 @@ import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit
 import { encrypt, decrypt } from '@/lib/whatsapp/encryption'
 import { validateAiCredentials } from '@/lib/ai/validate'
 import { embedTexts } from '@/lib/ai/embeddings'
+import { deriveEmbeddingsProvider } from '@/lib/ai/config'
 import { AiError, type AiProvider } from '@/lib/ai/types'
 
 function bad(message: string) {
@@ -128,9 +129,42 @@ export async function POST(request: Request) {
     // Reuse the stored key when the form didn't send a fresh one.
     const { data: existing } = await supabase
       .from('ai_configs')
-      .select('id, provider, model, api_key')
+      .select('id, provider, model, api_key, embeddings_api_key')
       .eq('account_id', accountId)
       .maybeSingle()
+
+    // ------------------------------------------------------------
+    // Embedding-space mismatch guard.
+    //
+    // `ai_knowledge_chunks.embedding` vectors don't record which
+    // provider/model produced them. Same dimension (1536) does NOT mean
+    // the same embedding space — an OpenAI text-embedding-3-small
+    // vector and a Gemini gemini-embedding-2 vector are not comparable,
+    // so if the account's embeddings provider changes (Gemini↔OpenAI,
+    // or a key is added/removed), any existing vectors must be cleared
+    // rather than silently mixed into future cosine-distance queries.
+    // A same-provider key rotation (openai→openai, gemini→gemini) or a
+    // chat-provider change that doesn't change the embeddings provider
+    // (openai↔anthropic, both use OpenAI embeddings) does NOT need this
+    // — the vector space is unchanged.
+    //
+    // Only presence is inspected here (never the decrypted plaintext),
+    // so the still-encrypted `existing.embeddings_api_key` can be
+    // passed straight through — see deriveEmbeddingsProvider's doc.
+    // ------------------------------------------------------------
+    const oldEmbeddingsProvider = existing
+      ? deriveEmbeddingsProvider(existing.provider, existing.embeddings_api_key)
+      : null
+    // Effective embeddings key AFTER this save: a freshly-sent key wins,
+    // an explicit clear (embeddings_api_key: null) wins, otherwise
+    // whatever was already stored carries over unchanged.
+    const effectiveNewEmbeddingsKey = rawEmbeddingsKey
+      ? rawEmbeddingsKey
+      : clearEmbeddingsKey
+        ? null
+        : (existing?.embeddings_api_key ?? null)
+    const newEmbeddingsProvider = deriveEmbeddingsProvider(provider, effectiveNewEmbeddingsKey)
+    const embeddingsProviderChanged = oldEmbeddingsProvider !== newEmbeddingsProvider
 
     let apiKeyPlain: string
     if (rawKey) {
@@ -167,6 +201,7 @@ export async function POST(request: Request) {
           autoReplyMaxPerConversation: maxPer,
           handoffAgentId: null,
           embeddingsApiKey: null,
+          embeddingsProvider: null,
         })
       } catch (err) {
         if (err instanceof AiError) {
@@ -184,7 +219,12 @@ export async function POST(request: Request) {
     // embed), same "verify before save" discipline as the chat key.
     if (rawEmbeddingsKey) {
       try {
-        await embedTexts(rawEmbeddingsKey, ['ping'])
+        // Same rule as loadAiConfig's deriveEmbeddingsProvider: Gemini
+        // chat accounts use Gemini embeddings, everyone else uses
+        // OpenAI. `provider` was already validated above.
+        await embedTexts(provider === 'gemini' ? 'gemini' : 'openai', rawEmbeddingsKey, ['ping'], {
+          kind: 'query',
+        })
       } catch (err) {
         if (err instanceof AiError) {
           return NextResponse.json(
@@ -215,6 +255,44 @@ export async function POST(request: Request) {
       shared.embeddings_api_key = null
     }
 
+    // ------------------------------------------------------------
+    // Clear stale vectors from a DIFFERENT embedding space BEFORE
+    // persisting the new config — fail-safe ordering is the whole
+    // point. If this clear fails, the new config is NOT saved: saving
+    // it anyway would leave the account's provider pointing at (say)
+    // OpenAI while its chunks still carry Gemini vectors sitting right
+    // next to it — exactly the incompatible-space mixing this guard
+    // exists to prevent. The OLD config (and OLD, still-consistent
+    // vectors) stay exactly as they were; a retry of this same save is
+    // what recovers. Never deletes documents/chunks/fts — only NULLs
+    // the embedding column, so lexical search is unaffected either way
+    // and this step is safely re-runnable.
+    //
+    // Losing semantic search temporarily (chunks with embedding=NULL
+    // until the next Reindex) is the accepted, safe outcome here — NOT
+    // restoring the old vectors, NOT rolling anything back, NOT
+    // auto-reindexing. Mixing embedding spaces silently would be worse.
+    // ------------------------------------------------------------
+    if (embeddingsProviderChanged) {
+      const { error: clearErr } = await supabase
+        .from('ai_knowledge_chunks')
+        .update({ embedding: null })
+        .eq('account_id', accountId)
+      if (clearErr) {
+        // Never log the error object raw (could carry query/DB
+        // internals) — just the message, and never anything from the
+        // request body's keys.
+        console.error(
+          '[ai/config POST] failed to clear stale embeddings before provider change — config NOT saved:',
+          clearErr.message,
+        )
+        return NextResponse.json(
+          { error: 'Failed to prepare knowledge base for the new embeddings provider.' },
+          { status: 500 },
+        )
+      }
+    }
+
     if (existing) {
       const { error: upErr } = await supabase
         .from('ai_configs')
@@ -243,7 +321,10 @@ export async function POST(request: Request) {
       }
     }
 
-    return NextResponse.json({ success: true })
+    return NextResponse.json({
+      success: true,
+      ...(embeddingsProviderChanged ? { knowledge_reindex_required: true } : {}),
+    })
   } catch (err) {
     return toErrorResponse(err)
   }

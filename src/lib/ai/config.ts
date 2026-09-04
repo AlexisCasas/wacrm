@@ -1,6 +1,27 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { decrypt } from '@/lib/whatsapp/encryption'
-import type { AiConfig, AiProvider } from './types'
+import type { AiConfig, AiProvider, EmbeddingsProvider } from './types'
+
+/**
+ * Which embeddings provider an account's `embeddings_api_key` belongs
+ * to — derived, never stored. Gemini chat accounts use Gemini
+ * embeddings; OpenAI and Anthropic chat accounts use OpenAI embeddings
+ * (Anthropic has no embeddings endpoint). Null with no key at all —
+ * the caller never has to guess a provider from the key's shape.
+ *
+ * Only inspects whether `embeddingsApiKey` is present, never its
+ * content — so a caller that only needs a presence signal (e.g. the
+ * config route diffing old vs. new to decide whether to clear stale
+ * vectors) can pass the still-encrypted ciphertext here instead of
+ * decrypting it first.
+ */
+export function deriveEmbeddingsProvider(
+  chatProvider: AiProvider,
+  embeddingsApiKey: string | null,
+): EmbeddingsProvider | null {
+  if (!embeddingsApiKey) return null
+  return chatProvider === 'gemini' ? 'gemini' : 'openai'
+}
 
 interface AiConfigRow {
   provider: AiProvider
@@ -79,6 +100,7 @@ export async function loadAiConfig(
     autoReplyMaxPerConversation: row.auto_reply_max_per_conversation,
     handoffAgentId: row.handoff_agent_id,
     embeddingsApiKey,
+    embeddingsProvider: deriveEmbeddingsProvider(row.provider, embeddingsApiKey),
   }
 }
 
@@ -88,27 +110,31 @@ export async function loadAiConfig(
  * semantic search works) whenever an embeddings key is present, even if
  * the assistant's master switch is currently off.
  *
- * Returns `{ key, corrupt }`: `key` is null when there's no key OR it
- * can't be decrypted; `corrupt` distinguishes those cases so callers can
- * warn ("a key is set but unusable") rather than silently indexing
- * lexical-only and reporting success.
+ * Returns `{ key, corrupt, provider }`: `key` is null when there's no
+ * key OR it can't be decrypted; `corrupt` distinguishes those cases so
+ * callers can warn ("a key is set but unusable") rather than silently
+ * indexing lexical-only and reporting success; `provider` is the
+ * embeddings provider to embed with (derived from the account's chat
+ * `provider` the same way `loadAiConfig` does — see
+ * `deriveEmbeddingsProvider`), null whenever `key` is null.
  */
 export async function loadEmbeddingsKey(
   db: SupabaseClient,
   accountId: string,
-): Promise<{ key: string | null; corrupt: boolean }> {
+): Promise<{ key: string | null; corrupt: boolean; provider: EmbeddingsProvider | null }> {
   const { data, error } = await db
     .from('ai_configs')
-    .select('embeddings_api_key')
+    .select('provider, embeddings_api_key')
     .eq('account_id', accountId)
     .maybeSingle()
-  if (error || !data?.embeddings_api_key) return { key: null, corrupt: false }
+  if (error || !data?.embeddings_api_key) return { key: null, corrupt: false, provider: null }
   try {
-    return { key: decrypt(data.embeddings_api_key), corrupt: false }
+    const key = decrypt(data.embeddings_api_key)
+    return { key, corrupt: false, provider: deriveEmbeddingsProvider(data.provider, key) }
   } catch {
     console.error(
       `[ai config] embeddings key for account ${accountId} could not be decrypted — check ENCRYPTION_KEY.`,
     )
-    return { key: null, corrupt: true }
+    return { key: null, corrupt: true, provider: null }
   }
 }

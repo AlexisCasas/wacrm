@@ -1688,6 +1688,7 @@
       "embeddingsKey": "임베딩 키",
       "optionalSemanticSearch": "(선택 — 의미 기반 지식베이스 검색을 활성화합니다)",
       "embeddingsHint": "지식베이스를 임베딩하는 데만 사용되는 OpenAI 키입니다(text-embedding-3-small){sameKeyText}. 비워두면 키워드 검색을 사용합니다. 비우면 의미 기반 검색이 꺼집니다.",
+      "embeddingsHintGemini": "선택 사항입니다. 위와 동일한 Gemini API 키를 사용하여 gemini-embedding-2로 의미 기반 지식베이스 검색을 활성화할 수 있습니다. 비워두면 키워드 검색을 사용합니다. 비우면 의미 기반 검색이 꺼집니다.",
       "sameKeyText": " — 위와 동일한 키를 사용할 수 있습니다",
       "behaviour": "동작 방식",
       "behaviourDesc": "비즈니스에 대해 어시스턴트에게 알려주세요 — 제품, 어조, 약속해도 되는 것과 안 되는 것. 이 맥락은 초안 작성과 자동 응답 모두에 반영됩니다.",
@@ -1709,7 +1710,8 @@
       "saveSuccess": "AI 어시스턴트가 저장되었습니다.",
       "saveFailed": "저장하지 못했습니다.",
       "removeSuccess": "AI 설정이 제거되었습니다.",
-      "removeFailed": "제거하지 못했습니다."
+      "removeFailed": "제거하지 못했습니다.",
+      "reindexRequired": "임베딩 제공업체가 변경되었습니다. 시맨틱 검색을 사용하기 전에 지식베이스를 다시 색인하세요."
     },
     "aiKnowledge": {
       "loadFailed": "지식베이스를 불러오지 못했습니다",

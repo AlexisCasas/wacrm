@@ -68,7 +68,11 @@ export async function PATCH(request: Request, { params }: Params) {
       .update(update)
       .eq('account_id', accountId)
       .eq('id', id)
-      .select('id')
+      // `title` too — even on a content-only PATCH, re-embedding needs
+      // the document's CURRENT title (Gemini's asymmetric document
+      // format), which this row-select gives us for free regardless of
+      // whether this request touched it.
+      .select('id, title')
       .maybeSingle()
     if (error) {
       console.error('[ai/knowledge/[id] PATCH] error:', error)
@@ -77,12 +81,17 @@ export async function PATCH(request: Request, { params }: Params) {
     if (!updated) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     if (content !== undefined) {
-      const { key: embeddingsApiKey, corrupt } = await loadEmbeddingsKey(
-        supabase,
-        accountId,
-      )
+      const { key: embeddingsApiKey, corrupt, provider: embeddingsProvider } =
+        await loadEmbeddingsKey(supabase, accountId)
       try {
-        await ingestDocument(supabase, accountId, { embeddingsApiKey }, id, content)
+        await ingestDocument(
+          supabase,
+          accountId,
+          { embeddingsApiKey, embeddingsProvider },
+          id,
+          updated.title,
+          content,
+        )
       } catch (err) {
         const message = err instanceof AiError ? err.message : 'indexing failed'
         console.error('[ai/knowledge/[id] PATCH] ingest error:', err)
