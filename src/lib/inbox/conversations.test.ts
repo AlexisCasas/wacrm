@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   matchesContactFilters,
+  needsHumanAttention,
   normalizeConversation,
 } from "./conversations";
 import type { Conversation } from "@/types";
@@ -96,6 +97,50 @@ describe("matchesContactFilters", () => {
     ).toBe(false);
     expect(
       matchesContactFilters(conv, { tagIds: ["tX"], company: "Acme" }),
+    ).toBe(false);
+  });
+});
+
+describe("needsHumanAttention", () => {
+  it("is true only when disabled=true AND a non-empty summary is present", () => {
+    expect(
+      needsHumanAttention({
+        ai_autoreply_disabled: true,
+        ai_handoff_summary: "🤖 AI agent handed off after 2 replies.",
+      }),
+    ).toBe(true);
+  });
+
+  it("is false for a bare manual pause (disabled=true, no summary)", () => {
+    expect(
+      needsHumanAttention({ ai_autoreply_disabled: true, ai_handoff_summary: null }),
+    ).toBe(false);
+    expect(
+      needsHumanAttention({ ai_autoreply_disabled: true, ai_handoff_summary: undefined }),
+    ).toBe(false);
+  });
+
+  it("is false for a whitespace-only summary", () => {
+    expect(
+      needsHumanAttention({ ai_autoreply_disabled: true, ai_handoff_summary: "   " }),
+    ).toBe(false);
+  });
+
+  it("is false when the bot is not disabled, even if a stale summary lingers", () => {
+    expect(
+      needsHumanAttention({
+        ai_autoreply_disabled: false,
+        ai_handoff_summary: "🤖 AI agent handed off after 2 replies.",
+      }),
+    ).toBe(false);
+  });
+
+  it("is false when disabled is undefined (never set)", () => {
+    expect(
+      needsHumanAttention({
+        ai_autoreply_disabled: undefined,
+        ai_handoff_summary: "🤖 AI agent handed off after 2 replies.",
+      }),
     ).toBe(false);
   });
 });

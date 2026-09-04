@@ -570,6 +570,14 @@ export async function sendMessageToConversation(
       last_message_text: lastMessageText,
       last_message_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      // A human agent just sent a message here (below the insert-error
+      // check above, so this only runs once the send is confirmed AND
+      // persisted). That's the "someone attended to this" signal — clear
+      // the "needs human attention" marker. Deliberately NOT touching
+      // `ai_autoreply_disabled`: the human keeps ownership of the thread
+      // until they explicitly hit "Resume AI" — this send alone must not
+      // hand it back to the bot.
+      ai_handoff_summary: null,
     })
     .eq('id', conversationId);
 
@@ -696,6 +704,9 @@ async function sendViaManyChat(
       last_message_text: contentText || '[text]',
       last_message_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
+      // See the matching comment on the Meta path above: clear the
+      // "needs human attention" marker only, never re-enable the bot.
+      ai_handoff_summary: null,
     })
     .eq('id', conversationId);
 

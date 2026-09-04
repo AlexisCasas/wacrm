@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest'
-import { buildHandoffSummary } from './handoff'
+import { buildHandoffSummary, HANDOFF_CUSTOMER_NOTICE } from './handoff'
+
+describe('HANDOFF_CUSTOMER_NOTICE', () => {
+  it('is a fixed, deterministic string (no template placeholders, no invented ETA)', () => {
+    expect(HANDOFF_CUSTOMER_NOTICE).toBe(
+      'Para ayudarte correctamente con esta consulta, voy a derivarte con uno de nuestros asesores. En breve continuarán la atención contigo por este medio.',
+    )
+  })
+})
 
 describe('buildHandoffSummary', () => {
   it('notes the reply count and quotes the last customer message', () => {
@@ -62,5 +70,27 @@ describe('buildHandoffSummary', () => {
       replyCount: 0,
     })
     expect(summary).toBe('🤖 AI agent handed off without replying.')
+  })
+
+  describe('reason: "cap" — the deterministic reply-cap path', () => {
+    it('never claims the model chose to hand off', () => {
+      const summary = buildHandoffSummary({
+        messages: [{ role: 'user', content: 'still need help' }],
+        replyCount: 3,
+        reason: 'cap',
+        maxReplies: 3,
+      })
+      expect(summary).toContain('reaching the 3-reply limit')
+      expect(summary).not.toContain('without replying')
+      expect(summary).toContain('“still need help”')
+    })
+
+    it('defaults reason to "model" when omitted, unchanged from before', () => {
+      const summary = buildHandoffSummary({
+        messages: [{ role: 'user', content: 'x' }],
+        replyCount: 2,
+      })
+      expect(summary).toContain('after 2 replies')
+    })
   })
 })
