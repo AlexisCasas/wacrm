@@ -1688,6 +1688,7 @@
       "embeddingsKey": "Embeddings key",
       "optionalSemanticSearch": "(optional — enables semantic knowledge-base search)",
       "embeddingsHint": "An OpenAI key used only to embed your knowledge base (text-embedding-3-small){sameKeyText}. Leave blank to use keyword search instead. Clear it to turn semantic search off.",
+      "embeddingsHintGemini": "Optional. You may reuse the same Gemini API key to enable semantic knowledge-base search with gemini-embedding-2. Leave blank to use keyword search instead. Clear it to turn semantic search off.",
       "sameKeyText": " — can be the same key as above",
       "behaviour": "Behaviour",
       "behaviourDesc": "Tell the assistant about your business — products, tone, what it may and may not promise. This context feeds both drafts and auto-replies.",
@@ -1709,7 +1710,8 @@
       "saveSuccess": "AI assistant saved.",
       "saveFailed": "Failed to save.",
       "removeSuccess": "AI configuration removed.",
-      "removeFailed": "Failed to remove."
+      "removeFailed": "Failed to remove.",
+      "reindexRequired": "Embedding provider changed. Reindex the knowledge base before using semantic search."
     },
     "aiKnowledge": {
       "loadFailed": "Failed to load knowledge base",

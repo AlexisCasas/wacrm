@@ -196,6 +196,15 @@ export function AiConfig() {
       const data = await res.json();
       if (res.ok) {
         toast.success(t('saveSuccess'));
+        // The embeddings provider changed (or a key was added/removed) —
+        // any existing vectors were cleared server-side to avoid mixing
+        // incompatible embedding spaces. Nudge the admin to reindex.
+        if (data.knowledge_reindex_required) {
+          toast.info(t('reindexRequired'));
+        }
+        if (data.warning) {
+          toast.warning(data.warning);
+        }
         await fetchConfig();
       } else {
         toast.error(data.error ?? t('saveFailed'));
@@ -371,14 +380,16 @@ export function AiConfig() {
                     setEmbeddingsKeyEdited(true);
                   }
                 }}
-                placeholder="sk-... (OpenAI)"
+                placeholder={provider === 'gemini' ? KEY_PLACEHOLDER.gemini : 'sk-... (OpenAI)'}
                 disabled={disabled}
                 autoComplete="off"
               />
               <p className="text-xs text-muted-foreground">
-                {t('embeddingsHint', {
-                  sameKeyText: provider === 'openai' ? t('sameKeyText') : '',
-                })}
+                {provider === 'gemini'
+                  ? t('embeddingsHintGemini')
+                  : t('embeddingsHint', {
+                      sameKeyText: provider === 'openai' ? t('sameKeyText') : '',
+                    })}
               </p>
             </div>
           </CardContent>
