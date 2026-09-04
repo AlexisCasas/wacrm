@@ -64,7 +64,7 @@ export async function generateAnthropic(args: ProviderArgs): Promise<ProviderRes
   }
 
   if (!res.ok) {
-    throw await providerHttpError('Anthropic', res)
+    throw await providerHttpError('Anthropic', res, { redact: [apiKey] })
   }
 
   const data = (await res.json().catch(() => null)) as AnthropicResponse | null

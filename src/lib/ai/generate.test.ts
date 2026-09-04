@@ -126,6 +126,28 @@ describe('generateReply — OpenAI', () => {
       }),
     ).rejects.toBeInstanceOf(AiError)
   })
+
+  it('redacts the request API key if OpenAI accidentally echoes it back in an error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        errResponse(403, { error: { message: 'Rejected API key sk-test' } }),
+      ),
+    )
+    let caught: AiError | null = null
+    try {
+      await generateReply({
+        config: config({ apiKey: 'sk-test' }),
+        systemPrompt: 'sys',
+        messages: [{ role: 'user', content: 'Hi' }],
+      })
+    } catch (err) {
+      caught = err as AiError
+    }
+    expect(caught).toBeInstanceOf(AiError)
+    expect(caught!.message).not.toContain('sk-test')
+    expect(caught!.message).toContain('[REDACTED]')
+  })
 })
 
 describe('generateReply — Anthropic', () => {
@@ -190,5 +212,141 @@ describe('generateReply — Anthropic', () => {
     const body = JSON.parse(fetchMock.mock.calls[0][1].body)
     expect(body.messages[0].role).toBe('user')
     expect(body.messages).toHaveLength(1)
+  })
+
+  it('redacts the request API key if Anthropic accidentally echoes it back in an error', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        errResponse(403, { error: { message: 'Rejected API key sk-ant-x' } }),
+      ),
+    )
+    let caught: AiError | null = null
+    try {
+      await generateReply({
+        config: config({ provider: 'anthropic', apiKey: 'sk-ant-x' }),
+        systemPrompt: 'sys',
+        messages: [{ role: 'user', content: 'Hi' }],
+      })
+    } catch (err) {
+      caught = err as AiError
+    }
+    expect(caught).toBeInstanceOf(AiError)
+    expect(caught!.message).not.toContain('sk-ant-x')
+    expect(caught!.message).toContain('[REDACTED]')
+  })
+})
+
+describe('generateReply — Gemini', () => {
+  it('calls the generateContent endpoint and returns the reply', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      okResponse({
+        candidates: [{ content: { parts: [{ text: 'Sure — happy to help!' }] } }],
+        usageMetadata: { promptTokenCount: 42, candidatesTokenCount: 8, totalTokenCount: 50 },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const res = await generateReply({
+      config: config({ provider: 'gemini', model: 'gemini-3.8-flash', apiKey: 'gm-test' }),
+      systemPrompt: 'sys',
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+
+    expect(res).toEqual({
+      text: 'Sure — happy to help!',
+      handoff: false,
+      usage: { promptTokens: 42, completionTokens: 8, totalTokens: 50 },
+    })
+    const [url, opts] = fetchMock.mock.calls[0]
+    expect(url).toContain('generativelanguage.googleapis.com')
+    expect(opts.headers['x-goog-api-key']).toBe('gm-test')
+  })
+
+  it('maps a 403 to an invalid_key AiError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(errResponse(403, { error: { message: 'API key not valid' } })),
+    )
+    await expect(
+      generateReply({
+        config: config({ provider: 'gemini' }),
+        systemPrompt: 'sys',
+        messages: [{ role: 'user', content: 'Hi' }],
+      }),
+    ).rejects.toMatchObject({ code: 'invalid_key', status: 401 })
+  })
+
+  it('detects handoff in the model output', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        okResponse({ candidates: [{ content: { parts: [{ text: '[[HANDOFF]]' }] } }] }),
+      ),
+    )
+    const res = await generateReply({
+      config: config({ provider: 'gemini' }),
+      systemPrompt: 'sys',
+      messages: [{ role: 'user', content: 'I want to speak to a person' }],
+    })
+    expect(res.handoff).toBe(true)
+    expect(res.text).toBe('')
+  })
+})
+
+describe('generateReply — provider dispatch', () => {
+  it('provider=openai still calls OpenAI (api.openai.com)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      okResponse({ choices: [{ message: { content: 'ok' } }] }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await generateReply({
+      config: config({ provider: 'openai' }),
+      systemPrompt: 'sys',
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+    expect(fetchMock.mock.calls[0][0]).toContain('api.openai.com')
+  })
+
+  it('provider=anthropic still calls Anthropic (api.anthropic.com)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      okResponse({ content: [{ type: 'text', text: 'ok' }] }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await generateReply({
+      config: config({ provider: 'anthropic' }),
+      systemPrompt: 'sys',
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+    expect(fetchMock.mock.calls[0][0]).toContain('api.anthropic.com')
+  })
+
+  it('provider=gemini calls Gemini (generativelanguage.googleapis.com)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      okResponse({ candidates: [{ content: { parts: [{ text: 'ok' }] } }] }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    await generateReply({
+      config: config({ provider: 'gemini' }),
+      systemPrompt: 'sys',
+      messages: [{ role: 'user', content: 'Hi' }],
+    })
+    expect(fetchMock.mock.calls[0][0]).toContain('generativelanguage.googleapis.com')
+  })
+
+  it('rejects an unsupported provider without calling any adapter', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    await expect(
+      generateReply({
+        // Deliberately outside the AiProvider union — proves the
+        // dispatch's default branch still rejects an invalid value at
+        // runtime even though the type system would normally catch it.
+        config: config({ provider: 'carrier-pigeon' as unknown as AiConfig['provider'] }),
+        systemPrompt: 'sys',
+        messages: [{ role: 'user', content: 'Hi' }],
+      }),
+    ).rejects.toMatchObject({ code: 'unsupported_provider', status: 400 })
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
