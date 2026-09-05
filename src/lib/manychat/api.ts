@@ -8,23 +8,36 @@
  * WA CRM Inbox has to leave through ManyChat rather than Meta's Cloud
  * API directly.
  *
- * Implements only `sendManyChatText` — the single call the outbound
- * bridge needs today. Request shape follows ManyChat's documented
- * `sendContent` (dynamic content v2) envelope for WhatsApp:
- *   POST /fb/sending/sendContent
- *   { "subscriber_id": <integer, required>,
- *     "data": { "version": "v2",
- *                "content": { "type": "whatsapp",
- *                              "messages": [{ "type": "text", "text": "…" }] } } }
- * (https://api.manychat.com/swagger#/Sending/post_fb_sending_sendContent).
- * `subscriber_id` is validated as a positive, `Number.isSafeInteger`
- * value BEFORE any network call — see `toSubscriberId`.
+ * Two primitives:
+ *   - `sendManyChatText` — the outbound bridge's original need. Request
+ *     shape follows ManyChat's documented `sendContent` (dynamic
+ *     content v2) envelope for WhatsApp:
+ *       POST /fb/sending/sendContent
+ *       { "subscriber_id": <integer, required>,
+ *         "data": { "version": "v2",
+ *                    "content": { "type": "whatsapp",
+ *                                  "messages": [{ "type": "text", "text": "…" }] } } }
+ *     (https://api.manychat.com/swagger#/Sending/post_fb_sending_sendContent).
+ *   - `sendManyChatFlow` — the Flows media bridge (see
+ *     src/lib/flows/meta-send.ts). ManyChat's Public API has no
+ *     documented WhatsApp media send, so instead of sending media
+ *     directly this triggers a ManyChat Automation Flow (authored
+ *     manually in ManyChat, containing only the asset to relay) by its
+ *     `flow_ns`:
+ *       POST /fb/sending/sendFlow
+ *       { "subscriber_id": <integer, required>, "flow_ns": "<string>" }
+ *     (https://api.manychat.com/swagger#/Sending/post_fb_sending_sendFlow).
  *
- * ManyChat's documented success envelope is `{ "status": "success" }`,
- * with no confirmed message-id field, so callers must not assume one —
- * see `SendManyChatTextResult.raw`. A 2xx HTTP status alone is not
- * treated as success: the body's `status` field must literally read
- * `"success"`, or the call throws `ManyChatApiError`.
+ * Both share `subscriber_id` validation (positive, `Number.isSafeInteger`,
+ * checked BEFORE any network call — see `toSubscriberId`) and the same
+ * request/response handling (`postManyChatContent`): timeout via
+ * AbortController, non-2xx → `ManyChatApiError`, and ManyChat's
+ * documented success envelope `{ "status": "success" }` — a 2xx HTTP
+ * status alone is never treated as success; the body's `status` field
+ * must literally read `"success"`, or the call throws.
+ * `sendManyChatText`'s `SendManyChatTextResult.raw` and
+ * `sendManyChatFlow`'s `SendManyChatFlowResult.raw` carry no confirmed
+ * message-id field, so callers must not assume one is present.
  */
 
 const MANYCHAT_API_BASE = 'https://api.manychat.com'
@@ -107,46 +120,34 @@ function toSubscriberId(manyChatContactId: string): number {
 }
 
 /**
- * Send a WhatsApp text message through ManyChat's Public API, targeting
- * a subscriber by their ManyChat contact id.
- *
- * Never logs `apiKey` or the `Authorization` header. Throws
- * `ManyChatApiError` on: an invalid `manyChatContactId` (before any
- * network call), a non-2xx response, a 2xx response that doesn't
- * confirm `status: "success"`, a network failure, or a timeout — it
- * never returns a "failed" result, so a caller that awaits this
- * successfully can persist the message as sent.
+ * Shared request/response handling for every ManyChat "sending" call:
+ * POST with the Bearer auth + timeout, non-2xx → `ManyChatApiError`,
+ * and ManyChat's `{ "status": "success" }` envelope check. Extracted so
+ * `sendManyChatText` and `sendManyChatFlow` can't drift on error
+ * handling or API-key redaction — every caller still does its OWN
+ * argument validation (subscriber id, flow_ns, …) BEFORE calling this,
+ * since that must happen before any network call.
  */
-export async function sendManyChatText(
-  args: SendManyChatTextArgs,
-): Promise<SendManyChatTextResult> {
-  const { apiKey, manyChatContactId, text, timeoutMs = DEFAULT_TIMEOUT_MS } = args
-
-  // Validated BEFORE the fetch — an invalid id must never reach the
-  // network call.
-  const subscriberId = toSubscriberId(manyChatContactId)
+async function postManyChatContent(args: {
+  apiKey: string
+  path: string
+  payload: Record<string, unknown>
+  timeoutMs: number
+}): Promise<unknown> {
+  const { apiKey, path, payload, timeoutMs } = args
 
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
 
   let response: Response
   try {
-    response = await fetch(`${MANYCHAT_API_BASE}/fb/sending/sendContent`, {
+    response = await fetch(`${MANYCHAT_API_BASE}${path}`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        subscriber_id: subscriberId,
-        data: {
-          version: 'v2',
-          content: {
-            type: 'whatsapp',
-            messages: [{ type: 'text', text }],
-          },
-        },
-      }),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     })
   } catch (err) {
@@ -197,6 +198,118 @@ export async function sendManyChatText(
       sanitized,
     )
   }
+
+  return body
+}
+
+/**
+ * Send a WhatsApp text message through ManyChat's Public API, targeting
+ * a subscriber by their ManyChat contact id.
+ *
+ * Never logs `apiKey` or the `Authorization` header. Throws
+ * `ManyChatApiError` on: an invalid `manyChatContactId` (before any
+ * network call), a non-2xx response, a 2xx response that doesn't
+ * confirm `status: "success"`, a network failure, or a timeout — it
+ * never returns a "failed" result, so a caller that awaits this
+ * successfully can persist the message as sent.
+ */
+export async function sendManyChatText(
+  args: SendManyChatTextArgs,
+): Promise<SendManyChatTextResult> {
+  const { apiKey, manyChatContactId, text, timeoutMs = DEFAULT_TIMEOUT_MS } = args
+
+  // Validated BEFORE the fetch — an invalid id must never reach the
+  // network call.
+  const subscriberId = toSubscriberId(manyChatContactId)
+
+  const body = await postManyChatContent({
+    apiKey,
+    path: '/fb/sending/sendContent',
+    payload: {
+      subscriber_id: subscriberId,
+      data: {
+        version: 'v2',
+        content: {
+          type: 'whatsapp',
+          messages: [{ type: 'text', text }],
+        },
+      },
+    },
+    timeoutMs,
+  })
+
+  return { raw: body }
+}
+
+/**
+ * ManyChat contact/subscriber ids are pure integers, but Flow
+ * namespaces (`flow_ns`) are ManyChat-generated slugs. Their
+ * documented shape is `content<alphanumeric>` — validated BEFORE any
+ * network call, same discipline as `toSubscriberId`, so a typo'd or
+ * empty value never reaches the network.
+ */
+const FLOW_NS_PATTERN = /^content[A-Za-z0-9_]+$/
+
+function toFlowNs(flowNs: string): string {
+  if (typeof flowNs !== 'string' || !FLOW_NS_PATTERN.test(flowNs)) {
+    throw new ManyChatApiError(
+      400,
+      `Invalid ManyChat flow_ns — expected a "content..." identifier, got ${JSON.stringify(flowNs)}`,
+    )
+  }
+  return flowNs
+}
+
+export interface SendManyChatFlowArgs {
+  /** MANYCHAT_API_KEY — never logged, never included in a thrown error. */
+  apiKey: string
+  /** The target subscriber's ManyChat contact id (manychat_contact_links.manychat_contact_id). */
+  manyChatContactId: string
+  /** The ManyChat Automation Flow's namespace, e.g. "content2026abc123". */
+  flowNs: string
+  /** Abort the request after this many ms. Default 10000. */
+  timeoutMs?: number
+}
+
+export interface SendManyChatFlowResult {
+  /**
+   * Raw parsed JSON body ManyChat returned on success. Callers may look
+   * for a message id opportunistically (`raw.message_id`,
+   * `raw.data.message_id`) but must not assume one is present.
+   */
+  raw: unknown
+}
+
+/**
+ * Trigger a ManyChat Automation Flow for a subscriber — the TEMPORARY
+ * media bridge (see src/lib/flows/meta-send.ts): ManyChat's Public API
+ * has no documented WhatsApp media send, so a `send_media` Flow node
+ * relays through a manually-authored ManyChat Flow (containing only the
+ * asset) instead, identified by `flowNs`.
+ *
+ * Same guarantees as `sendManyChatText`: `manyChatContactId` and
+ * `flowNs` are both validated BEFORE any network call; never logs
+ * `apiKey`; throws `ManyChatApiError` on any non-success outcome
+ * (invalid input, non-2xx, missing `status: "success"`, network
+ * failure, or timeout) — never returns a "failed" result.
+ */
+export async function sendManyChatFlow(
+  args: SendManyChatFlowArgs,
+): Promise<SendManyChatFlowResult> {
+  const { apiKey, manyChatContactId, flowNs, timeoutMs = DEFAULT_TIMEOUT_MS } = args
+
+  const subscriberId = toSubscriberId(manyChatContactId)
+  const validFlowNs = toFlowNs(flowNs)
+
+  const body = await postManyChatContent({
+    apiKey,
+    path: '/fb/sending/sendFlow',
+    payload: {
+      subscriber_id: subscriberId,
+      flow_ns: validFlowNs,
+    },
+    timeoutMs,
+  })
 
   return { raw: body }
 }

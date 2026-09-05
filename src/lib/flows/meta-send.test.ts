@@ -14,6 +14,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 const h = vi.hoisted(() => ({
   resolveOutboundTransport: vi.fn(),
   sendManyChatTextToContact: vi.fn(),
+  sendManyChatFlowToContact: vi.fn(),
   sendTextMessage: vi.fn(),
   sendMediaMessage: vi.fn(),
   sendInteractiveButtons: vi.fn(),
@@ -34,6 +35,7 @@ vi.mock("@/lib/whatsapp/send-message", () => ({
 vi.mock("@/lib/manychat/contact-send", async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   sendManyChatTextToContact: h.sendManyChatTextToContact,
+  sendManyChatFlowToContact: h.sendManyChatFlowToContact,
 }));
 
 vi.mock("@/lib/whatsapp/meta-api", async (importOriginal) => ({
@@ -127,6 +129,7 @@ beforeEach(() => {
   h.sendTextMessage.mockResolvedValue({ messageId: "wamid.text" });
   h.sendMediaMessage.mockResolvedValue({ messageId: "wamid.media" });
   h.sendManyChatTextToContact.mockResolvedValue({ whatsappMessageId: "manychat-out:abc" });
+  h.sendManyChatFlowToContact.mockResolvedValue({ whatsappMessageId: "manychat-flow:xyz" });
 });
 
 describe("engineSendText — transport=meta (unchanged behavior)", () => {
@@ -215,15 +218,65 @@ describe("engineSendText — transport=manychat (new)", () => {
 });
 
 describe("engineSendMedia — transport=meta (unchanged behavior)", () => {
-  it("sends via Meta as before", async () => {
+  beforeEach(() => {
     h.resolveOutboundTransport.mockReturnValue("meta");
+  });
+
+  it("sends via Meta as before", async () => {
     const result = await engineSendMedia(MEDIA_ARGS);
     expect(h.sendMediaMessage).toHaveBeenCalledTimes(1);
     expect(result.whatsapp_message_id).toBe("wamid.media");
   });
+
+  // Tests A/B/C (symmetry gap fix): the Meta branch must persist
+  // media_url = args.link, the SAME canonical asset reference the
+  // ManyChat bridge branch already persists — message-media.tsx
+  // renders from message.media_url regardless of which transport sent
+  // it, so this must hold for every media kind.
+  it.each(["image", "video", "document"] as const)(
+    "persists media_url = args.link for kind=%s (Inbox renders from this field)",
+    async (kind) => {
+      await engineSendMedia({ ...MEDIA_ARGS, kind, link: `https://cdn.example/x.${kind}` });
+      expect(h.state.insertCalls).toHaveLength(1);
+      expect(h.state.insertCalls[0]).toMatchObject({
+        conversation_id: "cv-1",
+        sender_type: "bot",
+        content_type: kind,
+        message_id: "wamid.media",
+        status: "sent",
+        media_url: `https://cdn.example/x.${kind}`,
+      });
+    },
+  );
+
+  it("still persists content_text = caption ?? null alongside media_url", async () => {
+    await engineSendMedia({ ...MEDIA_ARGS, caption: "Combo XTD" });
+    expect(h.state.insertCalls[0]).toMatchObject({
+      content_text: "Combo XTD",
+      media_url: MEDIA_ARGS.link,
+    });
+  });
+
+  it("persists content_text: null when no caption is given", async () => {
+    await engineSendMedia(MEDIA_ARGS);
+    expect(h.state.insertCalls[0]).toMatchObject({ content_text: null });
+  });
+
+  // Test E: a failed Meta send must never leave a false "sent" row.
+  it("does not insert a message row when the Meta send itself fails", async () => {
+    h.sendMediaMessage.mockRejectedValue(new Error("Meta API error: 400"));
+    await expect(engineSendMedia(MEDIA_ARGS)).rejects.toThrow();
+    expect(h.state.insertCalls).toHaveLength(0);
+  });
+
+  it("throws (does not swallow) a DB insert failure after a successful Meta send", async () => {
+    h.state.insertError = { message: "constraint violation" };
+    await expect(engineSendMedia(MEDIA_ARGS)).rejects.toThrow(/DB insert failed/);
+  });
 });
 
-describe("engineSendMedia — transport=manychat (FAILS CLOSED, no silent Meta fallback)", () => {
+// Test B (spec §10): transport=manychat + no manychat_bridge_flow_ns.
+describe("engineSendMedia — transport=manychat, NO bridge flow_ns configured (FAILS CLOSED)", () => {
   beforeEach(() => {
     h.resolveOutboundTransport.mockReturnValue("manychat");
   });
@@ -231,11 +284,17 @@ describe("engineSendMedia — transport=manychat (FAILS CLOSED, no silent Meta f
   it("throws immediately, before attempting anything", async () => {
     await expect(engineSendMedia(MEDIA_ARGS)).rejects.toThrow(/ManyChat/);
     expect(h.sendMediaMessage).not.toHaveBeenCalled();
+    expect(h.sendManyChatFlowToContact).not.toHaveBeenCalled();
   });
 
   it("never falls back to Meta", async () => {
     await engineSendMedia(MEDIA_ARGS).catch(() => {});
     expect(h.sendMediaMessage).not.toHaveBeenCalled();
+  });
+
+  it("never calls the ManyChat API at all — fails before any network call", async () => {
+    await engineSendMedia(MEDIA_ARGS).catch(() => {});
+    expect(h.sendManyChatFlowToContact).not.toHaveBeenCalled();
   });
 
   it("never persists a message row for the failed attempt", async () => {
@@ -245,7 +304,94 @@ describe("engineSendMedia — transport=manychat (FAILS CLOSED, no silent Meta f
 
   it("the error message is legible and names the actual limitation", async () => {
     await expect(engineSendMedia(MEDIA_ARGS)).rejects.toThrow(
-      /not yet supported while this account is bridged through ManyChat/,
+      /has no manychat_bridge_flow_ns configured/,
     );
+  });
+
+  it("an empty-string bridge flow_ns is treated the same as absent", async () => {
+    await expect(
+      engineSendMedia({ ...MEDIA_ARGS, manychatBridgeFlowNs: "" }),
+    ).rejects.toThrow(/has no manychat_bridge_flow_ns configured/);
+    expect(h.sendManyChatFlowToContact).not.toHaveBeenCalled();
+  });
+});
+
+// Test A + E (spec §10): transport=manychat + bridge flow_ns present.
+describe("engineSendMedia — transport=manychat, WITH bridge flow_ns configured", () => {
+  const BRIDGE_ARGS = { ...MEDIA_ARGS, manychatBridgeFlowNs: "content2026abc123", caption: "Combo XTD" };
+
+  beforeEach(() => {
+    h.resolveOutboundTransport.mockReturnValue("manychat");
+  });
+
+  it("calls sendManyChatFlowToContact and never Meta", async () => {
+    const result = await engineSendMedia(BRIDGE_ARGS);
+    expect(h.sendManyChatFlowToContact).toHaveBeenCalledWith({
+      db: expect.anything(),
+      accountId: "acct-1",
+      contactId: "ct-1",
+      flowNs: "content2026abc123",
+    });
+    expect(h.sendMediaMessage).not.toHaveBeenCalled();
+    expect(result.whatsapp_message_id).toBe("manychat-flow:xyz");
+  });
+
+  it("persists sender_type='bot', content_type=kind, media_url=canonical WACRM URL, status='sent', ai_generated=false", async () => {
+    await engineSendMedia(BRIDGE_ARGS);
+    expect(h.state.insertCalls).toHaveLength(1);
+    expect(h.state.insertCalls[0]).toMatchObject({
+      conversation_id: "cv-1",
+      sender_type: "bot",
+      content_type: "image",
+      content_text: "Combo XTD",
+      media_url: BRIDGE_ARGS.link,
+      message_id: "manychat-flow:xyz",
+      status: "sent",
+      ai_generated: false,
+    });
+  });
+
+  it("updates last_message_text and last_message_at on the conversation", async () => {
+    await engineSendMedia(BRIDGE_ARGS);
+    expect(h.state.conversationUpdateCalls).toHaveLength(1);
+    expect(h.state.conversationUpdateCalls[0].last_message_at).toBeTruthy();
+  });
+
+  it("does not touch flow_runs — the Flow's own send must never pause its own run", async () => {
+    // The fake admin-client throws on any table other than
+    // contacts/whatsapp_config/messages/conversations — a successful
+    // resolve here proves flow_runs was never queried.
+    await expect(engineSendMedia(BRIDGE_ARGS)).resolves.toBeDefined();
+  });
+
+  it("propagates a sendFlow failure without persisting a message, and never falls back to Meta", async () => {
+    h.sendManyChatFlowToContact.mockRejectedValue(new Error("ManyChat API error: 500"));
+    await expect(engineSendMedia(BRIDGE_ARGS)).rejects.toThrow("ManyChat API error: 500");
+    expect(h.state.insertCalls).toHaveLength(0);
+    expect(h.sendMediaMessage).not.toHaveBeenCalled();
+  });
+
+  it("throws (does not swallow) a DB insert failure after a successful bridge send", async () => {
+    h.state.insertError = { message: "constraint violation" };
+    await expect(engineSendMedia(BRIDGE_ARGS)).rejects.toThrow(/DB insert failed/);
+  });
+
+  it("works for video and document kinds too", async () => {
+    await engineSendMedia({ ...BRIDGE_ARGS, kind: "document", filename: "invoice.pdf" });
+    expect(h.state.insertCalls[0]).toMatchObject({ content_type: "document" });
+  });
+});
+
+// Test D (spec §10): transport=meta + bridge flow_ns present is ignored.
+describe("engineSendMedia — transport=meta ignores manychat_bridge_flow_ns entirely", () => {
+  it("sends via Meta normally even when a bridge flow_ns is set on the node", async () => {
+    h.resolveOutboundTransport.mockReturnValue("meta");
+    const result = await engineSendMedia({
+      ...MEDIA_ARGS,
+      manychatBridgeFlowNs: "content2026abc123",
+    });
+    expect(h.sendMediaMessage).toHaveBeenCalledTimes(1);
+    expect(h.sendManyChatFlowToContact).not.toHaveBeenCalled();
+    expect(result.whatsapp_message_id).toBe("wamid.media");
   });
 });

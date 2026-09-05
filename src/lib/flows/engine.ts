@@ -741,6 +741,11 @@ async function advanceFromNodeKey(
             ? interpolateVars(cfg.caption, run.vars)
             : undefined,
           filename: cfg.filename,
+          // TEMPORARY ManyChat coexistence bridge (PENDIENTE 02.1B) —
+          // ignored by meta-send.ts under Meta transport. No ManyChat
+          // dependency here: engine.ts only ever hands the config
+          // value through.
+          manychatBridgeFlowNs: cfg.manychat_bridge_flow_ns,
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "send_media",

@@ -247,6 +247,7 @@ function validateNode(
         media_type?: "image" | "video" | "document";
         media_url?: string;
         caption?: string;
+        manychat_bridge_flow_ns?: string;
         next_node_key?: string;
       };
       if (
@@ -279,6 +280,28 @@ function validateNode(
           node_key: node.node_key,
           field: "caption",
           message: `Caption exceeds ${INTERACTIVE_LIMITS.bodyMaxLength} chars (WhatsApp limit).`,
+        });
+      }
+      // TEMPORARY ManyChat coexistence bridge (PENDIENTE 02.1B) — NOT
+      // required globally: a Flow authored for direct Meta sending has
+      // no reason to carry one, and must not be blocked from saving/
+      // activating for lacking it. Whether it's ACTUALLY needed is a
+      // runtime, fail-closed decision (see engineSendMedia in
+      // meta-send.ts) that depends on the account's live outbound
+      // transport, which this save-time validator has no business
+      // deciding. Only format is checked here, and only when a value
+      // was actually entered.
+      if (
+        cfg.manychat_bridge_flow_ns !== undefined &&
+        cfg.manychat_bridge_flow_ns !== "" &&
+        !/^content[A-Za-z0-9_]+$/.test(cfg.manychat_bridge_flow_ns)
+      ) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "manychat_bridge_flow_ns",
+          message: `ManyChat bridge flow ns must look like "content..." — got "${cfg.manychat_bridge_flow_ns}".`,
         });
       }
       if (!cfg.next_node_key) {

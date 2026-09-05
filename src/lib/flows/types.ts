@@ -93,6 +93,25 @@ export interface SendMediaNodeConfig {
    * at upload time; the user can edit it.
    */
   filename?: string;
+  /**
+   * TEMPORARY ManyChat coexistence bridge (PENDIENTE 02.1B — see
+   * `engineSendMedia` in src/lib/flows/meta-send.ts). ManyChat's Public
+   * API has no documented WhatsApp media send, so while the account's
+   * outbound transport resolves to ManyChat, this node instead
+   * triggers a manually-authored ManyChat Automation Flow — identified
+   * by this `flow_ns` — that contains only the asset to relay.
+   *
+   * Ignored entirely once the account cuts over to Meta transport:
+   * `media_url` above is sent directly and is the ONLY thing that
+   * matters post-cutover, which is why it stays required regardless of
+   * whether this field is set — it's the canonical, permanent asset
+   * reference; this field is a temporary routing detail.
+   *
+   * Optional — a Flow authored for direct Meta sending has no reason
+   * to carry one, and must not be blocked from saving/activating for
+   * lacking it (see validate.ts).
+   */
+  manychat_bridge_flow_ns?: string;
   /** Auto-advance target after the send lands at Meta. */
   next_node_key: string;
 }

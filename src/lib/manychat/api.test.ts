@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendManyChatText, ManyChatApiError } from './api'
+import { sendManyChatText, sendManyChatFlow, ManyChatApiError } from './api'
 
 const API_KEY = 'mc-secret-key-12345'
 
@@ -312,6 +312,283 @@ describe('sendManyChatText — never logs the API key', () => {
       }),
     )
     await sendManyChatText({ apiKey: API_KEY, manyChatContactId: '123', text: 'hi' }).catch(() => {})
+    expect(loggedText()).not.toContain(API_KEY)
+  })
+})
+
+// ============================================================
+// sendManyChatFlow — the media bridge (PENDIENTE 02.1B). Same
+// request/response contract as sendManyChatText (shared via
+// postManyChatContent), plus its own flow_ns validation.
+// ============================================================
+
+const VALID_FLOW_NS = 'content2026abc123'
+
+describe('sendManyChatFlow — request contract', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async () => jsonResponse(200, { status: 'success' }))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('POSTs to the documented sendFlow endpoint', async () => {
+    await sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS })
+    const [url] = fetchMock.mock.calls[0]
+    expect(url).toBe('https://api.manychat.com/fb/sending/sendFlow')
+  })
+
+  it('sends the exact Bearer + Content-Type headers', async () => {
+    await sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS })
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.headers).toMatchObject({
+      Authorization: `Bearer ${API_KEY}`,
+      'Content-Type': 'application/json',
+    })
+  })
+
+  it('sends exactly { subscriber_id, flow_ns } — no dynamic-content envelope', async () => {
+    await sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS })
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(init.body as string)
+    expect(body).toEqual({ subscriber_id: 123, flow_ns: VALID_FLOW_NS })
+  })
+
+  it('sends subscriber_id as a number', async () => {
+    await sendManyChatFlow({
+      apiKey: API_KEY,
+      manyChatContactId: '987654321',
+      flowNs: VALID_FLOW_NS,
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(body.subscriber_id).toBe(987654321)
+    expect(typeof body.subscriber_id).toBe('number')
+  })
+
+  it('passes an AbortController signal for the timeout', async () => {
+    await sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS })
+    const [, init] = fetchMock.mock.calls[0]
+    expect(init.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('returns the raw parsed body on a 2xx response', async () => {
+    fetchMock.mockResolvedValue(jsonResponse(200, { status: 'success' }))
+    const result = await sendManyChatFlow({
+      apiKey: API_KEY,
+      manyChatContactId: '123',
+      flowNs: VALID_FLOW_NS,
+    })
+    expect(result.raw).toEqual({ status: 'success' })
+  })
+})
+
+describe('sendManyChatFlow — subscriber_id validation (fails BEFORE fetch)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async () => jsonResponse(200, { status: 'success' }))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it.each([
+    ['non-numeric string', 'abc-123'],
+    ['zero', '0'],
+    ['a decimal', '12.5'],
+    ['empty string', ''],
+  ])('rejects %s without calling fetch', async (_label, manyChatContactId) => {
+    await expect(
+      sendManyChatFlow({ apiKey: API_KEY, manyChatContactId, flowNs: VALID_FLOW_NS }),
+    ).rejects.toBeInstanceOf(ManyChatApiError)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('sendManyChatFlow — flow_ns validation (fails BEFORE fetch)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    fetchMock = vi.fn(async () => jsonResponse(200, { status: 'success' }))
+    vi.stubGlobal('fetch', fetchMock)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it.each([
+    ['empty string', ''],
+    ['whitespace', '   '],
+    ['missing the content prefix', 'abc123'],
+    ['just the prefix, no id', 'content'],
+    ['a URL, not a flow_ns', 'https://manychat.com/flow/abc'],
+    ['contains spaces', 'content 2026 abc'],
+    ['contains a slash', 'content2026/abc'],
+  ])('rejects %s without calling fetch', async (_label, flowNs) => {
+    await expect(
+      sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs }),
+    ).rejects.toBeInstanceOf(ManyChatApiError)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('the thrown error is a 400 with no network call made', async () => {
+    await expect(
+      sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: '' }),
+    ).rejects.toMatchObject({ status: 400 })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('accepts a well-formed content<alphanumeric_> flow_ns', async () => {
+    await sendManyChatFlow({
+      apiKey: API_KEY,
+      manyChatContactId: '123',
+      flowNs: 'content2026_XTD_amarillo',
+    })
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string)
+    expect(body.flow_ns).toBe('content2026_XTD_amarillo')
+  })
+})
+
+describe('sendManyChatFlow — 2xx responses must confirm status: "success"', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it('accepts a 200 with status: "success"', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { status: 'success' })))
+    const result = await sendManyChatFlow({
+      apiKey: API_KEY,
+      manyChatContactId: '123',
+      flowNs: VALID_FLOW_NS,
+    })
+    expect(result.raw).toEqual({ status: 'success' })
+  })
+
+  it('rejects a 200 with status: "error"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(200, { status: 'error', message: 'not delivered' })),
+    )
+    await expect(
+      sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS }),
+    ).rejects.toBeInstanceOf(ManyChatApiError)
+  })
+
+  it('rejects a 200 with no status field at all', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { unexpected: 'shape' })))
+    await expect(
+      sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS }),
+    ).rejects.toBeInstanceOf(ManyChatApiError)
+  })
+})
+
+describe('sendManyChatFlow — error handling', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it.each([401, 403, 429, 500])('throws a typed ManyChatApiError on HTTP %i', async (status) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(status, { status: 'error', message: `boom ${status}` })),
+    )
+    await expect(
+      sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS }),
+    ).rejects.toMatchObject({ status, message: `boom ${status}` })
+  })
+
+  it('surfaces a network failure as a 502 ManyChatApiError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('getaddrinfo ENOTFOUND')
+      }),
+    )
+    await expect(
+      sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS }),
+    ).rejects.toMatchObject({ status: 502 })
+  })
+
+  it('surfaces an aborted request as a 504 timeout ManyChatApiError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        const err = new Error('The operation was aborted')
+        err.name = 'AbortError'
+        throw err
+      }),
+    )
+    await expect(
+      sendManyChatFlow({
+        apiKey: API_KEY,
+        manyChatContactId: '123',
+        flowNs: VALID_FLOW_NS,
+        timeoutMs: 5,
+      }),
+    ).rejects.toMatchObject({ status: 504 })
+  })
+
+  it('redacts the literal API key if it ever appears in an error body', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => jsonResponse(400, { message: `invalid token ${API_KEY}` })),
+    )
+    let caught: ManyChatApiError | null = null
+    try {
+      await sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS })
+    } catch (err) {
+      caught = err as ManyChatApiError
+    }
+    expect(caught).toBeInstanceOf(ManyChatApiError)
+    expect(caught!.message).not.toContain(API_KEY)
+  })
+})
+
+describe('sendManyChatFlow — never logs the API key', () => {
+  let errorSpy: ReturnType<typeof vi.spyOn>
+  let warnSpy: ReturnType<typeof vi.spyOn>
+  let logSpy: ReturnType<typeof vi.spyOn>
+
+  beforeEach(() => {
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    errorSpy.mockRestore()
+    warnSpy.mockRestore()
+    logSpy.mockRestore()
+    vi.unstubAllGlobals()
+  })
+
+  function loggedText(): string {
+    return [...errorSpy.mock.calls, ...warnSpy.mock.calls, ...logSpy.mock.calls]
+      .flat()
+      .map((arg) => (typeof arg === 'string' ? arg : JSON.stringify(arg)))
+      .join('\n')
+  }
+
+  it('on success', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(200, { status: 'success' })))
+    await sendManyChatFlow({ apiKey: API_KEY, manyChatContactId: '123', flowNs: VALID_FLOW_NS })
+    expect(loggedText()).not.toContain(API_KEY)
+  })
+
+  it('on a ManyChat error response', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(401, { message: 'unauthorized' })))
+    await sendManyChatFlow({
+      apiKey: API_KEY,
+      manyChatContactId: '123',
+      flowNs: VALID_FLOW_NS,
+    }).catch(() => {})
     expect(loggedText()).not.toContain(API_KEY)
   })
 })
