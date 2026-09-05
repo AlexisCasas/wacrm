@@ -1074,6 +1074,7 @@ interface SendMediaCfg {
   media_url?: string;
   caption?: string;
   filename?: string;
+  manychat_bridge_flow_ns?: string;
   next_node_key?: string;
 }
 
@@ -1254,6 +1255,21 @@ function SendMediaForm({
           />
         </div>
       )}
+
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">
+          {t("manychatBridgeFlowNsLabel")}
+        </label>
+        <Input
+          value={cfg.manychat_bridge_flow_ns ?? ""}
+          onChange={(e) => onUpdateConfig({ manychat_bridge_flow_ns: e.target.value })}
+          placeholder="content2026..."
+          className="bg-muted font-mono text-xs"
+        />
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          {t("manychatBridgeFlowNsHelp")}
+        </p>
+      </div>
 
       <NextNodeRow
         value={cfg.next_node_key ?? ""}

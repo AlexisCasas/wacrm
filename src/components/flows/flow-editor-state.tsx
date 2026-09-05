@@ -164,6 +164,10 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
         media_url: "",
         caption: "",
         filename: "",
+        // TEMPORARY ManyChat coexistence bridge (PENDIENTE 02.1B) —
+        // empty by default; a Meta-native Flow never needs to touch
+        // this field.
+        manychat_bridge_flow_ns: "",
         next_node_key: "",
       };
     case "collect_input":

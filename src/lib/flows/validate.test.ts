@@ -514,6 +514,81 @@ describe("validateFlowForActivation — send_media", () => {
     );
     expect(set).toEqual(new Set(["s", "m", "h"]));
   });
+
+  // PENDIENTE 02.1B — manychat_bridge_flow_ns is NOT globally required.
+  describe("manychat_bridge_flow_ns (TEMPORARY ManyChat coexistence bridge)", () => {
+    it("passes with no manychat_bridge_flow_ns at all — a Meta-native Flow needs none", () => {
+      const issues = validateFlowForActivation(
+        baseFlow,
+        nodesWith({
+          media_type: "image",
+          media_url: "https://cdn.example/x.png",
+          next_node_key: "h",
+        }),
+      );
+      expect(issues.some((i) => i.field === "manychat_bridge_flow_ns")).toBe(false);
+    });
+
+    it("passes with an empty-string manychat_bridge_flow_ns — valid for Meta", () => {
+      const issues = validateFlowForActivation(
+        baseFlow,
+        nodesWith({
+          media_type: "image",
+          media_url: "https://cdn.example/x.png",
+          manychat_bridge_flow_ns: "",
+          next_node_key: "h",
+        }),
+      );
+      expect(issues.some((i) => i.field === "manychat_bridge_flow_ns")).toBe(false);
+    });
+
+    it("passes with a well-formed content<alphanumeric_> value", () => {
+      const issues = validateFlowForActivation(
+        baseFlow,
+        nodesWith({
+          media_type: "image",
+          media_url: "https://cdn.example/x.png",
+          manychat_bridge_flow_ns: "content2026_XTD_amarillo",
+          next_node_key: "h",
+        }),
+      );
+      expect(issues.some((i) => i.field === "manychat_bridge_flow_ns")).toBe(false);
+    });
+
+    it.each([
+      "abc123",
+      "content",
+      "https://manychat.com/flow/abc",
+      "content 2026 abc",
+      "content2026/abc",
+    ])("flags a malformed value (%s) when one IS provided", (value) => {
+      const issues = validateFlowForActivation(
+        baseFlow,
+        nodesWith({
+          media_type: "image",
+          media_url: "https://cdn.example/x.png",
+          manychat_bridge_flow_ns: value,
+          next_node_key: "h",
+        }),
+      );
+      expect(issues.some((i) => i.node_key === "m" && i.field === "manychat_bridge_flow_ns")).toBe(
+        true,
+      );
+    });
+
+    it("media_url is still required even when a valid bridge flow_ns is set", () => {
+      const issues = validateFlowForActivation(
+        baseFlow,
+        nodesWith({
+          media_type: "image",
+          media_url: "",
+          manychat_bridge_flow_ns: "content2026abc123",
+          next_node_key: "h",
+        }),
+      );
+      expect(issues.some((i) => i.node_key === "m" && i.field === "media_url")).toBe(true);
+    });
+  });
 });
 
 describe("validateFlowForActivation — delay", () => {

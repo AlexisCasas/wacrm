@@ -1156,6 +1156,8 @@
         "captionLabel": "Caption (optional, shown under the media)",
         "filenameLabel": "Filename shown to the customer (documents only)",
         "filenamePlaceholder": "invoice.pdf",
+        "manychatBridgeFlowNsLabel": "ManyChat bridge automation ID (temporary)",
+        "manychatBridgeFlowNsHelp": "Used only while outbound transport is ManyChat. After migration to Meta, this value is ignored and the media URL above is sent directly.",
         "advanceAfterSending": "After sending, advance to",
         "pickNextNode": "Pick a next node…",
         "none": "— None —",

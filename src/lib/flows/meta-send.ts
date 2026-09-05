@@ -16,7 +16,7 @@ import {
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { resolveOutboundTransport } from '@/lib/whatsapp/send-message'
-import { sendManyChatTextToContact } from '@/lib/manychat/contact-send'
+import { sendManyChatTextToContact, sendManyChatFlowToContact } from '@/lib/manychat/contact-send'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -234,39 +234,47 @@ interface SendMediaEngineArgs {
   conversationId: string
   contactId: string
   kind: MediaKind
-  /** Public URL Meta fetches at send time. */
+  /** Public URL Meta fetches at send time — also the canonical asset
+   *  reference persisted regardless of transport (see the ManyChat
+   *  branch below). */
   link: string
   caption?: string
   /** Document-only; ignored by Meta for image/video. */
   filename?: string
+  /**
+   * TEMPORARY ManyChat coexistence bridge (PENDIENTE 02.1B). When set
+   * AND this account resolves to ManyChat transport, triggers this
+   * ManyChat Automation Flow (via `sendFlow`) instead of failing
+   * closed. Ignored entirely under Meta transport. See
+   * `SendMediaNodeConfig.manychat_bridge_flow_ns` in types.ts.
+   */
+  manychatBridgeFlowNs?: string
 }
 
 /**
  * Send an image / video / document from the Flows engine.
  *
  * Used by the runner's `send_media` node. Auto-advances after the
- * send lands (same suspend semantics as send_message). Same
- * phone-variant retry + DB persistence as the text/interactive
- * senders; persists the outgoing message with `content_type` matching
- * the media kind so the inbox renders the right preview.
+ * send lands (same suspend semantics as send_message).
  *
- * FAILS CLOSED while this account is bridged through ManyChat — the
- * ManyChat Public API's media-send contract for WhatsApp is not
- * something to guess at, so this deliberately does NOT attempt a send
- * and NEVER falls back to Meta (which would silently send through the
- * wrong number's channel while ManyChat still owns it operationally).
- * The media bridge is a planned follow-up iteration; this is the seam
- * where it will plug in — replace this branch with a real ManyChat
- * media call when that lands, following the same
- * `resolveOutboundTransport` check `engineSendText` above uses.
+ * Transport-aware, same `resolveOutboundTransport` check
+ * `engineSendText` above uses:
+ *   - Meta (unchanged): phone-variant retry + DB persistence, same as
+ *     before this bridge existed.
+ *   - ManyChat: FAILS CLOSED unless `manychatBridgeFlowNs` is set — the
+ *     ManyChat Public API has no documented WhatsApp media send, so
+ *     rather than guess at one, a configured node instead triggers a
+ *     manually-authored ManyChat Automation Flow (containing only the
+ *     asset) via `sendManyChatFlowToContact`. Never falls back to
+ *     Meta in either sub-case (no bridge configured, or the bridge
+ *     call itself fails) — that would silently send through the wrong
+ *     number's channel while ManyChat still owns it operationally.
  */
 export async function engineSendMedia(
   args: SendMediaEngineArgs,
 ): Promise<{ whatsapp_message_id: string }> {
   if (resolveOutboundTransport(args.accountId) === 'manychat') {
-    throw new Error(
-      '[flows] send_media is not yet supported while this account is bridged through ManyChat — the media bridge is a planned follow-up (see engineSendMedia in src/lib/flows/meta-send.ts). This send was NOT attempted via Meta.',
-    )
+    return sendMediaViaManyChatBridge(args)
   }
 
   const db = supabaseAdmin()
@@ -336,12 +344,17 @@ export async function engineSendMedia(
   // messages_content_type_check constraint (migration 001 + 010).
   // content_text carries the caption (or empty) so the conversation
   // list preview shows something meaningful when the user glances at it.
+  // media_url is the canonical asset reference the Inbox renders from
+  // (see src/components/inbox/message-media.tsx) — was missing here
+  // even though the ManyChat bridge branch below already persists it;
+  // this keeps both transports symmetric for the same send_media node.
   const preview = args.caption?.trim() || `[${args.kind}]`
   const { error: msgErr } = await db.from('messages').insert({
     conversation_id: args.conversationId,
     sender_type: 'bot',
     content_type: args.kind,
     content_text: args.caption ?? null,
+    media_url: args.link,
     message_id: waMessageId,
     status: 'sent',
   })
@@ -359,6 +372,78 @@ export async function engineSendMedia(
     .eq('id', args.conversationId)
 
   return { whatsapp_message_id: waMessageId }
+}
+
+/**
+ * ManyChat branch of `engineSendMedia` — the TEMPORARY media bridge
+ * (PENDIENTE 02.1B). FAILS CLOSED when the node has no
+ * `manychatBridgeFlowNs` configured: never attempts a send, never
+ * falls back to Meta. When one IS configured, triggers it via
+ * `sendManyChatFlowToContact` and persists exactly like the Meta
+ * branch, with `media_url` set to the canonical WACRM asset URL
+ * (`args.link`) even though ManyChat's own relay Flow — not this
+ * call — is what actually delivers the asset; that keeps the Inbox
+ * showing the right asset AND keeps this same node Meta-native the
+ * moment the account cuts over (media_url is already correct; only
+ * the bridge field becomes unused).
+ *
+ * Deliberately does NOT touch `flow_runs` — this send is the Flow
+ * itself acting, not a human agent stepping in, so it must never
+ * pause the very run that's sending it.
+ */
+async function sendMediaViaManyChatBridge(
+  args: SendMediaEngineArgs,
+): Promise<{ whatsapp_message_id: string }> {
+  if (!args.manychatBridgeFlowNs) {
+    throw new Error(
+      '[flows] send_media has no manychat_bridge_flow_ns configured — cannot send media while this account is bridged through ManyChat. This send was NOT attempted via Meta. Set a temporary ManyChat bridge Flow ns on this node, or wait for the Meta cutover.',
+    )
+  }
+
+  const db = supabaseAdmin()
+
+  let whatsappMessageId: string
+  try {
+    const result = await sendManyChatFlowToContact({
+      db,
+      accountId: args.accountId,
+      contactId: args.contactId,
+      flowNs: args.manychatBridgeFlowNs,
+    })
+    whatsappMessageId = result.whatsappMessageId
+  } catch (err) {
+    console.error(
+      '[flows] ManyChat media bridge send failed:',
+      err instanceof Error ? err.message : String(err),
+    )
+    throw err
+  }
+
+  const preview = args.caption?.trim() || `[${args.kind}]`
+  const { error: msgError } = await db.from('messages').insert({
+    conversation_id: args.conversationId,
+    sender_type: 'bot',
+    content_type: args.kind,
+    content_text: args.caption ?? null,
+    media_url: args.link,
+    message_id: whatsappMessageId,
+    status: 'sent',
+    ai_generated: false,
+  })
+  if (msgError) {
+    throw new Error(`sent via ManyChat bridge but DB insert failed: ${msgError.message}`)
+  }
+
+  await db
+    .from('conversations')
+    .update({
+      last_message_text: preview,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', args.conversationId)
+
+  return { whatsapp_message_id: whatsappMessageId }
 }
 
 interface SendInteractiveButtonsEngineArgs {
