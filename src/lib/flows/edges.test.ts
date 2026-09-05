@@ -70,6 +70,25 @@ describe("deriveCanvasEdges — single-outgoing node types", () => {
     ]);
   });
 
+  it("derives a `next` edge from delay and set_contact_field", () => {
+    const edges = deriveCanvasEdges(
+      nodes(
+        {
+          node_key: "d",
+          node_type: "delay",
+          config: { seconds: 5, next_node_key: "scf" },
+        },
+        {
+          node_key: "scf",
+          node_type: "set_contact_field",
+          config: { field: "custom:abc", value: "177", next_node_key: "e" },
+        },
+        { node_key: "e", node_type: "end", config: {} },
+      ),
+    );
+    expect(edges.map((e) => `${e.source}->${e.target}`)).toEqual(["d->scf", "scf->e"]);
+  });
+
   it("skips dangling edges (next_node_key pointing nowhere)", () => {
     const edges = deriveCanvasEdges(
       nodes({
@@ -310,6 +329,12 @@ describe("outgoingSlots", () => {
     expect(each({ node_key: "x", node_type: "set_tag", config: {} })).toEqual([
       "next",
     ]);
+    expect(each({ node_key: "x", node_type: "delay", config: {} })).toEqual([
+      "next",
+    ]);
+    expect(
+      each({ node_key: "x", node_type: "set_contact_field", config: {} }),
+    ).toEqual(["next"]);
   });
 
   it("returns true/false slots for condition", () => {
@@ -386,6 +411,25 @@ describe("applyEdgeConnection", () => {
       config: { text: "hi", next_node_key: "" },
     };
     expect(applyEdgeConnection(node, "next", "b")).toEqual({
+      next_node_key: "b",
+    });
+  });
+
+  it("patches next_node_key for delay and set_contact_field", () => {
+    const delayNode: BuilderNode = {
+      node_key: "d",
+      node_type: "delay",
+      config: { seconds: 5, next_node_key: "" },
+    };
+    expect(applyEdgeConnection(delayNode, "next", "b")).toEqual({
+      next_node_key: "b",
+    });
+    const scfNode: BuilderNode = {
+      node_key: "scf",
+      node_type: "set_contact_field",
+      config: { field: "custom:x", value: "y", next_node_key: "" },
+    };
+    expect(applyEdgeConnection(scfNode, "next", "b")).toEqual({
       next_node_key: "b",
     });
   });
@@ -504,6 +548,21 @@ describe("unlinkNodeReferences", () => {
     expect(
       (after[0].config as { next_node_key: string }).next_node_key,
     ).toBe("");
+  });
+
+  it("clears next_node_key for delay and set_contact_field when pointing at the deleted node", () => {
+    const before: BuilderNode[] = [
+      { node_key: "d", node_type: "delay", config: { seconds: 5, next_node_key: "victim" } },
+      {
+        node_key: "scf",
+        node_type: "set_contact_field",
+        config: { field: "custom:x", value: "y", next_node_key: "victim" },
+      },
+      { node_key: "victim", node_type: "end", config: {} },
+    ];
+    const after = unlinkNodeReferences(before, "victim");
+    expect((after[0].config as { next_node_key: string }).next_node_key).toBe("");
+    expect((after[1].config as { next_node_key: string }).next_node_key).toBe("");
   });
 
   it("clears both true_next and false_next when condition points at the deleted node", () => {

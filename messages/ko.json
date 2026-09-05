@@ -1158,7 +1158,14 @@
         "filenamePlaceholder": "invoice.pdf",
         "advanceAfterSending": "전송 후 다음 진행",
         "pickNextNode": "다음 노드를 선택하세요…",
-        "none": "— 없음 —"
+        "none": "— 없음 —",
+        "delaySecondsLabel": "대기 시간(초)",
+        "delayHelp": "짧은 인메모리 지연만 지원합니다 ({min}-{max}초) — 영구 스케줄러가 아닙니다.",
+        "customFieldLabel": "커스텀 필드",
+        "customFieldPlaceholder": "필드를 선택하세요…",
+        "customFieldValueLabel": "값",
+        "customFieldValuePlaceholder": "예: 177",
+        "customFieldValueHelp": "변수 보간을 지원합니다. 예:"
       },
       "categories": {
         "messaging": "메시징",
@@ -1198,6 +1205,14 @@
           "label": "연락처 태그 지정",
           "blurb": "연락처 태그를 추가하거나 제거합니다"
         },
+        "delay": {
+          "label": "지연",
+          "blurb": "몇 초간 대기한 후 계속 진행합니다"
+        },
+        "set_contact_field": {
+          "label": "연락처 필드 설정",
+          "blurb": "연락처의 커스텀 필드를 설정합니다"
+        },
         "handoff": {
           "label": "상담원에게 인계",
           "blurb": "대화를 사람에게 넘깁니다"
@@ -1236,7 +1251,8 @@
       "modeAdd": "추가",
       "modeRemove": "제거",
       "tagPicked": "{tag} 태그 {mode}…",
-      "tagNone": "태그 {mode} (선택된 태그 없음)"
+      "tagNone": "태그 {mode} (선택된 태그 없음)",
+      "waitSeconds": "{seconds}초 대기"
     }
   },
   "Settings": {

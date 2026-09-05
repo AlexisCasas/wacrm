@@ -17,6 +17,7 @@
  */
 
 import {
+  Clock,
   Flag,
   GitFork,
   Inbox,
@@ -26,6 +27,7 @@ import {
   Paperclip,
   PlayCircle,
   Tag,
+  UserCog,
   UserPlus,
   Workflow,
 } from 'lucide-react';
@@ -49,6 +51,8 @@ export type NodeType =
   | 'collect_input'
   | 'condition'
   | 'set_tag'
+  | 'delay'
+  | 'set_contact_field'
   | 'handoff'
   | 'end';
 
@@ -152,6 +156,20 @@ export const NODE_META: Record<
     blurb: 'Adds or removes a contact tag',
     category: 'logic',
   },
+  delay: {
+    label: 'Delay',
+    icon: Clock,
+    color: 'text-orange-400',
+    blurb: 'Waits a few seconds before continuing',
+    category: 'flow',
+  },
+  set_contact_field: {
+    label: 'Set contact field',
+    icon: UserCog,
+    color: 'text-lime-400',
+    blurb: 'Sets a custom field on the contact',
+    category: 'logic',
+  },
   handoff: {
     label: 'Handoff to agent',
     icon: UserPlus,
@@ -205,6 +223,8 @@ const NODE_HUE: Record<NodeType, { l: number; c: number; h: number }> = {
   collect_input: { l: 0.65, c: 0.1, h: 185 }, // teal — capture
   condition: { l: 0.72, c: 0.15, h: 65 }, // amber — a fork in the road
   set_tag: { l: 0.65, c: 0.15, h: 350 }, // pink
+  delay: { l: 0.68, c: 0.15, h: 45 }, // orange — pause / wait
+  set_contact_field: { l: 0.68, c: 0.14, h: 130 }, // lime — data write
   handoff: { l: 0.65, c: 0.17, h: 16 }, // rose — hands off
   end: { l: 0.55, c: 0.01, h: 260 }, // neutral grey — terminal
 };
@@ -419,6 +439,25 @@ export function summarizeNode(
       return tagId
         ? t ? t('tagPicked', { mode, tag: tagId.slice(0, 8) }) : `${mode} tag ${tagId.slice(0, 8)}…`
         : t ? t('tagNone', { mode }) : `${mode} tag (none picked)`;
+    }
+    case 'delay': {
+      const seconds = typeof cfg.seconds === 'number' ? cfg.seconds : null;
+      return seconds
+        ? t
+          ? t('waitSeconds', { seconds })
+          : `Wait ${seconds}s`
+        : null;
+    }
+    case 'set_contact_field': {
+      const field = typeof cfg.field === 'string' ? cfg.field : '';
+      const value = typeof cfg.value === 'string' ? cfg.value : '';
+      if (!field) return null;
+      const fieldLabel = field.startsWith('custom:')
+        ? field.slice('custom:'.length).slice(0, 8)
+        : field;
+      return value
+        ? `${fieldLabel} = ${truncate(value, 40)}`
+        : `${fieldLabel} = (empty)`;
     }
     case 'handoff': {
       const note = typeof cfg.note === 'string' ? cfg.note : '';

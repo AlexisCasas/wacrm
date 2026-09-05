@@ -183,6 +183,10 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
       };
     case "set_tag":
       return { mode: "add", tag_id: "", next_node_key: "" };
+    case "delay":
+      return { seconds: 5, next_node_key: "" };
+    case "set_contact_field":
+      return { field: "", value: "", next_node_key: "" };
     case "handoff":
       return { note: "" };
     case "end":

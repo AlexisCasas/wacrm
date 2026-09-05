@@ -701,6 +701,88 @@ function validateNode(
       break;
     }
 
+    case "delay": {
+      const cfg = node.config as { seconds?: number; next_node_key?: string };
+      if (
+        typeof cfg.seconds !== "number" ||
+        !Number.isFinite(cfg.seconds) ||
+        cfg.seconds < 1 ||
+        cfg.seconds > 30
+      ) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "seconds",
+          message: "Delay must be between 1 and 30 seconds (v1 supports short delays only).",
+        });
+      }
+      if (!cfg.next_node_key) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: "Delay node must point to a next node.",
+        });
+      } else if (!knownKeys.has(cfg.next_node_key)) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: `Delay points to non-existent node "${cfg.next_node_key}".`,
+        });
+      }
+      break;
+    }
+
+    case "set_contact_field": {
+      const cfg = node.config as {
+        field?: string;
+        value?: string;
+        next_node_key?: string;
+      };
+      if (!cfg.field?.trim()) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "field",
+          message: "Set-contact-field needs a field to write.",
+        });
+      } else if (
+        !cfg.field.startsWith("custom:") ||
+        cfg.field.slice("custom:".length).length === 0
+      ) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "field",
+          message: `Only custom fields are supported ("custom:<id>") — got "${cfg.field}".`,
+        });
+      }
+      if (!cfg.next_node_key) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: "Set-contact-field node must point to a next node.",
+        });
+      } else if (!knownKeys.has(cfg.next_node_key)) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: `Set-contact-field points to non-existent node "${cfg.next_node_key}".`,
+        });
+      }
+      break;
+    }
+
     case "handoff":
     case "end":
       // Terminal nodes have no outgoing edges; nothing to validate
@@ -751,7 +833,9 @@ function outgoingEdges(node: NodeInput): string[] {
     case "send_message":
     case "send_media":
     case "collect_input":
-    case "set_tag": {
+    case "set_tag":
+    case "delay":
+    case "set_contact_field": {
       const cfg = node.config as { next_node_key?: string };
       return cfg.next_node_key ? [cfg.next_node_key] : [];
     }

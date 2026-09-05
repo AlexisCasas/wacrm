@@ -516,6 +516,109 @@ describe("validateFlowForActivation — send_media", () => {
   });
 });
 
+describe("validateFlowForActivation — delay", () => {
+  const baseFlow = { ...validFlow, entry_node_id: "s" };
+  const nodesWith = (delayConfig: Record<string, unknown>) => [
+    { node_key: "s", node_type: "start", config: { next_node_key: "d" } },
+    { node_key: "d", node_type: "delay", config: delayConfig },
+    { node_key: "h", node_type: "handoff", config: {} },
+  ];
+
+  it("passes with seconds in [1, 30] and a valid next_node_key", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ seconds: 10, next_node_key: "h" }),
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it.each([0, 31, -1, NaN])("flags seconds out of range (%s)", (seconds) => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ seconds, next_node_key: "h" }),
+    );
+    expect(issues.some((i) => i.node_key === "d" && i.field === "seconds")).toBe(true);
+  });
+
+  it("flags a missing seconds value", () => {
+    const issues = validateFlowForActivation(baseFlow, nodesWith({ next_node_key: "h" }));
+    expect(issues.some((i) => i.node_key === "d" && i.field === "seconds")).toBe(true);
+  });
+
+  it("flags next_node_key pointing at a non-existent node", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ seconds: 5, next_node_key: "ghost" }),
+    );
+    expect(
+      issues.some(
+        (i) => i.node_key === "d" && i.field === "next_node_key" && i.message.includes("ghost"),
+      ),
+    ).toBe(true);
+  });
+
+  it("contributes its next_node_key to reachability", () => {
+    const set = reachableFromEntry("s", nodesWith({ seconds: 5, next_node_key: "h" }));
+    expect(set).toEqual(new Set(["s", "d", "h"]));
+  });
+});
+
+describe("validateFlowForActivation — set_contact_field", () => {
+  const baseFlow = { ...validFlow, entry_node_id: "s" };
+  const nodesWith = (cfg: Record<string, unknown>) => [
+    { node_key: "s", node_type: "start", config: { next_node_key: "scf" } },
+    { node_key: "scf", node_type: "set_contact_field", config: cfg },
+    { node_key: "h", node_type: "handoff", config: {} },
+  ];
+
+  it("passes with a custom: field, a value, and a valid next_node_key", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ field: "custom:abc-123", value: "177", next_node_key: "h" }),
+    );
+    expect(issues).toEqual([]);
+  });
+
+  it("flags a missing field", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ value: "177", next_node_key: "h" }),
+    );
+    expect(issues.some((i) => i.node_key === "scf" && i.field === "field")).toBe(true);
+  });
+
+  it.each(["name", "email", "company", "custom:", ""])(
+    "flags a non-custom: field (%s)",
+    (field) => {
+      const issues = validateFlowForActivation(
+        baseFlow,
+        nodesWith({ field, value: "177", next_node_key: "h" }),
+      );
+      expect(issues.some((i) => i.node_key === "scf" && i.field === "field")).toBe(true);
+    },
+  );
+
+  it("flags next_node_key pointing at a non-existent node", () => {
+    const issues = validateFlowForActivation(
+      baseFlow,
+      nodesWith({ field: "custom:abc", value: "177", next_node_key: "ghost" }),
+    );
+    expect(
+      issues.some(
+        (i) => i.node_key === "scf" && i.field === "next_node_key" && i.message.includes("ghost"),
+      ),
+    ).toBe(true);
+  });
+
+  it("contributes its next_node_key to reachability", () => {
+    const set = reachableFromEntry(
+      "s",
+      nodesWith({ field: "custom:abc", value: "177", next_node_key: "h" }),
+    );
+    expect(set).toEqual(new Set(["s", "scf", "h"]));
+  });
+});
+
 describe("reachableFromEntry", () => {
   it("walks the graph from the entry", () => {
     const set = reachableFromEntry("start", validNodes);
