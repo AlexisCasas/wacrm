@@ -15,6 +15,8 @@ import {
   phoneVariants,
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
+import { resolveOutboundTransport } from '@/lib/whatsapp/send-message'
+import { sendManyChatTextToContact } from '@/lib/manychat/contact-send'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -55,7 +57,20 @@ interface SendTextEngineArgs {
  *
  * Used by the runner's `send_message` and `collect_input` nodes —
  * both prompt the customer with text and either auto-advance (the
- * send_message case) or suspend awaiting a text reply (collect_input).
+ * send_message case) or suspend awaiting a text reply (collect_input);
+ * `collect_input`'s reprompt-on-fallback path also calls this, so all
+ * three text-sending call sites become transport-aware from this one
+ * change.
+ *
+ * Transport-aware: routes through ManyChat instead of Meta while this
+ * account is bridged (`resolveOutboundTransport` — the SAME helper
+ * `src/lib/ai/send.ts` already imports from
+ * `@/lib/whatsapp/send-message`, reused here rather than duplicated).
+ * AI's own call site into this function only ever reaches the Meta
+ * branch below (it pre-checks transport itself and takes a separate
+ * ManyChat path before ever calling this), so this change is a no-op
+ * for AI and closes the gap for Flows, which previously always used
+ * Meta regardless of the account's configured transport.
  *
  * Wraps the same phone-variant retry + DB persistence pattern as the
  * interactive senders; the duplication will be DRY'd into a shared
@@ -65,6 +80,10 @@ interface SendTextEngineArgs {
 export async function engineSendText(
   args: SendTextEngineArgs,
 ): Promise<{ whatsapp_message_id: string }> {
+  if (resolveOutboundTransport(args.accountId) === 'manychat') {
+    return sendTextViaManyChat(args)
+  }
+
   const db = supabaseAdmin()
 
   const { data: contact, error: contactErr } = await db
@@ -150,6 +169,65 @@ export async function engineSendText(
   return { whatsapp_message_id: waMessageId }
 }
 
+/**
+ * ManyChat branch of `engineSendText` — mirrors `src/lib/ai/send.ts`'s
+ * ManyChat path (same transport primitive, same persistence shape),
+ * with the one deliberate difference the spec calls for: `ai_generated`
+ * stays false (a Flow send is deterministic, not model-generated) and
+ * `sender_type` stays `'bot'` (never `'agent'` — this is not a human
+ * reply, so it must never be mistaken for one).
+ *
+ * Deliberately does NOT touch `flow_runs` — a Flow's own outbound send
+ * is not an agent stepping in and must never pause the very run that's
+ * sending it.
+ */
+async function sendTextViaManyChat(
+  args: SendTextEngineArgs,
+): Promise<{ whatsapp_message_id: string }> {
+  const db = supabaseAdmin()
+
+  let whatsappMessageId: string
+  try {
+    const result = await sendManyChatTextToContact({
+      db,
+      accountId: args.accountId,
+      contactId: args.contactId,
+      text: args.text,
+    })
+    whatsappMessageId = result.whatsappMessageId
+  } catch (err) {
+    console.error(
+      '[flows] ManyChat send failed:',
+      err instanceof Error ? err.message : String(err),
+    )
+    throw err
+  }
+
+  const { error: msgError } = await db.from('messages').insert({
+    conversation_id: args.conversationId,
+    sender_type: 'bot',
+    content_type: 'text',
+    content_text: args.text,
+    message_id: whatsappMessageId,
+    status: 'sent',
+    ai_generated: args.aiGenerated ?? false,
+  })
+  if (msgError) {
+    throw new Error(`sent via ManyChat but DB insert failed: ${msgError.message}`)
+  }
+
+  await db
+    .from('conversations')
+    .update({
+      last_message_text: args.text,
+      last_message_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', args.conversationId)
+
+  return { whatsapp_message_id: whatsappMessageId }
+}
+
 interface SendMediaEngineArgs {
   accountId: string
   userId: string
@@ -171,10 +249,26 @@ interface SendMediaEngineArgs {
  * phone-variant retry + DB persistence as the text/interactive
  * senders; persists the outgoing message with `content_type` matching
  * the media kind so the inbox renders the right preview.
+ *
+ * FAILS CLOSED while this account is bridged through ManyChat — the
+ * ManyChat Public API's media-send contract for WhatsApp is not
+ * something to guess at, so this deliberately does NOT attempt a send
+ * and NEVER falls back to Meta (which would silently send through the
+ * wrong number's channel while ManyChat still owns it operationally).
+ * The media bridge is a planned follow-up iteration; this is the seam
+ * where it will plug in — replace this branch with a real ManyChat
+ * media call when that lands, following the same
+ * `resolveOutboundTransport` check `engineSendText` above uses.
  */
 export async function engineSendMedia(
   args: SendMediaEngineArgs,
 ): Promise<{ whatsapp_message_id: string }> {
+  if (resolveOutboundTransport(args.accountId) === 'manychat') {
+    throw new Error(
+      '[flows] send_media is not yet supported while this account is bridged through ManyChat — the media bridge is a planned follow-up (see engineSendMedia in src/lib/flows/meta-send.ts). This send was NOT attempted via Meta.',
+    )
+  }
+
   const db = supabaseAdmin()
 
   const { data: contact, error: contactErr } = await db

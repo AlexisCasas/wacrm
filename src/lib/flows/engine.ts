@@ -45,6 +45,7 @@ import { removeContactTag } from "@/lib/contacts/tag-write";
 import {
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
+  type DelayNodeConfig,
   type DispatchInboundInput,
   type DispatchInboundResult,
   type FlowNodeRow,
@@ -55,6 +56,7 @@ import {
   type SendListNodeConfig,
   type SendMediaNodeConfig,
   type SendMessageNodeConfig,
+  type SetContactFieldNodeConfig,
   type SetTagNodeConfig,
   type StartNodeConfig,
   type KeywordTriggerConfig,
@@ -140,7 +142,9 @@ export function isAutoAdvancing(node_type: string): boolean {
     node_type === "send_message" ||
     node_type === "send_media" ||
     node_type === "condition" ||
-    node_type === "set_tag"
+    node_type === "set_tag" ||
+    node_type === "delay" ||
+    node_type === "set_contact_field"
   );
 }
 
@@ -555,6 +559,93 @@ function interpolateVars(template: string, vars: Record<string, unknown>): strin
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Re-check a run's status directly from the DB — never trust an
+ * in-memory `run` object read before an `await` boundary (a delay node
+ * sleeps for real seconds; the row can change underneath it). Used
+ * exclusively by the `delay` node to detect an agent take-over that
+ * happened while it was sleeping.
+ */
+async function isRunActive(db: AdminClient, runId: string): Promise<boolean> {
+  const { data, error } = await db
+    .from("flow_runs")
+    .select("status")
+    .eq("id", runId)
+    .maybeSingle();
+  if (error || !data) return false;
+  return (data as { status: string }).status === "active";
+}
+
+/**
+ * Write one custom field on the run's contact, then let the caller
+ * advance. Mirrors `update_contact_field` in
+ * src/lib/automations/engine.ts (same `custom:<id>` encoding, same
+ * defense-in-depth account checks) — narrower on purpose: only
+ * `custom:<id>` is accepted here, not the built-in name/email/company
+ * columns, since every ManyChat "Set Custom User Field" action this
+ * node replicates targets a custom field.
+ *
+ * Throws on any tenancy failure or DB error; the caller (the advance
+ * loop) treats that as non-fatal — logged, then advances anyway — so a
+ * bad field reference can't strand the customer mid-flow (same
+ * tolerance `set_tag` already has for a bad tag write).
+ */
+async function executeSetContactField(
+  db: AdminClient,
+  run: FlowRunRow,
+  cfg: SetContactFieldNodeConfig,
+): Promise<void> {
+  if (!cfg.field.startsWith("custom:")) {
+    throw new Error(
+      `unsupported field "${cfg.field}" — only custom:<custom_field_id> is writable from a Flow`,
+    );
+  }
+  const customFieldId = cfg.field.slice("custom:".length);
+  if (!customFieldId) {
+    throw new Error(`field "${cfg.field}" is missing a custom_field_id`);
+  }
+  if (!run.contact_id) {
+    throw new Error("set_contact_field needs a contact on the run");
+  }
+
+  // Defense in depth: the service-role client bypasses RLS. Confirm
+  // BOTH sides of the write belong to this run's account — the field
+  // definition AND the contact — before writing anything.
+  const { data: field } = await db
+    .from("custom_fields")
+    .select("id")
+    .eq("id", customFieldId)
+    .eq("account_id", run.account_id)
+    .maybeSingle();
+  if (!field) {
+    throw new Error(`custom field ${customFieldId} not found for this account`);
+  }
+
+  const { data: contact } = await db
+    .from("contacts")
+    .select("id")
+    .eq("id", run.contact_id)
+    .eq("account_id", run.account_id)
+    .maybeSingle();
+  if (!contact) {
+    throw new Error(`contact ${run.contact_id} not found for this account`);
+  }
+
+  const value = interpolateVars(cfg.value, run.vars);
+
+  // Upsert on the table's UNIQUE(contact_id, custom_field_id) so
+  // repeated visits to this node overwrite rather than duplicate.
+  const { error } = await db.from("contact_custom_values").upsert(
+    { contact_id: run.contact_id, custom_field_id: customFieldId, value },
+    { onConflict: "contact_id,custom_field_id" },
+  );
+  if (error) throw error;
+}
+
 async function endRun(
   db: AdminClient,
   runId: string,
@@ -764,6 +855,54 @@ async function advanceFromNodeKey(
         // strand the customer mid-flow.
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "set_tag_failed",
+          detail: err instanceof Error ? err.message : String(err),
+        });
+      }
+      currentKey = cfg.next_node_key;
+      continue;
+    }
+    if (node.node_type === "delay") {
+      const cfg = node.config as unknown as DelayNodeConfig;
+      // V1 scope: bounded [1, 30]s, in-process sleep — no scheduler, no
+      // persisted "waiting" checkpoint. Clamp defensively even though
+      // the builder + validator already enforce the range, since this
+      // value came out of the DB, not straight from the form.
+      const seconds = Math.min(30, Math.max(1, Math.floor(cfg.seconds) || 1));
+      await logEvent(db, run.id, "node_entered", node.node_key, {
+        node_type: "delay",
+        seconds,
+      });
+      await sleep(seconds * 1000);
+      // The flow must stay the owner of this conversation for the
+      // WHOLE delay: never activate AI, never let a fallback fire, and
+      // — the specific case a real sleep introduces — never keep
+      // sending if a human took over while we were asleep. Re-read the
+      // run's status from the DB rather than trusting the in-memory
+      // `run` (read before the sleep): send-message.ts's
+      // pause-on-agent-send flips status away from 'active' the
+      // moment an agent replies, and that write can land at any point
+      // during these up-to-30 real seconds.
+      if (!(await isRunActive(db, run.id))) {
+        await logEvent(db, run.id, "node_entered", node.node_key, {
+          reason: "delay_aborted_run_no_longer_active",
+        });
+        // Deliberately does NOT call endRun() — the row's status/
+        // ended_at/end_reason already reflect whatever took over
+        // (typically 'paused_by_agent'), and must not be overwritten.
+        return { outcome: "completed" };
+      }
+      currentKey = cfg.next_node_key;
+      continue;
+    }
+    if (node.node_type === "set_contact_field") {
+      const cfg = node.config as unknown as SetContactFieldNodeConfig;
+      try {
+        await executeSetContactField(db, run, cfg);
+      } catch (err) {
+        // Non-fatal — mirrors set_tag: a bad/missing field reference
+        // must not strand the customer mid-flow.
+        await logEvent(db, run.id, "error", node.node_key, {
+          reason: "set_contact_field_failed",
           detail: err instanceof Error ? err.message : String(err),
         });
       }
@@ -1092,6 +1231,24 @@ async function startNewRun(
   input: DispatchInboundInput,
   nodes: Map<string, FlowNodeRow>,
 ): Promise<DispatchInboundResult> {
+  // Seed `vars.contact_name` so an authored flow can write
+  // "Hola estimado {{vars.contact_name}} 🤗" without first asking the
+  // customer for their name. Account-scoped (`flow.account_id`, the
+  // SAME tenancy key the run itself is created under just below) —
+  // required defense-in-depth: this runs under service_role, which
+  // bypasses RLS, so a query scoped by contact id alone could read
+  // another account's contact if `input.contactId` were ever wrong.
+  // Never trusts anything from the inbound payload itself — the name
+  // comes only from our own `contacts` table.
+  const { data: contactRow } = await db
+    .from("contacts")
+    .select("name")
+    .eq("id", input.contactId)
+    .eq("account_id", flow.account_id)
+    .maybeSingle();
+  const contactName =
+    (contactRow as { name?: string | null } | null)?.name?.trim() || "";
+
   // INSERT — partial unique index `idx_one_active_run_per_contact`
   // catches concurrent inserts with 23505. We catch and return as
   // consumed:true (the parallel webhook handles it).
@@ -1111,6 +1268,10 @@ async function startNewRun(
       conversation_id: input.conversationId,
       status: "active",
       current_node_key: flow.entry_node_id,
+      // Only this one predefined var — collect_input's capture merges
+      // (`{ ...run.vars, [var_key]: captured }`), so this survives
+      // every later variable a flow captures.
+      vars: { contact_name: contactName },
     })
     .select("*")
     .maybeSingle();

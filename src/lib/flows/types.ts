@@ -173,6 +173,50 @@ export interface SetTagNodeConfig {
   next_node_key: string;
 }
 
+/**
+ * Short, in-process pause before auto-advancing. V1 scope only: a
+ * bounded [1, 30] second `setTimeout`-style wait inside the SAME
+ * advance-loop invocation — NOT a durable scheduler. There is no
+ * persisted "waiting" checkpoint; if the process is recycled mid-delay,
+ * the in-flight advance chain is lost, exactly like any other
+ * auto-advancing node today (see engine.ts's module doc on
+ * `advanceFromNodeKey`). The only durability requirement this node
+ * DOES carry: the run's `status` is re-checked from the DB after the
+ * sleep, before sending anything further — if an agent took over
+ * (`status` flipped away from `'active'`, e.g. by
+ * `send-message.ts`'s pause-on-agent-send) while the delay was
+ * sleeping, the runner must NOT continue sending.
+ */
+export interface DelayNodeConfig {
+  /** Whole seconds to wait. Clamped to [1, 30] at execution time — the
+   *  builder also clamps on input so authored flows can't drift out of
+   *  range. */
+  seconds: number;
+  next_node_key: string;
+}
+
+/**
+ * Sets one WA CRM custom field on the contact, then auto-advances.
+ * Replicates ManyChat's "Set Custom User Field" action (e.g. the
+ * Combo XTD automation's `Precio = 177` / `Producto = ...` steps).
+ *
+ * `field` uses the SAME `custom:<custom_field_id>` encoding Automations'
+ * `update_contact_field` step already uses (see
+ * src/lib/automations/engine.ts) — deliberately narrower than that
+ * step for v1: only custom fields are writable here, not the built-in
+ * name/email/company columns, since every ManyChat action this node
+ * replaces targets a custom field. `value` supports `{{vars.X}}`
+ * interpolation against `flow_runs.vars`, same syntax `send_message`
+ * already uses.
+ */
+export interface SetContactFieldNodeConfig {
+  /** `custom:<custom_field_id>` — any other shape is rejected at
+   *  execution time (logged, not thrown — see engine.ts). */
+  field: string;
+  value: string;
+  next_node_key: string;
+}
+
 // Terminal nodes carry no config — they just stop the run.
 export type EndNodeConfig = Record<string, never>;
 
@@ -193,6 +237,8 @@ export type FlowNodeConfig =
   | { node_type: "collect_input"; config: CollectInputNodeConfig }
   | { node_type: "condition"; config: ConditionNodeConfig }
   | { node_type: "set_tag"; config: SetTagNodeConfig }
+  | { node_type: "delay"; config: DelayNodeConfig }
+  | { node_type: "set_contact_field"; config: SetContactFieldNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
   | { node_type: "end"; config: EndNodeConfig };
 

@@ -1158,7 +1158,14 @@
         "filenamePlaceholder": "invoice.pdf",
         "advanceAfterSending": "After sending, advance to",
         "pickNextNode": "Pick a next node…",
-        "none": "— None —"
+        "none": "— None —",
+        "delaySecondsLabel": "Seconds to wait",
+        "delayHelp": "Short in-process delay only ({min}-{max}s) — not a durable scheduler.",
+        "customFieldLabel": "Custom field",
+        "customFieldPlaceholder": "Pick a field…",
+        "customFieldValueLabel": "Value",
+        "customFieldValuePlaceholder": "e.g. 177",
+        "customFieldValueHelp": "Supports variable interpolation, e.g."
       },
       "categories": {
         "messaging": "Messaging",
@@ -1198,6 +1205,14 @@
           "label": "Tag contact",
           "blurb": "Adds or removes a contact tag"
         },
+        "delay": {
+          "label": "Delay",
+          "blurb": "Waits a few seconds before continuing"
+        },
+        "set_contact_field": {
+          "label": "Set contact field",
+          "blurb": "Sets a custom field on the contact"
+        },
         "handoff": {
           "label": "Handoff to agent",
           "blurb": "Hands the conversation to a human"
@@ -1236,7 +1251,8 @@
       "modeAdd": "Add",
       "modeRemove": "Remove",
       "tagPicked": "{mode} tag {tag}…",
-      "tagNone": "{mode} tag (none picked)"
+      "tagNone": "{mode} tag (none picked)",
+      "waitSeconds": "Wait {seconds}s"
     }
   },
   "Settings": {

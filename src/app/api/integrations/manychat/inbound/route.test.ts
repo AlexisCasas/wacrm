@@ -7,6 +7,7 @@ const h = vi.hoisted(() => ({
   findOrCreateConversation: vi.fn(),
   reopenClosedConversation: vi.fn(),
   dispatchInboundToAiReply: vi.fn(),
+  dispatchInboundToFlows: vi.fn(),
   state: {
     configRow: { account_id: 'acc-1', user_id: 'user-1' } as
       | { account_id: string; user_id: string }
@@ -15,6 +16,8 @@ const h = vi.hoisted(() => ({
     /** Result the message upsert's .select() resolves to. */
     messageUpsertResult: [{ id: 'msg-1' }] as { id: string }[],
     messageUpsertError: null as { message: string } | null,
+    /** Backs the isFirstInboundMessage COUNT query — 0 = first inbound. */
+    priorCustomerMsgCount: 0,
     upsertCalls: [] as { row: Record<string, unknown>; options: unknown }[],
     rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
     linkUpsertCalls: [] as { row: Record<string, unknown>; options: unknown }[],
@@ -40,6 +43,10 @@ vi.mock('@/lib/ai/auto-reply', () => ({
   dispatchInboundToAiReply: h.dispatchInboundToAiReply,
 }))
 
+vi.mock('@/lib/flows/engine', () => ({
+  dispatchInboundToFlows: h.dispatchInboundToFlows,
+}))
+
 vi.mock('@/lib/automations/admin-client', () => ({
   supabaseAdmin: () => ({
     from(table: string) {
@@ -58,6 +65,14 @@ vi.mock('@/lib/automations/admin-client', () => ({
           }
         case 'messages':
           return {
+            // Backs the isFirstInboundMessage COUNT query — a plain
+            // .select().eq().eq() chain resolving { count, error }.
+            select: () => ({
+              eq: () => ({
+                eq: () =>
+                  Promise.resolve({ count: h.state.priorCustomerMsgCount, error: null }),
+              }),
+            }),
             upsert: (row: Record<string, unknown>, options: unknown) => {
               h.state.upsertCalls.push({ row, options })
               return {
@@ -138,6 +153,7 @@ beforeEach(() => {
   h.state.configError = null
   h.state.messageUpsertResult = [{ id: 'msg-1' }]
   h.state.messageUpsertError = null
+  h.state.priorCustomerMsgCount = 0
   h.state.upsertCalls = []
   h.state.rpcCalls = []
   h.state.linkUpsertCalls = []
@@ -153,12 +169,15 @@ beforeEach(() => {
   })
   h.reopenClosedConversation.mockResolvedValue(false)
   h.dispatchInboundToAiReply.mockResolvedValue(undefined)
+  h.dispatchInboundToFlows.mockResolvedValue({ consumed: false, outcome: 'no_match' })
 })
 
 afterEach(() => {
   delete process.env.MANYCHAT_INGEST_SECRET
   delete process.env.MANYCHAT_INGEST_ACCOUNT_ID
   delete process.env.MANYCHAT_AI_AUTOREPLY_ENABLED
+  delete process.env.MANYCHAT_FLOWS_ENABLED
+  delete process.env.MANYCHAT_FLOW_CONTACT_IDS
 })
 
 describe('auth', () => {
@@ -433,21 +452,21 @@ describe('retry / duplicate delivery', () => {
   })
 })
 
-describe('never dispatches Flows / Automations / public webhooks / direct WhatsApp sends', () => {
-  it('imports dispatchInboundToAiReply (feature-flagged), but never Flows, Automations, public webhook fan-out, or any WhatsApp send path', () => {
+describe('never dispatches Automations / public webhooks / direct WhatsApp sends', () => {
+  it('imports dispatchInboundToAiReply AND dispatchInboundToFlows (both feature-flagged), but never Automations, public webhook fan-out, or any WhatsApp send path', () => {
     const source = readFileSync(join(__dirname, 'route.ts'), 'utf8')
-    // AI is intentionally wired in as of this change — locked in as a
-    // positive assertion so a future edit can't silently rip it back
-    // out along with something else.
+    // AI and Flows are BOTH intentionally wired in as of this change —
+    // locked in as positive assertions so a future edit can't silently
+    // rip either back out along with something else.
     expect(source).toMatch(/dispatchInboundToAiReply/)
     expect(source).toMatch(/@\/lib\/ai\/auto-reply/)
+    expect(source).toMatch(/dispatchInboundToFlows/)
+    expect(source).toMatch(/@\/lib\/flows\/engine/)
     // Everything else stays forbidden — this route is still a mirror
-    // for everything except AI.
-    expect(source).not.toMatch(/dispatchInboundToFlows/)
+    // for everything except Flows/AI.
     expect(source).not.toMatch(/runAutomationsForTrigger/)
     expect(source).not.toMatch(/dispatchWebhookEvent/)
     expect(source).not.toMatch(/@\/lib\/whatsapp\/meta-api/)
-    expect(source).not.toMatch(/@\/lib\/flows\//)
     expect(source).not.toMatch(/@\/lib\/automations\/engine/)
   })
 })
@@ -706,5 +725,260 @@ describe('never logs the bearer secret', () => {
   it('does not log the secret on a genuine successful insert', async () => {
     await POST(inboundRequest(VALID_PAYLOAD))
     expect(loggedText()).not.toContain(VALID_SECRET)
+  })
+})
+
+describe('Flow dispatch (MANYCHAT_FLOWS_ENABLED)', () => {
+  it('flag absent → does not schedule Flow dispatch', async () => {
+    delete process.env.MANYCHAT_FLOWS_ENABLED
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+    expect(res.status).toBe(201)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+
+  it('flag "false" → does not schedule Flow dispatch', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'false'
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(0)
+  })
+
+  it('flag any value other than the exact string "true" → does not schedule Flow dispatch', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'TRUE'
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(0)
+  })
+
+  it('flag=true + a genuine new message → schedules Flow dispatch exactly once, via after()', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+
+    expect(res.status).toBe(201)
+    // The response resolved WITHOUT the after() callback having run —
+    // proves the HTTP response never waited on the Flow engine.
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.state.afterCallbacks).toHaveLength(1)
+
+    await drainAfterCallbacks()
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+  })
+
+  it('duplicate/retry → does not schedule Flow dispatch a second time', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-flow' }))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+
+    h.state.afterCallbacks = []
+    h.state.messageUpsertResult = []
+    const res = await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-flow' }))
+
+    expect(res.status).toBe(200)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+
+  it('invalid payload → does not schedule Flow dispatch', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    const res = await POST(inboundRequest({ ...VALID_PAYLOAD, text: '' }))
+    expect(res.status).toBe(400)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+  })
+
+  it('passes server-resolved tenancy args, the deterministic manychat: message id, and isFirstInboundMessage=true for a brand-new conversation', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    h.state.priorCustomerMsgCount = 0
+    await POST(
+      inboundRequest({
+        ...VALID_PAYLOAD,
+        account_id: 'attacker-acc',
+        user_id: 'attacker-user',
+        conversation_id: 'attacker-conv',
+      }),
+    )
+    await drainAfterCallbacks()
+
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledWith({
+      accountId: 'acc-1',
+      userId: 'user-1',
+      contactId: 'contact-1',
+      conversationId: 'conv-1',
+      message: {
+        kind: 'text',
+        text: VALID_PAYLOAD.text,
+        meta_message_id: expect.stringMatching(/^manychat:/),
+      },
+      isFirstInboundMessage: true,
+    })
+  })
+
+  it('computes isFirstInboundMessage=false when the conversation already has prior customer messages', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    h.state.priorCustomerMsgCount = 3
+    await POST(inboundRequest(VALID_PAYLOAD))
+    await drainAfterCallbacks()
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledWith(
+      expect.objectContaining({ isFirstInboundMessage: false }),
+    )
+  })
+
+  it('uses the SAME deterministic manychat: id already used for the message upsert as the Flow engine idempotency key', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-flow-id' }))
+    await drainAfterCallbacks()
+    expect(h.state.upsertCalls[0].row.message_id).toBe('manychat:mc-evt-flow-id')
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: expect.objectContaining({ meta_message_id: 'manychat:mc-evt-flow-id' }),
+      }),
+    )
+  })
+})
+
+describe('Flow allowlist (MANYCHAT_FLOW_CONTACT_IDS)', () => {
+  afterEach(() => {
+    delete process.env.MANYCHAT_FLOW_CONTACT_IDS
+  })
+
+  it('enabled + allowlist contains the current contact_id → schedules Flow dispatch', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    process.env.MANYCHAT_FLOW_CONTACT_IDS = 'mc-contact-1'
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+    expect(res.status).toBe(201)
+    expect(h.state.afterCallbacks).toHaveLength(1)
+  })
+
+  it('enabled + allowlist does NOT contain the current contact_id → does not schedule Flow dispatch', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    process.env.MANYCHAT_FLOW_CONTACT_IDS = 'someone-else,another-one'
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+    // The message itself still mirrors into the Inbox fine — only the
+    // Flow dispatch is withheld.
+    expect(res.status).toBe(201)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+    expect(h.state.upsertCalls).toHaveLength(1)
+  })
+
+  it('parses whitespace/comma-separated ids correctly (trim + exact match)', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    process.env.MANYCHAT_FLOW_CONTACT_IDS = '  someone-else , mc-contact-1 ,, another '
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+  })
+
+  it('an empty allowlist string ("") falls back to normal (all eligible contacts) behavior', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    process.env.MANYCHAT_FLOW_CONTACT_IDS = ''
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+  })
+
+  it('variable absent → normal (all eligible contacts) behavior', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    delete process.env.MANYCHAT_FLOW_CONTACT_IDS
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+  })
+
+  it('the Flows allowlist and the AI allowlist are independent of each other', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    process.env.MANYCHAT_FLOW_CONTACT_IDS = 'someone-else' // excludes mc-contact-1
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS = 'mc-contact-1' // includes mc-contact-1
+
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+    expect(res.status).toBe(201)
+    expect(h.state.afterCallbacks).toHaveLength(1) // still scheduled — AI is eligible
+
+    await drainAfterCallbacks()
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled() // excluded by its own allowlist
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledTimes(1) // AI still ran
+  })
+})
+
+describe('Flow + AI dispatch ordering', () => {
+  beforeEach(() => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'true'
+    process.env.MANYCHAT_AI_AUTOREPLY_ENABLED = 'true'
+  })
+
+  it('A: MANYCHAT_FLOWS_ENABLED=false → Flow never dispatched (AI can still fire independently)', async () => {
+    process.env.MANYCHAT_FLOWS_ENABLED = 'false'
+    await POST(inboundRequest(VALID_PAYLOAD))
+    await drainAfterCallbacks()
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('B: flag true + contact outside the Flow allowlist → Flow never dispatched', async () => {
+    process.env.MANYCHAT_FLOW_CONTACT_IDS = 'someone-else'
+    await POST(inboundRequest(VALID_PAYLOAD))
+    await drainAfterCallbacks()
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    delete process.env.MANYCHAT_FLOW_CONTACT_IDS
+  })
+
+  it('C: flag true + allowed + Flow consumes the message → AI is never called', async () => {
+    h.dispatchInboundToFlows.mockResolvedValue({ consumed: true, outcome: 'started' })
+    await POST(inboundRequest(VALID_PAYLOAD))
+    await drainAfterCallbacks()
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+  })
+
+  it('D: flag true + allowed + no Flow match → AI is still evaluated', async () => {
+    h.dispatchInboundToFlows.mockResolvedValue({ consumed: false, outcome: 'no_match' })
+    await POST(inboundRequest(VALID_PAYLOAD))
+    await drainAfterCallbacks()
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('E: a duplicate/retry inbound never dispatches Flow nor AI', async () => {
+    await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-both' }))
+    expect(h.state.afterCallbacks).toHaveLength(1)
+
+    h.state.afterCallbacks = []
+    h.state.messageUpsertResult = []
+    const res = await POST(inboundRequest({ ...VALID_PAYLOAD, external_id: 'mc-evt-both' }))
+
+    expect(res.status).toBe(200)
+    expect(h.state.afterCallbacks).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+  })
+
+  it('F: a Flow that internally delays does not block the HTTP response', async () => {
+    let releaseFlow: (() => void) | null = null
+    h.dispatchInboundToFlows.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          releaseFlow = () => resolve({ consumed: true, outcome: 'completed' })
+        }),
+    )
+
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+    // The response already resolved even though the Flow's own promise
+    // (standing in for a real in-process delay node) is still pending —
+    // proves the HTTP response never waits on Flow work.
+    expect(res.status).toBe(201)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+
+    const drainPromise = drainAfterCallbacks()
+    releaseFlow!()
+    await drainPromise
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+  })
+
+  it('a Flow dispatch that throws is caught — AI still gets its chance, and the route never 500s', async () => {
+    h.dispatchInboundToFlows.mockRejectedValue(new Error('boom'))
+    const res = await POST(inboundRequest(VALID_PAYLOAD))
+    expect(res.status).toBe(201)
+    await expect(drainAfterCallbacks()).resolves.toBeUndefined()
+    expect(h.dispatchInboundToAiReply).toHaveBeenCalledTimes(1)
+  })
+
+  it('never registers two separate after() callbacks — Flow and AI always share one', async () => {
+    await POST(inboundRequest(VALID_PAYLOAD))
+    expect(h.state.afterCallbacks.length).toBeLessThanOrEqual(1)
   })
 })

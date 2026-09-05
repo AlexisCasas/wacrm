@@ -589,6 +589,8 @@ function AddNodeButton({ onAdd, t }: { onAdd: (type: NodeType) => void; t: Retur
     'collect_input',
     'condition',
     'set_tag',
+    'delay',
+    'set_contact_field',
     'handoff',
     'end',
   ];

@@ -47,6 +47,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { uploadAccountMedia, MEDIA_MAX_BYTES } from "@/lib/storage/upload-media";
+import { createClient } from "@/lib/supabase/client";
 import { slugify, type BuilderNode } from "../shared";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
 
@@ -188,6 +189,28 @@ export function NodeConfigForm({
       return (
         <SetTagForm
           cfg={cfg as SetTagCfg}
+          allNodes={allNodes}
+          currentKey={node.node_key}
+          onUpdateConfig={onUpdateConfig}
+          t={t}
+        />
+      );
+
+    case "delay":
+      return (
+        <DelayForm
+          cfg={cfg as DelayCfg}
+          allNodes={allNodes}
+          currentKey={node.node_key}
+          onUpdateConfig={onUpdateConfig}
+          t={t}
+        />
+      );
+
+    case "set_contact_field":
+      return (
+        <SetContactFieldForm
+          cfg={cfg as SetContactFieldCfg}
           allNodes={allNodes}
           currentKey={node.node_key}
           onUpdateConfig={onUpdateConfig}
@@ -860,6 +883,186 @@ function useUserTags(): UserTag[] {
     };
   }, []);
   return tags;
+}
+
+// ============================================================
+// delay
+// ============================================================
+
+interface DelayCfg {
+  seconds?: number;
+  next_node_key?: string;
+}
+
+const DELAY_MIN_SECONDS = 1;
+const DELAY_MAX_SECONDS = 30;
+
+function DelayForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: DelayCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  return (
+    <>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">
+          {t("delaySecondsLabel")}
+        </label>
+        <Input
+          type="number"
+          min={DELAY_MIN_SECONDS}
+          max={DELAY_MAX_SECONDS}
+          value={cfg.seconds ?? 5}
+          onChange={(e) => {
+            const raw = Math.round(Number(e.target.value));
+            const clamped = Number.isFinite(raw)
+              ? Math.min(DELAY_MAX_SECONDS, Math.max(DELAY_MIN_SECONDS, raw))
+              : DELAY_MIN_SECONDS;
+            onUpdateConfig({ seconds: clamped });
+          }}
+          className="bg-muted"
+        />
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          {t("delayHelp", { min: DELAY_MIN_SECONDS, max: DELAY_MAX_SECONDS })}
+        </p>
+      </div>
+      <NextNodeRow
+        value={cfg.next_node_key ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ next_node_key: v })}
+        label={t("advancesTo")}
+      />
+    </>
+  );
+}
+
+// ============================================================
+// set_contact_field
+// ============================================================
+
+interface SetContactFieldCfg {
+  field?: string;
+  value?: string;
+  next_node_key?: string;
+}
+
+interface AccountCustomField {
+  id: string;
+  field_name: string;
+}
+
+/**
+ * Loads the account's custom fields via a direct RLS-scoped Supabase
+ * query — the SAME working pattern `automation-builder.tsx` uses for
+ * its own custom-field picker (`supabase.from("custom_fields")...`).
+ * Deliberately NOT `useUserTags`'s `fetch("/api/tags")` pattern above:
+ * that endpoint doesn't exist in this repo, so `useUserTags` silently
+ * falls back to a raw-UUID input in practice. Falls back the same way
+ * here if the query returns nothing, so the node is still authorable.
+ */
+function useAccountCustomFields(): AccountCustomField[] {
+  const [fields, setFields] = useState<AccountCustomField[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data } = await supabase
+          .from("custom_fields")
+          .select("id, field_name")
+          .order("field_name");
+        if (!cancelled) setFields((data as AccountCustomField[] | null) ?? []);
+      } catch {
+        // RLS / network hiccup — caller falls back to raw input.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return fields;
+}
+
+function SetContactFieldForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: SetContactFieldCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const fields = useAccountCustomFields();
+  const currentValue = cfg.field?.startsWith("custom:") ? cfg.field : "";
+
+  return (
+    <>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">
+          {t("customFieldLabel")}
+        </label>
+        {fields.length > 0 ? (
+          <Select
+            value={currentValue}
+            onValueChange={(v) => onUpdateConfig({ field: v })}
+          >
+            <SelectTrigger className="bg-muted">
+              <SelectValue placeholder={t("customFieldPlaceholder")} />
+            </SelectTrigger>
+            <SelectContent>
+              {fields.map((f) => (
+                <SelectItem key={f.id} value={`custom:${f.id}`}>
+                  {f.field_name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Input
+            value={cfg.field ?? ""}
+            onChange={(e) => onUpdateConfig({ field: e.target.value })}
+            placeholder="custom:<uuid>"
+            className="bg-muted font-mono text-xs"
+          />
+        )}
+      </div>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">
+          {t("customFieldValueLabel")}
+        </label>
+        <Input
+          value={cfg.value ?? ""}
+          onChange={(e) => onUpdateConfig({ value: e.target.value })}
+          placeholder={t("customFieldValuePlaceholder")}
+          className="bg-muted"
+        />
+        <p className="mt-1 text-[10px] text-muted-foreground">
+          {t("customFieldValueHelp")}{" "}
+          <code className="rounded bg-muted px-1">{"{{vars.contact_name}}"}</code>.
+        </p>
+      </div>
+      <NextNodeRow
+        value={cfg.next_node_key ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ next_node_key: v })}
+        label={t("thenAdvanceTo")}
+      />
+    </>
+  );
 }
 
 // ============================================================

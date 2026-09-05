@@ -90,6 +90,8 @@ describe("defaultConfigFor", () => {
     "collect_input",
     "condition",
     "set_tag",
+    "delay",
+    "set_contact_field",
     "handoff",
     "end",
   ];
@@ -130,5 +132,23 @@ describe("defaultConfigFor", () => {
 
   it("end's default is an empty object (terminal — no config)", () => {
     expect(defaultConfigFor("end")).toEqual({});
+  });
+
+  it("delay defaults to a valid, in-range seconds value", () => {
+    const cfg = defaultConfigFor("delay") as { seconds?: number; next_node_key?: string };
+    expect(cfg.seconds).toBeGreaterThanOrEqual(1);
+    expect(cfg.seconds).toBeLessThanOrEqual(30);
+    expect(cfg.next_node_key).toBe("");
+  });
+
+  it("set_contact_field defaults to an empty (unpicked) field, not a fake custom: id", () => {
+    const cfg = defaultConfigFor("set_contact_field") as {
+      field?: string;
+      value?: string;
+      next_node_key?: string;
+    };
+    expect(cfg.field).toBe("");
+    expect(cfg.value).toBe("");
+    expect(cfg.next_node_key).toBe("");
   });
 });

@@ -6,40 +6,43 @@ import { findOrCreateContact } from '@/lib/contacts/find-or-create'
 import { findOrCreateConversation } from '@/lib/conversations/find-or-create'
 import { reopenClosedConversation } from '@/lib/conversations/reopen'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
+import { dispatchInboundToFlows } from '@/lib/flows/engine'
 
 /**
  * TEMPORARY bridge: mirrors inbound WhatsApp messages from ManyChat
  * (still the live-sending platform during this migration window) into
  * the WA CRM Inbox — contact, conversation, message, mapping, and
- * (optionally) AI auto-reply.
+ * (optionally) Flow dispatch / AI auto-reply.
  *
- * Deliberately does NOT: send to WhatsApp directly, run Flows, or run
- * Automations. This route is a read-only mirror of ManyChat's own
- * inbound handling for everything except AI — those two engines must
- * never see a message that originated here — remove this route once
+ * Deliberately does NOT run Automations for a message that originated
+ * here — this route is a read-only mirror of ManyChat's own inbound
+ * handling for everything except Flows/AI. Remove this route once
  * ManyChat is decommissioned.
  *
- * AI auto-reply IS wired up, but only when ALL of these hold:
- *   - MANYCHAT_AI_AUTOREPLY_ENABLED === 'true' (server-only flag,
- *     default/absent = false — see .env.local.example);
- *   - this delivery was a genuine new message, not a retry/duplicate
- *     (the idempotent message upsert below already tells us this);
- *   - there's non-empty text (already guaranteed by payload validation,
- *     re-checked here for clarity of the gate);
- *   - MANYCHAT_AI_AUTOREPLY_CONTACT_IDS is either unset/empty (normal
- *     production behavior — every eligible contact), or it's set and
- *     the ManyChat contact_id THIS ROUTE ALREADY VALIDATED is exactly
- *     in that list (controlled rollout — see `isManyChatAiAutoreplyAllowed`).
- * When it fires, the LLM call is deferred via `after()` (same pattern
- * the native Meta webhook uses) so ManyChat's External Request gets its
- * 201 immediately and never blocks on OpenAI/Anthropic latency.
- * `dispatchInboundToAiReply` owns its own eligibility gates (auto-reply
- * enabled for the account, no human assigned, reply cap, etc.) and
- * never throws — this route doesn't duplicate any of that logic. It's
- * called with `suppressWhenAutomationsActive: false` — unlike the
- * native Meta webhook, this route never dispatches Automations for the
- * same inbound, so an active CRM automation here is irrelevant noise,
- * not a competing responder.
+ * Flows and AI auto-reply are BOTH wired up, each behind its own
+ * server-only feature flag (+ optional allowlist), and dispatched from
+ * a SINGLE deferred `after()` callback, in a fixed order, so they can
+ * never race each other:
+ *   1. Flow dispatch first (if `MANYCHAT_FLOWS_ENABLED === 'true'` and
+ *      the contact passes `MANYCHAT_FLOW_CONTACT_IDS`, when set).
+ *   2. AI auto-reply ONLY if the Flow did not consume the message (if
+ *      `MANYCHAT_AI_AUTOREPLY_ENABLED === 'true'` and the contact
+ *      passes `MANYCHAT_AI_AUTOREPLY_CONTACT_IDS`, when set).
+ * Both flags default to 'false' (see .env.local.example) and both
+ * apply ONLY to a genuine new message — the idempotent message upsert
+ * below already filters out retries/duplicates before either flag is
+ * even consulted. Deferred via `after()` (same pattern the native Meta
+ * webhook uses) so ManyChat's External Request gets its 201
+ * immediately and never blocks on a Flow delay, an LLM call, or
+ * anything else — the persistence/idempotency boundary above stays
+ * synchronous; only this dispatch step is deferred. Both
+ * `dispatchInboundToFlows` and `dispatchInboundToAiReply` own their
+ * own eligibility gates and never throw, so this route doesn't
+ * duplicate any of that logic. AI is called with
+ * `suppressWhenAutomationsActive: false` — unlike the native Meta
+ * webhook, this route never dispatches Automations for the same
+ * inbound, so an active CRM automation here is irrelevant noise, not a
+ * competing responder.
  *
  * Auth: `Authorization: Bearer <MANYCHAT_INGEST_SECRET>`, compared with
  * `timingSafeEqual` (same pattern as GET /api/automations/cron). No
@@ -138,6 +141,24 @@ function buildMessageId(payload: ManyChatInboundPayload): string {
  */
 function isManyChatAiAutoreplyAllowed(manyChatContactId: string): boolean {
   const raw = process.env.MANYCHAT_AI_AUTOREPLY_CONTACT_IDS
+  if (!raw) return true
+  const allowlist = raw
+    .split(',')
+    .map((id) => id.trim())
+    .filter((id) => id.length > 0)
+  if (allowlist.length === 0) return true
+  return allowlist.includes(manyChatContactId)
+}
+
+/**
+ * Controlled-rollout allowlist for `MANYCHAT_FLOWS_ENABLED`. Same
+ * defensive parsing as `isManyChatAiAutoreplyAllowed` above (separate
+ * function, separate env var — each feature flag keeps its own
+ * allowlist so the AI pilot and the Flows pilot can be rolled out to
+ * different contacts independently).
+ */
+function isManyChatFlowAllowed(manyChatContactId: string): boolean {
+  const raw = process.env.MANYCHAT_FLOW_CONTACT_IDS
   if (!raw) return true
   const allowlist = raw
     .split(',')
@@ -271,6 +292,18 @@ export async function POST(request: Request) {
   const messageId = buildMessageId(payload)
   const createdAt = parseTimestamp(payload.last_interaction)
 
+  // Determine whether this is the contact's very first inbound message
+  // BEFORE we insert, so the count is accurate — same semantics and
+  // same placement as the native Meta webhook (see
+  // src/app/api/whatsapp/webhook/route.ts). Drives the Flow engine's
+  // `first_inbound_message` trigger below.
+  const { count: priorCustomerMsgCount } = await admin
+    .from('messages')
+    .select('id', { count: 'exact', head: true })
+    .eq('conversation_id', conversation.id)
+    .eq('sender_type', 'customer')
+  const isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
+
   // Idempotent insert — identical to the Meta webhook's idempotency
   // boundary (migration 037's unique index on (conversation_id,
   // message_id)). A retry with the same payload resolves to the same
@@ -312,32 +345,75 @@ export async function POST(request: Request) {
 
   await reopenClosedConversation(admin, conversation)
 
-  // AI auto-reply — gated behind the feature flag (+ optional allowlist
-  // for a controlled rollout), and registered ONLY now that we know
-  // this was a genuine new message (past the duplicate/retry
-  // early-return above). Deferred via after() so the LLM call never
-  // delays ManyChat's response. Tenancy args come entirely from
-  // server-resolved state (config.account_id/user_id, the
-  // contact/conversation just created or found) — never from the
-  // request body. `payload.contact_id` is the ManyChat contact id this
-  // route already validated — the only value the allowlist check is
-  // ever compared against.
-  if (
+  // Flow dispatch + AI auto-reply — each gated behind its own feature
+  // flag (+ optional allowlist for a controlled rollout), evaluated
+  // ONLY now that we know this was a genuine new message (past the
+  // duplicate/retry early-return above). `payload.contact_id` is the
+  // ManyChat contact id this route already validated — the only value
+  // either allowlist check is ever compared against.
+  const flowEnabled =
+    process.env.MANYCHAT_FLOWS_ENABLED === 'true' &&
+    isManyChatFlowAllowed(payload.contact_id)
+  const aiEligible =
     process.env.MANYCHAT_AI_AUTOREPLY_ENABLED === 'true' &&
-    payload.text.trim() &&
+    payload.text.trim().length > 0 &&
     isManyChatAiAutoreplyAllowed(payload.contact_id)
-  ) {
-    const aiArgs = {
-      accountId: config.account_id,
-      conversationId: conversation.id,
-      contactId: contactOutcome.contact.id,
-      configOwnerUserId: config.user_id,
-      // This route never dispatches Automations for this same inbound
-      // (unlike the native Meta webhook) — an active CRM automation
-      // here must not silence the AI.
-      suppressWhenAutomationsActive: false,
-    }
-    after(() => dispatchInboundToAiReply(aiArgs))
+
+  // A SINGLE deferred callback, sequential inside it — never two
+  // separate after() registrations — so Flow and AI can't race each
+  // other. Deferred so ManyChat's External Request gets its 201
+  // immediately: neither a Flow delay/send nor an LLM call ever blocks
+  // the response. Tenancy args come entirely from server-resolved
+  // state (config.account_id/user_id, the contact/conversation just
+  // created or found) — never from the request body.
+  if (flowEnabled || aiEligible) {
+    after(async () => {
+      let flowConsumed = false
+      if (flowEnabled) {
+        try {
+          const flowResult = await dispatchInboundToFlows({
+            accountId: config.account_id,
+            userId: config.user_id,
+            contactId: contactOutcome.contact.id,
+            conversationId: conversation.id,
+            message: {
+              kind: 'text',
+              text: payload.text,
+              // The bridge's own deterministic `manychat:...` id — same
+              // idempotency key the outer message upsert above already
+              // used, so a retry that somehow reached this callback
+              // (it can't: the outer idempotency check already returns
+              // before here) would still be a no-op for the engine's
+              // own internal dedup check too.
+              meta_message_id: messageId,
+            },
+            isFirstInboundMessage,
+          })
+          flowConsumed = flowResult.consumed
+        } catch (err) {
+          // dispatchInboundToFlows already catches internally and never
+          // throws — this is belt-and-braces so a future change there
+          // can't silently skip the AI fallback below.
+          console.error(
+            '[manychat-inbound] Flow dispatch threw:',
+            err instanceof Error ? err.message : err,
+          )
+        }
+      }
+
+      if (!flowConsumed && aiEligible) {
+        await dispatchInboundToAiReply({
+          accountId: config.account_id,
+          conversationId: conversation.id,
+          contactId: contactOutcome.contact.id,
+          configOwnerUserId: config.user_id,
+          // This route never dispatches Automations for this same inbound
+          // (unlike the native Meta webhook) — an active CRM automation
+          // here must not silence the AI.
+          suppressWhenAutomationsActive: false,
+        })
+      }
+    })
   }
 
   return NextResponse.json({ status: 'created' }, { status: 201 })
