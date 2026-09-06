@@ -19,6 +19,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslations } from 'next-intl';
+import { toast } from 'sonner';
 import {
   CircleAlert,
   Plus,
@@ -26,10 +27,14 @@ import {
   ChevronDown,
   ChevronUp,
   CornerDownRight,
+  Copy,
+  ExternalLink,
+  Loader2,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
   SelectContent,
@@ -62,6 +67,11 @@ import { NodeConfigForm } from './forms/node-config-form';
 import { NodeKeySelect } from './forms/fields';
 import { IssueLine } from './validation-panel';
 import { useFlowEditor, type BuilderState } from './flow-editor-state';
+import {
+  buildWhatsAppAdvertisingLink,
+  combineKeywords,
+  manualKeywordsFrom,
+} from '@/lib/flows/advertising-link';
 
 // ============================================================
 // Local state shape — mirrors the DB but the configs are typed
@@ -219,8 +229,17 @@ export function FlowBuilder() {
  * re-display the cleaned, rejoined form. Seeded once on mount; the
  * component unmounts/remounts when the trigger type changes, so the
  * seed stays in sync. Mirrors the automations builder's KeywordMatchConfig.
+ *
+ * IMPORTANT (feat/flow-advertising-links): this component must NEVER be
+ * given the advertising message as part of `keywords` — it can
+ * legitimately contain commas, and this field's commit always
+ * re-splits its ENTIRE displayed value on ",". The trigger panel below
+ * passes only the "manual" subset (via `manualKeywordsFrom`) and
+ * recombines the advertising message back in on every change (via
+ * `combineKeywords`) — this component stays exactly as simple as it
+ * was before that field existed.
  */
-function KeywordsInput({
+export function KeywordsInput({
   keywords,
   onChange,
   t,
@@ -258,6 +277,181 @@ function KeywordsInput({
 }
 
 // ============================================================
+// Advertising message — pre-filled text for a WhatsApp `wa.me` link
+// (feat/flow-advertising-links)
+// ============================================================
+
+/**
+ * Free-text message that, via the link built by `AdvertisingLinkSection`
+ * below, arrives pre-filled in the customer's WhatsApp composer when
+ * they tap a `wa.me` ad link. Mirrors `KeywordsInput`'s draft/commit-on-
+ * blur pattern (same file, same rationale — mid-typing edits must
+ * survive until the user is done) rather than syncing on every
+ * keystroke.
+ *
+ * Takes `manualKeywords` — the trigger panel's `manualKeywordsFrom`
+ * output, i.e. `trigger_config.keywords` with the CURRENT advertising
+ * message already excluded — never the full array. On commit it
+ * appends the new message back in whole via `combineKeywords` (never
+ * `split(',')`), so a message containing commas can never be
+ * fragmented, regardless of what the user does to the Keywords field
+ * afterwards.
+ */
+export function AdvertisingMessageInput({
+  manualKeywords,
+  advertisingMessage,
+  onChange,
+  t,
+}: {
+  manualKeywords: string[];
+  advertisingMessage: string;
+  onChange: (patch: { keywords: string[]; advertising_message: string | undefined }) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const [draft, setDraft] = useState(advertisingMessage);
+
+  function commit() {
+    const trimmed = draft.trim();
+    setDraft(trimmed);
+    // Never persist an empty string (spec §7) — absent, not "".
+    onChange({
+      keywords: combineKeywords(manualKeywords, trimmed),
+      advertising_message: trimmed || undefined,
+    });
+  }
+
+  return (
+    <div>
+      <Textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        placeholder={t('advertisingMessagePlaceholder')}
+        rows={3}
+        className="bg-muted"
+      />
+      <p className="text-muted-foreground mt-1 text-xs">{t('advertisingMessageHelp')}</p>
+    </div>
+  );
+}
+
+// ============================================================
+// WhatsApp advertising link — read-only, generated from the account's
+// connected number + the advertising message above.
+// ============================================================
+
+type PhoneLookupStatus = 'loading' | 'ready' | 'unavailable';
+
+/**
+ * Resolves the account's Meta-verified WhatsApp number for link
+ * generation. Reuses GET /api/whatsapp/config — the SAME endpoint the
+ * Settings page already calls to health-check the connection — rather
+ * than adding a second source of truth for the phone number. Only
+ * `phone_info.display_phone_number` is read; `phone_number_id` and any
+ * other technical identifier in the response are never surfaced here.
+ */
+function useWhatsAppDisplayPhoneNumber(): {
+  displayPhoneNumber: string | null;
+  status: PhoneLookupStatus;
+} {
+  const [displayPhoneNumber, setDisplayPhoneNumber] = useState<string | null>(null);
+  const [status, setStatus] = useState<PhoneLookupStatus>('loading');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch('/api/whatsapp/config', { method: 'GET' });
+        const payload = await res.json().catch(() => null);
+        if (cancelled) return;
+        const phone = payload?.connected ? payload.phone_info?.display_phone_number : null;
+        if (typeof phone === 'string' && phone.trim()) {
+          setDisplayPhoneNumber(phone);
+          setStatus('ready');
+        } else {
+          setStatus('unavailable');
+        }
+      } catch {
+        if (!cancelled) setStatus('unavailable');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { displayPhoneNumber, status };
+}
+
+export function AdvertisingLinkSection({
+  advertisingMessage,
+  t,
+}: {
+  advertisingMessage: string;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const { displayPhoneNumber, status } = useWhatsAppDisplayPhoneNumber();
+
+  const link =
+    status === 'ready'
+      ? buildWhatsAppAdvertisingLink({ displayPhoneNumber, advertisingMessage })
+      : null;
+
+  async function handleCopy() {
+    if (!link) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      toast.success(t('advertisingLinkCopied'));
+    } catch {
+      toast.error(t('advertisingLinkCopyFailed'));
+    }
+  }
+
+  let helper: string | null = null;
+  if (status === 'loading') {
+    helper = t('advertisingLinkLoading');
+  } else if (status === 'unavailable') {
+    helper = t('advertisingLinkNeedsPhone');
+  } else if (!advertisingMessage.trim()) {
+    helper = t('advertisingLinkNeedsMessage');
+  }
+
+  return (
+    <div>
+      <label className="text-muted-foreground mb-1 block text-xs">
+        {t('advertisingLinkLabel')}
+      </label>
+      {link ? (
+        <div className="flex items-center gap-2">
+          <Input value={link} readOnly className="bg-muted font-mono text-xs" />
+          <Button type="button" variant="outline" size="sm" onClick={handleCopy}>
+            <Copy className="h-3.5 w-3.5" />
+            {t('advertisingLinkCopy')}
+          </Button>
+          {/* Direct anchor styled with buttonVariants — the wacrm Button
+              is the Base UI ButtonPrimitive and has no asChild slot
+              (see invite-member-dialog.tsx for the same pattern). */}
+          <a
+            href={link}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={buttonVariants({ variant: 'ghost', size: 'sm' })}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            {t('advertisingLinkOpen')}
+          </a>
+        </div>
+      ) : (
+        <div className="border-border bg-muted/40 text-muted-foreground flex items-center gap-2 rounded-md border border-dashed px-3 py-2 text-xs">
+          {status === 'loading' && <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" />}
+          {helper}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // Trigger panel
 // ============================================================
 
@@ -272,6 +466,18 @@ function TriggerPanel({
   triggerIssues: ValidationIssue[];
   t: ReturnType<typeof useTranslations>;
 }) {
+  const fullKeywords = Array.isArray(state.trigger_config.keywords)
+    ? (state.trigger_config.keywords as string[])
+    : [];
+  const advertisingMessage =
+    typeof state.trigger_config.advertising_message === 'string'
+      ? state.trigger_config.advertising_message
+      : '';
+  // KeywordsInput is shown (and re-parses) ONLY this subset — the
+  // advertising message, which can contain commas, is never part of
+  // what it displays or splits. See manualKeywordsFrom's doc comment.
+  const manualKeywords = manualKeywordsFrom(fullKeywords, advertisingMessage);
+
   return (
     <section className="border-border bg-card rounded-lg border p-4">
       <h2 className="text-foreground mb-3 text-sm font-semibold">{t('triggerTitle')}</h2>
@@ -313,15 +519,14 @@ function TriggerPanel({
               {t('keywordsLabel')}
             </label>
             <KeywordsInput
-              keywords={
-                Array.isArray(state.trigger_config.keywords)
-                  ? (state.trigger_config.keywords as string[])
-                  : []
-              }
-              onChange={(keywords) =>
+              keywords={manualKeywords}
+              onChange={(nextManualKeywords) =>
                 setState((s) => ({
                   ...s,
-                  trigger_config: { ...s.trigger_config, keywords },
+                  trigger_config: {
+                    ...s.trigger_config,
+                    keywords: combineKeywords(nextManualKeywords, advertisingMessage),
+                  },
                 }))
               }
               t={t}
@@ -329,6 +534,27 @@ function TriggerPanel({
           </div>
         )}
       </div>
+      {state.trigger_type === 'keyword' && (
+        <div className="mt-3 flex flex-col gap-3">
+          <div>
+            <label className="text-muted-foreground mb-1 block text-xs">
+              {t('advertisingMessageLabel')}
+            </label>
+            <AdvertisingMessageInput
+              manualKeywords={manualKeywords}
+              advertisingMessage={advertisingMessage}
+              onChange={({ keywords, advertising_message }) =>
+                setState((s) => ({
+                  ...s,
+                  trigger_config: { ...s.trigger_config, keywords, advertising_message },
+                }))
+              }
+              t={t}
+            />
+          </div>
+          <AdvertisingLinkSection advertisingMessage={advertisingMessage} t={t} />
+        </div>
+      )}
       {triggerIssues.length > 0 && (
         <div className="mt-3 flex flex-col gap-1">
           {triggerIssues.map((i, ix) => (
