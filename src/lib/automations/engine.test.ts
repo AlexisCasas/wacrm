@@ -13,6 +13,9 @@ const h = vi.hoisted(() => ({
     upsertCalls: [] as { table: string; payload: unknown }[],
     logInserts: [] as Record<string, unknown>[],
     logUpdates: [] as Record<string, unknown>[],
+    pendingInserts: [] as Record<string, unknown>[],
+    contactTagDeletes: [] as { contactId: unknown; tagId: unknown }[],
+    conversationLookup: null as { id: string } | null,
   },
 }));
 
@@ -45,7 +48,37 @@ vi.mock("./admin-client", () => {
       }
       return { data: null, error: null };
     }
-    if (table === "automations") return { data: state.automations, error: null };
+    if (table === "automations") {
+      // resumePendingExecution looks up ONE automation by id (`.eq('id', ...).single()`);
+      // runAutomationsForTrigger's dispatch fetch filters by account/trigger/is_active
+      // instead and expects the whole matching array. Distinguish by the presence
+      // of an `id` filter so both call sites share this one resolver.
+      const idFilter = ops.filters.find((f) => f[0] === "eq" && f[1] === "id");
+      if (idFilter) {
+        const found = state.automations.find((a) => a.id === idFilter[2]) ?? null;
+        return { data: found, error: null };
+      }
+      return { data: state.automations, error: null };
+    }
+    if (table === "automation_pending_executions") {
+      if (type === "insert") {
+        state.pendingInserts.push(ops.payload as Record<string, unknown>);
+        return { data: null, error: null };
+      }
+      return { data: null, error: null };
+    }
+    if (table === "contact_tags") {
+      if (type === "delete") {
+        const contactId = ops.filters.find((f) => f[1] === "contact_id")?.[2];
+        const tagId = ops.filters.find((f) => f[1] === "tag_id")?.[2];
+        state.contactTagDeletes.push({ contactId, tagId });
+        return { data: null, error: null };
+      }
+      return { data: null, error: null };
+    }
+    if (table === "conversations") {
+      return { data: state.conversationLookup, error: null };
+    }
     if (table === "automation_logs") {
       if (type === "insert") {
         state.logInserts.push(ops.payload as Record<string, unknown>);
@@ -102,9 +135,11 @@ vi.mock("./meta-send", () => ({
   engineSendText: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
   engineSendTemplate: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
   engineSendInteractive: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
+  engineSendMedia: vi.fn(async () => ({ whatsapp_message_id: "m1" })),
 }));
 
-import { runAutomationsForTrigger, triggerMatches } from "./engine";
+import { runAutomationsForTrigger, triggerMatches, resumePendingExecution } from "./engine";
+import { engineSendMedia as mockEngineSendMedia } from "./meta-send";
 import type { Automation, KeywordMatchTriggerConfig } from "@/types";
 
 const ACCOUNT = "acct-1";
@@ -119,6 +154,10 @@ beforeEach(() => {
   h.state.upsertCalls = [];
   h.state.logInserts = [];
   h.state.logUpdates = [];
+  h.state.pendingInserts = [];
+  h.state.contactTagDeletes = [];
+  h.state.conversationLookup = null;
+  vi.mocked(mockEngineSendMedia).mockClear();
 });
 
 describe("runAutomationsForTrigger — tenant isolation", () => {
@@ -548,5 +587,241 @@ describe("triggerMatches — keyword_match", () => {
   it("ignores empty keywords and empty messages in `word` mode", () => {
     expect(on(automation({ keywords: [""], match_type: "word" }), "anything")).toBe(false);
     expect(on(automation({ keywords: ["hi"], match_type: "word" }), "")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// feat/automation-durable-followup-media — durable `wait`, the remove_tag-
+// before-wait follow-up pattern, and the new `send_media` step. These reuse
+// the SAME `automation_pending_executions` queue the `wait` step has always
+// written to; nothing here introduces a second scheduler.
+// ---------------------------------------------------------------------------
+
+function waitStep(position: number, amount: number, unit: "minutes" | "hours" | "days") {
+  return {
+    id: `wait-${position}`,
+    automation_id: "a1",
+    step_type: "wait",
+    position,
+    parent_step_id: null,
+    step_config: { amount, unit },
+  };
+}
+
+function removeTagStep(position: number, tagId: string) {
+  return {
+    id: `remove-${position}`,
+    automation_id: "a1",
+    step_type: "remove_tag",
+    position,
+    parent_step_id: null,
+    step_config: { tag_id: tagId },
+  };
+}
+
+function sendMediaStep(position: number, config: Record<string, unknown>) {
+  return {
+    id: `media-${position}`,
+    automation_id: "a1",
+    step_type: "send_media",
+    position,
+    parent_step_id: null,
+    step_config: config,
+  };
+}
+
+function tagAddedAutomation() {
+  return {
+    id: "a1",
+    account_id: ACCOUNT,
+    user_id: "u1",
+    trigger_type: "tag_added",
+    trigger_config: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    is_active: true,
+  };
+}
+
+describe("wait — durable follow-up scheduling (spec §11.A)", () => {
+  it("enqueues a pending row with run_at ≈ now + the configured duration", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [waitStep(0, 10, "hours")];
+
+    const before = Date.now();
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+    const after = Date.now();
+
+    expect(h.state.pendingInserts).toHaveLength(1);
+    const row = h.state.pendingInserts[0];
+    expect(row).toMatchObject({
+      automation_id: "a1",
+      account_id: ACCOUNT,
+      contact_id: "c1",
+      status: "pending",
+      next_step_position: 1,
+    });
+    const runAt = new Date(row.run_at as string).getTime();
+    const tenHoursMs = 10 * 60 * 60 * 1000;
+    expect(runAt).toBeGreaterThanOrEqual(before + tenHoursMs);
+    expect(runAt).toBeLessThanOrEqual(after + tenHoursMs + 1000);
+  });
+
+  it("never touches flow_runs, ai_autoreply_disabled, or a conversation's assigned_agent_id (spec §11 — no cancellation source)", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [waitStep(0, 10, "hours")];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(h.state.fromCalls).not.toContain("flow_runs");
+    expect(h.state.fromCalls).not.toContain("ai_autoreply_disabled");
+    // The wait branch returns immediately after the insert — it never
+    // even reads `conversations` (where assigned_agent_id lives), let
+    // alone writes to it.
+    expect(h.state.fromCalls).not.toContain("conversations");
+  });
+});
+
+describe("remove_tag before wait — the follow-up rule's own pattern (spec §6/§11.B)", () => {
+  it("removing the tag does not delete or otherwise touch the pending execution it created", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [tagAddedAutomation()];
+    // Mirrors the real rule: remove_tag runs first (so the tag can retrigger
+    // this automation later), THEN wait enqueues the durable follow-up.
+    h.state.steps = [
+      removeTagStep(0, "PROGRAMAR_PRUEBAS_ENVIO"),
+      waitStep(1, 10, "hours"),
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    // The tag really was removed...
+    expect(h.state.contactTagDeletes).toEqual([
+      { contactId: "c1", tagId: "PROGRAMAR_PRUEBAS_ENVIO" },
+    ]);
+    // ...and the wait step that ran right after it still enqueued its pending
+    // row, resuming from the position AFTER wait (index 2).
+    expect(h.state.pendingInserts).toHaveLength(1);
+    expect(h.state.pendingInserts[0]).toMatchObject({
+      next_step_position: 2,
+      status: "pending",
+    });
+    // remove_tag's implementation (src/lib/automations/engine.ts's
+    // 'remove_tag' case) only ever issues a delete against contact_tags —
+    // it has no reference to automation_pending_executions at all, so
+    // there is no code path by which running it could cancel a pending
+    // wait row (this one, or any other).
+  });
+});
+
+describe("resumePendingExecution — processes a due row (spec §11.C)", () => {
+  it("resumes from next_step_position and depends only on the pending row's own fields", async () => {
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [
+      // Position 0 would have been "wait" in the real automation; the
+      // pending row already recorded next_step_position=1, so only this
+      // step is fetched (`.gte('position', 1)`).
+      {
+        id: "s-resumed",
+        automation_id: "a1",
+        step_type: "send_message",
+        position: 1,
+        parent_step_id: null,
+        step_config: { text: "Gracias por tu compra" },
+      },
+    ];
+
+    await resumePendingExecution({
+      id: "pending-1",
+      automation_id: "a1",
+      user_id: "u1",
+      account_id: ACCOUNT,
+      contact_id: "c1",
+      log_id: "log-1",
+      parent_step_id: null,
+      branch: null,
+      next_step_position: 1,
+      // conversation_id pre-supplied so the resumed step never needs to
+      // query `conversations` — keeps this test focused on the resume
+      // mechanics rather than conversation lookup.
+      context: { conversation_id: "conv-1" },
+    });
+
+    expect(h.state.fromCalls).toContain("automation_steps");
+    // No ownership re-check against `contacts`, no `flow_runs`, no
+    // `ai_autoreply_disabled` — a resumed wait is driven purely by
+    // run_at/status on its own row, never by inbox/agent/AI state.
+    expect(h.state.fromCalls).not.toContain("flow_runs");
+    expect(h.state.fromCalls).not.toContain("ai_autoreply_disabled");
+  });
+});
+
+describe("send_media step — reuses the Flows engineSendMedia (spec §11.F/§11.G)", () => {
+  it("maps step_config onto engineSendMedia's args, including the ManyChat bridge field", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.conversationLookup = { id: "conv-1" };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [
+      sendMediaStep(0, {
+        media_type: "image",
+        media_url: "https://cdn.example.com/combo.png",
+        caption: "Combo XTD",
+        manychat_bridge_flow_ns: "content2026abc123",
+      }),
+    ];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(mockEngineSendMedia).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountId: ACCOUNT,
+        contactId: "c1",
+        kind: "image",
+        link: "https://cdn.example.com/combo.png",
+        caption: "Combo XTD",
+        manychatBridgeFlowNs: "content2026abc123",
+      }),
+    );
+  });
+
+  it("throws before sending when media_url is missing (tenant/config guard, spec §11.I)", async () => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [sendMediaStep(0, { media_type: "image", media_url: "" })];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(mockEngineSendMedia).not.toHaveBeenCalled();
+    expect(h.state.logUpdates).toContainEqual(
+      expect.objectContaining({
+        status: "failed",
+        error_message: "send_media needs media_url",
+      }),
+    );
   });
 });

@@ -1,9 +1,12 @@
-import { sendTextMessage, sendTemplateMessage } from '@/lib/whatsapp/meta-api'
+import { sendTemplateMessage } from '@/lib/whatsapp/meta-api'
 import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive'
 import {
+  engineSendText as flowsEngineSendText,
+  engineSendMedia as flowsEngineSendMedia,
   engineSendInteractiveButtons,
   engineSendInteractiveList,
 } from '@/lib/flows/meta-send'
+import type { MediaKind } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import {
   sanitizePhoneForMeta,
@@ -26,6 +29,16 @@ import { supabaseAdmin } from './admin-client'
 // on hand. Kept here (rather than refactoring the user-facing send
 // route) to avoid risk to the working manual-send path — they can
 // converge in a later refactor.
+//
+// `send_message` (plain text) is now a thin delegate to
+// `@/lib/flows/meta-send`'s `engineSendText` — see that module for
+// why: it already resolves `WHATSAPP_OUTBOUND_TRANSPORT` (Meta vs the
+// temporary ManyChat bridge) and both engines want byte-identical
+// persistence (sender_type='bot', conversation last_message_* update).
+// Reusing it here means Automations and Flows can never drift on that
+// logic. `send_template` / interactive sends have no ManyChat
+// equivalent (ManyChat's Public API has no template-send primitive to
+// bridge to), so `sendViaMeta` below stays Meta-only, template-scoped.
 // ------------------------------------------------------------
 
 interface SendTextArgs {
@@ -52,14 +65,60 @@ interface SendTemplateArgs {
   params?: string[]
 }
 
+/**
+ * Transport-aware: Meta by default, or the temporary ManyChat bridge
+ * when `WHATSAPP_OUTBOUND_TRANSPORT=manychat` resolves this account —
+ * see `resolveOutboundTransport` inside `@/lib/flows/meta-send`'s
+ * `engineSendText`, which owns 100% of that decision and the resulting
+ * persistence. Automations never re-implements or re-checks transport.
+ */
 export async function engineSendText(args: SendTextArgs): Promise<{ whatsapp_message_id: string }> {
-  return sendViaMeta({ ...args, kind: 'text' })
+  return flowsEngineSendText(args)
 }
 
 export async function engineSendTemplate(
   args: SendTemplateArgs,
 ): Promise<{ whatsapp_message_id: string }> {
-  return sendViaMeta({ ...args, kind: 'template' })
+  return sendTemplateViaMeta(args)
+}
+
+interface SendMediaArgs {
+  accountId: string
+  userId: string
+  conversationId: string
+  contactId: string
+  kind: MediaKind
+  link: string
+  caption?: string
+  filename?: string
+  /** Temporary ManyChat coexistence bridge — see `send_media`'s
+   *  `manychat_bridge_flow_ns` config field. */
+  manychatBridgeFlowNs?: string
+}
+
+/**
+ * Transport-aware, same delegation pattern as `engineSendText` above:
+ * Meta by default, or the temporary ManyChat media bridge
+ * (`manychat_bridge_flow_ns`) when this account is bridged. Fails
+ * closed under ManyChat transport with no bridge configured — never
+ * silently falls back to Meta. All of that logic lives once in
+ * `@/lib/flows/meta-send`'s `engineSendMedia`; Automations' `send_media`
+ * step reuses it rather than re-implementing the bridge.
+ */
+export async function engineSendMedia(
+  args: SendMediaArgs,
+): Promise<{ whatsapp_message_id: string }> {
+  return flowsEngineSendMedia({
+    accountId: args.accountId,
+    userId: args.userId,
+    conversationId: args.conversationId,
+    contactId: args.contactId,
+    kind: args.kind,
+    link: args.link,
+    caption: args.caption,
+    filename: args.filename,
+    manychatBridgeFlowNs: args.manychatBridgeFlowNs,
+  })
 }
 
 interface SendInteractiveArgs {
@@ -105,11 +164,15 @@ export async function engineSendInteractive(
   })
 }
 
-type SendInput =
-  | (SendTextArgs & { kind: 'text' })
-  | (SendTemplateArgs & { kind: 'template' })
-
-async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: string }> {
+/**
+ * Meta-only, template-scoped. Plain text no longer flows through here —
+ * see `engineSendText` above — so this stays a direct sender with no
+ * transport branch of its own (ManyChat's Public API has no template
+ * send to bridge to).
+ */
+async function sendTemplateViaMeta(
+  input: SendTemplateArgs,
+): Promise<{ whatsapp_message_id: string }> {
   const db = supabaseAdmin()
 
   // Scope the contact + config lookups by account_id, not user_id.
@@ -150,35 +213,18 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
   // the Meta payload (the wire shape is deliberately unchanged here).
   // A missing row is fine: the send still goes out, we just can't
   // reconstruct the text the customer saw.
-  const templateRow =
-    input.kind === 'template'
-      ? (
-          await resolveTemplateRow(
-            db,
-            input.accountId,
-            input.templateName,
-            input.language,
-          )
-        ).row
-      : null
+  const templateRow = (
+    await resolveTemplateRow(db, input.accountId, input.templateName, input.language)
+  ).row
 
   const attempt = async (phone: string): Promise<string> => {
-    if (input.kind === 'template') {
-      const r = await sendTemplateMessage({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
-        to: phone,
-        templateName: input.templateName,
-        language: input.language,
-        params: input.params,
-      })
-      return r.messageId
-    }
-    const r = await sendTextMessage({
+    const r = await sendTemplateMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
       to: phone,
-      text: input.text,
+      templateName: input.templateName,
+      language: input.language,
+      params: input.params,
     })
     return r.messageId
   }
@@ -211,22 +257,18 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
   // Persist the sent message so it appears in the inbox with a real
   // Meta message id. sender_type='bot' distinguishes automation sends
   // from manual agent sends.
-  const content_type = input.kind === 'template' ? 'template' : 'text'
+  //
   // Templates persist the substituted body, same as the manual and
   // public-API send paths. This was unconditionally null, so every
   // automation template send rendered as an empty bubble (issue #483).
-  const content_text =
-    input.kind === 'text'
-      ? input.text
-      : templateContentText(templateRow, input.params ?? [])
-  const template_name = input.kind === 'template' ? input.templateName : null
+  const content_text = templateContentText(templateRow, input.params ?? [])
 
   const { error: msgErr } = await db.from('messages').insert({
     conversation_id: input.conversationId,
     sender_type: 'bot',
-    content_type,
+    content_type: 'template',
     content_text,
-    template_name,
+    template_name: input.templateName,
     message_id: waMessageId,
     status: 'sent',
   })
@@ -239,10 +281,7 @@ async function sendViaMeta(input: SendInput): Promise<{ whatsapp_message_id: str
   await db
     .from('conversations')
     .update({
-      last_message_text:
-        input.kind === 'template'
-          ? (content_text ?? `[template:${input.templateName}]`)
-          : input.text,
+      last_message_text: content_text ?? `[template:${input.templateName}]`,
       last_message_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })

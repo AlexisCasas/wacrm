@@ -480,7 +480,8 @@ export type AutomationStepType =
   | 'wait'
   | 'condition'
   | 'send_webhook'
-  | 'close_conversation';
+  | 'close_conversation'
+  | 'send_media';
 
 export type AutomationLogStatus = 'success' | 'partial' | 'failed';
 
@@ -593,6 +594,23 @@ export interface SendWebhookStepConfig {
   body_template?: string;
 }
 
+/**
+ * Mirrors Flows' `SendMediaNodeConfig` (`@/lib/flows/types`) minus the
+ * node-graph-only `next_node_key`. `media_url` is the permanent
+ * canonical asset reference (used directly once an account is on Meta
+ * transport); `manychat_bridge_flow_ns` is the TEMPORARY ManyChat
+ * coexistence bridge (PENDIENTE 02.1B) and is ignored under Meta
+ * transport.
+ */
+export interface SendMediaStepConfig {
+  media_type: 'image' | 'video' | 'document';
+  media_url: string;
+  caption?: string;
+  /** Document-only; ignored by Meta for image/video. */
+  filename?: string;
+  manychat_bridge_flow_ns?: string;
+}
+
 export type AutomationStepConfig =
   | SendMessageStepConfig
   | SendButtonsStepConfig
@@ -605,6 +623,7 @@ export type AutomationStepConfig =
   | WaitStepConfig
   | ConditionStepConfig
   | SendWebhookStepConfig
+  | SendMediaStepConfig
   | Record<string, never>
   | Record<string, unknown>;
 

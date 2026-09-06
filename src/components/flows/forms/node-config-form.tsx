@@ -24,16 +24,8 @@
  * renders the advanced rows.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Loader2,
-  Paperclip,
-  Plus,
-  Trash2,
-  Upload,
-  X,
-} from "lucide-react";
-import { toast } from "sonner";
+import { useEffect, useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { Button } from "@/components/ui/button";
@@ -46,8 +38,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { uploadAccountMedia, MEDIA_MAX_BYTES } from "@/lib/storage/upload-media";
 import { createClient } from "@/lib/supabase/client";
+import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker";
 import { slugify, type BuilderNode } from "../shared";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
 
@@ -1070,27 +1062,9 @@ function SetContactFieldForm({
 // send_media
 // ============================================================
 
-interface SendMediaCfg {
-  media_type?: "image" | "video" | "document";
-  media_url?: string;
-  caption?: string;
-  filename?: string;
-  manychat_bridge_flow_ns?: string;
+interface SendMediaCfg extends MediaPickerValue {
   next_node_key?: string;
 }
-
-// Mirrors the bucket's allowed_mime_types from migration 016. Kept in
-// sync with the storage policy so the picker rejects unsupported files
-// before they hit the network rather than failing with a confusing
-// Supabase RLS / mime-type error.
-const MEDIA_ACCEPT: Record<NonNullable<SendMediaCfg["media_type"]>, string> = {
-  image: "image/png,image/jpeg,image/webp",
-  video: "video/mp4,video/3gpp",
-  document:
-    "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain",
-};
-
-const FLOW_MEDIA_BUCKET = "flow-media";
 
 function SendMediaForm({
   cfg,
@@ -1105,172 +1079,27 @@ function SendMediaForm({
   onUpdateConfig: (patch: Record<string, unknown>) => void;
   t: ReturnType<typeof useTranslations>;
 }) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [uploading, setUploading] = useState(false);
-
-  const mediaType = cfg.media_type ?? "image";
-  const isDocument = mediaType === "document";
-  const displayName =
-    cfg.filename ||
-    (cfg.media_url ? cfg.media_url.split("/").pop() ?? "" : "");
-
-  const handleFile = useCallback(
-    async (file: File) => {
-      if (file.size > MEDIA_MAX_BYTES) {
-        toast.error(
-          `File is ${(file.size / 1024 / 1024).toFixed(1)} MB — limit is 16 MB.`,
-        );
-        return;
-      }
-      setUploading(true);
-      try {
-        // Account-scoped upload (path `account-<id>/...`) — see
-        // uploadAccountMedia + migration 020's flow-media RLS policy.
-        const { publicUrl } = await uploadAccountMedia(FLOW_MEDIA_BUCKET, file);
-        // Patch all fields in one call so the form doesn't re-render
-        // with a half-uploaded state.
-        onUpdateConfig({
-          media_url: publicUrl,
-          filename: file.name,
-        });
-        toast.success("File uploaded.");
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Upload failed.";
-        toast.error(msg);
-      } finally {
-        setUploading(false);
-      }
-    },
-    [onUpdateConfig],
-  );
-
-  const handleClear = () => {
-    onUpdateConfig({ media_url: "", filename: "" });
-  };
-
   return (
     <>
-      <div>
-        <label className="mb-1 block text-xs text-muted-foreground">{t("mediaTypeLabel")}</label>
-        <Select
-          value={mediaType}
-          onValueChange={(v) => {
-            // Changing type clears the existing file — the bucket
-            // accepts different MIME sets per type and a previously
-            // uploaded PDF can't be sent as an image.
-            onUpdateConfig({
-              media_type: v as NonNullable<SendMediaCfg["media_type"]>,
-              media_url: "",
-              filename: "",
-            });
-          }}
-        >
-          <SelectTrigger className="bg-muted">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="image">{t("imageLabel")}</SelectItem>
-            <SelectItem value="video">{t("videoLabel")}</SelectItem>
-            <SelectItem value="document">
-              {t("documentLabel")}
-            </SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div>
-        <label className="mb-1 block text-xs text-muted-foreground">{t("fileLabel")}</label>
-        {cfg.media_url ? (
-          <div className="flex items-center gap-2 rounded-md border border-border bg-muted px-3 py-2 text-xs">
-            <Paperclip className="h-3.5 w-3.5 shrink-0 text-cyan-400" />
-            <a
-              href={cfg.media_url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="min-w-0 flex-1 truncate text-foreground hover:text-cyan-300"
-              title={displayName || cfg.media_url}
-            >
-              {displayName || cfg.media_url}
-            </a>
-            <button
-              type="button"
-              onClick={handleClear}
-              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-              aria-label={t("removeFile")}
-              disabled={uploading}
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={uploading}
-            className="flex w-full items-center justify-center gap-2 rounded-md border border-dashed border-border bg-card px-3 py-4 text-xs text-muted-foreground transition-colors hover:border-border hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {uploading ? (
-              <>
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                {t("uploading")}
-              </>
-            ) : (
-              <>
-                <Upload className="h-3.5 w-3.5" />
-                {t("clickToUpload")}
-              </>
-            )}
-          </button>
-        )}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept={MEDIA_ACCEPT[mediaType]}
-          className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) void handleFile(f);
-            // Reset so picking the same file twice still fires onChange.
-            e.target.value = "";
-          }}
-        />
-      </div>
-
-      <TextRow
-        label={t("captionLabel")}
-        value={cfg.caption ?? ""}
-        onChange={(v) => onUpdateConfig({ caption: v })}
-        rows={2}
+      <MediaPicker
+        value={cfg}
+        onChange={onUpdateConfig}
+        labels={{
+          mediaTypeLabel: t("mediaTypeLabel"),
+          imageLabel: t("imageLabel"),
+          videoLabel: t("videoLabel"),
+          documentLabel: t("documentLabel"),
+          fileLabel: t("fileLabel"),
+          removeFile: t("removeFile"),
+          uploading: t("uploading"),
+          clickToUpload: t("clickToUpload"),
+          captionLabel: t("captionLabel"),
+          filenameLabel: t("filenameLabel"),
+          filenamePlaceholder: t("filenamePlaceholder"),
+          manychatBridgeFlowNsLabel: t("manychatBridgeFlowNsLabel"),
+          manychatBridgeFlowNsHelp: t("manychatBridgeFlowNsHelp"),
+        }}
       />
-
-      {isDocument && (
-        <div>
-          <label className="mb-1 block text-xs text-muted-foreground">
-            {t("filenameLabel")}
-          </label>
-          <Input
-            value={cfg.filename ?? ""}
-            onChange={(e) => onUpdateConfig({ filename: e.target.value })}
-            placeholder={t("filenamePlaceholder")}
-            className="bg-muted text-xs"
-          />
-        </div>
-      )}
-
-      <div>
-        <label className="mb-1 block text-xs text-muted-foreground">
-          {t("manychatBridgeFlowNsLabel")}
-        </label>
-        <Input
-          value={cfg.manychat_bridge_flow_ns ?? ""}
-          onChange={(e) => onUpdateConfig({ manychat_bridge_flow_ns: e.target.value })}
-          placeholder="content2026..."
-          className="bg-muted font-mono text-xs"
-        />
-        <p className="mt-1 text-[10px] text-muted-foreground">
-          {t("manychatBridgeFlowNsHelp")}
-        </p>
-      </div>
 
       <NextNodeRow
         value={cfg.next_node_key ?? ""}

@@ -1,5 +1,6 @@
 import type { AutomationTriggerType } from '@/types'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
+import { INTERACTIVE_LIMITS } from '@/lib/whatsapp/meta-api'
 
 // ------------------------------------------------------------
 // Pre-flight config validation for automations about to be activated.
@@ -146,6 +147,44 @@ function validateOne(step: StepLike, path: string, issues: ValidationIssue[]): v
     case 'close_conversation':
       // No config required.
       break
+    case 'send_media': {
+      if (!['image', 'video', 'document'].includes(String(c.media_type))) {
+        issues.push({
+          path: `${path}.media_type`,
+          message: 'media type must be image, video, or document',
+        })
+      }
+      if (!nonEmpty(c.media_url)) {
+        issues.push({ path: `${path}.media_url`, message: 'media file is required' })
+      }
+      if (
+        typeof c.caption === 'string' &&
+        c.caption.length > INTERACTIVE_LIMITS.bodyMaxLength
+      ) {
+        issues.push({
+          path: `${path}.caption`,
+          message: `caption exceeds ${INTERACTIVE_LIMITS.bodyMaxLength} chars (WhatsApp limit)`,
+        })
+      }
+      // TEMPORARY ManyChat coexistence bridge (PENDIENTE 02.1B) — NOT
+      // required globally (a Meta-native automation has no reason to
+      // carry one). Whether it's actually needed is a runtime,
+      // fail-closed decision in engineSendMedia that depends on the
+      // account's live outbound transport — this save-time validator
+      // only checks format, and only when a value was entered. Mirrors
+      // the identical check in flows/validate.ts.
+      if (
+        c.manychat_bridge_flow_ns !== undefined &&
+        c.manychat_bridge_flow_ns !== '' &&
+        !/^content[A-Za-z0-9_]+$/.test(String(c.manychat_bridge_flow_ns))
+      ) {
+        issues.push({
+          path: `${path}.manychat_bridge_flow_ns`,
+          message: `ManyChat bridge flow ns must look like "content..." — got "${c.manychat_bridge_flow_ns}"`,
+        })
+      }
+      break
+    }
     default:
       issues.push({ path, message: `unknown step type: ${step.step_type}` })
   }
