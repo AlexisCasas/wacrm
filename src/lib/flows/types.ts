@@ -272,6 +272,15 @@ export interface KeywordTriggerConfig {
   keywords: string[];
   match_type?: "exact" | "contains";
   case_sensitive?: boolean;
+  /**
+   * TEMPORARY UX metadata (feat/flow-advertising-links) — the message
+   * pre-filled by a `wa.me` advertising link. Purely descriptive: the
+   * engine's keyword matcher never reads this field, only `keywords`
+   * (which the builder keeps in sync with this value — see
+   * `syncAdvertisingMessageIntoKeywords` in `@/lib/flows/advertising-link`).
+   * Optional; absent on every Flow saved before this feature shipped.
+   */
+  advertising_message?: string;
 }
 
 // No knobs in v1 — the trigger has a single semantic. Kept as a type
