@@ -72,6 +72,30 @@ describe('sendManyChatText — request contract', () => {
     const result = await sendManyChatText({ apiKey: API_KEY, manyChatContactId: '123', text: 'hi' })
     expect(result.raw).toEqual({ status: 'success' })
   })
+
+  // fix/flows-multiline-message-editor (test E): a multiline
+  // send_message body must reach ManyChat's wire payload byte-for-byte
+  // — no \n → <br> substitution, no stripping, no collapsing.
+  it('sends a multiline text value exactly as-is — no newline transformation', async () => {
+    await sendManyChatText({
+      apiKey: API_KEY,
+      manyChatContactId: '123',
+      text: 'Linea 1\nLinea 2',
+    })
+    const [, init] = fetchMock.mock.calls[0]
+    const body = JSON.parse(init.body as string)
+    expect(body).toEqual({
+      subscriber_id: 123,
+      data: {
+        version: 'v2',
+        content: {
+          type: 'whatsapp',
+          messages: [{ type: 'text', text: 'Linea 1\nLinea 2' }],
+        },
+      },
+    })
+    expect(body.data.content.messages[0].text).not.toContain('<br')
+  })
 })
 
 describe('sendManyChatText — subscriber_id validation (fails BEFORE fetch)', () => {
