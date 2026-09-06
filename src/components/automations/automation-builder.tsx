@@ -33,6 +33,7 @@ import {
   ArrowUp,
   MousePointerClick,
   List,
+  Paperclip,
 } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -61,6 +62,7 @@ import {
   blankListPayload,
 } from "@/components/interactive/interactive-builder"
 import { interactivePayloadPreviewText } from "@/lib/whatsapp/interactive"
+import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker"
 import { createClient } from "@/lib/supabase/client"
 import {
   childPath,
@@ -120,10 +122,12 @@ const STEP_META: Record<AutomationStepType, StepMeta> = {
   condition: { label: "condition", icon: GitBranch, border: "border-l-amber-500" },
   send_webhook: { label: "send_webhook", icon: Webhook, border: "border-l-primary" },
   close_conversation: { label: "close_conversation", icon: CircleSlash, border: "border-l-primary" },
+  send_media: { label: "send_media", icon: Paperclip, border: "border-l-primary" },
 }
 
 const ADDABLE_STEPS: AutomationStepType[] = [
   "send_message",
+  "send_media",
   "send_buttons",
   "send_list",
   "send_template",
@@ -180,6 +184,8 @@ function blankConfig(type: AutomationStepType): Record<string, unknown> {
       return toStepConfig(blankListPayload())
     case "send_template":
       return { template_name: "", language: "en_US" }
+    case "send_media":
+      return { media_type: "image", media_url: "" }
     case "add_tag":
     case "remove_tag":
       return { tag_id: "" }
@@ -1335,6 +1341,28 @@ function StepEditor({
           t={t}
         />
       )
+    case "send_media":
+      return (
+        <MediaPicker
+          value={cfg as MediaPickerValue}
+          onChange={(patch) => set(patch)}
+          labels={{
+            mediaTypeLabel: t("config.mediaTypeLabel"),
+            imageLabel: t("config.imageLabel"),
+            videoLabel: t("config.videoLabel"),
+            documentLabel: t("config.documentLabel"),
+            fileLabel: t("config.fileLabel"),
+            removeFile: t("config.removeFile"),
+            uploading: t("config.uploading"),
+            clickToUpload: t("config.clickToUpload"),
+            captionLabel: t("config.captionLabel"),
+            filenameLabel: t("config.filenameLabel"),
+            filenamePlaceholder: t("config.filenamePlaceholder"),
+            manychatBridgeFlowNsLabel: t("config.manychatBridgeFlowNsLabel"),
+            manychatBridgeFlowNsHelp: t("config.manychatBridgeFlowNsHelp"),
+          }}
+        />
+      )
     case "add_tag":
     case "remove_tag":
       return (
@@ -1537,6 +1565,12 @@ function previewFor(step: BuilderStep): string {
       return interactivePayloadPreviewText(asInteractive(step.step_config)) || "no body yet"
     case "send_template":
       return (step.step_config.template_name as string) || "pick a template"
+    case "send_media":
+      return (
+        (step.step_config.filename as string) ||
+        (step.step_config.media_url as string) ||
+        "no file yet"
+      )
     case "wait":
       return `${step.step_config.amount ?? "?"} ${step.step_config.unit ?? ""}`
     case "condition":

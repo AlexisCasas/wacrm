@@ -873,7 +873,8 @@
         "wait": "Wait",
         "condition": "Condition (If/Else)",
         "send_webhook": "Send Webhook",
-        "close_conversation": "Close Conversation"
+        "close_conversation": "Close Conversation",
+        "send_media": "Send Media"
       },
       "triggers": {
         "new_message_received": {
@@ -1013,7 +1014,20 @@
         "matchWord": "Whole word",
         "matchWordHint": "Matches the keyword only as a standalone word, so \"k\" no longer fires on \"thanks\". Best for short keywords in space-separated languages; use Contains for languages written without spaces.",
         "matchExact": "Exact",
-        "closeConversationHint": "Sets the conversation status to \"closed\". No configuration needed."
+        "closeConversationHint": "Sets the conversation status to \"closed\". No configuration needed.",
+        "mediaTypeLabel": "Media type",
+        "imageLabel": "Image (PNG, JPEG, WebP)",
+        "videoLabel": "Video (MP4, 3GP)",
+        "documentLabel": "Document (PDF, Word, Excel, PowerPoint, TXT)",
+        "fileLabel": "File",
+        "removeFile": "Remove file",
+        "uploading": "Uploading…",
+        "clickToUpload": "Click to upload (max 16 MB)",
+        "captionLabel": "Caption (optional, shown under the media)",
+        "filenameLabel": "Filename shown to the customer (documents only)",
+        "filenamePlaceholder": "invoice.pdf",
+        "manychatBridgeFlowNsLabel": "ManyChat bridge automation ID (temporary)",
+        "manychatBridgeFlowNsHelp": "Used only while outbound transport is ManyChat. After migration to Meta, this value is ignored and the media URL above is sent directly."
       }
     }
   },

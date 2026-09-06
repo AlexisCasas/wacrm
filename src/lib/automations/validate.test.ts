@@ -165,6 +165,104 @@ describe("validateStepsForActivation", () => {
     ]);
   });
 
+  it("accepts a fully-populated send_media step", () => {
+    const issues = validateStepsForActivation([
+      {
+        step_type: "send_media",
+        step_config: {
+          media_type: "image",
+          media_url: "https://cdn.example.com/pic.png",
+          caption: "Combo XTD",
+        },
+      },
+    ]);
+    expect(issues).toEqual([]);
+  });
+
+  it("flags send_media when media_type or media_url is missing", () => {
+    const issues = validateStepsForActivation([
+      { step_type: "send_media", step_config: {} },
+    ]);
+    expect(issues.map((i) => i.path).sort()).toEqual([
+      "steps[0].media_type",
+      "steps[0].media_url",
+    ]);
+  });
+
+  it("rejects an unsupported send_media media_type", () => {
+    const issues = validateStepsForActivation([
+      {
+        step_type: "send_media",
+        step_config: { media_type: "audio", media_url: "https://x/y.mp3" },
+      },
+    ]);
+    expect(issues.map((i) => i.path)).toEqual(["steps[0].media_type"]);
+  });
+
+  it("does not require manychat_bridge_flow_ns on send_media — it's optional (PENDIENTE 02.1B)", () => {
+    const noneSet = validateStepsForActivation([
+      {
+        step_type: "send_media",
+        step_config: { media_type: "image", media_url: "https://x/y.png" },
+      },
+    ]);
+    expect(noneSet).toEqual([]);
+
+    const emptyString = validateStepsForActivation([
+      {
+        step_type: "send_media",
+        step_config: {
+          media_type: "image",
+          media_url: "https://x/y.png",
+          manychat_bridge_flow_ns: "",
+        },
+      },
+    ]);
+    expect(emptyString).toEqual([]);
+  });
+
+  it("rejects a malformed manychat_bridge_flow_ns on send_media, only when one was entered", () => {
+    const issues = validateStepsForActivation([
+      {
+        step_type: "send_media",
+        step_config: {
+          media_type: "image",
+          media_url: "https://x/y.png",
+          manychat_bridge_flow_ns: "content2026/abc",
+        },
+      },
+    ]);
+    expect(issues.map((i) => i.path)).toEqual([
+      "steps[0].manychat_bridge_flow_ns",
+    ]);
+
+    const good = validateStepsForActivation([
+      {
+        step_type: "send_media",
+        step_config: {
+          media_type: "image",
+          media_url: "https://x/y.png",
+          manychat_bridge_flow_ns: "content2026_XTD_amarillo",
+        },
+      },
+    ]);
+    expect(good).toEqual([]);
+  });
+
+  it("flags an oversized send_media caption", () => {
+    const issues = validateStepsForActivation([
+      {
+        step_type: "send_media",
+        step_config: {
+          media_type: "image",
+          media_url: "https://x/y.png",
+          caption: "x".repeat(1025),
+        },
+      },
+    ]);
+    expect(issues.map((i) => i.path)).toEqual(["steps[0].caption"]);
+  });
+
   it("recursively walks condition branches with stable dot-paths", () => {
     const issues = validateStepsForActivation([
       {
