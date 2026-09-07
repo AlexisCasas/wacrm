@@ -185,6 +185,15 @@ vi.mock('@/lib/contacts/dedupe', () => ({
 vi.mock('@/lib/whatsapp/webhook-signature', () => ({
   verifyMetaWebhookSignature: () => true,
 }))
+// Multi-tenant secret resolution (feat/per-account-meta-app-secret) is
+// covered on its own in webhook-tenant-secret.test.ts. Stubbing it here
+// with a non-empty candidate list keeps this file focused on inbound
+// PROCESSING behavior — it only needs the route to get PAST the
+// signature-verification gate, which also requires verifyMetaWebhookSignature
+// above to report `true`.
+vi.mock('@/lib/whatsapp/webhook-tenant-secret', () => ({
+  resolveWebhookSignatureSecrets: async () => ['stub-secret'],
+}))
 vi.mock('@/lib/whatsapp/template-webhook', () => ({
   isTemplateWebhookField: () => false,
   handleTemplateWebhookChange: vi.fn(),

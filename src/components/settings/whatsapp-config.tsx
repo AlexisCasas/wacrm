@@ -32,6 +32,21 @@ import {
 } from '@/components/ui/accordion';
 import type { WhatsAppConfig as WhatsAppConfigType } from '@/types';
 
+// The non-sensitive subset of WhatsAppConfig this component actually
+// loads (see the explicit column list in fetchConfig) — access_token /
+// verify_token / app_secret are deliberately never selected, so the
+// local state type must not claim to have them either.
+type NonSensitiveWhatsAppConfig = Pick<
+  WhatsAppConfigType,
+  | 'id'
+  | 'phone_number_id'
+  | 'waba_id'
+  | 'status'
+  | 'registered_at'
+  | 'last_registration_error'
+  | 'mirror_inbound_media'
+>;
+
 const MASKED_TOKEN = '••••••••••••••••';
 
 type ConnectionStatus = 'connected' | 'disconnected' | 'unknown';
@@ -58,7 +73,7 @@ export function WhatsAppConfig() {
   const [testing, setTesting] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [showToken, setShowToken] = useState(false);
-  const [config, setConfig] = useState<WhatsAppConfigType | null>(null);
+  const [config, setConfig] = useState<NonSensitiveWhatsAppConfig | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
   const [resetReason, setResetReason] = useState<ResetReason>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -76,6 +91,16 @@ export function WhatsAppConfig() {
   const [verifyToken, setVerifyToken] = useState('');
   const [pin, setPin] = useState('');
   const [tokenEdited, setTokenEdited] = useState(false);
+  // App Secret is never sent back from the server in ANY form — not
+  // the plaintext, not the ciphertext. GET /api/whatsapp/config instead
+  // returns a plain `app_secret_configured` boolean derived server-side
+  // from the row, which is all this component ever needs to show
+  // "configured" / "not configured" copy. So unlike accessToken there
+  // is no masked-placeholder value to seed the input with: it starts
+  // and stays empty unless the user types a new secret, and an empty
+  // submit means "leave the stored one alone."
+  const [appSecret, setAppSecret] = useState('');
+  const [appSecretConfigured, setAppSecretConfigured] = useState(false);
 
   // Inbound-media mirror (issue #466). Unlike everything else on this
   // page it is NOT part of handleSave: that path insists on re-entering
@@ -120,9 +145,21 @@ export function WhatsAppConfig() {
       // account sees the same saved configuration. UNIQUE(account_id)
       // on the table guarantees the .maybeSingle() return type
       // remains accurate.
+      //
+      // Explicit column list — NEVER `select('*')` here. This runs
+      // client-side against Supabase directly (RLS-scoped, but still a
+      // straight-to-browser read), so any sensitive column named here
+      // reaches the browser. access_token / verify_token / app_secret
+      // are all deliberately excluded: the component never displays
+      // their real values anyway (access_token/verify_token render as
+      // MASKED_TOKEN / blank), and app_secret's "is one configured?"
+      // signal comes from the API's `app_secret_configured` boolean
+      // below instead, never from the ciphertext itself.
       const { data, error } = await supabase
         .from('whatsapp_config')
-        .select('*')
+        .select(
+          'id, phone_number_id, waba_id, status, registered_at, last_registration_error, mirror_inbound_media',
+        )
         .eq('account_id', acctId)
         .maybeSingle();
 
@@ -137,6 +174,7 @@ export function WhatsAppConfig() {
         setAccessToken(MASKED_TOKEN);
         setVerifyToken('');
         setPin('');
+        setAppSecret('');
         setTokenEdited(false);
         // Undefined on a row read before migration 039 — treat that as
         // on, matching the webhook's own default.
@@ -148,17 +186,22 @@ export function WhatsAppConfig() {
         setAccessToken('');
         setVerifyToken('');
         setPin('');
+        setAppSecret('');
+        setAppSecretConfigured(false);
         setTokenEdited(false);
         setMirrorMedia(true);
       }
       // Clear any stale probe result when reloading the row.
       setRegistrationProbe(null);
 
-      // Then verify health via the API (decrypts token + pings Meta)
+      // Then verify health via the API (decrypts token + pings Meta).
+      // This is ALSO the only source for `app_secret_configured` — the
+      // direct Supabase read above deliberately never selects app_secret.
       if (data) {
         try {
           const res = await fetch('/api/whatsapp/config', { method: 'GET' });
           const payload = await res.json();
+          setAppSecretConfigured(Boolean(payload.app_secret_configured));
 
           if (payload.connected) {
             setConnectionStatus('connected');
@@ -253,6 +296,16 @@ export function WhatsAppConfig() {
         pin: pin.trim() || null,
       };
 
+      // Only include app_secret when the user actually typed a new one.
+      // Omitting the key entirely (not sending an empty string) is what
+      // tells the server to leave any previously-saved secret untouched
+      // — this field never round-trips the real value, so there's no
+      // "unchanged" sentinel to compare against like accessToken's
+      // MASKED_TOKEN.
+      if (appSecret.trim()) {
+        payload.app_secret = appSecret.trim();
+      }
+
       if (tokenEdited && accessToken !== MASKED_TOKEN && accessToken.trim()) {
         payload.access_token = accessToken.trim();
       } else if (config) {
@@ -326,6 +379,7 @@ export function WhatsAppConfig() {
       setTesting(true);
       const res = await fetch('/api/whatsapp/config', { method: 'GET' });
       const payload = await res.json();
+      setAppSecretConfigured(Boolean(payload.app_secret_configured));
 
       if (payload.connected) {
         setConnectionStatus('connected');
@@ -398,6 +452,8 @@ export function WhatsAppConfig() {
       setWabaId('');
       setAccessToken('');
       setVerifyToken('');
+      setAppSecret('');
+      setAppSecretConfigured(false);
       setTokenEdited(false);
       setConnectionStatus('disconnected');
       setResetReason(null);
@@ -692,6 +748,27 @@ export function WhatsAppConfig() {
               />
               <p className="text-xs text-muted-foreground leading-relaxed">
                 <span dangerouslySetInnerHTML={{ __html: t('pinHint') }} />
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-muted-foreground">
+                {t('appSecret')}
+                <span className="ml-1 text-muted-foreground">{t('optional')}</span>
+              </Label>
+              <Input
+                type="password"
+                placeholder={t('appSecretPlaceholder')}
+                value={appSecret}
+                onChange={(e) => setAppSecret(e.target.value)}
+                className="bg-muted border-border text-foreground placeholder:text-muted-foreground"
+                autoComplete="off"
+              />
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {appSecretConfigured ? t('appSecretConfigured') : t('appSecretNotConfigured')}
+              </p>
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                {t('appSecretHint')}
               </p>
             </div>
           </CardContent>
