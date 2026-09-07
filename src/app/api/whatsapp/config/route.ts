@@ -55,10 +55,17 @@ function supabaseAdmin() {
  * so the UI can render an appropriate message rather than show a 500.
  *
  * Response shape:
- *   { connected: true,  phone_info: {...} }
+ *   { connected: true,  phone_info: {...}, app_secret_configured: boolean }
  *   { connected: false, reason: 'no_config',        message: '...' }
- *   { connected: false, reason: 'token_corrupted',  message: '...', needs_reset: true }
- *   { connected: false, reason: 'meta_api_error',   message: '...' }
+ *   { connected: false, reason: 'token_corrupted',  message: '...', needs_reset: true, app_secret_configured: boolean }
+ *   { connected: false, reason: 'meta_api_error',   message: '...', app_secret_configured: boolean }
+ *
+ * `app_secret_configured` is a plain boolean derived server-side from
+ * whether the row's `app_secret` column is set — NEVER the ciphertext
+ * or decrypted value, which this endpoint (and every endpoint) must
+ * never return. Present on every branch reached once a `config` row
+ * is confirmed to exist; absent on `no_config`/`no_account`/`db_error`
+ * since there's nothing to report.
  */
 export async function GET() {
   try {
@@ -87,7 +94,7 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, access_token, status')
+      .select('phone_number_id, access_token, status, app_secret')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -110,6 +117,13 @@ export async function GET() {
       )
     }
 
+    // Whether this account has its own Meta App Secret saved — a plain
+    // boolean derived server-side from the ciphertext. Neither the
+    // ciphertext nor (obviously) the decrypted value is ever put in a
+    // response; the settings UI uses only this flag to render
+    // "configured" / "not configured" copy.
+    const appSecretConfigured = Boolean(config.app_secret)
+
     // Try to decrypt the stored token with the current ENCRYPTION_KEY.
     // If this fails, the key changed (or was never consistent across envs).
     let accessToken: string
@@ -124,6 +138,7 @@ export async function GET() {
           needs_reset: true,
           message:
             'The stored access token cannot be decrypted with the current ENCRYPTION_KEY. This usually means the key changed, or it differs between environments (local vs Hostinger vs Vercel). Click "Reset Configuration" below, then re-save.',
+          app_secret_configured: appSecretConfigured,
         },
         { status: 200 }
       )
@@ -135,7 +150,11 @@ export async function GET() {
         phoneNumberId: config.phone_number_id,
         accessToken,
       })
-      return NextResponse.json({ connected: true, phone_info: phoneInfo })
+      return NextResponse.json({
+        connected: true,
+        phone_info: phoneInfo,
+        app_secret_configured: appSecretConfigured,
+      })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Meta API error'
       console.error('[whatsapp/config GET] Meta API verification failed:', message)
@@ -144,6 +163,7 @@ export async function GET() {
           connected: false,
           reason: 'meta_api_error',
           message: `Meta API rejected the credentials: ${message}`,
+          app_secret_configured: appSecretConfigured,
         },
         { status: 200 }
       )
@@ -185,7 +205,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { phone_number_id, waba_id, access_token, verify_token, pin } = body
+    const { phone_number_id, waba_id, access_token, verify_token, pin, app_secret } = body
 
     if (!access_token || !phone_number_id) {
       return NextResponse.json(
@@ -251,12 +271,23 @@ export async function POST(request: Request) {
       )
     }
 
-    // Encrypt sensitive tokens before storing
+    // Encrypt sensitive tokens before storing.
+    //
+    // app_secret is OPTIONAL and, unlike access_token, has an
+    // update-preserves-existing contract: the settings UI never
+    // pre-fills it with the real value (it's never sent back to the
+    // browser at all — see GET below), so an empty/absent field here
+    // means "leave the stored secret alone," not "clear it." Only a
+    // non-empty string encrypts and replaces it.
     let encryptedAccessToken: string
     let encryptedVerifyToken: string | null
+    let encryptedAppSecret: string | null = null
     try {
       encryptedAccessToken = encrypt(access_token)
       encryptedVerifyToken = verify_token ? encrypt(verify_token) : null
+      if (typeof app_secret === 'string' && app_secret.trim()) {
+        encryptedAppSecret = encrypt(app_secret.trim())
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown encryption error'
       console.error('Encryption failed:', message)
@@ -353,11 +384,18 @@ export async function POST(request: Request) {
     // Persist everything in one shot. If /register failed we still
     // store the credentials and the error so the UI can guide the
     // user through a retry.
+    //
+    // `app_secret` is spread in ONLY when the caller actually supplied
+    // a new value (encryptedAppSecret is null otherwise) — omitting the
+    // key entirely, rather than setting it to null, is what keeps an
+    // UPDATE from wiping out a previously-saved secret when the field
+    // was left blank.
     const baseRow = {
       phone_number_id,
       waba_id: waba_id || null,
       access_token: encryptedAccessToken,
       verify_token: encryptedVerifyToken,
+      ...(encryptedAppSecret ? { app_secret: encryptedAppSecret } : {}),
       status: registrationError ? 'disconnected' : 'connected',
       connected_at: registrationError ? null : new Date().toISOString(),
       registered_at: registrationError ? null : registeredAt,

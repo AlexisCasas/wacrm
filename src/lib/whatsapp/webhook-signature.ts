@@ -11,18 +11,29 @@ import crypto from 'node:crypto'
  * Reference:
  *   https://developers.facebook.com/docs/graph-api/webhooks/getting-started#verify-payloads
  *
+ * Multi-tenant (feat/per-account-meta-app-secret):
+ *   Pass `appSecret` explicitly to verify against ONE specific
+ *   account's Meta App Secret — this function never touches
+ *   `process.env` in that case. Callers that need to try several
+ *   candidate secrets (e.g. multiple `whatsapp_config` rows sharing a
+ *   WABA) call this once per candidate. `src/lib/whatsapp/
+ *   webhook-tenant-secret.ts` owns resolving which secret(s) to try
+ *   for a given inbound payload.
+ *
  * Contract:
- *   `META_APP_SECRET` is **required**. If it's missing we fail closed —
- *   every request is rejected until the operator configures the
- *   secret. A previous version fell open with a warning log, which is
- *   unsafe for a public template: anyone who forgets the env var would
- *   be running a fully spoofable webhook.
+ *   When `appSecret` is omitted, `META_APP_SECRET` is **required** —
+ *   this is the legacy, single-tenant path. If it's missing we fail
+ *   closed — every request is rejected until the operator configures
+ *   the secret. A previous version fell open with a warning log,
+ *   which is unsafe for a public template: anyone who forgets the env
+ *   var would be running a fully spoofable webhook.
  */
 export function verifyMetaWebhookSignature(
   rawBody: string,
   signatureHeader: string | null,
+  appSecret?: string,
 ): boolean {
-  const secret = process.env.META_APP_SECRET
+  const secret = appSecret ?? process.env.META_APP_SECRET
   if (!secret) {
     console.error(
       '[webhook] META_APP_SECRET is not set — rejecting request. ' +

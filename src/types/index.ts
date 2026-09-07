@@ -298,6 +298,16 @@ export interface WhatsAppConfig {
    * inbound attachments expire. Migration 039.
    */
   mirror_inbound_media?: boolean;
+  /**
+   * Per-account Meta App Secret, ciphertext only (migration 043).
+   * NULL/absent means this account hasn't set one yet — the webhook
+   * falls back to the legacy global META_APP_SECRET env var for
+   * signature verification. The decrypted value is NEVER returned to
+   * the browser; client code should only ever check this for
+   * truthiness (`Boolean(config.app_secret)`) to show "configured" /
+   * "not configured" UI state.
+   */
+  app_secret?: string | null;
 }
 
 // Raw Meta status enum. We persist this verbatim from Meta (sync + webhook)

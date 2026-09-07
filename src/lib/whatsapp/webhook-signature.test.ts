@@ -66,4 +66,55 @@ describe("verifyMetaWebhookSignature", () => {
       expect(verifyMetaWebhookSignature(body, header)).toBe(false);
     });
   });
+
+  // -------------------------------------------------------------------
+  // feat/per-account-meta-app-secret — an explicit `appSecret` argument
+  // lets a caller verify against ONE specific tenant's secret instead of
+  // the global env var. webhook-tenant-secret.ts is what decides WHICH
+  // secret(s) to try; this function's contract is just "check against
+  // exactly the secret I was given."
+  // -------------------------------------------------------------------
+  describe("explicit appSecret argument (multi-tenant)", () => {
+    it("verifies against the explicit secret, ignoring META_APP_SECRET entirely", () => {
+      const tenantSecret = "tenant-a-secret";
+      const body = JSON.stringify({ entry: [{ id: "waba-a" }] });
+      const header = signedHeader(body, tenantSecret);
+
+      // The global env secret is deliberately different — if the function
+      // fell back to it, this would fail.
+      expect(SECRET).not.toBe(tenantSecret);
+      expect(verifyMetaWebhookSignature(body, header, tenantSecret)).toBe(true);
+    });
+
+    it("rejects a signature made with a different tenant's secret", () => {
+      const body = JSON.stringify({ entry: [{ id: "waba-a" }] });
+      const headerFromB = signedHeader(body, "tenant-b-secret");
+      expect(
+        verifyMetaWebhookSignature(body, headerFromB, "tenant-a-secret"),
+      ).toBe(false);
+    });
+
+    it("never falls back to META_APP_SECRET when an explicit secret is given and wrong", () => {
+      // Signed with the GLOBAL secret, but the caller is checking against
+      // a specific tenant secret — must fail, not silently accept via env.
+      const body = JSON.stringify({ entry: [{ id: "waba-a" }] });
+      const headerFromGlobal = signedHeader(body, SECRET);
+      expect(
+        verifyMetaWebhookSignature(body, headerFromGlobal, "tenant-a-secret"),
+      ).toBe(false);
+    });
+
+    it("does not touch process.env.META_APP_SECRET at all when appSecret is explicit — works even if the env var is unset", () => {
+      const originalSecret = process.env.META_APP_SECRET;
+      delete process.env.META_APP_SECRET;
+      try {
+        const tenantSecret = "tenant-a-secret";
+        const body = "{}";
+        const header = signedHeader(body, tenantSecret);
+        expect(verifyMetaWebhookSignature(body, header, tenantSecret)).toBe(true);
+      } finally {
+        process.env.META_APP_SECRET = originalSecret;
+      }
+    });
+  });
 });

@@ -8,6 +8,7 @@ import { findOrCreateContact } from '@/lib/contacts/find-or-create'
 import { findOrCreateConversation } from '@/lib/conversations/find-or-create'
 import { reopenClosedConversation } from '@/lib/conversations/reopen'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
+import { resolveWebhookSignatureSecrets } from '@/lib/whatsapp/webhook-tenant-secret'
 import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
@@ -187,19 +188,51 @@ export async function POST(request: Request) {
   const rawBody = await request.text()
   const signature = request.headers.get('x-hub-signature-256')
 
-  if (!verifyMetaWebhookSignature(rawBody, signature)) {
+  // Multi-tenant signature verification (feat/per-account-meta-app-secret):
+  // different accounts can be behind different Meta Apps, each with its
+  // own App Secret, so a single global process.env.META_APP_SECRET can no
+  // longer be the sole source of truth. We need to know WHICH account's
+  // whatsapp_config this payload claims to be from before we know which
+  // secret to check the signature against.
+  //
+  // Parsing here is safe: this JSON is used ONLY to extract routing ids
+  // (phone_number_id / waba_id) for that lookup — see
+  // webhook-tenant-secret.ts's file-level doc comment. It is NOT used for
+  // any business logic (no DB writes, no dispatch) until AFTER the
+  // signature check below passes. A parse failure is treated the same as
+  // "no config identifiable": fail closed.
+  let body: { entry?: WhatsAppWebhookEntry[] }
+  try {
+    body = JSON.parse(rawBody)
+  } catch {
+    console.warn('[webhook] rejected request with unparseable body')
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+  }
+
+  const candidateSecrets = await resolveWebhookSignatureSecrets(supabaseAdmin(), body)
+  if (candidateSecrets.length === 0) {
+    // No whatsapp_config row could be identified from this payload at
+    // all — never fall back to accepting on the strength of the global
+    // secret alone (that would let a spoofed phone_number_id/waba_id
+    // borrow ANY tenant's trust). Fail closed.
+    console.warn('[webhook] rejected request — no whatsapp_config resolvable for signature verification')
+    return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
+  }
+
+  // Accept if the signature matches ANY resolved candidate. A specific
+  // config's own app_secret and the legacy global fallback are never
+  // both in this list for the SAME config — see resolveWebhookSignatureSecrets
+  // — so a tenant with its own app_secret can never be satisfied by the
+  // global secret, and vice versa.
+  const verified = candidateSecrets.some((secret) =>
+    verifyMetaWebhookSignature(rawBody, signature, secret),
+  )
+  if (!verified) {
     // 401 (not 200) — we want Meta's delivery dashboard to show failures
     // loudly if a misconfiguration causes signatures to stop matching,
     // rather than silently eating events.
     console.warn('[webhook] rejected request with invalid signature')
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
-  }
-
-  let body: { entry?: WhatsAppWebhookEntry[] }
-  try {
-    body = JSON.parse(rawBody)
-  } catch {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
   }
 
   // Process AFTER the response so we ack Meta within their ~20s timeout
