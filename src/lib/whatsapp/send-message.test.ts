@@ -149,6 +149,50 @@ describe('sendMessageToConversation — param validation (pre-DB)', () => {
     ).rejects.toThrow('reached DB');
     expect(spy).toHaveBeenCalledWith('conversations');
   });
+
+  // -------------------------------------------------------------------
+  // P0.1 — voice_note is only meaningful on an audio send. Combining it
+  // with any other message_type must 400 rather than silently ignoring
+  // the flag (a caller who thinks they sent a voice note deserves to
+  // know their request was rejected, not to have it quietly downgraded).
+  // -------------------------------------------------------------------
+  it('rejects voice_note=true combined with a non-audio message_type', async () => {
+    await expectSendError(
+      { ...base, messageType: 'image', mediaUrl: 'https://x/y.jpg', voiceNote: true },
+      400,
+      /voice_note is only valid for message_type "audio"/
+    );
+    await expectSendError(
+      { ...base, messageType: 'video', mediaUrl: 'https://x/y.mp4', voiceNote: true },
+      400,
+      /voice_note is only valid/
+    );
+    await expectSendError(
+      { ...base, messageType: 'document', mediaUrl: 'https://x/y.pdf', voiceNote: true },
+      400,
+      /voice_note is only valid/
+    );
+    await expectSendError(
+      { ...base, messageType: 'text', contentText: 'hi', voiceNote: true },
+      400,
+      /voice_note is only valid/
+    );
+  });
+
+  it('allows voice_note=true on an audio send to pass validation', async () => {
+    const spy = vi.fn(() => {
+      throw new Error('reached DB');
+    });
+    const db = { from: spy } as unknown as SupabaseClient;
+    await expect(
+      sendMessageToConversation(db, 'acct-1', {
+        ...base,
+        messageType: 'audio',
+        mediaUrl: 'https://x/y.ogg',
+        voiceNote: true,
+      })
+    ).rejects.toThrow('reached DB');
+  });
 });
 
 describe('SendMessageError', () => {
@@ -165,6 +209,7 @@ describe('SendMessageError', () => {
 // ============================================================
 
 const sendTemplateMessage = vi.fn(async () => ({ messageId: 'wamid.1' }));
+const sendMediaMessage = vi.fn(async () => ({ messageId: 'wamid.media' }));
 
 // Stub only the senders — the module also exports INTERACTIVE_LIMITS,
 // which `interactive.ts` needs for the payload validation covered above.
@@ -173,7 +218,8 @@ vi.mock('@/lib/whatsapp/meta-api', async (importOriginal) => ({
   sendTextMessage: vi.fn(async () => ({ messageId: 'wamid.text' })),
   sendTemplateMessage: (...args: unknown[]) =>
     (sendTemplateMessage as unknown as (...a: unknown[]) => unknown)(...args),
-  sendMediaMessage: vi.fn(async () => ({ messageId: 'wamid.media' })),
+  sendMediaMessage: (...args: unknown[]) =>
+    (sendMediaMessage as unknown as (...a: unknown[]) => unknown)(...args),
   sendInteractiveButtons: vi.fn(async () => ({ messageId: 'wamid.btn' })),
   sendInteractiveList: vi.fn(async () => ({ messageId: 'wamid.list' })),
 }));
@@ -355,6 +401,56 @@ describe('sendMessageToConversation — template persistence (#483)', () => {
     // name rather than inventing a body.
     expect(captured.message?.content_text).toBeNull();
     expect(captured.conversation?.last_message_text).toBe('[template]');
+  });
+});
+
+// ============================================================
+// P0.1 — voice_note passes `voice` through to sendMediaMessage.
+// ============================================================
+
+describe('sendMessageToConversation — audio / voice_note pass-through (P0.1)', () => {
+  beforeEach(() => {
+    sendMediaMessage.mockClear();
+  });
+
+  it('passes voice: true to sendMediaMessage when voiceNote is set', async () => {
+    const captured: CapturedWrites = {};
+    await sendMessageToConversation(sendPathDb([], captured), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'audio',
+      mediaUrl: 'https://x/voice.ogg',
+      voiceNote: true,
+    });
+    expect(sendMediaMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'audio', link: 'https://x/voice.ogg', voice: true }),
+    );
+  });
+
+  it('passes voice: false when voiceNote is not set — normal audio unaffected', async () => {
+    const captured: CapturedWrites = {};
+    await sendMessageToConversation(sendPathDb([], captured), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'audio',
+      mediaUrl: 'https://x/normal.mp3',
+    });
+    expect(sendMediaMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'audio', link: 'https://x/normal.mp3', voice: false }),
+    );
+  });
+
+  it('image/video/document sends are unaffected — voice is always false for them', async () => {
+    for (const messageType of ['image', 'video', 'document']) {
+      sendMediaMessage.mockClear();
+      const captured: CapturedWrites = {};
+      await sendMessageToConversation(sendPathDb([], captured), 'acct-1', {
+        conversationId: 'cv-1',
+        messageType,
+        mediaUrl: 'https://x/file',
+      });
+      expect(sendMediaMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ voice: false }),
+      );
+    }
   });
 });
 

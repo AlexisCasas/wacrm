@@ -3,6 +3,7 @@ import {
   INTERACTIVE_LIMITS,
   sendInteractiveButtons,
   sendInteractiveList,
+  sendMediaMessage,
 } from "./meta-api";
 
 // All assertions in this file run BEFORE the network call. We stub fetch
@@ -265,5 +266,83 @@ describe("sendInteractiveList — validation", () => {
         },
       },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// P0.1 — WhatsApp voice notes. `voice` on `sendMediaMessage` is what
+// actually makes Meta render an OGG/Opus audio message as a voice-note
+// bubble; without it, even a valid Opus file renders as a plain audio
+// attachment. Must never leak onto a non-audio kind, and normal audio
+// (no flag) must keep sending exactly the pre-existing wire shape.
+// ---------------------------------------------------------------------------
+describe("sendMediaMessage — audio / voice note wire shape", () => {
+  const MEDIA_BASE = {
+    phoneNumberId: "test-phone",
+    accessToken: "test-token",
+    to: "1234567890",
+    link: "https://cdn.example.com/voice.ogg",
+  } as const;
+
+  function stubSuccessfulSend() {
+    let captured: { body: { audio?: Record<string, unknown>; image?: Record<string, unknown> } } | null =
+      null;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        captured = { body: JSON.parse(String(init.body)) };
+        return new Response(JSON.stringify({ messages: [{ id: "wamid.AUDIO" }] }), {
+          status: 200,
+        });
+      }),
+    );
+    return () => captured;
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("normal audio (no voice flag) sends { link } only — unchanged from today", async () => {
+    const getCaptured = stubSuccessfulSend();
+    await sendMediaMessage({ ...MEDIA_BASE, kind: "audio" });
+    expect(getCaptured()!.body.audio).toEqual({ link: MEDIA_BASE.link });
+  });
+
+  it("voice=true sends { link, voice: true }", async () => {
+    const getCaptured = stubSuccessfulSend();
+    await sendMediaMessage({ ...MEDIA_BASE, kind: "audio", voice: true });
+    expect(getCaptured()!.body.audio).toEqual({ link: MEDIA_BASE.link, voice: true });
+  });
+
+  it("voice=false is indistinguishable from omitted — no voice key at all", async () => {
+    const getCaptured = stubSuccessfulSend();
+    await sendMediaMessage({ ...MEDIA_BASE, kind: "audio", voice: false });
+    expect(getCaptured()!.body.audio).toEqual({ link: MEDIA_BASE.link });
+    expect(getCaptured()!.body.audio).not.toHaveProperty("voice");
+  });
+
+  it("never sends caption or filename for audio, even as a voice note", async () => {
+    const getCaptured = stubSuccessfulSend();
+    await sendMediaMessage({
+      ...MEDIA_BASE,
+      kind: "audio",
+      voice: true,
+      caption: "hello there",
+      filename: "note.ogg",
+    });
+    expect(getCaptured()!.body.audio).toEqual({ link: MEDIA_BASE.link, voice: true });
+  });
+
+  it("ignores voice=true for a non-audio kind — never sent on the wire", async () => {
+    const getCaptured = stubSuccessfulSend();
+    await sendMediaMessage({
+      ...MEDIA_BASE,
+      kind: "image",
+      voice: true,
+      link: "https://cdn.example.com/pic.jpg",
+    });
+    expect(getCaptured()!.body.image).toEqual({ link: "https://cdn.example.com/pic.jpg" });
+    expect(getCaptured()!.body.image).not.toHaveProperty("voice");
   });
 });

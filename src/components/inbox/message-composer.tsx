@@ -15,6 +15,7 @@ import {
   Video,
   FileText,
   Mic,
+  Upload,
   Square,
   X,
   Loader2,
@@ -46,6 +47,11 @@ import {
   deleteAccountMedia,
   MEDIA_MAX_BYTES_BY_KIND,
 } from "@/lib/storage/upload-media";
+import {
+  hasOggExtension,
+  looksLikeOpusOgg,
+  normalizeOggFile,
+} from "@/lib/media/ogg-opus";
 import { ReplyQuote } from "./reply-quote";
 import { useTranslations } from "next-intl";
 import {
@@ -80,6 +86,15 @@ export interface SendMediaPayload {
   /** Original file name — surfaced to the recipient for documents. */
   filename?: string;
   replyToId?: string;
+  /**
+   * Send as a WhatsApp voice note (waveform bubble) rather than a plain
+   * audio attachment. Only meaningful when `kind === "audio"` — both
+   * the recorder and the "Upload voice note" picker set this; a normal
+   * audio upload (were one ever added) would leave it unset. The
+   * server independently re-validates this against `kind` (never trust
+   * the client alone) — see `src/lib/whatsapp/send-message.ts`.
+   */
+  voiceNote?: boolean;
 }
 
 interface ReplyDraft {
@@ -100,6 +115,12 @@ const PICKER_ACCEPT: Record<"image" | "video" | "document", string> = {
     "application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,text/plain",
 };
 
+/** "Upload voice note" picker — deliberately OGG/Opus only (P0.1), not a
+ *  general audio picker. MP3/AAC/etc. are out of scope for this feature;
+ *  extension listed first since some OS file dialogs filter more
+ *  reliably on it than on the MIME hints. */
+const VOICE_NOTE_ACCEPT = ".ogg,audio/ogg,application/ogg";
+
 interface MediaDraft {
   kind: ComposerMediaKind;
   mediaUrl: string;
@@ -107,6 +128,10 @@ interface MediaDraft {
   path: string;
   filename: string;
   caption: string;
+  /** True for both a recorded and an uploaded OGG/Opus voice note —
+   *  false for every other attachment kind. Forwarded to the server as
+   *  `voice_note`, which independently re-validates it against `kind`. */
+  voiceNote: boolean;
 }
 
 interface MessageComposerProps {
@@ -162,6 +187,7 @@ export function MessageComposer({
   const imageInputRef = useRef<HTMLInputElement>(null);
   const videoInputRef = useRef<HTMLInputElement>(null);
   const documentInputRef = useRef<HTMLInputElement>(null);
+  const voiceNoteInputRef = useRef<HTMLInputElement>(null);
   // Mirror of `draft` for the unmount cleanup, which can't read render
   // state. Kept in sync below so navigating away with a staged-but-unsent
   // attachment GCs the orphaned object.
@@ -401,7 +427,7 @@ export function MessageComposer({
         const { publicUrl, path } = await uploadAccountMedia(CHAT_MEDIA_BUCKET, file);
         // Replacing an existing draft? GC the previous object first.
         removeStaged(draftRef.current?.path);
-        setDraft({ kind, mediaUrl: publicUrl, path, filename: file.name, caption: "" });
+        setDraft({ kind, mediaUrl: publicUrl, path, filename: file.name, caption: "", voiceNote: false });
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Upload failed.");
       } finally {
@@ -411,17 +437,91 @@ export function MessageComposer({
     [removeStaged],
   );
 
+  // ---- Voice note: upload a pre-recorded OGG/Opus file from disk -----
+
+  // A client's existing .ogg voice memo, uploaded rather than recorded
+  // live. Validated as genuinely Opus-in-Ogg BEFORE upload (P0.1) — a
+  // mis-encoded or renamed file would otherwise silently produce a
+  // broken voice note once `audio.voice=true` reaches Meta. Also used
+  // by the Document picker's auto-redirect for a manually-selected
+  // .ogg (see `handleDocumentPicked` below).
+  const stageVoiceNoteUpload = useCallback(
+    async (file: File) => {
+      if (!hasOggExtension(file.name)) {
+        toast.error(t("voiceNoteInvalidFormat"));
+        return;
+      }
+      if (file.size > MEDIA_MAX_BYTES_BY_KIND.audio) {
+        toast.error(
+          `File is ${(file.size / 1024 / 1024).toFixed(1)} MB — voice note limit is ${Math.round(
+            MEDIA_MAX_BYTES_BY_KIND.audio / 1024 / 1024,
+          )} MB.`,
+        );
+        return;
+      }
+      setBusy(true);
+      try {
+        if (!(await looksLikeOpusOgg(file))) {
+          toast.error(t("voiceNoteInvalidFormat"));
+          return;
+        }
+        // Some browsers/OSes report "" or the generic "application/ogg"
+        // for a .ogg file — normalize so the uploaded object's
+        // Content-Type is one Meta reliably fetches as audio.
+        const normalized = normalizeOggFile(file);
+        const { publicUrl, path } = await uploadAccountMedia(CHAT_MEDIA_BUCKET, normalized);
+        removeStaged(draftRef.current?.path);
+        setDraft({
+          kind: "audio",
+          mediaUrl: publicUrl,
+          path,
+          filename: normalized.name,
+          caption: "",
+          voiceNote: true,
+        });
+      } catch (err) {
+        toast.error(err instanceof Error ? err.message : "Upload failed.");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [removeStaged, t],
+  );
+
   const handlePicked = useCallback(
-    (kind: "image" | "video" | "document", file: File | undefined) => {
+    (kind: "image" | "video", file: File | undefined) => {
       if (file) void stageUpload(kind, file);
     },
     [stageUpload],
   );
 
+  // The Document picker doubles as an escape hatch for a client who
+  // navigates to a voice memo via "All files" instead of the dedicated
+  // "Upload voice note" entry (this is exactly what happened in the
+  // field per the P0.1 brief). A picked .ogg is intercepted here rather
+  // than uploaded as a generic document: if it's genuinely Opus, it's
+  // silently redirected into the voice-note flow; if it merely carries
+  // the extension but isn't actually Opus, it's rejected the same way
+  // the dedicated picker would reject it (never uploaded as a document
+  // either — a bare .ogg document is not something Meta renders usefully).
+  const handleDocumentPicked = useCallback(
+    (file: File | undefined) => {
+      if (!file) return;
+      if (hasOggExtension(file.name)) {
+        void stageVoiceNoteUpload(file);
+        return;
+      }
+      void stageUpload("document", file);
+    },
+    [stageUpload, stageVoiceNoteUpload],
+  );
+
   // ---- Voice recording (client-side Ogg/Opus, no server transcode) ---
 
-  // The encoded Ogg/Opus file from opus-recorder → upload as an audio
-  // draft. WhatsApp renders Ogg/Opus as a playable voice note.
+  // The encoded Ogg/Opus file from opus-recorder → upload as a voice-note
+  // draft. `audio.voice=true` (set via `voiceNote: true` below) is what
+  // actually makes Meta render it as a WhatsApp voice-note bubble — the
+  // Ogg/Opus encoding alone is necessary but not sufficient.
   const finalizeRecording = useCallback(
     async (bytes: Uint8Array) => {
       // Uint8Array is a valid BlobPart at runtime; the cast sidesteps the
@@ -438,7 +538,14 @@ export function MessageComposer({
       try {
         const { publicUrl, path } = await uploadAccountMedia(CHAT_MEDIA_BUCKET, file);
         removeStaged(draftRef.current?.path);
-        setDraft({ kind: "audio", mediaUrl: publicUrl, path, filename: file.name, caption: "" });
+        setDraft({
+          kind: "audio",
+          mediaUrl: publicUrl,
+          path,
+          filename: file.name,
+          caption: "",
+          voiceNote: true,
+        });
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "Upload failed.");
       } finally {
@@ -517,6 +624,7 @@ export function MessageComposer({
         draft.kind === "audio" ? undefined : draft.caption.trim() || undefined,
       filename: draft.kind === "document" ? draft.filename : undefined,
       replyToId: replyTo?.id,
+      voiceNote: draft.voiceNote,
     });
     // The object is now owned by the sent message — clear without GC.
     setDraft(null);
@@ -590,7 +698,18 @@ export function MessageComposer({
         accept={PICKER_ACCEPT.document}
         className="hidden"
         onChange={(e) => {
-          handlePicked("document", e.target.files?.[0]);
+          handleDocumentPicked(e.target.files?.[0]);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={voiceNoteInputRef}
+        type="file"
+        accept={VOICE_NOTE_ACCEPT}
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void stageVoiceNoteUpload(file);
           e.target.value = "";
         }}
       />
@@ -662,9 +781,13 @@ export function MessageComposer({
                 <FileText className="mr-2 h-4 w-4" />
                 {t("document")}
               </DropdownMenuItem>
+              <DropdownMenuItem onClick={() => voiceNoteInputRef.current?.click()}>
+                <Upload className="mr-2 h-4 w-4" />
+                {t("uploadVoiceNote")}
+              </DropdownMenuItem>
               <DropdownMenuItem onClick={() => void startRecording()}>
                 <Mic className="mr-2 h-4 w-4" />
-                {t("voiceNote")}
+                {t("recordVoiceNote")}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -854,7 +977,14 @@ function MediaDraftPreview({
             <video src={draft.mediaUrl} controls className="max-h-40 rounded-lg" />
           )}
           {draft.kind === "audio" && (
-            <audio src={draft.mediaUrl} controls className="w-full" />
+            <div>
+              <audio src={draft.mediaUrl} controls className="w-full" />
+              {draft.voiceNote && (
+                <p className="mt-1 truncate text-[11px] text-muted-foreground">
+                  {draft.filename}
+                </p>
+              )}
+            </div>
           )}
           {draft.kind === "document" && (
             <div className="flex items-center gap-2 text-sm text-foreground">
