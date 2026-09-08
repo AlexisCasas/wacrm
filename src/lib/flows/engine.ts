@@ -1230,33 +1230,53 @@ async function handleReplyForActiveRun(
   return { consumed: true, flow_run_id: run.id, outcome: "completed" };
 }
 
-async function startNewRun(
+/**
+ * The one shared "create + start" path for a flow_run, used by BOTH
+ * the inbound auto-trigger (`startNewRun` below) and the manual Inbox
+ * start action (`startFlowManually`). Everything that must never be
+ * duplicated between those two entry points lives here: the
+ * `vars.contact_name` seed, the INSERT (with its 23505 race handling),
+ * the `started` audit event, the `execution_count` bump, and kicking
+ * off `advanceFromNodeKey`.
+ *
+ * `startedEventPayloadExtra` is the only thing that differs between
+ * callers — inbound logs `meta_message_id`, manual logs
+ * `trigger_source`/`initiated_by_user_id` instead. Neither caller may
+ * fabricate the other's fields.
+ */
+async function createAndStartFlowRun(
   db: AdminClient,
   flow: FlowRow,
-  input: DispatchInboundInput,
+  contactId: string,
+  conversationId: string | null,
   nodes: Map<string, FlowNodeRow>,
-): Promise<DispatchInboundResult> {
+  startedEventPayloadExtra: Record<string, unknown>,
+): Promise<
+  | { kind: "started"; run: FlowRunRow; advanceOutcome: string }
+  | { kind: "duplicate_active_run" }
+  | { kind: "insert_error"; message: string }
+> {
   // Seed `vars.contact_name` so an authored flow can write
   // "Hola estimado {{vars.contact_name}} 🤗" without first asking the
   // customer for their name. Account-scoped (`flow.account_id`, the
   // SAME tenancy key the run itself is created under just below) —
   // required defense-in-depth: this runs under service_role, which
   // bypasses RLS, so a query scoped by contact id alone could read
-  // another account's contact if `input.contactId` were ever wrong.
+  // another account's contact if `contactId` were ever wrong.
   // Never trusts anything from the inbound payload itself — the name
   // comes only from our own `contacts` table.
   const { data: contactRow } = await db
     .from("contacts")
     .select("name")
-    .eq("id", input.contactId)
+    .eq("id", contactId)
     .eq("account_id", flow.account_id)
     .maybeSingle();
   const contactName =
     (contactRow as { name?: string | null } | null)?.name?.trim() || "";
 
   // INSERT — partial unique index `idx_one_active_run_per_contact`
-  // catches concurrent inserts with 23505. We catch and return as
-  // consumed:true (the parallel webhook handles it).
+  // catches concurrent inserts with 23505. We catch and report it as
+  // a controlled conflict, never a thrown 500.
   const { data: inserted, error: insErr } = await db
     .from("flow_runs")
     .insert({
@@ -1267,10 +1287,10 @@ async function startNewRun(
       // a contact phone number each run their own flows independently.
       account_id: flow.account_id,
       // Audit: preserves the flow's author on the run row for log
-      // attribution.
+      // attribution — NEVER the caller who dispatched/started it.
       user_id: flow.user_id,
-      contact_id: input.contactId,
-      conversation_id: input.conversationId,
+      contact_id: contactId,
+      conversation_id: conversationId,
       status: "active",
       current_node_key: flow.entry_node_id,
       // Only this one predefined var — collect_input's capture merges
@@ -1281,27 +1301,28 @@ async function startNewRun(
     .select("*")
     .maybeSingle();
   if (insErr) {
-    // 23505 = unique_violation → another webhook is starting the run.
+    // 23505 = unique_violation → someone else already started a run
+    // for this contact (a racing webhook, or a racing manual start).
     const msg = insErr.message ?? "";
     if (msg.includes("23505") || msg.includes("duplicate key")) {
-      return { consumed: true, outcome: "duplicate_inbound_ignored" };
+      return { kind: "duplicate_active_run" };
     }
-    console.error("[flows] startNewRun insert error:", insErr.message);
-    return { consumed: false, outcome: "no_match" };
+    console.error("[flows] createAndStartFlowRun insert error:", insErr.message);
+    return { kind: "insert_error", message: insErr.message };
   }
   const run = inserted as FlowRunRow;
   await logEvent(db, run.id, "started", flow.entry_node_id, {
     flow_id: flow.id,
     trigger_type: flow.trigger_type,
-    meta_message_id: input.message.meta_message_id,
+    ...startedEventPayloadExtra,
   });
   // Bump the flow's execution counter — used by the builder UI to
   // surface "X runs since activation" on the flow card.
   //
   // Atomic RPC (migration 012) rather than read-modify-write: two
-  // concurrent webhooks starting runs for different contacts on the
-  // same flow would otherwise both read N and both write N+1, losing
-  // a count. Mirrors the automations engine's use of
+  // concurrent starts for different contacts on the same flow would
+  // otherwise both read N and both write N+1, losing a count. Mirrors
+  // the automations engine's use of
   // `increment_automation_execution_count` (migration 007).
   const { error: incErr } = await db.rpc("increment_flow_execution_count", {
     p_flow_id: flow.id,
@@ -1313,9 +1334,176 @@ async function startNewRun(
 
   // Run the advance loop starting from the entry node.
   const outcome = await advanceFromNodeKey(db, run, flow.entry_node_id!, nodes);
+  return { kind: "started", run, advanceOutcome: outcome.outcome };
+}
+
+async function startNewRun(
+  db: AdminClient,
+  flow: FlowRow,
+  input: DispatchInboundInput,
+  nodes: Map<string, FlowNodeRow>,
+): Promise<DispatchInboundResult> {
+  const result = await createAndStartFlowRun(
+    db,
+    flow,
+    input.contactId,
+    input.conversationId,
+    nodes,
+    { meta_message_id: input.message.meta_message_id },
+  );
+  if (result.kind === "duplicate_active_run") {
+    return { consumed: true, outcome: "duplicate_inbound_ignored" };
+  }
+  if (result.kind === "insert_error") {
+    return { consumed: false, outcome: "no_match" };
+  }
   return {
     consumed: true,
-    flow_run_id: run.id,
-    outcome: outcome.outcome === "advanced" ? "started" : outcome.outcome,
+    flow_run_id: result.run.id,
+    outcome:
+      result.advanceOutcome === "advanced" ? "started" : (result.advanceOutcome as DispatchInboundResult["outcome"]),
+  };
+}
+
+// ============================================================
+// Manual start — "Iniciar Flow" from the Inbox. A human agent
+// picked the flow explicitly, so there is no trigger to match: this
+// bypasses `findEntryFlow` entirely and reuses `createAndStartFlowRun`
+// for everything after the flow is resolved. Any `status=active`
+// flow is eligible regardless of `trigger_type` (keyword/manual/
+// first_inbound_message) — only `draft`/`archived` are rejected.
+// ============================================================
+
+export interface StartFlowManuallyArgs {
+  accountId: string;
+  initiatedByUserId: string;
+  flowId: string;
+  conversationId: string;
+}
+
+export type StartFlowManuallyResult =
+  | { outcome: "started"; flow_run_id: string; flow_id: string; flow_name: string }
+  | { outcome: "flow_not_found" }
+  | { outcome: "flow_not_active" }
+  | { outcome: "conversation_not_found" }
+  | { outcome: "contact_not_found" }
+  | {
+      outcome: "active_flow_exists";
+      active_flow_run_id?: string;
+      active_flow_id?: string;
+      active_flow_name?: string;
+    }
+  | { outcome: "error"; message: string };
+
+export async function startFlowManually(
+  args: StartFlowManuallyArgs,
+): Promise<StartFlowManuallyResult> {
+  const { accountId, initiatedByUserId, flowId, conversationId } = args;
+  const db = supabaseAdmin();
+
+  // Flow — scoped by id AND account_id in the SAME query, so a
+  // cross-account flow id and a genuinely-missing one are
+  // indistinguishable from the caller's point of view (never reveal
+  // cross-tenant existence).
+  const { data: flowData, error: flowErr } = await db
+    .from("flows")
+    .select("*")
+    .eq("id", flowId)
+    .eq("account_id", accountId)
+    .maybeSingle();
+  if (flowErr) {
+    console.error("[flows] startFlowManually flow lookup error:", flowErr.message);
+    return { outcome: "error", message: flowErr.message };
+  }
+  if (!flowData) {
+    return { outcome: "flow_not_found" };
+  }
+  const flow = flowData as FlowRow;
+  if (flow.status !== "active" || !flow.entry_node_id) {
+    return { outcome: "flow_not_active" };
+  }
+
+  // Conversation — same account-scoping discipline. `contact_id` is
+  // derived from here server-side; the caller never gets to supply a
+  // contact id directly.
+  const { data: conversationData, error: convErr } = await db
+    .from("conversations")
+    .select("id, contact_id, account_id")
+    .eq("id", conversationId)
+    .eq("account_id", accountId)
+    .maybeSingle();
+  if (convErr) {
+    console.error("[flows] startFlowManually conversation lookup error:", convErr.message);
+    return { outcome: "error", message: convErr.message };
+  }
+  const conversation = conversationData as
+    | { id: string; contact_id: string | null; account_id: string }
+    | null;
+  if (!conversation || !conversation.contact_id) {
+    return { outcome: "conversation_not_found" };
+  }
+
+  // Contact — confirm it too belongs to this account (defense-in-depth
+  // against a stale/forged conversation row), never trust the id alone.
+  const { data: contactData, error: contactErr } = await db
+    .from("contacts")
+    .select("id")
+    .eq("id", conversation.contact_id)
+    .eq("account_id", accountId)
+    .maybeSingle();
+  if (contactErr) {
+    console.error("[flows] startFlowManually contact lookup error:", contactErr.message);
+    return { outcome: "error", message: contactErr.message };
+  }
+  if (!contactData) {
+    return { outcome: "contact_not_found" };
+  }
+  const contactId = (contactData as { id: string }).id;
+
+  // Never auto-replace an active run. Pre-check gives a clean,
+  // informative conflict in the common case; the DB's partial unique
+  // index (checked again below via 23505) is the last line of defense
+  // against a genuine race.
+  const existingActive = await loadActiveRunForContact(db, accountId, contactId);
+  if (existingActive) {
+    const activeFlow = await loadFlow(db, existingActive.flow_id);
+    return {
+      outcome: "active_flow_exists",
+      active_flow_run_id: existingActive.id,
+      active_flow_id: existingActive.flow_id,
+      active_flow_name: activeFlow?.name,
+    };
+  }
+
+  const nodes = await loadAllNodes(db, flow.id);
+  const result = await createAndStartFlowRun(
+    db,
+    flow,
+    contactId,
+    conversationId,
+    nodes,
+    { trigger_source: "manual", initiated_by_user_id: initiatedByUserId },
+  );
+
+  if (result.kind === "duplicate_active_run") {
+    // Lost the race despite the pre-check — recover conflict details
+    // best-effort so the caller still gets a useful message.
+    const raced = await loadActiveRunForContact(db, accountId, contactId);
+    const racedFlow = raced ? await loadFlow(db, raced.flow_id) : null;
+    return {
+      outcome: "active_flow_exists",
+      active_flow_run_id: raced?.id,
+      active_flow_id: raced?.flow_id,
+      active_flow_name: racedFlow?.name,
+    };
+  }
+  if (result.kind === "insert_error") {
+    return { outcome: "error", message: result.message };
+  }
+  return {
+    outcome: "started",
+    flow_run_id: result.run.id,
+    flow_id: flow.id,
+    flow_name: flow.name,
   };
 }

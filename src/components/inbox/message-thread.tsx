@@ -27,6 +27,7 @@ import {
   RefreshCw,
   PanelRightOpen,
   PanelRightClose,
+  Zap,
 } from "lucide-react";
 import { format, isToday, isYesterday, differenceInHours } from "date-fns";
 import { useTranslations } from "next-intl";
@@ -54,6 +55,8 @@ import { AiThreadBanner } from "./ai-thread-banner";
 import { buildReplyPreview } from "./reply-quote";
 import { renderTemplateBody } from "@/lib/whatsapp/template-body";
 import { toast } from "sonner";
+import { useCan } from "@/hooks/use-can";
+import { FlowStartPicker } from "./flow-start-picker";
 
 interface ReplyDraft {
   id: string;
@@ -169,10 +172,12 @@ export function MessageThread({
   const tQuote = useTranslations("Inbox.replyQuote");
 
   const { user } = useAuth();
+  const canStartFlow = useCan("send-messages");
   const { getPresence, getRow, now } = usePresence();
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
+  const [flowPickerOpen, setFlowPickerOpen] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   // Purely visual spin state for the manual-refresh button. The actual
@@ -988,6 +993,30 @@ export function MessageThread({
             </button>
           )}
 
+          {/* Start Flow — P0 manual dispatch from the Inbox. A customer
+              may arrive via an ad/link tied to a commercial Flow but
+              type something the keyword trigger doesn't match; this
+              lets an agent pick+start the right Flow by hand. Gated by
+              the same capability as sending a message (viewers can't),
+              and disabled outside the 24h service window — the server
+              enforces that independently regardless of this hint. */}
+          {canStartFlow && (
+            <button
+              type="button"
+              onClick={() => setFlowPickerOpen(true)}
+              disabled={sessionInfo.expired}
+              title={
+                sessionInfo.expired ? t("startFlowDisabledHint") : t("startFlow")
+              }
+              className={cn(
+                "inline-flex h-7 items-center justify-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent",
+              )}
+            >
+              <Zap className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">{t("startFlow")}</span>
+            </button>
+          )}
+
           {/* Status dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger className={cn(
@@ -1189,6 +1218,14 @@ export function MessageThread({
         open={templateModalOpen}
         onOpenChange={setTemplateModalOpen}
         onSelect={handleSendTemplate}
+      />
+
+      <FlowStartPicker
+        open={flowPickerOpen}
+        onOpenChange={setFlowPickerOpen}
+        conversationId={conversation.id}
+        contactDisplayName={contactDisplayName}
+        onStarted={onRefresh}
       />
 
       {/* Full-size viewer for the thread's images/videos. Renders nothing
