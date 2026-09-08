@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
     insertCalls: [] as Record<string, unknown>[],
     insertError: null as { message: string } | null,
     conversationUpdateCalls: [] as Record<string, unknown>[],
+    contactBlocked: false,
   },
 }))
 
@@ -45,6 +46,20 @@ vi.mock('./admin-client', () => ({
           },
         }
       }
+      if (table === 'contacts') {
+        // The shared assertContactCanReceive guard's own lookup —
+        // P0 contact blocking, checked before either transport branch.
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () => ({
+                maybeSingle: () =>
+                  Promise.resolve({ data: { blocked: h.state.contactBlocked }, error: null }),
+              }),
+            }),
+          }),
+        }
+      }
       // Proves flow_runs (or anything else) is never touched by the AI
       // ManyChat send path — reaching this is a test failure.
       throw new Error(`unexpected table: ${table}`)
@@ -72,6 +87,7 @@ beforeEach(() => {
   h.state.insertCalls = []
   h.state.insertError = null
   h.state.conversationUpdateCalls = []
+  h.state.contactBlocked = false
   h.resolveOutboundTransport.mockReturnValue('meta')
   h.engineSendText.mockResolvedValue({ whatsapp_message_id: 'wamid.ai1' })
   h.sendManyChatTextToContact.mockResolvedValue({
@@ -233,5 +249,37 @@ describe('sendAiTextToConversation — transport=meta (unchanged behavior)', () 
   it('propagates an engineSendText failure (e.g. Meta rejects the send)', async () => {
     h.engineSendText.mockRejectedValue(new Error('Meta API error: 400'))
     await expect(sendAiTextToConversation(ARGS)).rejects.toThrow('Meta API error: 400')
+  })
+})
+
+// P0 — BLOQUEO INTERNO DE CONTACTOS. The Meta branch already goes
+// through engineSendText's own guard (proven in flows/meta-send.test.ts);
+// this function's OWN ManyChat branch sends directly via
+// sendManyChatTextToContact WITHOUT ever calling engineSendText, so it
+// needs its own check — this proves it fires before either branch.
+describe('sendAiTextToConversation — blocked-contact guard', () => {
+  it('refuses under Meta transport, never calling engineSendText', async () => {
+    h.resolveOutboundTransport.mockReturnValue('meta')
+    h.state.contactBlocked = true
+    await expect(sendAiTextToConversation(ARGS)).rejects.toMatchObject({
+      code: 'contact_blocked',
+    })
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('refuses under ManyChat transport, never calling ManyChat', async () => {
+    h.resolveOutboundTransport.mockReturnValue('manychat')
+    h.state.contactBlocked = true
+    await expect(sendAiTextToConversation(ARGS)).rejects.toMatchObject({
+      code: 'contact_blocked',
+    })
+    expect(h.sendManyChatTextToContact).not.toHaveBeenCalled()
+    expect(h.state.insertCalls).toHaveLength(0)
+  })
+
+  it('a non-blocked contact still sends normally (no false positive)', async () => {
+    h.resolveOutboundTransport.mockReturnValue('meta')
+    h.state.contactBlocked = false
+    await expect(sendAiTextToConversation(ARGS)).resolves.toBeDefined()
   })
 })

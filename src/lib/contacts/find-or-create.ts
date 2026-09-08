@@ -34,7 +34,13 @@ export async function findOrCreateContact(
   const existingContact = await findExistingContact(db, accountId, phone)
 
   if (existingContact) {
-    if (name && name !== existingContact.name) {
+    // A blocked contact's operational data must not keep mutating from
+    // inbound traffic — a blocked inbound is a hard stop, not "mostly
+    // normal processing with the name synced." The caller short-circuits
+    // right after this call anyway (never reaches conversation/message
+    // creation for a blocked contact), but this name update happens
+    // inside find-or-create itself, before that check runs.
+    if (!existingContact.blocked && name && name !== existingContact.name) {
       await db
         .from('contacts')
         .update({ name, updated_at: new Date().toISOString() })

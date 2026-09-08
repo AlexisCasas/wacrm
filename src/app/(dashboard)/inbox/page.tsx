@@ -5,7 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import {
-  CONVERSATION_SELECT,
+  INBOX_CONVERSATION_SELECT,
   normalizeConversation,
 } from "@/lib/inbox/conversations";
 import type { Conversation, Message, Contact, ConversationStatus } from "@/types";
@@ -133,10 +133,16 @@ function InboxPageInner() {
     hydratingConvIdsRef.current.add(convId);
     try {
       const supabase = createClient();
+      // Inner-joined + blocked-filtered — a blocked contact's
+      // conversation must never be re-inserted into the normal Inbox
+      // list via this realtime self-heal path. A blocked match simply
+      // resolves to no row (`data` null below), which the existing
+      // `if (!data) return` already treats as "nothing to hydrate."
       const { data, error } = await supabase
         .from("conversations")
-        .select(CONVERSATION_SELECT)
+        .select(INBOX_CONVERSATION_SELECT)
         .eq("id", convId)
+        .eq("contact.blocked", false)
         .maybeSingle();
       if (error) {
         // Supabase errors have non-enumerable properties — log fields
@@ -554,6 +560,25 @@ function InboxPageInner() {
     [activeConversation]
   );
 
+  /**
+   * A contact was just blocked from this open conversation. The
+   * conversation itself is never deleted (block/unblock never touches
+   * `conversations`/`messages`), but it must leave the normal Inbox
+   * list immediately rather than waiting for the next full refetch —
+   * and the realtime self-heal (hydrateConversation) is already
+   * filtered to never re-add a blocked contact's conversation, so this
+   * removal sticks.
+   */
+  const handleContactBlocked = useCallback(
+    (conversationId: string) => {
+      setConversations((prev) => prev.filter((c) => c.id !== conversationId));
+      if (activeConversation?.id === conversationId) {
+        handleCloseConversation();
+      }
+    },
+    [activeConversation, handleCloseConversation]
+  );
+
   // On mobile (<lg) we show a SINGLE pane — either the list or the
   // thread — rather than cramming both side-by-side. Selecting a
   // conversation slides the thread in; the thread's back button pops
@@ -618,6 +643,7 @@ function InboxPageInner() {
             onUpdateMessage={handleUpdateMessage}
             onStatusChange={handleStatusChange}
             onAssignChange={handleAssignChange}
+            onContactBlocked={handleContactBlocked}
             onBack={handleCloseConversation}
             resyncToken={resyncToken}
             onRefresh={handleManualRefresh}

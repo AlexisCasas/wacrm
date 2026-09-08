@@ -140,6 +140,11 @@ export async function POST(
         { error: "Contact not found", code: "contact_not_found" },
         { status: 404 },
       )
+    case "contact_blocked":
+      return NextResponse.json(
+        { error: "This contact is blocked", code: "contact_blocked" },
+        { status: 409 },
+      )
     case "active_flow_exists":
       return NextResponse.json(
         {

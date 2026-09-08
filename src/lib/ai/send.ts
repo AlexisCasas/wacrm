@@ -8,6 +8,7 @@ import {
 } from '@/lib/manychat/contact-send'
 import { ManyChatApiError } from '@/lib/manychat/api'
 import { engineSendText } from '@/lib/flows/meta-send'
+import { assertContactCanReceive } from '@/lib/contacts/blocking'
 
 export interface SendAiTextArgs {
   accountId: string
@@ -60,6 +61,14 @@ export async function sendAiTextToConversation(
   args: SendAiTextArgs,
 ): Promise<SendAiTextResult> {
   const { accountId, conversationId, contactId, text, configOwnerUserId } = args
+
+  // MUST run before the transport branch below. The Meta branch's
+  // `engineSendText` already checks this internally, but this
+  // function's OWN ManyChat branch sends directly via
+  // `sendManyChatTextToContact` without ever going through
+  // `engineSendText` — without this, a blocked contact bridged through
+  // ManyChat could still receive an AI reply.
+  await assertContactCanReceive(supabaseAdmin(), accountId, contactId)
 
   if (resolveOutboundTransport(accountId) !== 'manychat') {
     return engineSendText({

@@ -105,6 +105,11 @@ export function FlowStartPicker({
           );
         } else if (data.code === "service_window_expired") {
           toast.error(t("errorServiceWindow"));
+        } else if (data.code === "contact_blocked") {
+          // P0 contact blocking — a stale Inbox tab picked a Flow for
+          // a contact that got blocked meanwhile. Never confirm as if
+          // it started.
+          toast.error(t("errorContactBlocked"));
         } else {
           toast.error(t("errorGeneric"));
         }

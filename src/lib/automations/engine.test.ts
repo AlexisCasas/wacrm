@@ -4,7 +4,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // so the vi.mock factory below can close over it.
 const h = vi.hoisted(() => ({
   state: {
-    owned: null as { id: string } | null,
+    owned: null as { id: string; blocked?: boolean } | null,
     ownedCustomField: null as { id: string } | null,
     automations: [] as Record<string, unknown>[],
     steps: [] as Record<string, unknown>[],
@@ -14,8 +14,48 @@ const h = vi.hoisted(() => ({
     logInserts: [] as Record<string, unknown>[],
     logUpdates: [] as Record<string, unknown>[],
     pendingInserts: [] as Record<string, unknown>[],
+    pendingStatusUpdates: [] as { id: unknown; status: unknown }[],
     contactTagDeletes: [] as { contactId: unknown; tagId: unknown }[],
     conversationLookup: null as { id: string } | null,
+    /** Non-update SELECTs against `contacts` so far this test — lets a
+     *  test simulate "the contact got blocked mid-run" by flipping
+     *  `blocked` starting at a specific call number rather than for
+     *  the whole test (see the P0 mid-run blocking race tests). */
+    contactsSelectCount: 0,
+    /** 1-indexed call number at which `contacts.blocked` starts
+     *  reading true (inclusive); null = never. */
+    blockContactFromCall: null as number | null,
+    /** 1-indexed call number at which the `contacts` blocked-check
+     *  SELECT starts erroring (inclusive); null = never. Used to
+     *  prove the mid-run check fails CLOSED. */
+    contactsSelectErrorFromCall: null as number | null,
+    /** What a fresh SELECT against `automation_pending_executions` by
+     *  id returns — the P0 cancellation-token re-check. Defaults (set
+     *  in beforeEach) to a valid, still-running row matching the
+     *  `pending` argument every resumePendingExecution test already
+     *  uses, so only the tests that specifically simulate a
+     *  cancellation need to override it. */
+    freshPendingRow: null as Record<string, unknown> | null,
+    freshPendingRowError: null as { message: string } | null,
+    /** Non-insert/update reads of `automation_pending_executions` so
+     *  far this test — lets a test simulate "block_contact_internal
+     *  cancelled this pending row WHILE it was already resuming" by
+     *  flipping the freshly-read status to 'done' starting at a
+     *  specific call number, mirroring contactsSelectCount/
+     *  blockContactFromCall above. */
+    pendingSelectCount: 0,
+    pendingDoneFromCall: null as number | null,
+    /** P0 wait-scheduling TOCTOU close — controls what the mocked
+     *  schedule_automation_wait_if_contact_active RPC returns.
+     *  scheduleWaitError set -> RPC technical failure (fail-closed
+     *  test); scheduleWaitBlocked true -> RPC returns false (contact
+     *  not eligible), no row inserted; otherwise the mock inserts into
+     *  pendingInserts (same shape the old direct insert produced) and
+     *  returns true, so every pre-existing assertion against
+     *  pendingInserts keeps working unchanged. */
+    scheduleWaitError: null as { message: string } | null,
+    scheduleWaitBlocked: false,
+    scheduleWaitCalls: [] as Record<string, unknown>[],
   },
 }));
 
@@ -34,7 +74,21 @@ vi.mock("./admin-client", () => {
         state.updateCalls.push({ table, filters: ops.filters });
         return { data: null, error: null };
       }
-      // ownership guard / condition read
+      // ownership guard / condition read / P0 mid-run blocked recheck
+      state.contactsSelectCount += 1;
+      if (
+        state.contactsSelectErrorFromCall !== null &&
+        state.contactsSelectCount >= state.contactsSelectErrorFromCall
+      ) {
+        return { data: null, error: { message: "connection reset" } };
+      }
+      if (
+        state.owned &&
+        state.blockContactFromCall !== null &&
+        state.contactsSelectCount >= state.blockContactFromCall
+      ) {
+        return { data: { ...state.owned, blocked: true }, error: null };
+      }
       return { data: state.owned, error: null };
     }
     if (table === "custom_fields") {
@@ -65,7 +119,24 @@ vi.mock("./admin-client", () => {
         state.pendingInserts.push(ops.payload as Record<string, unknown>);
         return { data: null, error: null };
       }
-      return { data: null, error: null };
+      if (type === "update") {
+        const id = ops.filters.find((f) => f[1] === "id")?.[2];
+        const status = (ops.payload as { status?: unknown } | undefined)?.status;
+        state.pendingStatusUpdates.push({ id, status });
+        return { data: null, error: null };
+      }
+      // The P0 cancellation-token re-checks (resumePendingExecution's
+      // own revalidation, and executeStepsFrom's per-step
+      // isPendingExecutionStillRunning) both do a plain SELECT by id.
+      state.pendingSelectCount += 1;
+      if (
+        state.freshPendingRow &&
+        state.pendingDoneFromCall !== null &&
+        state.pendingSelectCount >= state.pendingDoneFromCall
+      ) {
+        return { data: { ...state.freshPendingRow, status: "done" }, error: null };
+      }
+      return { data: state.freshPendingRow, error: state.freshPendingRowError };
     }
     if (table === "contact_tags") {
       if (type === "delete") {
@@ -126,7 +197,34 @@ vi.mock("./admin-client", () => {
         state.fromCalls.push(t);
         return builder(t);
       },
-      rpc: () => Promise.resolve({ error: null }),
+      rpc: (name: string, args: Record<string, unknown>) => {
+        if (name === "schedule_automation_wait_if_contact_active") {
+          state.scheduleWaitCalls.push(args);
+          if (state.scheduleWaitError) {
+            return Promise.resolve({ data: null, error: state.scheduleWaitError });
+          }
+          if (state.scheduleWaitBlocked) {
+            return Promise.resolve({ data: false, error: null });
+          }
+          // Simulate the real RPC's own INSERT so every pre-existing
+          // assertion against pendingInserts keeps working unchanged.
+          state.pendingInserts.push({
+            automation_id: args.p_automation_id,
+            account_id: args.p_account_id,
+            user_id: args.p_user_id,
+            contact_id: args.p_contact_id,
+            log_id: args.p_log_id,
+            parent_step_id: args.p_parent_step_id,
+            branch: args.p_branch,
+            next_step_position: args.p_next_step_position,
+            context: args.p_context,
+            run_at: args.p_run_at,
+            status: "pending",
+          });
+          return Promise.resolve({ data: true, error: null });
+        }
+        return Promise.resolve({ error: null });
+      },
     }),
   };
 });
@@ -139,7 +237,7 @@ vi.mock("./meta-send", () => ({
 }));
 
 import { runAutomationsForTrigger, triggerMatches, resumePendingExecution } from "./engine";
-import { engineSendMedia as mockEngineSendMedia } from "./meta-send";
+import { engineSendMedia as mockEngineSendMedia, engineSendText as mockEngineSendText } from "./meta-send";
 import type { Automation, KeywordMatchTriggerConfig } from "@/types";
 
 const ACCOUNT = "acct-1";
@@ -155,9 +253,30 @@ beforeEach(() => {
   h.state.logInserts = [];
   h.state.logUpdates = [];
   h.state.pendingInserts = [];
+  h.state.pendingStatusUpdates = [];
   h.state.contactTagDeletes = [];
   h.state.conversationLookup = null;
+  h.state.contactsSelectCount = 0;
+  h.state.blockContactFromCall = null;
+  h.state.contactsSelectErrorFromCall = null;
+  // Default: a valid, still-running pending row matching what every
+  // existing resumePendingExecution test already passes as `pending`.
+  // Tests that specifically simulate a cancellation override this.
+  h.state.freshPendingRow = {
+    id: "pending-1",
+    status: "running",
+    automation_id: "a1",
+    account_id: ACCOUNT,
+    contact_id: "c1",
+  };
+  h.state.freshPendingRowError = null;
+  h.state.pendingSelectCount = 0;
+  h.state.pendingDoneFromCall = null;
+  h.state.scheduleWaitError = null;
+  h.state.scheduleWaitBlocked = false;
+  h.state.scheduleWaitCalls = [];
   vi.mocked(mockEngineSendMedia).mockClear();
+  vi.mocked(mockEngineSendText).mockClear();
 });
 
 describe("runAutomationsForTrigger — tenant isolation", () => {
@@ -193,6 +312,24 @@ describe("runAutomationsForTrigger — tenant isolation", () => {
     });
 
     expect(h.state.fromCalls).toContain("automations");
+  });
+
+  it("P0 contact blocking — refuses to dispatch when the contact is blocked", async () => {
+    h.state.owned = { id: "c1", blocked: true };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [updateStep()];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "new_message_received",
+      contactId: "c1",
+      context: {},
+    });
+
+    // Bailed right after the ownership check, before ever loading automations.
+    expect(h.state.fromCalls).toContain("contacts");
+    expect(h.state.fromCalls).not.toContain("automations");
+    expect(h.state.updateCalls).toHaveLength(0);
   });
 
   it("scopes the update_contact_field write to the automation's account", async () => {
@@ -729,6 +866,225 @@ describe("remove_tag before wait — the follow-up rule's own pattern (spec §6/
   });
 });
 
+describe("P0 contact blocking — race: automation already running when the contact gets blocked", () => {
+  it("blocked right before the wait step: no pending row is enqueued, so unblocking later has nothing old to resume", async () => {
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [
+      removeTagStep(0, "PROGRAMAR_PRUEBAS_ENVIO"),
+      waitStep(1, 10, "hours"),
+    ];
+    // Contacts-select call sequence: #1 = runAutomationsForTrigger's own
+    // ownership guard, #2 = the per-step recheck before step 0, #3 = the
+    // per-step recheck before step 1 (the wait). Block starting at #3 —
+    // the contact was still fine when step 0 ran, then got blocked right
+    // before the wait would have been scheduled.
+    h.state.blockContactFromCall = 3;
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(h.state.pendingInserts).toHaveLength(0);
+  });
+
+  it("blocked mid-run: the next non-wait side-effect step is never executed", async () => {
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [
+      removeTagStep(0, "TAG_A"),
+      removeTagStep(1, "TAG_B"),
+    ];
+    // Same call numbering as above: #3 is the recheck before step 1.
+    h.state.blockContactFromCall = 3;
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    // Step 0 (TAG_A) ran before the contact was blocked; step 1 (TAG_B)
+    // must never run once it is.
+    expect(h.state.contactTagDeletes).toEqual([{ contactId: "c1", tagId: "TAG_A" }]);
+  });
+
+  it("logs the stop as an auditable 'skipped' step with status=partial, not a noisy technical failure", async () => {
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [waitStep(0, 10, "hours")];
+    // Call #1 is runAutomationsForTrigger's own ownership guard (must
+    // still see not-blocked here so it actually creates the log via
+    // executeAutomation); call #2 is the per-step recheck before step
+    // 0 — block from there so even the FIRST step never runs.
+    h.state.blockContactFromCall = 2;
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(h.state.pendingInserts).toHaveLength(0);
+    expect(h.state.logUpdates).toHaveLength(1);
+    expect(h.state.logUpdates[0]).toMatchObject({ status: "partial", error_message: "contact_blocked" });
+    const steps = h.state.logUpdates[0].steps_executed as Array<{ status: string; detail?: string }>;
+    expect(steps).toEqual([{ step_id: "wait-0", step_type: "wait", status: "skipped", detail: "contact_blocked" }]);
+  });
+
+  it("FAIL CLOSED — a transient error checking contact state stops the run instead of continuing", async () => {
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [
+      removeTagStep(0, "PROGRAMAR_PRUEBAS_ENVIO"),
+      waitStep(1, 10, "hours"),
+    ];
+    // Same call numbering as the tests above: #3 is the recheck before
+    // step 1 (the wait). The SELECT itself fails there, rather than
+    // returning blocked=true — must still stop, never fall through to
+    // "well, we don't know, so keep going."
+    h.state.contactsSelectErrorFromCall = 3;
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    // No pending row for the wait step that never got to run...
+    expect(h.state.pendingInserts).toHaveLength(0);
+    // ...step 0 (which ran before the failure) did its thing, but
+    // nothing after the failed check did.
+    expect(h.state.contactTagDeletes).toEqual([
+      { contactId: "c1", tagId: "PROGRAMAR_PRUEBAS_ENVIO" },
+    ]);
+    // Auditable, not silently swallowed: a real technical failure
+    // (as opposed to the graceful 'partial'/contact_blocked stop)
+    // reads status=failed with a distinct, stable detail.
+    expect(h.state.logUpdates).toHaveLength(1);
+    expect(h.state.logUpdates[0]).toMatchObject({
+      status: "failed",
+      error_message: "contact_state_check_failed",
+    });
+    const steps = h.state.logUpdates[0].steps_executed as Array<{ status: string; detail?: string }>;
+    expect(steps.at(-1)).toEqual({
+      step_id: "wait-1",
+      step_type: "wait",
+      status: "failed",
+      detail: "contact_state_check_failed",
+    });
+  });
+});
+
+describe("P0 contact blocking — wait scheduling is atomic with the contact's blocked state (TOCTOU close)", () => {
+  it("A. a wait with a contactId schedules via the RPC, never a direct insert", async () => {
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [waitStep(0, 10, "hours")];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(h.state.scheduleWaitCalls).toHaveLength(1);
+    expect(h.state.scheduleWaitCalls[0]).toMatchObject({
+      p_automation_id: "a1",
+      p_account_id: ACCOUNT,
+      p_contact_id: "c1",
+      p_next_step_position: 1,
+    });
+    // The RPC is the ONLY thing that touches automation_pending_executions
+    // here — no separate .from('automation_pending_executions').insert(...).
+    expect(h.state.fromCalls).not.toContain("automation_pending_executions");
+    expect(h.state.pendingInserts).toHaveLength(1);
+  });
+
+  it("B. RPC reports the contact isn't eligible (blocked / not found) -> no pending, no steps after, auditable stop", async () => {
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [waitStep(0, 10, "hours")];
+    h.state.scheduleWaitBlocked = true;
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(h.state.pendingInserts).toHaveLength(0);
+    expect(h.state.logUpdates).toHaveLength(1);
+    expect(h.state.logUpdates[0]).toMatchObject({ status: "partial", error_message: "contact_blocked" });
+    const steps = h.state.logUpdates[0].steps_executed as Array<{ status: string; detail?: string }>;
+    expect(steps).toEqual([{ step_id: "wait-0", step_type: "wait", status: "skipped", detail: "contact_blocked" }]);
+  });
+
+  it("C. RPC fails technically -> fail closed, no pending, status=failed with a stable detail", async () => {
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [waitStep(0, 10, "hours")];
+    h.state.scheduleWaitError = { message: "connection reset" };
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(h.state.pendingInserts).toHaveLength(0);
+    expect(h.state.logUpdates).toHaveLength(1);
+    expect(h.state.logUpdates[0]).toMatchObject({ status: "failed", error_message: "wait_schedule_failed" });
+    const steps = h.state.logUpdates[0].steps_executed as Array<{ status: string; detail?: string }>;
+    expect(steps).toEqual([{ step_id: "wait-0", step_type: "wait", status: "failed", detail: "wait_schedule_failed" }]);
+  });
+
+  it("D. RPC succeeds -> continues with the exact prior wait semantics (status=partial, waiting detail)", async () => {
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [waitStep(0, 10, "hours")];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: "c1",
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(h.state.pendingInserts).toHaveLength(1);
+    expect(h.state.logUpdates).toHaveLength(1);
+    expect(h.state.logUpdates[0]).toMatchObject({ status: "partial" });
+    const steps = h.state.logUpdates[0].steps_executed as Array<{ status: string; detail?: string }>;
+    expect(steps).toEqual([
+      { step_id: "wait-0", step_type: "wait", status: "success", detail: "waiting 10 hours" },
+    ]);
+  });
+
+  it("a wait with NO contactId keeps using the plain direct insert (contact blocking doesn't apply)", async () => {
+    h.state.automations = [tagAddedAutomation()];
+    h.state.steps = [waitStep(0, 10, "hours")];
+
+    await runAutomationsForTrigger({
+      accountId: ACCOUNT,
+      triggerType: "tag_added",
+      contactId: null,
+      context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" },
+    });
+
+    expect(h.state.scheduleWaitCalls).toHaveLength(0);
+    expect(h.state.fromCalls).toContain("automation_pending_executions");
+  });
+});
+
 describe("resumePendingExecution — processes a due row (spec §11.C)", () => {
   it("resumes from next_step_position and depends only on the pending row's own fields", async () => {
     h.state.automations = [tagAddedAutomation()];
@@ -763,11 +1119,182 @@ describe("resumePendingExecution — processes a due row (spec §11.C)", () => {
     });
 
     expect(h.state.fromCalls).toContain("automation_steps");
-    // No ownership re-check against `contacts`, no `flow_runs`, no
-    // `ai_autoreply_disabled` — a resumed wait is driven purely by
-    // run_at/status on its own row, never by inbox/agent/AI state.
+    // No `flow_runs`, no `ai_autoreply_disabled` — a resumed wait is
+    // driven purely by run_at/status on its own row, never by
+    // inbox/agent/AI state. (It DOES now check `contacts.blocked` —
+    // see the P0 contact-blocking tests below.)
     expect(h.state.fromCalls).not.toContain("flow_runs");
     expect(h.state.fromCalls).not.toContain("ai_autoreply_disabled");
+  });
+});
+
+describe("resumePendingExecution — P0 contact blocking", () => {
+  it("a blocked contact never runs the resumed steps, and is marked done (not failed, not left pending)", async () => {
+    h.state.automations = [tagAddedAutomation()];
+    h.state.owned = { id: "c1", blocked: true };
+    h.state.steps = [
+      {
+        id: "s-resumed",
+        automation_id: "a1",
+        step_type: "send_message",
+        position: 1,
+        parent_step_id: null,
+        step_config: { text: "Gracias por tu compra" },
+      },
+    ];
+
+    await resumePendingExecution({
+      id: "pending-1",
+      automation_id: "a1",
+      user_id: "u1",
+      account_id: ACCOUNT,
+      contact_id: "c1",
+      log_id: "log-1",
+      parent_step_id: null,
+      branch: null,
+      next_step_position: 1,
+      context: { conversation_id: "conv-1" },
+    });
+
+    // automation_steps IS fetched (executeStepsFrom's per-step guard
+    // runs inside its loop, after the read-only steps query) — but no
+    // step actually executes: no send, no side effect.
+    expect(mockEngineSendText).not.toHaveBeenCalled();
+    // Never left pending, never marked failed — 'done' so it can never
+    // be picked up again, including after a future unblock.
+    expect(h.state.pendingStatusUpdates).toEqual([{ id: "pending-1", status: "done" }]);
+  });
+
+  it("a non-blocked contact still resumes normally (no false positive)", async () => {
+    h.state.automations = [tagAddedAutomation()];
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.steps = [
+      {
+        id: "s-resumed",
+        automation_id: "a1",
+        step_type: "send_message",
+        position: 1,
+        parent_step_id: null,
+        step_config: { text: "Gracias por tu compra" },
+      },
+    ];
+
+    await resumePendingExecution({
+      id: "pending-1",
+      automation_id: "a1",
+      user_id: "u1",
+      account_id: ACCOUNT,
+      contact_id: "c1",
+      log_id: "log-1",
+      parent_step_id: null,
+      branch: null,
+      next_step_position: 1,
+      context: { conversation_id: "conv-1" },
+    });
+
+    expect(h.state.fromCalls).toContain("automation_steps");
+    // D. NORMAL — pending still running, contact not blocked: resume
+    // proceeds exactly as before, all the way to actually sending.
+    expect(mockEngineSendText).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("resumePendingExecution — P0 durable cancellation token (pending.status, not contacts.blocked)", () => {
+  it("B. CLAIMED -> BLOCKED -> UNBLOCKED: a fresh pending re-read of status=done refuses to revive, even though the contact is blocked=false again", async () => {
+    h.state.automations = [tagAddedAutomation()];
+    // The contact was unblocked before this resume ran — if the code
+    // looked at contacts.blocked instead of the pending row's own
+    // status, it would wrongly conclude "safe to proceed."
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.steps = [
+      {
+        id: "s-resumed",
+        automation_id: "a1",
+        step_type: "send_message",
+        position: 1,
+        parent_step_id: null,
+        step_config: { text: "Gracias por tu compra" },
+      },
+    ];
+    // block_contact_internal already flipped this pending row to
+    // 'done' while it was 'running' — the durable cancellation token.
+    h.state.freshPendingRow = {
+      id: "pending-1",
+      status: "done",
+      automation_id: "a1",
+      account_id: ACCOUNT,
+      contact_id: "c1",
+    };
+
+    // The cron's own (now-stale) view of the row it originally claimed.
+    await resumePendingExecution({
+      id: "pending-1",
+      automation_id: "a1",
+      user_id: "u1",
+      account_id: ACCOUNT,
+      contact_id: "c1",
+      log_id: "log-1",
+      parent_step_id: null,
+      branch: null,
+      next_step_position: 1,
+      context: { conversation_id: "conv-1" },
+    });
+
+    expect(h.state.fromCalls).not.toContain("automation_steps");
+    expect(mockEngineSendText).not.toHaveBeenCalled();
+    expect(h.state.pendingInserts).toHaveLength(0);
+    // Must not re-mark it — it's already terminal; resumePendingExecution's
+    // revalidation returns before ever calling markPending itself.
+    expect(h.state.pendingStatusUpdates).toHaveLength(0);
+  });
+
+  it("C. CANCEL DURING RESUME: step 0 runs, then the pending flips to done before step 1 — step 1 never runs", async () => {
+    h.state.automations = [tagAddedAutomation()];
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.steps = [
+      removeTagStep(0, "TAG_A"),
+      {
+        id: "s-resumed-1",
+        automation_id: "a1",
+        step_type: "send_message",
+        position: 1,
+        parent_step_id: null,
+        step_config: { text: "Gracias por tu compra" },
+      },
+    ];
+
+    // Starts valid/running (so resumePendingExecution's own outer
+    // revalidation passes and step 0 gets a chance to run)...
+    h.state.freshPendingRow = {
+      id: "pending-1",
+      status: "running",
+      automation_id: "a1",
+      account_id: ACCOUNT,
+      contact_id: "c1",
+    };
+    // ...but a concurrent block_contact_internal call flips it to
+    // 'done' between step 0 and step 1. Fresh-read call sequence:
+    // #1 = resumePendingExecution's own outer revalidation, #2 = the
+    // per-step guard before step 0 (remove_tag) — both still see
+    // 'running' — #3 = the per-step guard before step 1
+    // (send_message), where it flips to 'done'.
+    h.state.pendingDoneFromCall = 3;
+
+    await resumePendingExecution({
+      id: "pending-1",
+      automation_id: "a1",
+      user_id: "u1",
+      account_id: ACCOUNT,
+      contact_id: "c1",
+      log_id: "log-1",
+      parent_step_id: null,
+      branch: null,
+      next_step_position: 0,
+      context: { conversation_id: "conv-1" },
+    });
+
+    expect(h.state.contactTagDeletes).toEqual([{ contactId: "c1", tagId: "TAG_A" }]);
+    expect(mockEngineSendText).not.toHaveBeenCalled();
   });
 });
 

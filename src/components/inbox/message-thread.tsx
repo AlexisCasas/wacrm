@@ -28,6 +28,7 @@ import {
   PanelRightOpen,
   PanelRightClose,
   Zap,
+  Ban,
 } from "lucide-react";
 import { format, isToday, isYesterday, differenceInHours } from "date-fns";
 import { useTranslations } from "next-intl";
@@ -57,6 +58,15 @@ import { renderTemplateBody } from "@/lib/whatsapp/template-body";
 import { toast } from "sonner";
 import { useCan } from "@/hooks/use-can";
 import { FlowStartPicker } from "./flow-start-picker";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
 
 interface ReplyDraft {
   id: string;
@@ -108,6 +118,14 @@ interface MessageThreadProps {
    */
   contactPanelOpen?: boolean;
   onToggleContactPanel?: () => void;
+  /**
+   * Fired right after a successful block, so the parent can drop this
+   * conversation out of the normal Inbox list immediately and clear
+   * the active selection if it was the one open. Optional so existing
+   * callers keep working (the Block action itself only needs
+   * `canSendMessages` to render, independent of this being wired up).
+   */
+  onContactBlocked?: (conversationId: string) => void;
 }
 
 function formatDateSeparator(dateStr: string, t: ReturnType<typeof useTranslations>): string {
@@ -166,6 +184,7 @@ export function MessageThread({
   onRefresh,
   contactPanelOpen,
   onToggleContactPanel,
+  onContactBlocked,
 }: MessageThreadProps) {
   const t = useTranslations("Inbox.messageThread");
   const tTimer = useTranslations("Inbox.sessionTimer");
@@ -173,11 +192,16 @@ export function MessageThread({
 
   const { user } = useAuth();
   const canStartFlow = useCan("send-messages");
+  // Same underlying capability as Start Flow — blocking is a write
+  // operation gated the same way sending a message is (viewers can't).
+  const canBlockContact = useCan("send-messages");
   const { getPresence, getRow, now } = usePresence();
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [flowPickerOpen, setFlowPickerOpen] = useState(false);
+  const [blockDialogOpen, setBlockDialogOpen] = useState(false);
+  const [blocking, setBlocking] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   // Purely visual spin state for the manual-refresh button. The actual
@@ -660,6 +684,35 @@ export function MessageThread({
     [conversation, onStatusChange]
   );
 
+  /**
+   * P0 — internal WACRM contact block. Real enforcement is entirely
+   * server-side (POST /api/contacts/[id]/block, and every send/Flow/
+   * Automation/AI path independently refuses a blocked contact) — this
+   * handler is just the Inbox affordance: confirm, call the route,
+   * surface the result, and let the parent drop the conversation out
+   * of the normal list.
+   */
+  const handleBlockContact = useCallback(async () => {
+    if (!conversation || !contact || blocking) return;
+    setBlocking(true);
+    try {
+      const res = await fetch(`/api/contacts/${contact.id}/block`, {
+        method: "POST",
+      });
+      if (!res.ok) {
+        toast.error(t("blockContactError"));
+        return;
+      }
+      toast.success(t("blockContactSuccess"));
+      setBlockDialogOpen(false);
+      onContactBlocked?.(conversation.id);
+    } catch {
+      toast.error(t("blockContactError"));
+    } finally {
+      setBlocking(false);
+    }
+  }, [conversation, contact, blocking, onContactBlocked, t]);
+
   const handleOpenTemplates = useCallback(() => {
     setTemplateModalOpen(true);
   }, []);
@@ -1017,6 +1070,25 @@ export function MessageThread({
             </button>
           )}
 
+          {/* Block contact — P0 internal WACRM block (NOT WhatsApp/Meta's
+              native block). Hidden once already blocked: this view is
+              only reachable for a blocked contact via history/contact
+              detail, where unblocking happens from the Blocked Contacts
+              screen, not here. Real enforcement is entirely server-side
+              (POST /api/contacts/[id]/block + every send/Flow/
+              Automation/AI path) — this button is only the affordance. */}
+          {canBlockContact && !contact.blocked && (
+            <button
+              type="button"
+              onClick={() => setBlockDialogOpen(true)}
+              title={t("blockContact")}
+              className="inline-flex h-7 items-center justify-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-red-500/10 hover:text-red-400"
+            >
+              <Ban className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">{t("blockContact")}</span>
+            </button>
+          )}
+
           {/* Status dropdown */}
           <DropdownMenu>
             <DropdownMenuTrigger className={cn(
@@ -1186,6 +1258,19 @@ export function MessageThread({
         )}
       </div>
 
+      {/* Blocked-contact banner — reachable when this conversation is
+          opened via history/contact-detail rather than the normal
+          Inbox list (which already excludes blocked contacts at the
+          query layer). Purely informational: the composer below is
+          already disabled, and send-message.ts is the real
+          enforcement regardless of what renders here. */}
+      {contact.blocked && (
+        <div className="flex items-center gap-2 border-t border-red-500/20 bg-red-500/10 px-4 py-2">
+          <Ban className="h-3.5 w-3.5 shrink-0 text-red-400" />
+          <p className="text-xs text-red-400">{t("blockedBanner")}</p>
+        </div>
+      )}
+
       {/* AI auto-reply banner — take over an active bot, or resume it
           after a handoff. Renders nothing unless the account has
           auto-reply configured. */}
@@ -1206,6 +1291,7 @@ export function MessageThread({
       <MessageComposer
         conversationId={conversation.id}
         sessionExpired={sessionInfo.expired}
+        contactBlocked={contact.blocked ?? false}
         onSend={handleSend}
         onSendMedia={handleSendMedia}
         onSendInteractive={handleSendInteractive}
@@ -1227,6 +1313,38 @@ export function MessageThread({
         contactDisplayName={contactDisplayName}
         onStarted={onRefresh}
       />
+
+      <Dialog
+        open={blockDialogOpen}
+        onOpenChange={(next) => !blocking && setBlockDialogOpen(next)}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t("blockContactConfirmTitle")}</DialogTitle>
+            <DialogDescription>
+              {t("blockContactConfirmDescription")}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setBlockDialogOpen(false)}
+              disabled={blocking}
+            >
+              {t("blockContactCancel")}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={handleBlockContact}
+              disabled={blocking}
+            >
+              {blocking ? t("blockContactBlocking") : t("blockContactConfirm")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Full-size viewer for the thread's images/videos. Renders nothing
           until a bubble opens it. */}

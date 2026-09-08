@@ -263,11 +263,12 @@ interface CapturedWrites {
  */
 function sendPathDb(
   templateRows: unknown[],
-  captured: CapturedWrites
+  captured: CapturedWrites,
+  contactOverrides: Record<string, unknown> = {},
 ): SupabaseClient {
   const conversation = {
     id: 'cv-1',
-    contact: { id: 'ct-1', phone: '+15551234567' },
+    contact: { id: 'ct-1', phone: '+15551234567', ...contactOverrides },
   };
   const config = {
     id: 'cfg-1',
@@ -1004,5 +1005,88 @@ describe('the bot/AI send path (src/lib/ai/send.ts) never clears ai_handoff_summ
       'utf8',
     );
     expect(source).not.toContain('ai_handoff_summary');
+  });
+});
+
+// ============================================================
+// P0 — BLOQUEO INTERNO DE CONTACTOS. Blocked check must run before
+// ANY transport (Meta or ManyChat) and before any persistence — this
+// is the shared core every manual/public-API send goes through.
+// ============================================================
+describe('sendMessageToConversation — blocked contact (P0 contact blocking)', () => {
+  it('refuses a text send with a stable code, before Meta is called', async () => {
+    sendTemplateMessage.mockClear();
+    const captured: CapturedWrites = {};
+    await expect(
+      sendMessageToConversation(
+        sendPathDb([], captured, { blocked: true }),
+        'acct-1',
+        { conversationId: 'cv-1', messageType: 'text', contentText: 'hi' },
+      ),
+    ).rejects.toMatchObject({ code: 'contact_blocked', status: 409 });
+    expect(captured.message).toBeUndefined();
+  });
+
+  it('refuses a media send', async () => {
+    sendMediaMessage.mockClear();
+    const captured: CapturedWrites = {};
+    await expect(
+      sendMessageToConversation(
+        sendPathDb([], captured, { blocked: true }),
+        'acct-1',
+        {
+          conversationId: 'cv-1',
+          messageType: 'image',
+          mediaUrl: 'https://cdn.example.com/pic.jpg',
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'contact_blocked' });
+    expect(sendMediaMessage).not.toHaveBeenCalled();
+  });
+
+  it('refuses a template send', async () => {
+    sendTemplateMessage.mockClear();
+    const captured: CapturedWrites = {};
+    await expect(
+      sendMessageToConversation(
+        sendPathDb([TEMPLATE_ROW], captured, { blocked: true }),
+        'acct-1',
+        {
+          conversationId: 'cv-1',
+          messageType: 'template',
+          templateName: 'order_update',
+          templateParams: ['A123', 'Friday'],
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'contact_blocked' });
+    expect(sendTemplateMessage).not.toHaveBeenCalled();
+  });
+
+  it('refuses a voice note send', async () => {
+    sendMediaMessage.mockClear();
+    const captured: CapturedWrites = {};
+    await expect(
+      sendMessageToConversation(
+        sendPathDb([], captured, { blocked: true }),
+        'acct-1',
+        {
+          conversationId: 'cv-1',
+          messageType: 'audio',
+          mediaUrl: 'https://cdn.example.com/voice.ogg',
+          voiceNote: true,
+        },
+      ),
+    ).rejects.toMatchObject({ code: 'contact_blocked' });
+    expect(sendMediaMessage).not.toHaveBeenCalled();
+  });
+
+  it('a non-blocked contact still sends normally (no false positive)', async () => {
+    const captured: CapturedWrites = {};
+    const result = await sendMessageToConversation(
+      sendPathDb([], captured, { blocked: false }),
+      'acct-1',
+      { conversationId: 'cv-1', messageType: 'text', contentText: 'hi' },
+    );
+    expect(result.whatsappMessageId).toBeTruthy();
   });
 });

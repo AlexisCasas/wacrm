@@ -636,6 +636,23 @@ async function processMessage(
   if (!contactOutcome) return
   const contactRecord = contactOutcome.contact
 
+  // Blocked contact — hard operational stop. Nothing below this point
+  // may run: no conversation open/reopen, no message insert, no
+  // unread bump, no media mirror, no Flow/Automation/AI dispatch, no
+  // outbound webhook event. Only a lightweight, content-free counter
+  // is recorded (never the message text/media/id).
+  if (contactRecord.blocked) {
+    const { error: blockedRpcErr } = await supabaseAdmin().rpc('record_blocked_inbound', {
+      p_contact_id: contactRecord.id,
+      p_account_id: accountId,
+      p_timestamp: new Date().toISOString(),
+    })
+    if (blockedRpcErr) {
+      console.error('[webhook] record_blocked_inbound failed:', blockedRpcErr.message)
+    }
+    return
+  }
+
   // Find or create conversation
   const convResult = await findOrCreateConversation(
     supabaseAdmin(),

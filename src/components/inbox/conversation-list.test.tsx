@@ -30,6 +30,7 @@ vi.mock("@/lib/supabase/client", () => ({
     from: (_table: string) => {
       const builder = {
         select: () => builder,
+        eq: () => builder,
         order: () => Promise.resolve({ data: [], error: null }),
       };
       return builder;

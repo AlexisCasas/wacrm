@@ -213,6 +213,7 @@ vi.mock('@/lib/webhooks/deliver', () => ({
 
 import { POST } from './route'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
+import { findExistingContact } from '@/lib/contacts/dedupe'
 
 const mockGetMediaUrl = vi.mocked(getMediaUrl)
 const mockDownloadMedia = vi.mocked(downloadMedia)
@@ -545,5 +546,49 @@ describe('inbound webhook: after() awaits automations (#368)', () => {
     // If the dispatches were fire-and-forget, completed would still be 0
     // here — the callback would have resolved before the timers fired.
     expect(h.state.automationCompleted).toBe(3)
+  })
+})
+
+// ============================================================
+// P0 — BLOQUEO INTERNO DE CONTACTOS. A blocked contact's inbound
+// message must hard-stop right after contact resolution: no
+// conversation, no message insert, no unread bump, no media
+// mirror/download, no Flow/Automation/AI dispatch, no outbound
+// webhook event. Only a content-free counter is recorded.
+// ============================================================
+describe('inbound webhook: blocked contact (P0 contact blocking)', () => {
+  it('records the blocked-inbound counter and does nothing else', async () => {
+    vi.mocked(findExistingContact).mockResolvedValueOnce({
+      id: 'contact-1',
+      name: 'Ada',
+      phone: '15551230000',
+      blocked: true,
+    } as never)
+
+    await runWebhook()
+
+    const blockedCall = h.state.rpcCalls.find((c) => c.name === 'record_blocked_inbound')
+    expect(blockedCall).toBeDefined()
+    expect(blockedCall!.args).toMatchObject({
+      p_contact_id: 'contact-1',
+      p_account_id: 'acc-1',
+    })
+
+    expect(h.state.upsertCalls).toHaveLength(0)
+    expect(mockGetMediaUrl).not.toHaveBeenCalled()
+    expect(mockDownloadMedia).not.toHaveBeenCalled()
+    expect(h.state.storageUploads).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.runAutomationsForTrigger).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+    expect(h.dispatchWebhookEvent).not.toHaveBeenCalled()
+  })
+
+  it('a non-blocked contact on the same webhook keeps working exactly as before', async () => {
+    // Default mock (no override) — blocked is undefined/falsy.
+    await runWebhook()
+
+    expect(h.state.upsertCalls).toHaveLength(1)
+    expect(h.state.rpcCalls.some((c) => c.name === 'record_blocked_inbound')).toBe(false)
   })
 })

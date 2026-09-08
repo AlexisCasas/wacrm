@@ -177,7 +177,16 @@
       "today": "오늘",
       "yesterday": "어제",
       "startFlow": "Flow 시작",
-      "startFlowDisabledHint": "24시간 서비스 윈도우 밖에서는 Flow를 시작할 수 없습니다."
+      "startFlowDisabledHint": "24시간 서비스 윈도우 밖에서는 Flow를 시작할 수 없습니다.",
+      "blockContact": "연락처 차단",
+      "blockContactConfirmTitle": "이 연락처를 차단할까요?",
+      "blockContactConfirmDescription": "이 연락처는 일반 받은편지함에 더 이상 표시되지 않으며, WACRM은 새 메시지에 대해 자동화나 자동 응답을 실행하지 않습니다.",
+      "blockContactCancel": "취소",
+      "blockContactConfirm": "차단",
+      "blockContactBlocking": "차단하는 중...",
+      "blockContactSuccess": "연락처가 차단되었습니다.",
+      "blockContactError": "연락처를 차단하지 못했습니다. 다시 시도해 주세요.",
+      "blockedBanner": "이 연락처는 차단되었습니다. 다시 메시지를 보내려면 차단을 해제하세요."
     },
     "flowStartPicker": {
       "title": "Flow 시작",
@@ -191,6 +200,7 @@
       "successToast": "Flow 시작됨: {flowName}",
       "errorActiveFlow": "이 연락처에는 이미 활성 Flow가 있습니다: {flowName}.",
       "errorServiceWindow": "24시간 서비스 윈도우 밖에서는 Flow를 시작할 수 없습니다.",
+      "errorContactBlocked": "이 연락처는 차단되었습니다. Flow를 시작하려면 먼저 차단을 해제하세요.",
       "errorGeneric": "Flow를 시작하지 못했습니다. 다시 시도해 주세요."
     },
     "sessionTimer": {
@@ -202,9 +212,11 @@
     "composer": {
       "draftHint": "✨를 눌러 AI로 답장 초안을 작성하세요 — 보내기 전에 수정할 수 있습니다",
       "sessionExpiredHint": "24시간 세션이 만료되었습니다. 다시 연결하려면 템플릿을 사용하세요.",
+      "contactBlockedHint": "이 연락처는 차단되었습니다. 다시 메시지를 보내려면 차단을 해제하세요.",
       "templates": "템플릿",
       "readOnlyPlaceholder": "읽기 전용 — 뷰어는 열람만 가능하고 답장할 수 없습니다",
       "sessionExpiredPlaceholder": "세션 만료 - 템플릿을 사용하세요",
+      "contactBlockedPlaceholder": "이 연락처는 차단되었습니다",
       "typeMessagePlaceholder": "메시지를 입력하세요... (줄바꿈은 Shift+Enter)",
       "readOnlyTitle": "읽기 전용 — 현재 역할로는 메시지를 보낼 수 없습니다",
       "recording": "녹음 중… {current} / {max}",
@@ -327,6 +339,7 @@
       "subtitle": "연락처 목록을 관리하세요. 전체 연락처 {count}개.",
       "subtitleZero": "연락처 목록을 관리하세요.",
       "customFieldsBtn": "커스텀 필드",
+      "blockedContactsBtn": "차단됨",
       "importBtn": "가져오기",
       "addContactBtn": "연락처 추가",
       "searchPlaceholder": "이름, 전화번호, 이메일로 검색...",
@@ -364,6 +377,30 @@
       "toastDeleted": "연락처가 삭제되었습니다",
       "toastBulkFailedDelete": "연락처를 삭제하지 못했습니다",
       "toastBulkDeleted": "연락처 {count}개가 삭제되었습니다"
+    },
+    "blocked": {
+      "title": "차단된 연락처",
+      "backToContacts": "연락처로 돌아가기",
+      "searchPlaceholder": "이름 또는 전화번호로 검색...",
+      "columnName": "이름",
+      "columnPhone": "전화번호",
+      "columnBlockedAt": "차단 일시",
+      "columnBlockedBy": "차단한 사람",
+      "columnInboundCount": "차단된 수신 메시지",
+      "columnLastInbound": "마지막 차단된 수신",
+      "columnAction": "작업",
+      "unnamed": "이름 없음",
+      "empty": "차단된 연락처가 없습니다.",
+      "unblockAction": "차단 해제",
+      "unblockConfirmTitle": "이 연락처의 차단을 해제할까요?",
+      "unblockConfirmDescription": "다시 받은편지함에 나타나고 향후 활동에 참여할 수 있게 됩니다.",
+      "unblockCancel": "취소",
+      "unblockConfirm": "차단 해제",
+      "unblocking": "차단 해제하는 중...",
+      "toastUnblocked": "연락처 차단이 해제되었습니다.",
+      "toastFailedUnblock": "차단을 해제하지 못했습니다. 다시 시도해 주세요.",
+      "toastFailedLoad": "차단된 연락처를 불러오지 못했습니다",
+      "pageCount": "{total} 중 {page}페이지"
     },
     "form": {
       "addTitle": "연락처 추가",
