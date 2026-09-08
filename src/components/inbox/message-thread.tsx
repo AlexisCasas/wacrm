@@ -558,6 +558,7 @@ export function MessageThread({
             content_text: contentText,
             filename: payload.filename,
             reply_to_message_id: payload.replyToId,
+            voice_note: payload.voiceNote === true,
           }),
         });
 

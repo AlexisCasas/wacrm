@@ -272,25 +272,39 @@ export interface SendMediaMessageArgs {
   caption?: string
   /** Document-only. Shown in the recipient's chat as the file name. Ignored for image/video/audio. */
   filename?: string
+  /**
+   * Audio-only. When `true`, sets `audio.voice = true` on the wire so
+   * Meta renders the message as a WhatsApp voice note (waveform,
+   * play-inline bubble) instead of a generic audio file attachment.
+   * Ignored for every `kind` other than `'audio'` — see the doc
+   * comment below for why a non-audio + voice combination is refused
+   * at the layer above this (`send-message.ts`), not silently dropped
+   * here. Omit or pass `false` for a normal audio message.
+   */
+  voice?: boolean
   contextMessageId?: string
 }
 
 /**
- * Send an image, video, document, or audio (voice note) via a public URL.
+ * Send an image, video, document, or audio (voice note or plain audio
+ * file) via a public URL.
  *
  * Used by the Flows engine's `send_media` node and the inbox composer's
  * agent-initiated media sends. Mirrors `sendTextMessage` — single fetch,
  * throws on non-2xx, returns Meta's message id.
  *
  * Audio is special-cased: Meta rejects `caption` and `filename` on audio
- * messages, so we send `{ link }` only. WhatsApp auto-renders an
- * OGG/Opus file as a playable voice note (waveform) rather than a file
- * attachment.
+ * messages, so we send `{ link }` only (plus `voice: true` when the
+ * caller explicitly asks for a voice note — see `voice` above). WhatsApp
+ * does NOT auto-detect an OGG/Opus file as a voice note from its
+ * container alone; without `audio.voice = true` on the request, even a
+ * perfectly valid OGG/Opus link renders as a plain audio file
+ * attachment, not the compact waveform voice-note bubble.
  */
 export async function sendMediaMessage(
   args: SendMediaMessageArgs,
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, kind, link, caption, filename, contextMessageId } = args
+  const { phoneNumberId, accessToken, to, kind, link, caption, filename, voice, contextMessageId } = args
   if (!link) throw new Error('sendMediaMessage requires a link.')
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
@@ -300,6 +314,11 @@ export async function sendMediaMessage(
   const media: Record<string, unknown> = { link }
   if (caption && kind !== 'audio') media.caption = caption
   if (kind === 'document' && filename) media.filename = filename
+  // `voice` is audio-only — silently ignored (never sent) for any other
+  // kind rather than surfacing a wire-shape Meta wouldn't recognize
+  // anyway. Callers that need this enforced as a hard error should
+  // validate before reaching here (see send-message.ts's voiceNote check).
+  if (kind === 'audio' && voice) media.voice = true
 
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',

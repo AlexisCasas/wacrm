@@ -151,13 +151,15 @@ vi.mock('@/lib/whatsapp/encryption', () => ({
   isLegacyFormat: vi.fn(() => false),
 }))
 
-const { sendTemplateMessage } = vi.hoisted(() => ({
+const { sendTemplateMessage, sendMediaMessage, sendTextMessage } = vi.hoisted(() => ({
   sendTemplateMessage: vi.fn(async () => ({ messageId: 'wamid-1' })),
+  sendMediaMessage: vi.fn(async () => ({ messageId: 'wamid-media-1' })),
+  sendTextMessage: vi.fn(async () => ({ messageId: 'wamid-text-1' })),
 }))
 vi.mock('@/lib/whatsapp/meta-api', () => ({
   sendTemplateMessage,
-  sendTextMessage: vi.fn(),
-  sendMediaMessage: vi.fn(),
+  sendTextMessage,
+  sendMediaMessage,
 }))
 
 import { POST } from './route'
@@ -310,6 +312,171 @@ describe('POST /api/whatsapp/send — role enforcement', () => {
 
     const res = await postContactTemplate()
 
+    expect(res.status).toBe(200)
+    expect(sendTemplateMessage).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// P0.1 — voice_note accepted from the client, but never trusted blindly:
+// server-side validation (shared with the public v1 endpoint via
+// validateSendMessageParams) must refuse voice_note=true for anything but
+// message_type="audio".
+// ---------------------------------------------------------------------------
+function postConversationMedia(overrides: Record<string, unknown> = {}) {
+  return POST(
+    new Request('http://localhost/api/whatsapp/send', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        conversation_id: 'conv-existing',
+        message_type: 'audio',
+        media_url: 'https://cdn.example.com/voice.ogg',
+        ...overrides,
+      }),
+    }),
+  )
+}
+
+describe('POST /api/whatsapp/send — voice_note', () => {
+  beforeEach(() => {
+    conversationInserts.length = 0
+    messageInserts.length = 0
+    existingConversation = {
+      id: 'conv-existing',
+      account_id: 'acct-1',
+      contact_id: 'contact-1',
+      contact: CONTACT,
+    }
+    createdConversation = null
+    contactRow = CONTACT
+    callerRole = 'admin'
+    supabaseMock = makeSupabaseMock()
+    sendMediaMessage.mockClear()
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('message_type=audio + voice_note=true passes voice=true to Meta', async () => {
+    const res = await postConversationMedia({ voice_note: true })
+    expect(res.status).toBe(200)
+    expect(sendMediaMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'audio', voice: true }),
+    )
+  })
+
+  it('message_type=audio with no flag sends normal audio (voice=false)', async () => {
+    const res = await postConversationMedia()
+    expect(res.status).toBe(200)
+    expect(sendMediaMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'audio', voice: false }),
+    )
+  })
+
+  it('rejects voice_note=true with message_type=image (400, never reaches Meta)', async () => {
+    const res = await postConversationMedia({
+      message_type: 'image',
+      media_url: 'https://cdn.example.com/pic.jpg',
+      voice_note: true,
+    })
+    const json = await res.json()
+    expect(res.status).toBe(400)
+    expect(json.error).toMatch(/voice_note is only valid for message_type "audio"/)
+    expect(sendMediaMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects voice_note=true with message_type=document (400, never reaches Meta)', async () => {
+    const res = await postConversationMedia({
+      message_type: 'document',
+      media_url: 'https://cdn.example.com/file.pdf',
+      voice_note: true,
+    })
+    expect(res.status).toBe(400)
+    expect(sendMediaMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects voice_note=true with message_type=video (400, never reaches Meta)', async () => {
+    const res = await postConversationMedia({
+      message_type: 'video',
+      media_url: 'https://cdn.example.com/clip.mp4',
+      voice_note: true,
+    })
+    expect(res.status).toBe(400)
+    expect(sendMediaMessage).not.toHaveBeenCalled()
+  })
+
+  it('rejects voice_note=true with message_type=text (400, never reaches Meta)', async () => {
+    const res = await POST(
+      new Request('http://localhost/api/whatsapp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: 'conv-existing',
+          message_type: 'text',
+          content_text: 'hi',
+          voice_note: true,
+        }),
+      }),
+    )
+    expect(res.status).toBe(400)
+    expect(sendMediaMessage).not.toHaveBeenCalled()
+  })
+})
+
+// No-regression sweep — every other message_type must keep working exactly
+// as before, unaffected by the new voice_note plumbing.
+describe('POST /api/whatsapp/send — no regression for non-audio message types', () => {
+  beforeEach(() => {
+    conversationInserts.length = 0
+    messageInserts.length = 0
+    existingConversation = {
+      id: 'conv-existing',
+      account_id: 'acct-1',
+      contact_id: 'contact-1',
+      contact: CONTACT,
+    }
+    createdConversation = null
+    contactRow = CONTACT
+    callerRole = 'admin'
+    supabaseMock = makeSupabaseMock()
+    sendMediaMessage.mockClear()
+    sendTemplateMessage.mockClear()
+  })
+
+  afterEach(() => {
+    vi.clearAllMocks()
+  })
+
+  it('text send still works with no voice_note field present', async () => {
+    const res = await POST(
+      new Request('http://localhost/api/whatsapp/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          conversation_id: 'conv-existing',
+          message_type: 'text',
+          content_text: 'hello there',
+        }),
+      }),
+    )
+    expect(res.status).toBe(200)
+  })
+
+  it('image / video / document sends still succeed with no voice_note field', async () => {
+    for (const [message_type, media_url] of [
+      ['image', 'https://cdn.example.com/pic.jpg'],
+      ['video', 'https://cdn.example.com/clip.mp4'],
+      ['document', 'https://cdn.example.com/file.pdf'],
+    ]) {
+      const res = await postConversationMedia({ message_type, media_url })
+      expect(res.status).toBe(200)
+    }
+  })
+
+  it('template send is unaffected', async () => {
+    const res = await postContactTemplate()
     expect(res.status).toBe(200)
     expect(sendTemplateMessage).toHaveBeenCalledTimes(1)
   })

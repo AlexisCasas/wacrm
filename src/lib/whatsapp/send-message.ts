@@ -95,6 +95,16 @@ export interface SendMessageParams {
   /** Structured payload for `messageType === 'interactive'`. */
   interactivePayload?: InteractiveMessagePayload | null;
   replyToMessageId?: string | null;
+  /**
+   * Send this audio as a WhatsApp voice note (waveform bubble) rather
+   * than a plain audio file attachment — see `sendMediaMessage`'s
+   * `voice` arg in meta-api.ts. Only meaningful when
+   * `messageType === 'audio'`; combining it with any other message
+   * type is a 400 (`validateSendMessageParams` below), not a silent
+   * no-op, so a caller can't accidentally believe a text/image/video/
+   * document send was marked as a voice note.
+   */
+  voiceNote?: boolean;
 }
 
 export interface SendMessageResult {
@@ -165,9 +175,16 @@ export function validateSendMessageParams(params: {
   mediaUrl?: string | null;
   templateName?: string | null;
   interactivePayload?: InteractiveMessagePayload | null;
+  voiceNote?: boolean;
 }): void {
-  const { messageType, contentText, mediaUrl, templateName, interactivePayload } =
-    params;
+  const {
+    messageType,
+    contentText,
+    mediaUrl,
+    templateName,
+    interactivePayload,
+    voiceNote,
+  } = params;
 
   if (!messageType) {
     throw new SendMessageError('bad_request', 'message_type is required', 400);
@@ -229,6 +246,20 @@ export function validateSendMessageParams(params: {
       400
     );
   }
+
+  // voice_note only makes sense on an audio send. A caller combining it
+  // with text/image/video/document/template/interactive is almost
+  // certainly a client-side bug (or a spoofed request) — reject
+  // outright rather than silently ignoring the flag, so the bad
+  // combination surfaces immediately instead of quietly sending a
+  // normal (non-voice) message the caller thought was a voice note.
+  if (voiceNote && messageType !== 'audio') {
+    throw new SendMessageError(
+      'bad_request',
+      'voice_note is only valid for message_type "audio"',
+      400
+    );
+  }
 }
 
 export async function sendMessageToConversation(
@@ -248,6 +279,7 @@ export async function sendMessageToConversation(
     templateMessageParams,
     interactivePayload,
     replyToMessageId,
+    voiceNote,
   } = params;
 
   if (!conversationId) {
@@ -264,6 +296,7 @@ export async function sendMessageToConversation(
     mediaUrl,
     templateName,
     interactivePayload,
+    voiceNote,
   });
 
   const isMediaKind = (MEDIA_KINDS as readonly string[]).includes(messageType);
@@ -424,6 +457,7 @@ export async function sendMessageToConversation(
         link: mediaUrl!,
         caption: contentText || undefined,
         filename: filename || undefined,
+        voice: voiceNote === true,
         contextMessageId,
       });
       return result.messageId;
