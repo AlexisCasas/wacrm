@@ -217,6 +217,11 @@ export function SettingsOverview({
       loading: false,
       subtitle: t('appearance', { mode: cap(mode), theme: themeName }),
     },
+    {
+      section: 'language',
+      loading: false,
+      subtitle: profile?.locale === 'en' ? 'English' : 'Español',
+    },
   ];
 
   return (

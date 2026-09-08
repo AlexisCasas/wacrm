@@ -867,7 +867,7 @@ function TriggerCard({
             {type === "tag_added" && (
               <div>
                 <label className="mb-1 block text-xs font-medium text-muted-foreground">
-                  Tag
+                  {t("tagLabel")}
                 </label>
                 <TagSelect
                   value={(config.tag_id as string) ?? ""}
@@ -882,7 +882,7 @@ function TriggerCard({
                   {t("schedule")}
                 </label>
                 <Input
-                  placeholder="Cron expression or HH:mm"
+                  placeholder={t("schedulePlaceholder")}
                   value={(config.schedule as string) ?? ""}
                   onChange={(e) =>
                     onConfigChange({ ...config, schedule: e.target.value })
@@ -1160,7 +1160,7 @@ function StepRenderer({
                     variant="ghost"
                     size="icon"
                     disabled={index === 0}
-                    aria-label="Move up"
+                    aria-label={t("moveUp")}
                     onClick={() => props.moveStepAt(path, -1)}
                   >
                     <ArrowUp className="h-4 w-4" />
@@ -1169,7 +1169,7 @@ function StepRenderer({
                     variant="ghost"
                     size="icon"
                     disabled={index === total - 1}
-                    aria-label="Move down"
+                    aria-label={t("moveDown")}
                     onClick={() => props.moveStepAt(path, 1)}
                   >
                     <ArrowDown className="h-4 w-4" />
@@ -1355,6 +1355,9 @@ function StepEditor({
             removeFile: t("config.removeFile"),
             uploading: t("config.uploading"),
             clickToUpload: t("config.clickToUpload"),
+            uploadSuccess: t("config.uploadSuccess"),
+            fileTooLarge: t("config.fileTooLarge"),
+            uploadFailed: t("config.uploadFailed"),
             captionLabel: t("config.captionLabel"),
             filenameLabel: t("config.filenameLabel"),
             filenamePlaceholder: t("config.filenamePlaceholder"),

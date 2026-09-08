@@ -20,6 +20,7 @@ import {
   isAccountRole,
   type AccountRole,
 } from "@/lib/auth/roles";
+import { normalizeLocale, type AppLocale } from "@/i18n/config";
 
 interface Profile {
   id: string;
@@ -35,6 +36,16 @@ interface Profile {
   beta_features: string[];
   account_id: string | null;
   account_role: AccountRole | null;
+  /**
+   * Per-user interface language (migration 045) — 'es' or 'en',
+   * always normalized defensively even though the DB CHECK constraint
+   * already restricts stored values. Lets Settings → Language show
+   * the current selection without an extra query, since the profile
+   * is already loaded here. The actual page render's locale is
+   * resolved server-side per request (src/i18n/request.ts); this is
+   * just the client-side mirror for the settings UI.
+   */
+  locale: AppLocale;
 }
 
 interface AccountSummary {
@@ -152,6 +163,7 @@ interface ProfileRow {
   beta_features: string[] | null;
   account_id: string | null;
   account_role: string | null;
+  locale: string | null;
 }
 
 /**
@@ -192,7 +204,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const result = await supabase
           .from("profiles")
           .select(
-            "id, full_name, email, avatar_url, role, beta_features, account_id, account_role",
+            "id, full_name, email, avatar_url, role, beta_features, account_id, account_role, locale",
           )
           .eq("user_id", userId)
           .maybeSingle();
@@ -280,6 +292,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           beta_features: data.beta_features ?? [],
           account_id: data.account_id ?? null,
           account_role: accountRole,
+          locale: normalizeLocale(data.locale),
         });
         setAccount(accountRow);
         if (!data.account_id || !accountRole) {

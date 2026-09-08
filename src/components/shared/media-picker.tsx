@@ -54,6 +54,10 @@ export interface MediaPickerLabels {
   removeFile: string;
   uploading: string;
   clickToUpload: string;
+  uploadSuccess: string;
+  /** Must contain the literal token `{mb}`, replaced with the file's size. */
+  fileTooLarge: string;
+  uploadFailed: string;
   captionLabel: string;
   filenameLabel: string;
   filenamePlaceholder: string;
@@ -100,7 +104,10 @@ export function MediaPicker({
     async (file: File) => {
       if (file.size > MEDIA_MAX_BYTES) {
         toast.error(
-          `File is ${(file.size / 1024 / 1024).toFixed(1)} MB — limit is 16 MB.`,
+          labels.fileTooLarge.replace(
+            "{mb}",
+            (file.size / 1024 / 1024).toFixed(1),
+          ),
         );
         return;
       }
@@ -113,15 +120,15 @@ export function MediaPicker({
           media_url: publicUrl,
           filename: file.name,
         });
-        toast.success("File uploaded.");
+        toast.success(labels.uploadSuccess);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Upload failed.";
+        const msg = err instanceof Error ? err.message : labels.uploadFailed;
         toast.error(msg);
       } finally {
         setUploading(false);
       }
     },
-    [bucket, onChange],
+    [bucket, onChange, labels],
   );
 
   const handleClear = () => {

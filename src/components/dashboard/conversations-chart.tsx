@@ -28,6 +28,7 @@ const VB_H = 240
 const PADDING = { top: 16, right: 16, bottom: 28, left: 40 }
 
 import { useTranslations } from 'next-intl'
+import { useIntlLocaleTag } from '@/lib/date-locale'
 
 export function ConversationsChart({ series, loading, range, onRangeChange }: ConversationsChartProps) {
   const t = useTranslations('Dashboard.conversationsChart')
@@ -119,6 +120,7 @@ function LineSvg({
   const [hover, setHover] = useState<{ idx: number; tooltipLeftPx: number } | null>(null)
   const svgRef = useRef<SVGSVGElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
+  const intlLocale = useIntlLocaleTag()
 
   const chartW = VB_W - PADDING.left - PADDING.right
   const chartH = VB_H - PADDING.top - PADDING.bottom
@@ -238,7 +240,7 @@ function LineSvg({
               textAnchor="middle"
               className="fill-muted-foreground text-[10px]"
             >
-              {shortDayLabel(p.day)}
+              {shortDayLabel(p.day, intlLocale)}
             </text>
           ) : null,
         )}
@@ -288,7 +290,7 @@ function LineSvg({
           className="pointer-events-none absolute top-0 z-10 -translate-x-1/2 rounded-md border border-border bg-popover px-2.5 py-1.5 text-[11px] shadow-lg"
           style={{ left: `${hover.tooltipLeftPx}px` }}
         >
-          <div className="font-medium text-popover-foreground">{longDayLabel(hovered.day)}</div>
+          <div className="font-medium text-popover-foreground">{longDayLabel(hovered.day, intlLocale)}</div>
           <div className="mt-1 flex flex-col gap-0.5">
             <span className="flex items-center gap-1.5 text-blue-300">
               <span className="inline-block h-1.5 w-1.5 rounded-full bg-blue-500" />
@@ -314,18 +316,18 @@ function LegendDot({ color, label }: { color: string; label: string }) {
   )
 }
 
-function shortDayLabel(key: string): string {
+function shortDayLabel(key: string, intlLocale: string): string {
   // key is YYYY-MM-DD; return "Apr 17"-style. Using Date with an
   // appended time avoids timezone-shift surprises across midnight.
   const [y, m, d] = key.split('-').map(Number)
   const date = new Date(y, m - 1, d)
-  return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  return date.toLocaleDateString(intlLocale, { month: 'short', day: 'numeric' })
 }
 
-function longDayLabel(key: string): string {
+function longDayLabel(key: string, intlLocale: string): string {
   const [y, m, d] = key.split('-').map(Number)
   const date = new Date(y, m - 1, d)
-  return date.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' })
+  return date.toLocaleDateString(intlLocale, { weekday: 'short', month: 'short', day: 'numeric' })
 }
 
 /**
