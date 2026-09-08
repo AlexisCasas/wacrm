@@ -113,6 +113,16 @@ export interface Contact {
   /** Hydrated by queries that embed `contact_tags(tags(*))` (e.g. the
    *  Inbox conversation list, for tag filtering). Absent otherwise. */
   tags?: Tag[];
+  /** Internal WACRM block (migration 044) — NOT WhatsApp/Meta's native
+   *  block. See src/lib/contacts/blocking.ts for what blocking a
+   *  contact does. */
+  blocked?: boolean;
+  blocked_at?: string | null;
+  blocked_by_user_id?: string | null;
+  /** Count of inbound messages received while blocked. Never paired
+   *  with the message content itself. */
+  blocked_inbound_count?: number;
+  last_blocked_inbound_at?: string | null;
 }
 
 export interface Tag {

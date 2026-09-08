@@ -17,6 +17,7 @@ import {
 } from '@/lib/whatsapp/phone-utils'
 import { resolveOutboundTransport } from '@/lib/whatsapp/send-message'
 import { sendManyChatTextToContact, sendManyChatFlowToContact } from '@/lib/manychat/contact-send'
+import { assertContactCanReceive } from '@/lib/contacts/blocking'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -80,6 +81,12 @@ interface SendTextEngineArgs {
 export async function engineSendText(
   args: SendTextEngineArgs,
 ): Promise<{ whatsapp_message_id: string }> {
+  // MUST run before the transport branch below — the ManyChat path
+  // has its own send call that never touches the Meta-only contact
+  // lookup further down, so checking blocked status after resolving
+  // transport would let a blocked contact's message through ManyChat.
+  await assertContactCanReceive(supabaseAdmin(), args.accountId, args.contactId)
+
   if (resolveOutboundTransport(args.accountId) === 'manychat') {
     return sendTextViaManyChat(args)
   }
@@ -273,6 +280,10 @@ interface SendMediaEngineArgs {
 export async function engineSendMedia(
   args: SendMediaEngineArgs,
 ): Promise<{ whatsapp_message_id: string }> {
+  // Same ordering requirement as engineSendText above — must run
+  // before the ManyChat-vs-Meta branch, not after.
+  await assertContactCanReceive(supabaseAdmin(), args.accountId, args.contactId)
+
   if (resolveOutboundTransport(args.accountId) === 'manychat') {
     return sendMediaViaManyChatBridge(args)
   }
@@ -504,6 +515,11 @@ async function sendInteractiveViaMeta(
   input: SendInput,
 ): Promise<{ whatsapp_message_id: string }> {
   const db = supabaseAdmin()
+
+  // Interactive messages have no ManyChat bridge (Meta-only), but the
+  // guard still runs first for the same reason as engineSendText/Media:
+  // one shared place decides "blocked contacts never receive outbound".
+  await assertContactCanReceive(db, input.accountId, input.contactId)
 
   // Scope the contact + whatsapp_config lookups by account_id —
   // same defense-in-depth rationale as automations/meta-send.ts.

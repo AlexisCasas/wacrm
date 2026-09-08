@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
      *  — resolved as `{ error }`, never thrown, matching how Supabase
      *  actually reports it. */
     handoffUpdateError: null as { message: string } | null,
+    contactBlocked: false as boolean,
   },
 }))
 
@@ -40,6 +41,22 @@ vi.mock('./admin-client', () => ({
             Promise.resolve({ data: h.state.autoResponders, error: null }),
         }
         return chain
+      }
+      if (table === 'contacts') {
+        // The shared assertContactCanReceive guard (P0 contact
+        // blocking) — sendAiTextToConversation checks this before
+        // either transport branch. .select().eq().eq().maybeSingle()
+        return {
+          select: () => ({
+            eq: () => ({
+              eq: () =>
+                ({
+                  maybeSingle: () =>
+                    Promise.resolve({ data: { blocked: h.state.contactBlocked }, error: null }),
+                }),
+            }),
+          }),
+        }
       }
       // conversations
       return {
@@ -103,6 +120,7 @@ beforeEach(() => {
   h.state.updateCalls = []
   h.state.rpcCalls = []
   h.state.handoffUpdateError = null
+  h.state.contactBlocked = false
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
   h.retrieveKnowledge.mockResolvedValue([])

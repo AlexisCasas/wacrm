@@ -18,6 +18,7 @@ import {
   resolveTemplateRow,
   templateContentText,
 } from '@/lib/whatsapp/template-body'
+import { assertContactCanReceive } from '@/lib/contacts/blocking'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -174,6 +175,11 @@ async function sendTemplateViaMeta(
   input: SendTemplateArgs,
 ): Promise<{ whatsapp_message_id: string }> {
   const db = supabaseAdmin()
+
+  // Template sends have no ManyChat bridge (Meta-only) but still share
+  // the one central blocked-contact guard, same as every other engine
+  // sender — see src/lib/contacts/blocking.ts.
+  await assertContactCanReceive(db, input.accountId, input.contactId)
 
   // Scope the contact + config lookups by account_id, not user_id.
   // The engine uses the service-role client (bypassing RLS); without

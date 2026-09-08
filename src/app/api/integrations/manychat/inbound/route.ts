@@ -255,6 +255,22 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Failed to resolve contact' }, { status: 500 })
   }
 
+  // Blocked contact — same hard stop as the native Meta webhook (see
+  // src/app/api/whatsapp/webhook/route.ts): no contact mapping refresh,
+  // no conversation, no message, no Flow/AI dispatch. Only a
+  // content-free counter is recorded.
+  if (contactOutcome.contact.blocked) {
+    const { error: blockedRpcErr } = await admin.rpc('record_blocked_inbound', {
+      p_contact_id: contactOutcome.contact.id,
+      p_account_id: config.account_id,
+      p_timestamp: new Date().toISOString(),
+    })
+    if (blockedRpcErr) {
+      console.error('[manychat-inbound] record_blocked_inbound failed:', blockedRpcErr.message)
+    }
+    return NextResponse.json({ status: 'blocked' }, { status: 200 })
+  }
+
   // Persist the ManyChat↔CRM contact mapping the outbound bridge relies
   // on (src/lib/whatsapp/send-message.ts, WHATSAPP_OUTBOUND_TRANSPORT=
   // manychat). Runs on EVERY delivery, including retries — the mapping

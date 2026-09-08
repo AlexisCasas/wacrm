@@ -153,6 +153,14 @@ describe("POST /api/flows/[id]/start — tenancy", () => {
     expect(res.status).toBe(409)
     expect(json.code).toBe("flow_not_active")
   })
+
+  it("409s with contact_blocked when the contact is blocked (P0 contact blocking)", async () => {
+    startFlowManually.mockResolvedValue({ outcome: "contact_blocked" })
+    const res = await post()
+    const json = await res.json()
+    expect(res.status).toBe(409)
+    expect(json.code).toBe("contact_blocked")
+  })
 })
 
 describe("POST /api/flows/[id]/start — 24h service window", () => {

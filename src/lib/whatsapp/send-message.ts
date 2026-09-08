@@ -313,6 +313,20 @@ export async function sendMessageToConversation(
     throw new SendMessageError('not_found', 'Conversation not found', 404);
   }
 
+  // Blocked contact — hard stop before ANY transport (Meta or
+  // ManyChat) or persistence. The composer disables itself for a
+  // blocked contact, but that's UX only; this is the real defense,
+  // shared by every caller of this function (Inbox sends, the public
+  // v1 API). `conversation.contact` is the same embedded join used
+  // just below for the phone number, so this costs no extra query.
+  if (conversation.contact?.blocked) {
+    throw new SendMessageError(
+      'contact_blocked',
+      'This contact is blocked and cannot receive messages.',
+      409
+    );
+  }
+
   // Transport branch — MUST come before any Meta-specific validation
   // below (phone format, whatsapp_config lookup) since accounts bridged
   // through ManyChat deliberately have no whatsapp_config row yet

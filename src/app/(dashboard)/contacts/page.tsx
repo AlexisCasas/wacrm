@@ -1,10 +1,11 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag } from '@/types';
-import { Button } from '@/components/ui/button';
+import { Button, buttonVariants } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import {
   Table,
@@ -49,6 +50,7 @@ import {
   SlidersHorizontal,
   Filter,
   X,
+  Ban,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
@@ -350,6 +352,16 @@ export default function ContactsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href="/contacts/blocked"
+            className={buttonVariants({
+              variant: 'outline',
+              className: 'border-border text-muted-foreground hover:bg-muted',
+            })}
+          >
+            <Ban className="size-4" />
+            {t('blockedContactsBtn')}
+          </Link>
           {canEditSettings && (
             <Button
               variant="outline"

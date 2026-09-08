@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
-  CONVERSATION_SELECT,
+  INBOX_CONVERSATION_SELECT,
   matchesContactFilters,
   needsHumanAttention,
   normalizeConversations,
@@ -99,7 +99,8 @@ export function ConversationList({
     (async () => {
       const { data, error } = await supabase
         .from("conversations")
-        .select(CONVERSATION_SELECT)
+        .select(INBOX_CONVERSATION_SELECT)
+        .eq("contact.blocked", false)
         .order("last_message_at", { ascending: false });
 
       if (cancelled) return;

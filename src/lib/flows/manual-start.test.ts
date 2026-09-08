@@ -340,6 +340,27 @@ describe("startFlowManually", () => {
     expect(h.state.flowRuns).toHaveLength(0);
   });
 
+  it("P0 blocking — a blocked contact is rejected, no run created", async () => {
+    seedFlow();
+    h.state.contacts.push({ id: CONTACT, account_id: ACCOUNT, name: "Juan Pérez", blocked: true });
+    h.state.conversations.push({
+      id: CONVERSATION,
+      account_id: ACCOUNT,
+      contact_id: CONTACT,
+    });
+
+    const result = await startFlowManually({
+      accountId: ACCOUNT,
+      initiatedByUserId: AGENT_USER,
+      flowId: "flow-1",
+      conversationId: CONVERSATION,
+    });
+
+    expect(result.outcome).toBe("contact_blocked");
+    expect(h.state.flowRuns).toHaveLength(0);
+    expect(h.state.flowRunEvents).toHaveLength(0);
+  });
+
   it("H. contact is correctly derived from the conversation + account", async () => {
     seedFlow();
     seedConversationAndContact();

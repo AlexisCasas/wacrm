@@ -9,6 +9,22 @@ import type { Conversation, Contact, Tag } from "@/types";
 export const CONVERSATION_SELECT =
   "*, contact:contacts(*, contact_tags(tags(*)))";
 
+/**
+ * Same embed as {@link CONVERSATION_SELECT}, but requires (`!inner`)
+ * the contact join so a query can add `.eq("contact.blocked", false)`
+ * and exclude a blocked contact's conversation at the query layer —
+ * it never reaches the client at all, rather than being fetched and
+ * then hidden with `array.filter(...)`. `conversations.contact_id` is
+ * `NOT NULL` (migration 001), so the inner join never drops a
+ * legitimate row for an unrelated reason.
+ *
+ * Used by the normal Inbox list load and its realtime self-heal
+ * (hydrateConversation) — NOT by the public v1 API, which has no
+ * "hide blocked contacts" requirement of its own.
+ */
+export const INBOX_CONVERSATION_SELECT =
+  "*, contact:contacts!inner(*, contact_tags(tags(*)))";
+
 /** Raw shape returned by {@link CONVERSATION_SELECT} before flattening. */
 type RawContact = Contact & { contact_tags?: { tags: Tag | null }[] };
 type RawConversation = Omit<Conversation, "contact"> & {

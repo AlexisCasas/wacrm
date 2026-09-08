@@ -100,6 +100,7 @@ vi.mock("./admin-client", () => ({
 }));
 
 import { engineSendText, engineSendMedia } from "./meta-send";
+import { ContactBlockedError } from "@/lib/contacts/blocking";
 
 const TEXT_ARGS = {
   accountId: "acct-1",
@@ -393,5 +394,52 @@ describe("engineSendMedia — transport=meta ignores manychat_bridge_flow_ns ent
     expect(h.sendMediaMessage).toHaveBeenCalledTimes(1);
     expect(h.sendManyChatFlowToContact).not.toHaveBeenCalled();
     expect(result.whatsapp_message_id).toBe("wamid.media");
+  });
+});
+
+// P0 — BLOQUEO INTERNO DE CONTACTOS. The blocked check must run BEFORE
+// the ManyChat-vs-Meta transport decision — otherwise the ManyChat
+// branch (which never reaches the Meta-only contact lookup further
+// down) could send to a blocked contact.
+describe("blocked-contact guard — runs before transport is decided", () => {
+  beforeEach(() => {
+    h.state.contactRow = { id: "ct-1", phone: "+15551234567", blocked: true };
+  });
+
+  it("engineSendText refuses under Meta transport, never calling Meta", async () => {
+    h.resolveOutboundTransport.mockReturnValue("meta");
+    await expect(engineSendText(TEXT_ARGS)).rejects.toBeInstanceOf(ContactBlockedError);
+    expect(h.sendTextMessage).not.toHaveBeenCalled();
+    expect(h.state.insertCalls).toHaveLength(0);
+  });
+
+  it("engineSendText refuses under ManyChat transport, never calling ManyChat", async () => {
+    h.resolveOutboundTransport.mockReturnValue("manychat");
+    await expect(engineSendText(TEXT_ARGS)).rejects.toBeInstanceOf(ContactBlockedError);
+    expect(h.sendManyChatTextToContact).not.toHaveBeenCalled();
+    expect(h.state.insertCalls).toHaveLength(0);
+  });
+
+  it("engineSendMedia refuses under Meta transport, never calling Meta", async () => {
+    h.resolveOutboundTransport.mockReturnValue("meta");
+    await expect(engineSendMedia(MEDIA_ARGS)).rejects.toBeInstanceOf(ContactBlockedError);
+    expect(h.sendMediaMessage).not.toHaveBeenCalled();
+    expect(h.state.insertCalls).toHaveLength(0);
+  });
+
+  it("engineSendMedia refuses under the ManyChat bridge, never calling it", async () => {
+    h.resolveOutboundTransport.mockReturnValue("manychat");
+    await expect(
+      engineSendMedia({ ...MEDIA_ARGS, manychatBridgeFlowNs: "flow-ns-1" }),
+    ).rejects.toBeInstanceOf(ContactBlockedError);
+    expect(h.sendManyChatFlowToContact).not.toHaveBeenCalled();
+    expect(h.state.insertCalls).toHaveLength(0);
+  });
+
+  it("a non-blocked contact still sends normally (no false positive)", async () => {
+    h.state.contactRow = { id: "ct-1", phone: "+15551234567", blocked: false };
+    h.resolveOutboundTransport.mockReturnValue("meta");
+    await expect(engineSendText(TEXT_ARGS)).resolves.toBeDefined();
+    expect(h.sendTextMessage).toHaveBeenCalledTimes(1);
   });
 });

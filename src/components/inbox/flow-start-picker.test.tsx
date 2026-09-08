@@ -23,6 +23,7 @@ const messages: Record<string, string> = {
   successToast: "Flow started: {flowName}",
   errorActiveFlow: "This contact already has an active Flow: {flowName}.",
   errorServiceWindow: "A Flow can't be started outside the 24-hour service window.",
+  errorContactBlocked: "This contact is blocked. Unblock them first to start a Flow.",
   errorGeneric: "Couldn't start the flow. Please try again.",
 };
 
@@ -289,6 +290,29 @@ describe("FlowStartPicker — starting a flow", () => {
     await waitFor(() =>
       expect(toastMock.error).toHaveBeenCalledWith(
         "A Flow can't be started outside the 24-hour service window.",
+      ),
+    );
+  });
+
+  it("contact_blocked error shows the blocked-contact toast (P0 contact blocking)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        startResponse: async () =>
+          ({
+            ok: false,
+            json: async () => ({ error: "blocked", code: "contact_blocked" }),
+          }) as Response,
+      }),
+    );
+
+    render(<FlowStartPicker open={true} onOpenChange={vi.fn()} {...BASE_PROPS} />);
+    fireEvent.click(await screen.findByText("Combo XTD Taladro"));
+    fireEvent.click(screen.getByRole("button", { name: "Start Flow" }));
+
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith(
+        "This contact is blocked. Unblock them first to start a Flow.",
       ),
     );
   });

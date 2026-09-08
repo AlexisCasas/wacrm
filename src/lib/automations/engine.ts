@@ -26,6 +26,8 @@ import { engineSendText, engineSendTemplate, engineSendInteractive, engineSendMe
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 
+type AdminClient = ReturnType<typeof supabaseAdmin>
+
 // ------------------------------------------------------------
 // Public API
 // ------------------------------------------------------------
@@ -79,7 +81,7 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
     if (input.contactId) {
       const { data: owned, error: ownErr } = await db
         .from('contacts')
-        .select('id')
+        .select('id, blocked')
         .eq('id', input.contactId)
         .eq('account_id', input.accountId)
         .maybeSingle()
@@ -91,6 +93,10 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
         console.warn('[automations] contact not in account, refusing dispatch', input.contactId)
         return
       }
+      // Blocked contacts never trigger new automations — checked here,
+      // before any automation lookup, so a blocked contact costs one
+      // query and nothing else.
+      if (owned.blocked) return
     }
 
     const { data: automations, error } = await db
@@ -140,6 +146,43 @@ export async function resumePendingExecution(pending: {
   context: AutomationContext
 }): Promise<void> {
   const db = supabaseAdmin()
+
+  // Revalidate the pending row itself FIRST, before trusting anything
+  // else about it. The `pending` object here is whatever the cron read
+  // when it claimed this row (possibly some time ago, if the process
+  // was slow or delayed) — a concurrent block_contact_internal call
+  // may have already flipped it to 'done' since then. That flip is the
+  // durable "this specific execution was cancelled" memory: unlike
+  // contacts.blocked, it survives a LATER unblock, which is exactly
+  // why we check the PENDING ROW's own status here rather than
+  // re-deriving an answer from the contact's current blocked state.
+  const { data: freshPending, error: freshPendingErr } = await db
+    .from('automation_pending_executions')
+    .select('id, status, automation_id, account_id, contact_id')
+    .eq('id', pending.id)
+    .maybeSingle()
+  if (freshPendingErr) {
+    // Fail closed: can't confirm this execution is still valid, so
+    // don't run it. Leave the row untouched — a transient read error
+    // must not overwrite whatever its real status already is.
+    console.error('[automations] resume: pending re-check failed', freshPendingErr)
+    return
+  }
+  if (
+    !freshPending ||
+    freshPending.status !== 'running' ||
+    freshPending.automation_id !== pending.automation_id ||
+    freshPending.account_id !== pending.account_id ||
+    freshPending.contact_id !== pending.contact_id
+  ) {
+    // Already done/failed, or the row/ids don't match what the caller
+    // thinks it claimed. Most commonly: block_contact_internal already
+    // cancelled it. Never execute steps, never send, never re-derive
+    // "should this run?" from the contact's CURRENT blocked state —
+    // that's precisely the unblock-revives-an-old-run bug this closes.
+    return
+  }
+
   const { data: automation, error } = await db
     .from('automations')
     .select('*')
@@ -162,6 +205,10 @@ export async function resumePendingExecution(pending: {
       startPosition: pending.next_step_position,
       logId: pending.log_id,
       triggerEvent: 'resumed_wait',
+      // Lets executeStepsFrom re-confirm, before EACH step (not just
+      // once here), that this pending row hasn't been cancelled MID-
+      // resume — see the checks at the top of its loop.
+      pendingExecutionId: pending.id,
     })
     await markPending(pending.id, 'done')
   } catch (err) {
@@ -240,6 +287,68 @@ interface ExecuteArgs {
   startPosition: number
   logId: string | null
   triggerEvent: string
+  /** Set only when this call originated from resumePendingExecution.
+   *  Lets the per-step loop re-confirm, before EACH step, that
+   *  block_contact_internal hasn't cancelled (status -> 'done') this
+   *  SPECIFIC resumed execution since it started — the durable
+   *  "was this cancelled" memory, independent of contacts.blocked. */
+  pendingExecutionId?: string
+}
+
+/**
+ * Re-reads `automation_pending_executions` fresh and confirms it's
+ * still the SAME, still-running execution the caller thinks it is.
+ * A resumed run's `pending.status` is its durable cancellation token:
+ * block_contact_internal flips it to 'done' in one atomic transaction,
+ * and that must survive a LATER unblock — this function's answer must
+ * never flip back to "still running" just because contacts.blocked
+ * reset to false in the meantime.
+ */
+async function isPendingExecutionStillRunning(
+  db: AdminClient,
+  expected: { id: string; automation_id: string; account_id: string; contact_id: string | null },
+): Promise<'running' | 'cancelled' | 'error'> {
+  const { data, error } = await db
+    .from('automation_pending_executions')
+    .select('status, automation_id, account_id, contact_id')
+    .eq('id', expected.id)
+    .maybeSingle()
+  if (error) return 'error'
+  if (
+    !data ||
+    data.status !== 'running' ||
+    data.automation_id !== expected.automation_id ||
+    data.account_id !== expected.account_id ||
+    data.contact_id !== expected.contact_id
+  ) {
+    return 'cancelled'
+  }
+  return 'running'
+}
+
+/**
+ * Stop the whole executeStepsFrom scope from THIS step onward: log an
+ * auditable result for the step that never ran, finalize the log
+ * (outermost scope only — nested branches just append), and return to
+ * the caller. Shared by every "must not continue" gate in the loop
+ * below (pending-execution cancelled, contact blocked, either check's
+ * own lookup failing) so they all produce the same shape of audit
+ * trail instead of three subtly different ones.
+ */
+async function stopExecution(
+  args: ExecuteArgs,
+  results: AutomationLogStepResult[],
+  step: AutomationStep,
+  detail: string,
+  logStatus: 'partial' | 'failed',
+  stepStatus: 'skipped' | 'failed' = 'skipped',
+): Promise<void> {
+  results.push({ step_id: step.id, step_type: step.step_type, status: stepStatus, detail })
+  if (args.parentStepId === null) {
+    await appendResults(args.logId, results, logStatus, detail)
+  } else {
+    await appendResults(args.logId, results, null, detail)
+  }
 }
 
 async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
@@ -275,25 +384,138 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
   let errorMessage: string | null = null
 
   for (const step of steps as AutomationStep[]) {
-    // `wait` is the suspension point: enqueue and stop processing this
+    // A. Resumed-execution cancellation token. Checked FIRST, before
+    // the contact-blocked check below: a resumed run whose pending row
+    // was already cancelled (status -> 'done', by a concurrent
+    // block_contact_internal) must stop on that fact ALONE — it must
+    // never fall through to re-deriving "should this continue?" from
+    // contacts.blocked, which a LATER unblock could have already reset
+    // to false. That is precisely what would let an unblock revive an
+    // execution that was already cancelled mid-flight. A lookup error
+    // here fails CLOSED (same reasoning as B below).
+    if (args.pendingExecutionId) {
+      const pendingState = await isPendingExecutionStillRunning(db, {
+        id: args.pendingExecutionId,
+        automation_id: args.automation.id,
+        account_id: args.automation.account_id,
+        contact_id: args.contactId,
+      })
+      if (pendingState === 'error') {
+        console.error('[automations] mid-run pending-execution recheck failed')
+        await stopExecution(args, results, step, 'pending_state_check_failed', 'failed', 'failed')
+        return
+      }
+      if (pendingState === 'cancelled') {
+        await stopExecution(args, results, step, 'pending_execution_cancelled', 'partial')
+        return
+      }
+    }
+
+    // B. P0 contact blocking — re-checked before EVERY step, not just
+    // once at dispatch. Closes the race where an automation was
+    // already running when the contact got blocked: without this, it
+    // could still reach a `wait` step and schedule a NEW
+    // automation_pending_executions row that (a) shouldn't exist for a
+    // blocked contact at all, and (b) would otherwise be able to fire
+    // again after a future unblock. Checked account-scoped via the
+    // automation's own account_id, never a caller-supplied one.
+    //
+    // FAIL CLOSED on a lookup error — an automation must NEVER keep
+    // running (creating a wait, mutating tags/fields/deals, sending)
+    // just because we couldn't confirm the contact isn't blocked. The
+    // outbound guard (assertContactCanReceive) only covers sends; it
+    // does nothing to stop a non-send side effect or a new wait.
+    if (args.contactId) {
+      const { data: contactRow, error: contactErr } = await db
+        .from('contacts')
+        .select('blocked')
+        .eq('id', args.contactId)
+        .eq('account_id', args.automation.account_id)
+        .maybeSingle()
+      if (contactErr) {
+        console.error('[automations] mid-run contact blocked-check failed:', contactErr)
+        await stopExecution(args, results, step, 'contact_state_check_failed', 'failed', 'failed')
+        return
+      }
+      if (contactRow?.blocked) {
+        await stopExecution(args, results, step, 'contact_blocked', 'partial')
+        return
+      }
+    }
+
+    // C. `wait` is the suspension point: enqueue and stop processing this
     // scope. The cron endpoint will pick it up later.
     if (step.step_type === 'wait') {
       const cfg = step.step_config as WaitStepConfig
       const ms = waitMs(cfg)
-      await db.from('automation_pending_executions').insert({
-        automation_id: args.automation.id,
-        // Tenancy: account_id required NOT NULL post-017.
-        account_id: args.automation.account_id,
-        user_id: args.automation.user_id,
-        contact_id: args.contactId,
-        log_id: args.logId,
-        parent_step_id: args.parentStepId,
-        branch: args.branch,
-        next_step_position: step.position + 1,
-        context: args.context,
-        run_at: new Date(Date.now() + ms).toISOString(),
-        status: 'pending',
-      })
+      const runAt = new Date(Date.now() + ms).toISOString()
+
+      if (args.contactId) {
+        // P0 contact blocking — TOCTOU close. Checks B above and this
+        // INSERT used to be two independent calls: a concurrent
+        // block_contact_internal could commit `blocked=true` (and its
+        // pending/running -> done sweep) in the gap between them,
+        // landing a pending row born AFTER the sweep already ran —
+        // exactly the "unblock revives an Automation started before
+        // the block" bug, just hiding in a NEW wait instead of an
+        // existing one. schedule_automation_wait_if_contact_active
+        // (migration 044) takes the SAME `SELECT ... FOR UPDATE` row
+        // lock on `contacts` that block_contact_internal takes, so the
+        // read-then-insert is indivisible with respect to a concurrent
+        // block — see that function's own comment for the full
+        // serialization argument.
+        const { data: scheduled, error: scheduleErr } = await db.rpc(
+          'schedule_automation_wait_if_contact_active',
+          {
+            p_automation_id: args.automation.id,
+            p_account_id: args.automation.account_id,
+            p_user_id: args.automation.user_id,
+            p_contact_id: args.contactId,
+            p_log_id: args.logId,
+            p_parent_step_id: args.parentStepId,
+            p_branch: args.branch,
+            p_next_step_position: step.position + 1,
+            p_context: args.context,
+            p_run_at: runAt,
+          },
+        )
+        if (scheduleErr) {
+          // Fail CLOSED — same posture as the contact/pending checks
+          // above: if we can't confirm the wait was safely scheduled,
+          // it must not exist half-scheduled or silently retried.
+          console.error(
+            '[automations] schedule_automation_wait_if_contact_active failed:',
+            scheduleErr,
+          )
+          await stopExecution(args, results, step, 'wait_schedule_failed', 'failed', 'failed')
+          return
+        }
+        if (!scheduled) {
+          // Contact not found in this account, or blocked — either
+          // way, no row was inserted. Same audit shape as the
+          // contact-blocked stop above.
+          await stopExecution(args, results, step, 'contact_blocked', 'partial')
+          return
+        }
+      } else {
+        // No contact on this run at all — contact blocking doesn't
+        // apply, so the plain insert (no row lock needed) is fine.
+        await db.from('automation_pending_executions').insert({
+          automation_id: args.automation.id,
+          // Tenancy: account_id required NOT NULL post-017.
+          account_id: args.automation.account_id,
+          user_id: args.automation.user_id,
+          contact_id: null,
+          log_id: args.logId,
+          parent_step_id: args.parentStepId,
+          branch: args.branch,
+          next_step_position: step.position + 1,
+          context: args.context,
+          run_at: runAt,
+          status: 'pending',
+        })
+      }
+
       results.push({
         step_id: step.id,
         step_type: step.step_type,

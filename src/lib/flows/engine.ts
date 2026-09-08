@@ -42,6 +42,7 @@ import {
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
+import { ContactBlockedError } from "@/lib/contacts/blocking";
 import {
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
@@ -649,7 +650,7 @@ async function executeSetContactField(
 async function endRun(
   db: AdminClient,
   runId: string,
-  status: "completed" | "handed_off" | "timed_out" | "failed",
+  status: "completed" | "handed_off" | "timed_out" | "failed" | "paused_by_agent",
   reason: string,
 ): Promise<void> {
   await db
@@ -660,6 +661,25 @@ async function endRun(
       end_reason: reason,
     })
     .eq("id", runId);
+}
+
+/**
+ * A blocked-contact race (agent blocks the contact while a send node
+ * was already in flight) must end the run with the SAME status +
+ * end_reason the block route itself sets — never let the generic
+ * send-failure catch a caller might otherwise fall into relabel this
+ * as a plain send failure. That would both misreport why the run
+ * stopped AND, since the block route's own pause-active-runs UPDATE is
+ * scoped `WHERE status='active'`, could race past this run entirely if
+ * this write landed first with some other status.
+ */
+async function endRunForContactBlocked(
+  db: AdminClient,
+  runId: string,
+  nodeKey: string | null,
+): Promise<void> {
+  await logEvent(db, runId, "error", nodeKey, { reason: "contact_blocked" });
+  await endRun(db, runId, "paused_by_agent", "contact_blocked");
 }
 
 // ============================================================
@@ -717,6 +737,10 @@ async function advanceFromNodeKey(
           whatsapp_message_id,
         });
       } catch (err) {
+        if (err instanceof ContactBlockedError) {
+          await endRunForContactBlocked(db, run.id, node.node_key);
+          return { outcome: "completed" };
+        }
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "send_text_failed",
           detail: err instanceof Error ? err.message : String(err),
@@ -753,6 +777,10 @@ async function advanceFromNodeKey(
           whatsapp_message_id,
         });
       } catch (err) {
+        if (err instanceof ContactBlockedError) {
+          await endRunForContactBlocked(db, run.id, node.node_key);
+          return { outcome: "completed" };
+        }
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "send_media_failed",
           detail: err instanceof Error ? err.message : String(err),
@@ -791,6 +819,10 @@ async function advanceFromNodeKey(
           })
           .eq("id", run.id);
       } catch (err) {
+        if (err instanceof ContactBlockedError) {
+          await endRunForContactBlocked(db, run.id, node.node_key);
+          return { outcome: "completed" };
+        }
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "collect_input_prompt_failed",
           detail: err instanceof Error ? err.message : String(err),
@@ -1387,6 +1419,7 @@ export type StartFlowManuallyResult =
   | { outcome: "flow_not_active" }
   | { outcome: "conversation_not_found" }
   | { outcome: "contact_not_found" }
+  | { outcome: "contact_blocked" }
   | {
       outcome: "active_flow_exists";
       active_flow_run_id?: string;
@@ -1447,7 +1480,7 @@ export async function startFlowManually(
   // against a stale/forged conversation row), never trust the id alone.
   const { data: contactData, error: contactErr } = await db
     .from("contacts")
-    .select("id")
+    .select("id, blocked")
     .eq("id", conversation.contact_id)
     .eq("account_id", accountId)
     .maybeSingle();
@@ -1458,7 +1491,13 @@ export async function startFlowManually(
   if (!contactData) {
     return { outcome: "contact_not_found" };
   }
-  const contactId = (contactData as { id: string }).id;
+  const typedContact = contactData as { id: string; blocked: boolean };
+  // A blocked contact must never get a Flow started for them manually,
+  // even from a stale Inbox tab that still shows the picker.
+  if (typedContact.blocked) {
+    return { outcome: "contact_blocked" };
+  }
+  const contactId = typedContact.id;
 
   // Never auto-replace an active run. Pre-check gives a clean,
   // informative conflict in the common case; the DB's partial unique

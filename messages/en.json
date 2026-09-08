@@ -177,7 +177,16 @@
       "today": "Today",
       "yesterday": "Yesterday",
       "startFlow": "Start Flow",
-      "startFlowDisabledHint": "A Flow can't be started outside the 24-hour service window."
+      "startFlowDisabledHint": "A Flow can't be started outside the 24-hour service window.",
+      "blockContact": "Block contact",
+      "blockContactConfirmTitle": "Block this contact?",
+      "blockContactConfirmDescription": "This contact will stop appearing in the normal inbox and WACRM won't run automations or automatic replies for their new messages.",
+      "blockContactCancel": "Cancel",
+      "blockContactConfirm": "Block",
+      "blockContactBlocking": "Blocking...",
+      "blockContactSuccess": "Contact blocked.",
+      "blockContactError": "Couldn't block the contact. Please try again.",
+      "blockedBanner": "This contact is blocked. Unblock them to send messages again."
     },
     "flowStartPicker": {
       "title": "Start Flow",
@@ -191,6 +200,7 @@
       "successToast": "Flow started: {flowName}",
       "errorActiveFlow": "This contact already has an active Flow: {flowName}.",
       "errorServiceWindow": "A Flow can't be started outside the 24-hour service window.",
+      "errorContactBlocked": "This contact is blocked. Unblock them first to start a Flow.",
       "errorGeneric": "Couldn't start the flow. Please try again."
     },
     "sessionTimer": {
@@ -202,9 +212,11 @@
     "composer": {
       "draftHint": "Tap the ✨ to draft a reply with AI — you can edit it before sending",
       "sessionExpiredHint": "24-hour session expired. Use a template to re-engage.",
+      "contactBlockedHint": "This contact is blocked. Unblock them to send messages again.",
       "templates": "Templates",
       "readOnlyPlaceholder": "Read-only — viewers can browse but not reply",
       "sessionExpiredPlaceholder": "Session expired - use a template",
+      "contactBlockedPlaceholder": "This contact is blocked",
       "typeMessagePlaceholder": "Type a message... (Shift+Enter for new line)",
       "readOnlyTitle": "Read-only — your role can't send messages",
       "recording": "Recording… {current} / {max}",
@@ -327,6 +339,7 @@
       "subtitle": "Manage your contact list. {count} total contacts.",
       "subtitleZero": "Manage your contact list.",
       "customFieldsBtn": "Custom fields",
+      "blockedContactsBtn": "Blocked",
       "importBtn": "Import",
       "addContactBtn": "Add Contact",
       "searchPlaceholder": "Search by name, phone, or email...",
@@ -364,6 +377,30 @@
       "toastDeleted": "Contact deleted",
       "toastBulkFailedDelete": "Failed to delete contacts",
       "toastBulkDeleted": "{count} contacts deleted"
+    },
+    "blocked": {
+      "title": "Blocked contacts",
+      "backToContacts": "Back to contacts",
+      "searchPlaceholder": "Search by name or phone...",
+      "columnName": "Name",
+      "columnPhone": "Phone",
+      "columnBlockedAt": "Blocked at",
+      "columnBlockedBy": "Blocked by",
+      "columnInboundCount": "Blocked inbound",
+      "columnLastInbound": "Last blocked inbound",
+      "columnAction": "Action",
+      "unnamed": "Unnamed",
+      "empty": "No blocked contacts.",
+      "unblockAction": "Unblock",
+      "unblockConfirmTitle": "Unblock this contact?",
+      "unblockConfirmDescription": "They'll be able to appear in Inbox again and take part in future activity.",
+      "unblockCancel": "Cancel",
+      "unblockConfirm": "Unblock",
+      "unblocking": "Unblocking...",
+      "toastUnblocked": "Contact unblocked.",
+      "toastFailedUnblock": "Couldn't unblock the contact. Please try again.",
+      "toastFailedLoad": "Failed to load blocked contacts",
+      "pageCount": "Page {page} of {total}"
     },
     "form": {
       "addTitle": "Add Contact",
