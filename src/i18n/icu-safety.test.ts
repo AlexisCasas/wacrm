@@ -18,12 +18,21 @@ import { createTranslator } from 'next-intl';
 // `t.rich()` (tag handlers). This test fails when one is wired to plain
 // `t()`. Reported by @Arifuzzamanjoy in #421.
 
-const MESSAGES = join(process.cwd(), 'messages', 'en.json');
+const MESSAGES_DIR = join(process.cwd(), 'messages');
 const SRC = join(process.cwd(), 'src');
 
-/** Leaf keypaths whose value next-intl cannot parse as an ICU message. */
-function icuHostileKeys(): string[] {
-  const catalogue = JSON.parse(readFileSync(MESSAGES, 'utf8'));
+// Checked against every app-supported locale (see src/i18n/config.ts's
+// SUPPORTED_LOCALES), not just en.json: a call site is compiled once but
+// reads whichever locale's JSON is loaded at request time, so a string
+// that is only ICU-hostile in es.json (e.g. a translator introduces
+// literal `{{1}}`/stray braces that en.json's phrasing didn't have) would
+// otherwise go undetected here and silently render as a keypath for
+// Spanish users only.
+const LOCALES = ['en', 'es'];
+
+/** Leaf keypaths whose value next-intl cannot parse as an ICU message, for one locale's catalogue. */
+function icuHostileKeysFor(locale: string): string[] {
+  const catalogue = JSON.parse(readFileSync(join(MESSAGES_DIR, `${locale}.json`), 'utf8'));
   const leaves: string[] = [];
   const walk = (node: unknown, path: string) => {
     if (node && typeof node === 'object' && !Array.isArray(node)) {
@@ -37,7 +46,7 @@ function icuHostileKeys(): string[] {
   return leaves.filter((key) => {
     let code = '';
     const t = createTranslator({
-      locale: 'en',
+      locale,
       messages: catalogue,
       onError: (err) => {
         code = err.code;
@@ -51,6 +60,11 @@ function icuHostileKeys(): string[] {
     // and are correct as written.
     return code === 'INVALID_MESSAGE';
   });
+}
+
+/** Union of ICU-hostile keypaths across every app-supported locale. */
+function icuHostileKeys(): string[] {
+  return [...new Set(LOCALES.flatMap((locale) => icuHostileKeysFor(locale)))];
 }
 
 function tsxFiles(dir: string): string[] {

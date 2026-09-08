@@ -16,6 +16,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { MessageSquare, UsersRound } from "lucide-react";
+import { mapAuthError } from "@/lib/auth/map-auth-error";
 
 // `useSearchParams` opts the component out of static prerendering
 // unless it sits under a Suspense boundary. We split the form into
@@ -37,6 +38,7 @@ function LoginPageInner() {
   // page to accept rather than to /dashboard.
   const inviteToken = searchParams.get("invite");
   const t = useTranslations("LoginPage");
+  const tAuthErrors = useTranslations("AuthErrors");
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -55,7 +57,7 @@ function LoginPageInner() {
     });
 
     if (error) {
-      setError(error.message);
+      setError(mapAuthError(error, tAuthErrors, "login"));
       setLoading(false);
       return;
     }

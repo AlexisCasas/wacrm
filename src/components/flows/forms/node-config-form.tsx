@@ -514,7 +514,7 @@ function SendListForm({
                   size="sm"
                   onClick={() => removeSection(sIdx)}
                   className="shrink-0 text-red-400 hover:bg-red-500/10 hover:text-red-300"
-                  aria-label="Remove section"
+                  aria-label={t("removeSection")}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
@@ -673,7 +673,7 @@ function ConditionForm({
               onValueChange={(v) => onUpdateConfig({ subject_key: v })}
             >
               <SelectTrigger className="bg-muted">
-                <SelectValue placeholder="Pick a tag…" />
+                <SelectValue placeholder={t("pickTag")} />
               </SelectTrigger>
               <SelectContent>
                 {tags.map((t) => (
@@ -821,7 +821,7 @@ function SetTagForm({
               onValueChange={(v) => onUpdateConfig({ tag_id: v })}
             >
               <SelectTrigger className="bg-muted">
-                <SelectValue placeholder="Pick a tag…" />
+                <SelectValue placeholder={t("pickTag")} />
               </SelectTrigger>
               <SelectContent>
                 {tags.map((t) => (
@@ -1093,6 +1093,9 @@ function SendMediaForm({
           removeFile: t("removeFile"),
           uploading: t("uploading"),
           clickToUpload: t("clickToUpload"),
+          uploadSuccess: t("uploadSuccess"),
+          fileTooLarge: t("fileTooLarge"),
+          uploadFailed: t("uploadFailed"),
           captionLabel: t("captionLabel"),
           filenameLabel: t("filenameLabel"),
           filenamePlaceholder: t("filenamePlaceholder"),

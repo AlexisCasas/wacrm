@@ -18,6 +18,10 @@ vi.mock("next-intl", () => ({
   // Identity translator — tests assert against the message KEY, not a
   // localized string, so this file doesn't need to duplicate en.json.
   useTranslations: () => (key: string) => key,
+  // ConversationItem resolves a date-fns locale via useLocale() (see
+  // src/lib/date-locale.ts) for its "time ago" label — fixed to 'en' so
+  // this test doesn't depend on the app's default locale.
+  useLocale: () => "en",
 }));
 
 // The list fetches its own copy of conversations + tags on mount via
