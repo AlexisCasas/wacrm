@@ -175,7 +175,23 @@
       "selectConversation": "대화를 선택하세요",
       "selectConversationHint": "왼쪽에서 대화를 선택해 메시지를 시작하세요",
       "today": "오늘",
-      "yesterday": "어제"
+      "yesterday": "어제",
+      "startFlow": "Flow 시작",
+      "startFlowDisabledHint": "24시간 서비스 윈도우 밖에서는 Flow를 시작할 수 없습니다."
+    },
+    "flowStartPicker": {
+      "title": "Flow 시작",
+      "searchPlaceholder": "Flow 검색...",
+      "empty": "사용 가능한 활성 Flow가 없습니다.",
+      "confirmDescription": "{contactName}님에게 \"{flowName}\"을(를) 시작할까요?",
+      "back": "뒤로",
+      "cancel": "취소",
+      "confirm": "Flow 시작",
+      "starting": "시작하는 중...",
+      "successToast": "Flow 시작됨: {flowName}",
+      "errorActiveFlow": "이 연락처에는 이미 활성 Flow가 있습니다: {flowName}.",
+      "errorServiceWindow": "24시간 서비스 윈도우 밖에서는 Flow를 시작할 수 없습니다.",
+      "errorGeneric": "Flow를 시작하지 못했습니다. 다시 시도해 주세요."
     },
     "sessionTimer": {
       "expired": "만료됨",

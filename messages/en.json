@@ -175,7 +175,23 @@
       "selectConversation": "Select a conversation",
       "selectConversationHint": "Choose a conversation from the left to start messaging",
       "today": "Today",
-      "yesterday": "Yesterday"
+      "yesterday": "Yesterday",
+      "startFlow": "Start Flow",
+      "startFlowDisabledHint": "A Flow can't be started outside the 24-hour service window."
+    },
+    "flowStartPicker": {
+      "title": "Start Flow",
+      "searchPlaceholder": "Search flows...",
+      "empty": "No active flows available.",
+      "confirmDescription": "Start \"{flowName}\" for {contactName}?",
+      "back": "Back",
+      "cancel": "Cancel",
+      "confirm": "Start Flow",
+      "starting": "Starting...",
+      "successToast": "Flow started: {flowName}",
+      "errorActiveFlow": "This contact already has an active Flow: {flowName}.",
+      "errorServiceWindow": "A Flow can't be started outside the 24-hour service window.",
+      "errorGeneric": "Couldn't start the flow. Please try again."
     },
     "sessionTimer": {
       "expired": "Expired",
