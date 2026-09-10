@@ -29,6 +29,14 @@ const h = vi.hoisted(() => ({
     }[],
     /** Error the next storage upload resolves with, if any. */
     storageUploadError: null as { message: string } | null,
+    /**
+     * P1 Fase 2 — rows passed to `contacts.insert(...)`, in call order.
+     * `findExistingContact` is fully mocked (see below), so a contact
+     * INSERT only happens when a test explicitly makes that mock
+     * return `null` for that call — everything else short-circuits
+     * before ever reaching this table.
+     */
+    contactInsertCalls: [] as Record<string, unknown>[],
   },
 }))
 
@@ -78,6 +86,22 @@ vi.mock('@supabase/supabase-js', () => ({
                 }),
               }),
             }),
+          }
+        case 'contacts':
+          // findOrCreateContact's create branch: insert(...).select().single()
+          return {
+            insert: (row: Record<string, unknown>) => {
+              h.state.contactInsertCalls.push(row)
+              return {
+                select: () => ({
+                  single: () =>
+                    Promise.resolve({
+                      data: { id: `contact-created-${h.state.contactInsertCalls.length}`, ...row },
+                      error: null,
+                    }),
+                }),
+              }
+            },
           }
         case 'broadcast_recipients':
           // flagBroadcastReplyIfAny: select().eq().eq().in().order().limit()
@@ -226,7 +250,12 @@ const TEXT_MESSAGE = {
   text: { body: 'hello' },
 }
 
-function inboundRequest(message: Record<string, unknown> = TEXT_MESSAGE) {
+const DEFAULT_CONTACT = { wa_id: '15551230000', profile: { name: 'Ada' } }
+
+function inboundRequest(
+  message: Record<string, unknown> = TEXT_MESSAGE,
+  contact: Record<string, unknown> = DEFAULT_CONTACT,
+) {
   const body = {
     entry: [
       {
@@ -235,7 +264,7 @@ function inboundRequest(message: Record<string, unknown> = TEXT_MESSAGE) {
             field: 'messages',
             value: {
               metadata: { phone_number_id: 'pn-1' },
-              contacts: [{ wa_id: '15551230000', profile: { name: 'Ada' } }],
+              contacts: [contact],
               messages: [message],
             },
           },
@@ -249,10 +278,17 @@ function inboundRequest(message: Record<string, unknown> = TEXT_MESSAGE) {
   } as unknown as Request
 }
 
-async function runWebhook(message?: Record<string, unknown>) {
-  const res = await POST(inboundRequest(message))
-  // Drain the after() callback exactly as the runtime would.
-  for (const cb of h.state.afterCallbacks) await cb()
+async function runWebhook(
+  message?: Record<string, unknown>,
+  contact?: Record<string, unknown>,
+) {
+  const res = await POST(inboundRequest(message, contact))
+  // Drain the after() callback(s) queued by THIS call exactly as the
+  // runtime would, then empty the queue — a test that calls runWebhook
+  // more than once (e.g. two separate webhook deliveries) must not
+  // re-run an earlier call's already-drained callback a second time.
+  const callbacks = h.state.afterCallbacks.splice(0, h.state.afterCallbacks.length)
+  for (const cb of callbacks) await cb()
   return res
 }
 
@@ -270,6 +306,7 @@ beforeEach(() => {
   h.state.mirrorInboundMedia = true
   h.state.storageUploads = []
   h.state.storageUploadError = null
+  h.state.contactInsertCalls = []
   mockGetMediaUrl.mockResolvedValue({
     url: 'https://lookaside.fbsbx.com/whatsapp/abc',
     mimeType: 'image/jpeg',
@@ -590,5 +627,148 @@ describe('inbound webhook: blocked contact (P0 contact blocking)', () => {
 
     expect(h.state.upsertCalls).toHaveLength(1)
     expect(h.state.rpcCalls.some((c) => c.name === 'record_blocked_inbound')).toBe(false)
+  })
+})
+
+// ============================================================
+// P1 Fase 2 — SENDER IDENTITY RESOLUTION
+// (docs/P1_DUPLICATE_CHATS_AUDIT.md section Q — the "Juor Nuevo"
+// incident). `message.from` arriving empty/unresolved used to fall
+// straight through to `findOrCreateContact` and silently insert a
+// contact with `phone: ''` — a fresh contact + conversation on every
+// such message. These tests exercise the fix end-to-end through the
+// real webhook route, not just the resolver unit (see
+// resolve-sender-identity.test.ts for the pure case-by-case coverage).
+// ============================================================
+describe('inbound webhook: sender identity resolution (P1 Fase 2)', () => {
+  it('message.from empty, contact.wa_id valid — falls back to wa_id and creates exactly one contact', async () => {
+    vi.mocked(findExistingContact).mockResolvedValueOnce(null)
+
+    await runWebhook(
+      { ...TEXT_MESSAGE, id: 'wamid.FALLBACK1', from: '' },
+      { wa_id: '15559990000', profile: { name: 'Fallback Person' } },
+    )
+
+    expect(h.state.contactInsertCalls).toHaveLength(1)
+    expect(h.state.contactInsertCalls[0]).toMatchObject({
+      phone: '15559990000',
+      name: 'Fallback Person',
+    })
+    expect(h.state.upsertCalls).toHaveLength(1)
+  })
+
+  it('REGRESSION (Juor Nuevo): two separate deliveries with message.from empty but the same contact.wa_id resolve to ONE contact and ONE conversation', async () => {
+    const contact = { wa_id: '15558880000', profile: { name: 'Juor Nuevo' } }
+
+    // Delivery 1: no existing contact yet — this is the one that creates it.
+    vi.mocked(findExistingContact).mockResolvedValueOnce(null)
+    await runWebhook({ ...TEXT_MESSAGE, id: 'wamid.JUOR1', from: '' }, contact)
+
+    expect(h.state.contactInsertCalls).toHaveLength(1)
+    const createdContactId = 'contact-created-1'
+
+    // Delivery 2: same real contact — now found by identity (its wa_id
+    // resolved to the same phone as delivery 1), so no second INSERT.
+    vi.mocked(findExistingContact).mockResolvedValueOnce({
+      id: createdContactId,
+      name: 'Juor Nuevo',
+      phone: '15558880000',
+    } as never)
+    await runWebhook({ ...TEXT_MESSAGE, id: 'wamid.JUOR2', from: '' }, contact)
+
+    // The bug this regresses: THREE messages like these used to produce
+    // THREE contacts and THREE conversations. Here, still exactly one
+    // contact was ever created, and both messages landed in the same
+    // conversation.
+    expect(h.state.contactInsertCalls).toHaveLength(1)
+    expect(h.state.upsertCalls).toHaveLength(2)
+    expect(h.state.upsertCalls[0].row).toMatchObject({
+      conversation_id: 'conv-1',
+      message_id: 'wamid.JUOR1',
+    })
+    expect(h.state.upsertCalls[1].row).toMatchObject({
+      conversation_id: 'conv-1',
+      message_id: 'wamid.JUOR2',
+    })
+  })
+
+  it('message.from empty, contact.wa_id also empty — creates nothing and never even queries contacts', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    await runWebhook(
+      { ...TEXT_MESSAGE, id: 'wamid.MISSING1', from: '' },
+      { wa_id: '', profile: { name: 'Nobody' } },
+    )
+
+    expect(findExistingContact).not.toHaveBeenCalled()
+    expect(h.state.contactInsertCalls).toHaveLength(0)
+    expect(h.state.upsertCalls).toHaveLength(0)
+    expect(h.state.rpcCalls).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.runAutomationsForTrigger).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+    expect(h.dispatchWebhookEvent).not.toHaveBeenCalled()
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[webhook] inbound message dropped — sender identity unresolved',
+      expect.objectContaining({ reason: 'missing_sender_identity' }),
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  it('message.from and contact.wa_id both valid but genuinely different numbers — NEVER drops a message with a valid from; processes using message.from and warns', async () => {
+    // P1 Fase 2 adversarial review: an earlier version of the resolver
+    // refused to persist anything here. That was itself a regression —
+    // contacts[]/messages[] pairing by index isn't formally guaranteed
+    // by Meta's payload shape, so a disagreeing wa_id is at least as
+    // likely to be an unrelated/misaligned field as a "wrong" from. A
+    // valid message.from must never be silently dropped over it.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(findExistingContact).mockResolvedValueOnce(null)
+
+    await runWebhook(
+      { ...TEXT_MESSAGE, id: 'wamid.MISMATCH1', from: '15551230000' },
+      { wa_id: '442071838750', profile: { name: 'Someone Else' } },
+    )
+
+    expect(h.state.contactInsertCalls).toHaveLength(1)
+    expect(h.state.contactInsertCalls[0]).toMatchObject({ phone: '15551230000' })
+    expect(h.state.upsertCalls).toHaveLength(1)
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[webhook] sender identity mismatch (using message.from; not dropped)',
+      expect.objectContaining({
+        reason: 'sender_identity_mismatch',
+        message_id: 'wamid.MISMATCH1',
+      }),
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  it('message.from and contact.wa_id present, different digits, but a phonesMatch() trunk-prefix variant — still processes using message.from, with a warning', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(findExistingContact).mockResolvedValueOnce(null)
+
+    // Same last-8-digits pair used in phone-utils' own phonesMatch example.
+    // Behaves identically to the "genuinely different" case above now —
+    // the fuzzy-vs-different distinction no longer changes the outcome,
+    // only that both are logged the same way.
+    await runWebhook(
+      { ...TEXT_MESSAGE, id: 'wamid.FUZZY1', from: '37063949836' },
+      { wa_id: '370063949836', profile: { name: 'Trunk Variant' } },
+    )
+
+    expect(h.state.contactInsertCalls).toHaveLength(1)
+    expect(h.state.contactInsertCalls[0]).toMatchObject({ phone: '37063949836' })
+    expect(h.state.upsertCalls).toHaveLength(1)
+    expect(warnSpy).toHaveBeenCalledWith(
+      '[webhook] sender identity mismatch (using message.from; not dropped)',
+      expect.objectContaining({
+        reason: 'sender_identity_mismatch',
+        message_id: 'wamid.FUZZY1',
+      }),
+    )
+
+    warnSpy.mockRestore()
   })
 })

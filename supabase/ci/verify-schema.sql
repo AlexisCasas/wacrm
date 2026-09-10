@@ -42,6 +42,23 @@ BEGIN
     RAISE EXCEPTION 'public.accounts is missing — migration 017 did not apply';
   END IF;
 
+  -- P1 Fase 2C (046) — the new-row phone guard must exist as BOTH the
+  -- function and the trigger; either one missing means the guard is a
+  -- silent no-op despite a green migration run. This is a trigger
+  -- (not a CHECK) deliberately — see 046's own comment for why a CHECK
+  -- would have broken updates to pre-existing empty-phone contacts.
+  IF to_regprocedure('public.contacts_require_phone_on_write()') IS NULL THEN
+    RAISE EXCEPTION 'contacts_require_phone_on_write() is missing — migration 046 did not apply';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_trigger
+    WHERE tgname = 'trg_contacts_require_phone_on_write'
+      AND tgrelid = 'public.contacts'::regclass
+      AND NOT tgisinternal
+  ) THEN
+    RAISE EXCEPTION 'trg_contacts_require_phone_on_write is missing on public.contacts — migration 046 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;
