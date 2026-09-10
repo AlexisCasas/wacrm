@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 
 import { ConversationList } from "./conversation-list";
 import type { Conversation } from "@/types";
@@ -27,20 +27,37 @@ vi.mock("next-intl", () => ({
 // The list fetches its own copy of conversations + tags on mount via
 // Supabase, then hands them back up through onConversationsLoaded — but
 // what's actually RENDERED comes from the `conversations` prop, which the
-// test controls directly. Resolve both queries to empty so the mount
-// effect is a harmless no-op.
+// test controls directly. Most tests don't care about the tag catalog
+// fetch's contents, so `h.tagsCatalog` defaults empty; the
+// `tagCatalogVersion` describe block below overrides it per-test.
+const h = vi.hoisted(() => ({
+  tagsCatalog: [] as { id: string; name: string; color: string }[],
+  tagsFetchCount: 0,
+}));
+
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
-    from: (_table: string) => {
+    from: (table: string) => {
       const builder = {
         select: () => builder,
         eq: () => builder,
-        order: () => Promise.resolve({ data: [], error: null }),
+        order: () => {
+          if (table === "tags") {
+            h.tagsFetchCount++;
+            return Promise.resolve({ data: h.tagsCatalog, error: null });
+          }
+          return Promise.resolve({ data: [], error: null });
+        },
       };
       return builder;
     },
   }),
 }));
+
+beforeEach(() => {
+  h.tagsCatalog = [];
+  h.tagsFetchCount = 0;
+});
 
 function contact(name: string) {
   return {
@@ -51,6 +68,13 @@ function contact(name: string) {
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   } as Conversation["contact"];
+}
+
+function taggedContact(
+  name: string,
+  tags: NonNullable<Conversation["contact"]>["tags"],
+): Conversation["contact"] {
+  return { ...contact(name), tags } as Conversation["contact"];
 }
 
 function conv(overrides: Partial<Conversation>): Conversation {
@@ -162,6 +186,75 @@ describe('ConversationList — badges alongside the indicator (test #20, #21)', 
   });
 });
 
+describe("ConversationList — compact tag badges (P3, no extra query)", () => {
+  function tag(id: string, name: string, color = "#3b82f6") {
+    return { id, name, color, account_id: "acct-1", user_id: "u-1", created_at: "2026-01-01T00:00:00Z" };
+  }
+
+  it("renders nothing extra when the contact has no tags", async () => {
+    renderList([NORMAL_CONV]);
+    await screen.findByText("Normal Person");
+    expect(screen.queryByTitle("Favoritos")).not.toBeInTheDocument();
+  });
+
+  it("renders every tag as a chip when there are 2 or fewer", async () => {
+    const conversation = conv({
+      ...NORMAL_CONV,
+      id: "conv-two-tags",
+      contact: taggedContact("Two Tags Person", [tag("t1", "Favoritos"), tag("t2", "Pendiente")]),
+    });
+    renderList([conversation]);
+    await screen.findByText("Two Tags Person");
+    expect(screen.getByText("Favoritos")).toBeInTheDocument();
+    expect(screen.getByText("Pendiente")).toBeInTheDocument();
+    expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
+  });
+
+  it("collapses anything past the first 2 tags into a +N chip", async () => {
+    const conversation = conv({
+      ...NORMAL_CONV,
+      id: "conv-many-tags",
+      contact: taggedContact("Many Tags Person", [
+        tag("t1", "Favoritos"),
+        tag("t2", "Pendiente"),
+        tag("t3", "Reclamo"),
+        tag("t4", "Cliente frecuente"),
+      ]),
+    });
+    renderList([conversation]);
+    await screen.findByText("Many Tags Person");
+    expect(screen.getByText("Favoritos")).toBeInTheDocument();
+    expect(screen.getByText("Pendiente")).toBeInTheDocument();
+    expect(screen.queryByText("Reclamo")).not.toBeInTheDocument();
+    expect(screen.getByText("+2")).toBeInTheDocument();
+  });
+
+  it("badges never block the existing unread badge / status dot from rendering", async () => {
+    const conversation = conv({
+      ...HANDOFF_CONV,
+      contact: taggedContact("Tagged Handoff", [tag("t1", "Favoritos")]),
+    });
+    renderList([conversation]);
+    expect(await screen.findByTitle("needsHumanAttention")).toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument(); // unread_count
+    expect(screen.getByText("Favoritos")).toBeInTheDocument();
+  });
+
+  it("does not perform any additional Supabase query to render badges (mocked client only ever returns the empty catalog fetches)", async () => {
+    // The module-level mock at the top of this file resolves every
+    // `.from(...)` chain to `{ data: [], error: null }` — if badge
+    // rendering required a NEW query shape this mock doesn't already
+    // satisfy, the component would throw or hang instead of rendering.
+    const conversation = conv({
+      ...NORMAL_CONV,
+      id: "conv-badge-no-query",
+      contact: taggedContact("No Extra Query", [tag("t1", "Favoritos")]),
+    });
+    renderList([conversation]);
+    expect(await screen.findByText("Favoritos")).toBeInTheDocument();
+  });
+});
+
 describe('ConversationList — "Needs human" filter (test #19)', () => {
   it('selecting the "Needs human" filter shows only real handoffs', async () => {
     renderList([HANDOFF_CONV, MANUAL_PAUSE_CONV, NORMAL_CONV]);
@@ -180,5 +273,124 @@ describe('ConversationList — "Needs human" filter (test #19)', () => {
     expect(await screen.findByText("Handoff Person")).toBeInTheDocument();
     expect(screen.queryByText("Manual Pause Person")).not.toBeInTheDocument();
     expect(screen.queryByText("Normal Person")).not.toBeInTheDocument();
+  });
+});
+
+describe("ConversationList — tagCatalogVersion invalidation (P3 adversarial review, item 3)", () => {
+  function renderWithVersion(version: number) {
+    return render(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={() => {}}
+        tagCatalogVersion={version}
+      />,
+    );
+  }
+
+  it("a newly-created tag becomes selectable in the filter as soon as tagCatalogVersion bumps — no reload/resync needed", async () => {
+    h.tagsCatalog = [{ id: "t1", name: "Favoritos", color: "#f59e0b" }];
+    const { rerender } = renderWithVersion(0);
+    await waitFor(() => expect(h.tagsFetchCount).toBe(1));
+
+    fireEvent.click(await screen.findByText("tags"));
+    expect(await screen.findByText("Favoritos")).toBeInTheDocument();
+    expect(screen.queryByText("Cliente frecuente")).not.toBeInTheDocument();
+
+    // Simulate ContactSidebar creating "Cliente frecuente" — the parent
+    // (Inbox page) bumps tagCatalogVersion in response to onTagCreated.
+    h.tagsCatalog = [
+      { id: "t1", name: "Favoritos", color: "#f59e0b" },
+      { id: "t2", name: "Cliente frecuente", color: "#8b5cf6" },
+    ];
+    rerender(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={() => {}}
+        tagCatalogVersion={1}
+      />,
+    );
+
+    await waitFor(() => expect(h.tagsFetchCount).toBe(2));
+    expect(await screen.findByText("Cliente frecuente")).toBeInTheDocument();
+  });
+
+  it("does NOT refetch the tag catalog when only resyncToken bumps (assign/remove of an existing tag must not force a catalog refetch)", async () => {
+    h.tagsCatalog = [{ id: "t1", name: "Favoritos", color: "#f59e0b" }];
+    const { rerender } = render(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={() => {}}
+        tagCatalogVersion={0}
+        resyncToken={0}
+      />,
+    );
+    await waitFor(() => expect(h.tagsFetchCount).toBe(1));
+
+    rerender(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={() => {}}
+        tagCatalogVersion={0}
+        resyncToken={1}
+      />,
+    );
+
+    // Give any (incorrect) effect a chance to fire before asserting it didn't.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(h.tagsFetchCount).toBe(1);
+  });
+
+  it("preserves selectedTagIds / OR-filter behavior across a catalog refresh", async () => {
+    h.tagsCatalog = [
+      { id: "t1", name: "Favoritos", color: "#f59e0b" },
+      { id: "t2", name: "Pendiente", color: "#3b82f6" },
+    ];
+    const contactWithFavoritos = taggedContact("Has Favoritos", [
+      { id: "t1", name: "Favoritos", color: "#f59e0b", user_id: "u-1", created_at: "2026-01-01T00:00:00Z" },
+    ]);
+    const conversation = conv({ id: "conv-fav", contact_id: "ct-fav", contact: contactWithFavoritos });
+
+    const { rerender } = render(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[conversation]}
+        onConversationsLoaded={() => {}}
+        tagCatalogVersion={0}
+      />,
+    );
+    await screen.findByText("Has Favoritos");
+
+    // The seeded conversation's contact also carries a "Favoritos" badge
+    // chip, so the plain text is ambiguous — the dropdown option is the
+    // only one with the menuitemcheckbox role.
+    fireEvent.click(screen.getByText("tags"));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Favoritos" }));
+    // Selecting the tag filters the list down to the matching conversation
+    // (still visible — it has "Favoritos").
+    expect(await screen.findByText("Has Favoritos")).toBeInTheDocument();
+
+    h.tagsCatalog = [...h.tagsCatalog, { id: "t3", name: "Reclamo", color: "#ec4899" }];
+    rerender(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[conversation]}
+        onConversationsLoaded={() => {}}
+        tagCatalogVersion={1}
+      />,
+    );
+
+    // The selection (and therefore the filtered result) survives the
+    // catalog refresh triggered by the version bump.
+    expect(await screen.findByText("Has Favoritos")).toBeInTheDocument();
   });
 });
