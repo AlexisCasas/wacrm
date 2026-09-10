@@ -36,6 +36,16 @@ interface ConversationListProps {
    * or the tab was throttled. Optional so existing callers keep working.
    */
   resyncToken?: number;
+  /**
+   * Increment ONLY when a new tag DEFINITION is created elsewhere
+   * (ContactSidebar's "create tag" flow) — never on assigning/removing
+   * an existing tag, and never on `resyncToken` — to refetch just the
+   * tag catalog below without touching `conversations`. A brand-new
+   * tag must appear in the filter dropdown immediately, without
+   * waiting for a reconnect/visibility resync. Optional so existing
+   * callers keep working (defaults to a stable 0 — fetch once).
+   */
+  tagCatalogVersion?: number;
 }
 
 const STATUS_COLORS: Record<ConversationStatus, string> = {
@@ -54,6 +64,7 @@ export function ConversationList({
   conversations,
   onConversationsLoaded,
   resyncToken = 0,
+  tagCatalogVersion = 0,
 }: ConversationListProps) {
   const t = useTranslations("Inbox.conversationList");
   
@@ -130,8 +141,12 @@ export function ConversationList({
     // up on any events sent while the WS was disconnected or throttled.
   }, [resyncToken]);
 
-  // Tag definitions for the filter picker — loaded once so labels/colours
-  // stay stable regardless of which conversations happen to be loaded.
+  // Tag definitions for the filter picker — loaded once (labels/colours
+  // stay stable regardless of which conversations happen to be loaded),
+  // and again whenever `tagCatalogVersion` bumps (a NEW tag definition
+  // was created elsewhere — see the prop doc above). Assigning/removing
+  // an existing tag never touches this dependency, so it never
+  // refetches for that.
   useEffect(() => {
     const supabase = createClient();
     let cancelled = false;
@@ -142,7 +157,7 @@ export function ConversationList({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [tagCatalogVersion]);
 
   // Company options are derived from the loaded conversations — there's no
   // separate companies table, and only companies with a live conversation
@@ -458,6 +473,15 @@ function ConversationItem({
       })
     : "";
 
+  // Compact badges (P3) — `contact.tags` is already embedded by
+  // INBOX_CONVERSATION_SELECT's join (src/lib/inbox/conversations.ts);
+  // this is pure presentation over data already in memory, never a
+  // new query per row. Max 2 chips shown at this card width; the rest
+  // collapse into a single "+N" chip rather than wrapping the row
+  // onto a third/fourth line.
+  const visibleTags = contact?.tags?.slice(0, 2) ?? [];
+  const hiddenTagCount = (contact?.tags?.length ?? 0) - visibleTags.length;
+
   return (
     <button
       onClick={handleClick}
@@ -514,6 +538,28 @@ function ConversationItem({
             />
           </div>
         </div>
+        {visibleTags.length > 0 && (
+          <div className="mt-1 flex items-center gap-1">
+            {visibleTags.map((tag) => (
+              <span
+                key={tag.id}
+                className="max-w-16 truncate rounded-full px-1.5 py-0.5 text-[9px] font-medium"
+                style={{ backgroundColor: `${tag.color}20`, color: tag.color }}
+                title={tag.name}
+              >
+                {tag.name}
+              </span>
+            ))}
+            {hiddenTagCount > 0 && (
+              <span
+                className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground"
+                title={contact?.tags?.slice(2).map((t) => t.name).join(", ")}
+              >
+                +{hiddenTagCount}
+              </span>
+            )}
+          </div>
+        )}
       </div>
     </button>
   );

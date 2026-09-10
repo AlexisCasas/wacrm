@@ -25,17 +25,8 @@ import {
 import { cn } from '@/lib/utils';
 import { useTranslations } from 'next-intl';
 import type { Tag } from '@/types';
-
-const PRESET_COLORS = [
-  { name: 'red', value: '#ef4444' },
-  { name: 'orange', value: '#f97316' },
-  { name: 'amber', value: '#f59e0b' },
-  { name: 'emerald', value: '#10b981' },
-  { name: 'cyan', value: '#06b6d4' },
-  { name: 'blue', value: '#3b82f6' },
-  { name: 'violet', value: '#8b5cf6' },
-  { name: 'pink', value: '#ec4899' },
-];
+import { PRESET_TAG_COLORS } from '@/lib/contacts/tag-colors';
+import { createTag, TagApiError } from '@/lib/contacts/tag-api';
 
 /**
  * Tags card — colour-coded contact labels. Creation is an inline row
@@ -54,25 +45,32 @@ export function TagManager() {
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [newTagName, setNewTagName] = useState('');
-  const [selectedColor, setSelectedColor] = useState(PRESET_COLORS[3].value);
+  const [selectedColor, setSelectedColor] = useState(PRESET_TAG_COLORS[3].value);
 
   useEffect(() => {
     if (authLoading) return;
-    if (!user) {
+    if (!user || !accountId) {
       setLoading(false);
       return;
     }
-    fetchTags(user.id);
+    fetchTags(accountId);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authLoading, user?.id]);
+  }, [authLoading, user?.id, accountId]);
 
-  async function fetchTags(userId: string) {
+  // P3 adversarial review — this was previously scoped by `user_id`,
+  // which is WRONG under account sharing (migration 017): two
+  // admins/owners of the SAME account must see the SAME tag catalog,
+  // not only the tags each of them personally created. `tags_select`
+  // RLS already scopes reads to the caller's account regardless, but
+  // filtering explicitly by `account_id` here is still correct and
+  // clearer than relying on RLS alone plus an accidental extra filter.
+  async function fetchTags(accountId: string) {
     try {
       setLoading(true);
       const { data, error } = await supabase
         .from('tags')
         .select('*')
-        .eq('user_id', userId)
+        .eq('account_id', accountId)
         .order('created_at', { ascending: true });
 
       if (error) throw error;
@@ -98,24 +96,26 @@ export function TagManager() {
         return;
       }
 
-      // account_id is mandatory on every account-scoped insert (NOT
-      // NULL + RLS, no DB default).
-      const { error } = await supabase.from('tags').insert({
-        user_id: user.id,
-        account_id: accountId,
-        name: newTagName.trim(),
-        color: selectedColor,
-      });
-
-      if (error) throw error;
+      // P3: single reusable write path (src/lib/contacts/tag-create.ts
+      // via POST /api/tags) — same one the Inbox ContactSidebar's
+      // "create tag" flow uses. Server derives account_id from the
+      // session; never trust/send it from here.
+      await createTag(newTagName.trim(), selectedColor);
 
       toast.success(t('tagCreated'));
       setNewTagName('');
-      setSelectedColor(PRESET_COLORS[3].value);
-      await fetchTags(user.id);
+      setSelectedColor(PRESET_TAG_COLORS[3].value);
+      await fetchTags(accountId);
     } catch (err) {
       console.error('Create error:', err);
-      toast.error(t('failedToCreateTag'));
+      // Duplicate-name is the one case worth its own message here —
+      // everything else (validation, auth, internal) collapses to the
+      // existing generic toast, unchanged from before this refactor.
+      if (err instanceof TagApiError && err.code === 'tag_name_conflict') {
+        toast.error(t('duplicateTagName'));
+      } else {
+        toast.error(t('failedToCreateTag'));
+      }
     } finally {
       setSaving(false);
     }
@@ -216,7 +216,7 @@ export function TagManager() {
                 className="min-w-[180px] flex-1"
               />
               <div className="flex gap-1.5">
-                {PRESET_COLORS.map((color) => (
+                {PRESET_TAG_COLORS.map((color) => (
                   <button
                     key={color.value}
                     type="button"

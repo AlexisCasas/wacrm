@@ -8,7 +8,7 @@ import {
   INBOX_CONVERSATION_SELECT,
   normalizeConversation,
 } from "@/lib/inbox/conversations";
-import type { Conversation, Message, Contact, ConversationStatus } from "@/types";
+import type { Conversation, Message, Contact, ConversationStatus, Tag } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
@@ -59,6 +59,17 @@ function InboxPageInner() {
    * once on conversationId-change as usual.
    */
   const [resyncToken, setResyncToken] = useState(0);
+
+  /**
+   * P3 — bumped ONLY when a brand-new tag DEFINITION is created
+   * (ContactSidebar's "create tag" flow), never on assigning/removing
+   * an existing tag, and never alongside `resyncToken`. Passed to
+   * ConversationList so its independent tag-catalog fetch (for the
+   * filter dropdown) refetches immediately instead of waiting for a
+   * reconnect/visibility resync — see docs/P3_TAGS_INBOX_AUDIT.md
+   * section N.
+   */
+  const [tagCatalogVersion, setTagCatalogVersion] = useState(0);
 
   /**
    * Whether the desktop contact sidebar (tags / deals / notes) is shown.
@@ -561,6 +572,50 @@ function InboxPageInner() {
   );
 
   /**
+   * P3 — a tag was just assigned/removed/created for the contact
+   * currently shown in ContactSidebar. Mirrors handleStatusChange /
+   * handleAssignChange's shape: the write already succeeded server-side
+   * (ContactSidebar only calls this AFTER a successful persist — see
+   * its own tag-toggle handler), this just fans the new `tags` array
+   * out to every piece of local state that embeds this contact, so
+   * ConversationList's badges and its tag filter both see the change
+   * immediately without a refetch. Matched by `contact.id`, not
+   * `conversation.id` — ContactSidebar only knows the contact, and a
+   * contact maps to exactly one conversation (P1) but this stays
+   * correct even if that were ever not the case.
+   */
+  const handleContactTagsChange = useCallback(
+    (contactId: string, tags: Tag[]) => {
+      setConversations((prev) =>
+        prev.map((c) =>
+          c.contact?.id === contactId
+            ? { ...c, contact: { ...c.contact, tags } }
+            : c
+        )
+      );
+      setActiveContact((prev) =>
+        prev && prev.id === contactId ? { ...prev, tags } : prev
+      );
+      setActiveConversation((prev) =>
+        prev && prev.contact?.id === contactId
+          ? { ...prev, contact: prev.contact ? { ...prev.contact, tags } : prev.contact }
+          : prev
+      );
+    },
+    []
+  );
+
+  /**
+   * P3 — a brand-new tag DEFINITION was just created (never fired for
+   * assigning/removing an existing one — see ContactSidebar's
+   * `onTagCreated`). Bumps `tagCatalogVersion` so ConversationList's
+   * filter dropdown picks it up immediately.
+   */
+  const handleTagCreated = useCallback(() => {
+    setTagCatalogVersion((v) => v + 1);
+  }, []);
+
+  /**
    * A contact was just blocked from this open conversation. The
    * conversation itself is never deleted (block/unblock never touches
    * `conversations`/`messages`), but it must leave the normal Inbox
@@ -615,6 +670,7 @@ function InboxPageInner() {
             conversations={conversations}
             onConversationsLoaded={handleConversationsLoaded}
             resyncToken={resyncToken}
+            tagCatalogVersion={tagCatalogVersion}
           />
         </div>
 
@@ -658,7 +714,11 @@ function InboxPageInner() {
             toggle — which is itself desktop-only — never affects it. */}
         {contactPanelOpen && (
           <div className="hidden lg:block">
-            <ContactSidebar contact={activeContact} />
+            <ContactSidebar
+              contact={activeContact}
+              onTagsChanged={handleContactTagsChange}
+              onTagCreated={handleTagCreated}
+            />
           </div>
         )}
       </div>
