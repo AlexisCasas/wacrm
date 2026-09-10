@@ -110,6 +110,16 @@ export function FlowStartPicker({
           // a contact that got blocked meanwhile. Never confirm as if
           // it started.
           toast.error(t("errorContactBlocked"));
+        } else if (data.code === "flow_failed_immediately") {
+          // P1 bug #2 — the run WAS created and DID run (it's kept for
+          // audit server-side), but it ended in status='failed' before
+          // ever suspending. Never show the success toast, never call
+          // onStarted(), never close the dialog — the agent stays on
+          // the confirm screen so they can see something went wrong
+          // and decide whether to retry or pick a different flow. No
+          // internal detail (end_reason, exception, Meta error) is
+          // available here — the route never sends it.
+          toast.error(t("errorFailedImmediately"));
         } else {
           toast.error(t("errorGeneric"));
         }

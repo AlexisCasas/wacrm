@@ -1415,6 +1415,19 @@ export interface StartFlowManuallyArgs {
 
 export type StartFlowManuallyResult =
   | { outcome: "started"; flow_run_id: string; flow_id: string; flow_name: string }
+  // P1 bug #2 (docs/P1_DUPLICATE_CHATS_AUDIT.md) — the run WAS created
+  // and DID execute (it's preserved for audit — see the flow_run_id),
+  // but its first advance ended in `status='failed'` before ever
+  // suspending. Deliberately narrow: only a genuine `failed` status
+  // maps here. `completed` (an immediate `end` node), `handed_off`,
+  // and `paused_by_agent` (e.g. a contact-blocked race) are all still
+  // legitimate "started" outcomes — see startFlowManually below.
+  | {
+      outcome: "run_failed_immediately";
+      flow_run_id: string;
+      flow_id: string;
+      flow_name: string;
+    }
   | { outcome: "flow_not_found" }
   | { outcome: "flow_not_active" }
   | { outcome: "conversation_not_found" }
@@ -1539,6 +1552,67 @@ export async function startFlowManually(
   if (result.kind === "insert_error") {
     return { outcome: "error", message: result.message };
   }
+
+  // P1 bug #2 — `createAndStartFlowRun` already ran the run's first
+  // advance (inside `result`'s creation) and, on any terminal failure,
+  // already persisted `status='failed'` via `endRun()`. That is the
+  // authoritative truth this function is missing entirely below if we
+  // don't check it: `result.kind === "started"` only means "a row was
+  // inserted", not "it's still going" or "it went well".
+  //
+  // Deliberately a SEPARATE read here, scoped to `startFlowManually`
+  // only — `createAndStartFlowRun` itself, `startNewRun`, and
+  // `dispatchInboundToFlows` (the automatic-trigger path) are
+  // untouched and pay no extra query for this. The manual-start route
+  // is the only caller that turns this into a synchronous HTTP
+  // response a human is watching, so it's the only one that needs to
+  // know.
+  const { data: finalRunData, error: finalRunErr } = await db
+    .from("flow_runs")
+    .select("status, end_reason")
+    .eq("id", result.run.id)
+    .eq("account_id", accountId)
+    .maybeSingle();
+  if (finalRunErr) {
+    console.error("[flows] startFlowManually final-status lookup error:", finalRunErr.message);
+    return { outcome: "error", message: finalRunErr.message };
+  }
+  // Fail closed: `maybeSingle()` can also resolve with `data: null` and
+  // `error: null` (zero rows matched) — a row we just inserted (and can
+  // see via `result.run`) failing to be found by its own id here would
+  // be an inconsistency worth surfacing loudly, NEVER a silent "so it
+  // must not be failed, report started". This should not happen in
+  // practice (service-role client, no delete path for flow_runs), but
+  // this function decides whether a human sees a false success — it
+  // must never assume "not failed" from an absence of data.
+  if (!finalRunData) {
+    console.error(
+      "[flows] startFlowManually final-status lookup found no row for a run that was just created",
+      { flow_run_id: result.run.id, account_id: accountId },
+    );
+    return { outcome: "error", message: "Flow run not found immediately after creation" };
+  }
+  const finalRun = finalRunData as { status: string; end_reason: string | null };
+  if (finalRun.status === "failed") {
+    // Logged server-side only — never returned to the caller (may
+    // contain a raw exception message, a Meta API error, or other
+    // internal detail; see advanceFromNodeKey's error branches).
+    console.error("[flows] manual start failed immediately:", {
+      flow_run_id: result.run.id,
+      flow_id: flow.id,
+      end_reason: finalRun.end_reason,
+    });
+    return {
+      outcome: "run_failed_immediately",
+      flow_run_id: result.run.id,
+      flow_id: flow.id,
+      flow_name: flow.name,
+    };
+  }
+
+  // Any other status — completed (immediate `end` node), handed_off,
+  // paused_by_agent (e.g. a contact-blocked race), or still active
+  // (suspended waiting for a reply) — is a legitimate "started" result.
   return {
     outcome: "started",
     flow_run_id: result.run.id,

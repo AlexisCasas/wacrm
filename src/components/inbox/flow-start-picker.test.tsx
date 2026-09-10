@@ -24,6 +24,8 @@ const messages: Record<string, string> = {
   errorActiveFlow: "This contact already has an active Flow: {flowName}.",
   errorServiceWindow: "A Flow can't be started outside the 24-hour service window.",
   errorContactBlocked: "This contact is blocked. Unblock them first to start a Flow.",
+  errorFailedImmediately:
+    "The Flow couldn't be started. Check the contact's details or the Flow's configuration and try again.",
   errorGeneric: "Couldn't start the flow. Please try again.",
 };
 
@@ -315,6 +317,47 @@ describe("FlowStartPicker — starting a flow", () => {
         "This contact is blocked. Unblock them first to start a Flow.",
       ),
     );
+  });
+
+  it("flow_failed_immediately shows a distinct error toast, does NOT close the dialog, and does NOT fire onStarted (P1 bug #2)", async () => {
+    const onOpenChange = vi.fn();
+    const onStarted = vi.fn();
+    vi.stubGlobal(
+      "fetch",
+      mockFetch({
+        startResponse: async () =>
+          ({
+            ok: false,
+            json: async () => ({
+              error: "Flow failed immediately after start",
+              code: "flow_failed_immediately",
+              flow_run_id: "run-1",
+            }),
+          }) as Response,
+      }),
+    );
+
+    render(
+      <FlowStartPicker
+        open={true}
+        onOpenChange={onOpenChange}
+        onStarted={onStarted}
+        {...BASE_PROPS}
+      />,
+    );
+    fireEvent.click(await screen.findByText("Combo XTD Taladro"));
+    fireEvent.click(screen.getByRole("button", { name: "Start Flow" }));
+
+    await waitFor(() =>
+      expect(toastMock.error).toHaveBeenCalledWith(
+        "The Flow couldn't be started. Check the contact's details or the Flow's configuration and try again.",
+      ),
+    );
+    // Never treated as success: no success toast, dialog stays open,
+    // no onStarted refresh callback.
+    expect(toastMock.success).not.toHaveBeenCalled();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(onStarted).not.toHaveBeenCalled();
   });
 
   it("an unrecognized error code falls back to the generic error toast", async () => {

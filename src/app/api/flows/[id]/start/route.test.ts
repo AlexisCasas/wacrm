@@ -163,6 +163,32 @@ describe("POST /api/flows/[id]/start — tenancy", () => {
   })
 })
 
+// P1 bug #2 — the run was created and executed, but its first advance
+// already ended in status='failed'. Must never look like the 201
+// success response, and must never leak the internal end_reason /
+// exception / Meta error that caused it.
+describe("POST /api/flows/[id]/start — run failed immediately (P1 bug #2)", () => {
+  it("409s with flow_failed_immediately and only the flow_run_id, nothing internal", async () => {
+    startFlowManually.mockResolvedValue({
+      outcome: "run_failed_immediately",
+      flow_run_id: "run-1",
+      flow_id: "flow-1",
+      flow_name: "Combo XTD",
+    })
+    const res = await post()
+    const json = await res.json()
+
+    expect(res.status).toBe(409)
+    expect(json.code).toBe("flow_failed_immediately")
+    expect(json.flow_run_id).toBe("run-1")
+    expect(json.success).not.toBe(true)
+    expect(json).not.toHaveProperty("end_reason")
+    const raw = JSON.stringify(json)
+    expect(raw).not.toContain("send_text_failed")
+    expect(raw).not.toContain("contact not found")
+  })
+})
+
 describe("POST /api/flows/[id]/start — 24h service window", () => {
   it("returns service_window_expired when there is no customer inbound message at all", async () => {
     lastCustomerMessage = null
