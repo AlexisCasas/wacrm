@@ -302,6 +302,7 @@
       "errorActiveFlow": "Este contacto ya tiene un Flow activo: {flowName}.",
       "errorServiceWindow": "No se puede iniciar un Flow fuera de la ventana de servicio de 24 horas.",
       "errorContactBlocked": "Este contacto está bloqueado. Desbloquéalo primero para iniciar un Flow.",
+      "errorFailedImmediately": "No se pudo iniciar el Flow. Revisa los datos del contacto o la configuración e inténtalo nuevamente.",
       "errorGeneric": "No se pudo iniciar el flow. Intenta de nuevo."
     },
     "sessionTimer": {

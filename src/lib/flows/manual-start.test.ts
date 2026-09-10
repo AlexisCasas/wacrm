@@ -23,6 +23,19 @@ const h = vi.hoisted(() => ({
     execCountCalls: [] as string[],
     nextRunId: 1,
     forceInsertConflict: false,
+    /**
+     * When true, the NEXT `flow_runs` select filtered by `id` (i.e.
+     * startFlowManually's post-creation final-status lookup, never
+     * loadActiveRunForContact's account_id+contact_id+status query)
+     * returns zero rows — `{ data: [], error: null }` — instead of the
+     * real row. Exercises `maybeSingle()`'s "found nothing, but no
+     * error either" shape, which must fail closed, never be read as
+     * "not failed".
+     */
+    forceFinalStatusLookupMiss: false,
+    /** Same targeting as forceFinalStatusLookupMiss, but returns a DB
+     *  error instead of an empty result. */
+    forceFinalStatusLookupError: false,
   },
 }));
 
@@ -88,6 +101,20 @@ vi.mock("./admin-client", () => {
           Object.assign(row, payload);
         }
         return { data: null, error: null };
+      }
+      if (
+        state.forceFinalStatusLookupError &&
+        filters.some(([k]) => k === "id")
+      ) {
+        state.forceFinalStatusLookupError = false;
+        return { data: null, error: { message: "connection reset" } };
+      }
+      if (
+        state.forceFinalStatusLookupMiss &&
+        filters.some(([k]) => k === "id")
+      ) {
+        state.forceFinalStatusLookupMiss = false;
+        return { data: [], error: null };
       }
       return { data: matches(state.flowRuns, filters), error: null };
     }
@@ -156,6 +183,8 @@ vi.mock("./meta-send", () => ({
 }));
 
 import { startFlowManually, dispatchInboundToFlows } from "./engine";
+import { engineSendText } from "./meta-send";
+import { ContactBlockedError } from "@/lib/contacts/blocking";
 
 const ACCOUNT = "acct-1";
 const OTHER_ACCOUNT = "acct-2";
@@ -201,6 +230,18 @@ function seedConversationAndContact() {
   });
 }
 
+/** A `send_message` entry node advancing to `end1` on success. */
+function seedSendThenEndFlow(overrides: Partial<Record<string, unknown>> = {}) {
+  const flow = seedFlow({ entry_node_id: "send1", ...overrides });
+  h.state.flowNodes.push({
+    flow_id: flow.id,
+    node_key: "send1",
+    node_type: "send_message",
+    config: { text: "Hola {{vars.contact_name}}", next_node_key: "end1" },
+  });
+  return flow;
+}
+
 beforeEach(() => {
   h.state.flows = [];
   h.state.flowNodes = [];
@@ -211,6 +252,14 @@ beforeEach(() => {
   h.state.execCountCalls = [];
   h.state.nextRunId = 1;
   h.state.forceInsertConflict = false;
+  h.state.forceFinalStatusLookupMiss = false;
+  h.state.forceFinalStatusLookupError = false;
+  // Reset to the default success behavior — individual tests below
+  // override with mockRejectedValueOnce/mockImplementationOnce for the
+  // one call they care about; this guards against any leaking into a
+  // later test if a scenario ever calls engineSendText more than once.
+  vi.mocked(engineSendText).mockReset();
+  vi.mocked(engineSendText).mockResolvedValue({ whatsapp_message_id: "m1" });
 });
 
 describe("startFlowManually", () => {
@@ -525,6 +574,181 @@ describe("startFlowManually", () => {
   });
 });
 
+// ============================================================
+// P1 bug #2 — startFlowManually must not report success when the
+// run's FIRST advance already ended in status='failed'. Only that one
+// status maps to the new "run_failed_immediately" outcome; completed
+// (immediate end node), handed_off, paused_by_agent (contact-blocked
+// race), and active (suspended waiting for a reply) all still report
+// "started" — see docs/P1_DUPLICATE_CHATS_AUDIT.md.
+// ============================================================
+describe("startFlowManually — first-advance outcome", () => {
+  it("1. successful first send advancing to an end node -> outcome 'started', run completes", async () => {
+    seedSendThenEndFlow();
+    seedConversationAndContact();
+
+    const result = await startFlowManually({
+      accountId: ACCOUNT,
+      initiatedByUserId: AGENT_USER,
+      flowId: "flow-1",
+      conversationId: CONVERSATION,
+    });
+
+    expect(result.outcome).toBe("started");
+    expect(h.state.flowRuns).toHaveLength(1);
+    expect(h.state.flowRuns[0].status).toBe("completed");
+  });
+
+  it("2. engineSendText throws on the first node -> run is left failed, outcome is 'run_failed_immediately', exactly one run persists", async () => {
+    seedSendThenEndFlow();
+    seedConversationAndContact();
+    vi.mocked(engineSendText).mockRejectedValueOnce(
+      new Error("contact not found for this account"),
+    );
+
+    const result = await startFlowManually({
+      accountId: ACCOUNT,
+      initiatedByUserId: AGENT_USER,
+      flowId: "flow-1",
+      conversationId: CONVERSATION,
+    });
+
+    expect(result.outcome).toBe("run_failed_immediately");
+    if (result.outcome === "run_failed_immediately") {
+      expect(result.flow_run_id).toBe(h.state.flowRuns[0].id);
+      expect(result.flow_id).toBe("flow-1");
+      expect(result.flow_name).toBe("Combo XTD Taladro + Amoladora");
+      // The public result must never leak the internal failure detail.
+      expect(result).not.toHaveProperty("end_reason");
+      expect(JSON.stringify(result)).not.toContain("send_text_failed");
+      expect(JSON.stringify(result)).not.toContain("contact not found");
+    }
+
+    // The run is preserved for audit — not deleted, not duplicated.
+    expect(h.state.flowRuns).toHaveLength(1);
+    expect(h.state.flowRuns[0].status).toBe("failed");
+    expect(h.state.flowRuns[0].end_reason).toBe("send_text_failed");
+  });
+
+  it("7. an immediate 'end' node (no send at all) still reports 'started' — unaffected baseline", async () => {
+    seedFlow(); // default fixture: entry_node_id 'end1' -> end
+    seedConversationAndContact();
+
+    const result = await startFlowManually({
+      accountId: ACCOUNT,
+      initiatedByUserId: AGENT_USER,
+      flowId: "flow-1",
+      conversationId: CONVERSATION,
+    });
+
+    expect(result.outcome).toBe("started");
+    expect(h.state.flowRuns[0].status).toBe("completed");
+  });
+
+  it("8. an immediate handoff still reports 'started'", async () => {
+    const flow = seedFlow({ entry_node_id: "handoff1" });
+    h.state.flowNodes.push({
+      flow_id: flow.id,
+      node_key: "handoff1",
+      node_type: "handoff",
+      config: { note: "customer needs a human" },
+    });
+    seedConversationAndContact();
+
+    const result = await startFlowManually({
+      accountId: ACCOUNT,
+      initiatedByUserId: AGENT_USER,
+      flowId: "flow-1",
+      conversationId: CONVERSATION,
+    });
+
+    expect(result.outcome).toBe("started");
+    expect(h.state.flowRuns[0].status).toBe("handed_off");
+  });
+
+  it("9. suspended waiting for a reply (collect_input) still reports 'started'", async () => {
+    const flow = seedFlow({ entry_node_id: "collect1" });
+    h.state.flowNodes.push({
+      flow_id: flow.id,
+      node_key: "collect1",
+      node_type: "collect_input",
+      config: { prompt_text: "What's your name?", var_key: "name", next_node_key: "end1" },
+    });
+    seedConversationAndContact();
+
+    const result = await startFlowManually({
+      accountId: ACCOUNT,
+      initiatedByUserId: AGENT_USER,
+      flowId: "flow-1",
+      conversationId: CONVERSATION,
+    });
+
+    expect(result.outcome).toBe("started");
+    expect(h.state.flowRuns[0].status).toBe("active");
+  });
+
+  it("10. a contact-blocked race during the first send is 'paused_by_agent', NOT 'run_failed_immediately'", async () => {
+    seedSendThenEndFlow();
+    seedConversationAndContact();
+    vi.mocked(engineSendText).mockRejectedValueOnce(new ContactBlockedError());
+
+    const result = await startFlowManually({
+      accountId: ACCOUNT,
+      initiatedByUserId: AGENT_USER,
+      flowId: "flow-1",
+      conversationId: CONVERSATION,
+    });
+
+    expect(result.outcome).toBe("started");
+    expect(h.state.flowRuns[0].status).toBe("paused_by_agent");
+    expect(h.state.flowRuns[0].end_reason).toBe("contact_blocked");
+  });
+
+  it("fails closed when the post-creation status lookup finds no row (maybeSingle data=null, error=null) — never reports 'started'", async () => {
+    // Adversarial review finding: `maybeSingle()` resolving with
+    // `{ data: null, error: null }` (zero rows matched) is a REAL,
+    // distinct outcome from a genuine DB error — and, before this
+    // test, falling through that case silently reported "started" as
+    // if the run were known-good. A run this function itself just
+    // created failing to be found by its own id would be a serious
+    // inconsistency; it must never be read as "so it must not be
+    // failed".
+    seedSendThenEndFlow();
+    seedConversationAndContact();
+    h.state.forceFinalStatusLookupMiss = true;
+
+    const result = await startFlowManually({
+      accountId: ACCOUNT,
+      initiatedByUserId: AGENT_USER,
+      flowId: "flow-1",
+      conversationId: CONVERSATION,
+    });
+
+    expect(result.outcome).toBe("error");
+    // The run itself was still created (and, per the fixture, actually
+    // completed) — this failure is purely in the RE-READ, not in the
+    // run creation/advance itself. Confirms this isn't misreported as
+    // "started" OR as a run-creation failure.
+    expect(h.state.flowRuns).toHaveLength(1);
+  });
+
+  it("fails closed when the post-creation status lookup itself errors — never reports 'started'", async () => {
+    seedSendThenEndFlow();
+    seedConversationAndContact();
+    h.state.forceFinalStatusLookupError = true;
+
+    const result = await startFlowManually({
+      accountId: ACCOUNT,
+      initiatedByUserId: AGENT_USER,
+      flowId: "flow-1",
+      conversationId: CONVERSATION,
+    });
+
+    expect(result.outcome).toBe("error");
+    expect(h.state.flowRuns).toHaveLength(1);
+  });
+});
+
 describe("inbound dispatch compatibility — unaffected by the manual-start refactor", () => {
   it("keyword inbound still starts a run with the ORIGINAL 'started' payload shape (meta_message_id, no trigger_source)", async () => {
     seedFlow({ trigger_type: "keyword", trigger_config: { keywords: ["combo"] } });
@@ -566,5 +790,32 @@ describe("inbound dispatch compatibility — unaffected by the manual-start refa
 
     expect(result.consumed).toBe(false);
     expect(h.state.flowRuns).toHaveLength(0);
+  });
+
+  it("11. an immediate send failure on AUTOMATIC dispatch is unaffected by the P1 bug #2 fix — no run_failed_immediately concept exists here", async () => {
+    // P1 bug #2 fix lives entirely inside startFlowManually, which
+    // dispatchInboundToFlows/startNewRun never call. createAndStartFlowRun
+    // itself was NOT touched, so this is exactly the pre-existing
+    // behavior: the run still ends up 'failed' in the DB, but the
+    // DispatchInboundResult the webhook sees still reports the same
+    // (diagnostic-only, pre-existing) "completed" literal it always did.
+    seedSendThenEndFlow({ trigger_type: "keyword", trigger_config: { keywords: ["combo"] } });
+    seedConversationAndContact();
+    vi.mocked(engineSendText).mockRejectedValueOnce(new Error("contact not found for this account"));
+
+    const result = await dispatchInboundToFlows({
+      accountId: ACCOUNT,
+      userId: AGENT_USER,
+      contactId: CONTACT,
+      conversationId: CONVERSATION,
+      message: { kind: "text", text: "quiero el combo", meta_message_id: "wamid.789" },
+      isFirstInboundMessage: false,
+    });
+
+    expect(result.consumed).toBe(true);
+    expect(result.outcome).toBe("completed");
+    expect(h.state.flowRuns).toHaveLength(1);
+    expect(h.state.flowRuns[0].status).toBe("failed");
+    expect(h.state.flowRuns[0].end_reason).toBe("send_text_failed");
   });
 });

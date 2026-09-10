@@ -145,6 +145,19 @@ export async function POST(
         { error: "This contact is blocked", code: "contact_blocked" },
         { status: 409 },
       )
+    case "run_failed_immediately":
+      // The run exists (flow_run_id below) and is kept as-is for audit
+      // — never re-thrown, retried, or deleted here. Deliberately no
+      // end_reason / exception detail / Meta error in this response;
+      // that stays server-side only (see startFlowManually's own log).
+      return NextResponse.json(
+        {
+          error: "Flow failed immediately after start",
+          code: "flow_failed_immediately",
+          flow_run_id: result.flow_run_id,
+        },
+        { status: 409 },
+      )
     case "active_flow_exists":
       return NextResponse.json(
         {
