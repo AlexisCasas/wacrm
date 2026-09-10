@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
+import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type ContactRow = any
@@ -23,6 +24,16 @@ export interface ContactOutcome {
  * find-or-create *shape* around it a second caller) — behavior is
  * unchanged, confirmed by the webhook's existing test suite passing
  * after the extraction.
+ *
+ * Second barrier (P1 Fase 2B — docs/P1_DUPLICATE_CHATS_AUDIT.md section
+ * Q): every caller SHOULD already reject an empty/unresolvable phone
+ * before calling this (the webhook does, via `resolveSenderIdentity`),
+ * but this function must never depend on that alone — a bug in any
+ * current or future caller must not be able to insert `contacts.phone
+ * = ''`, which is exactly what let one inbound message fragment into a
+ * brand-new contact + conversation each time. `phone` is re-normalized
+ * here and rejected if it doesn't normalize to any digits, independent
+ * of what the caller passed in.
  */
 export async function findOrCreateContact(
   db: SupabaseClient,
@@ -31,7 +42,15 @@ export async function findOrCreateContact(
   phone: string,
   name: string,
 ): Promise<ContactOutcome | null> {
-  const existingContact = await findExistingContact(db, accountId, phone)
+  const normalizedPhone = normalizePhone(phone)
+  if (!normalizedPhone) {
+    console.warn('[contacts] findOrCreateContact refused — phone does not normalize to any digits', {
+      account_id: accountId,
+    })
+    return null
+  }
+
+  const existingContact = await findExistingContact(db, accountId, normalizedPhone)
 
   if (existingContact) {
     // A blocked contact's operational data must not keep mutating from
@@ -57,8 +76,8 @@ export async function findOrCreateContact(
     .insert({
       account_id: accountId,
       user_id: configOwnerUserId,
-      phone,
-      name: name || phone,
+      phone: normalizedPhone,
+      name: name || normalizedPhone,
     })
     .select()
     .single()
@@ -69,7 +88,7 @@ export async function findOrCreateContact(
     // unique index (migration 022) rejected the duplicate. Re-resolve
     // the existing row instead of dropping the message.
     if (isUniqueViolation(createError)) {
-      const raced = await findExistingContact(db, accountId, phone)
+      const raced = await findExistingContact(db, accountId, normalizedPhone)
       if (raced) return { contact: raced, wasCreated: false }
     }
     console.error('Error creating contact:', createError)

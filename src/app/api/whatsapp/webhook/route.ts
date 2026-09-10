@@ -3,7 +3,7 @@ import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { mirrorInboundMedia } from '@/lib/whatsapp/mirror-inbound-media'
-import { normalizePhone } from '@/lib/whatsapp/phone-utils'
+import { resolveSenderIdentity } from '@/lib/whatsapp/resolve-sender-identity'
 import { findOrCreateContact } from '@/lib/contacts/find-or-create'
 import { findOrCreateConversation } from '@/lib/conversations/find-or-create'
 import { reopenClosedConversation } from '@/lib/conversations/reopen'
@@ -349,7 +349,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // Default ON: the column is NOT NULL DEFAULT TRUE, but a row
           // read before migration 039 lands would have it undefined,
           // and losing attachments is the failure mode worth avoiding.
-          config.mirror_inbound_media !== false
+          config.mirror_inbound_media !== false,
+          phoneNumberId
         )
       }
     }
@@ -620,17 +621,56 @@ async function processMessage(
   accessToken: string,
   // Per-account opt-out for the inbound-media mirror (migration 039).
   // See parseMessageContent for what it turns off.
-  mirrorMedia: boolean
+  mirrorMedia: boolean,
+  // Receiving business number. Used only for the observability log
+  // below (never for tenancy/routing — that's already resolved into
+  // accountId by the caller).
+  phoneNumberId: string
 ) {
-  const senderPhone = normalizePhone(message.from)
   const contactName = contact.profile.name
+
+  // Resolve the sender's identity from BOTH fields Meta's payload
+  // carries: `message.from` (what this code has always used) and
+  // `contact.wa_id` (present in every payload but never consulted
+  // before — see docs/P1_DUPLICATE_CHATS_AUDIT.md section Q). A
+  // `message.from` that arrives empty/unresolved for reasons still
+  // under investigation used to fall through to `normalizePhone('')`
+  // and let `findOrCreateContact` insert a contact with `phone: ''` —
+  // silently, with no log — creating a fresh contact + conversation
+  // for every such message (the "Juor Nuevo" incident). This is the
+  // point of no return: nothing below may create a contact,
+  // conversation, or message without a resolved identity.
+  const identity = resolveSenderIdentity(message.from, contact.wa_id)
+  if (!identity.ok) {
+    console.warn('[webhook] inbound message dropped — sender identity unresolved', {
+      reason: identity.reason,
+      message_type: message.type,
+      message_id: message.id,
+      phone_number_id: phoneNumberId,
+      has_from: Boolean(message.from),
+      has_wa_id: Boolean(contact.wa_id),
+    })
+    return
+  }
+  if (identity.warning) {
+    // Diagnostic only — never gates persistence. See
+    // resolve-sender-identity.ts's file-level comment for why a
+    // disagreeing contact.wa_id must not drop a message that has a
+    // valid message.from.
+    console.warn('[webhook] sender identity mismatch (using message.from; not dropped)', {
+      reason: identity.warning,
+      message_type: message.type,
+      message_id: message.id,
+      phone_number_id: phoneNumberId,
+    })
+  }
 
   // Find or create contact
   const contactOutcome = await findOrCreateContact(
     supabaseAdmin(),
     accountId,
     configOwnerUserId,
-    senderPhone,
+    identity.phone,
     contactName
   )
   if (!contactOutcome) return

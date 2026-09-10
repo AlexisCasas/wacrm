@@ -101,3 +101,76 @@ describe("findOrCreateContact — blocked contact name-sync guard", () => {
     expect(updateCalls).toHaveLength(1);
   });
 });
+
+// P1 Fase 2B (docs/P1_DUPLICATE_CHATS_AUDIT.md section Q) — SECOND
+// BARRIER. findOrCreateContact must refuse an empty/non-normalizable
+// phone itself, regardless of what the caller passed in — a caller bug
+// (or a future caller nobody hardened yet) must not be able to insert
+// contacts.phone = '', which is exactly how one inbound message could
+// fragment into a brand-new contact + conversation every time (the
+// "Juor Nuevo" incident).
+function fakeDbWithInsertTracking(insertCalls: Record<string, unknown>[]): SupabaseClient {
+  return {
+    from: () => ({
+      insert: (row: Record<string, unknown>) => {
+        insertCalls.push(row);
+        return {
+          select: () => ({
+            single: () =>
+              Promise.resolve({ data: { id: "new-contact", ...row }, error: null }),
+          }),
+        };
+      },
+    }),
+  } as unknown as SupabaseClient;
+}
+
+describe("findOrCreateContact — second barrier: refuses an empty/non-normalizable phone", () => {
+  beforeEach(() => {
+    // No existing contact for any of these — if the barrier didn't
+    // exist, execution would fall through to the INSERT branch below.
+    h.findExistingContact.mockResolvedValue(null);
+  });
+
+  it.each([
+    ["empty string", ""],
+    ["whitespace only", "   "],
+    ["no digits at all", "unknown"],
+  ])("returns null and never inserts for phone = %s (%p)", async (_label, phone) => {
+    const insertCalls: Record<string, unknown>[] = [];
+    const result = await findOrCreateContact(
+      fakeDbWithInsertTracking(insertCalls),
+      "acct-1",
+      "owner-1",
+      phone,
+      "Some Name",
+    );
+
+    expect(result).toBeNull();
+    expect(insertCalls).toHaveLength(0);
+    // findExistingContact must never even be consulted with a phone
+    // that can't normalize — there is nothing to look up.
+    expect(h.findExistingContact).not.toHaveBeenCalled();
+  });
+
+  it("still creates a contact normally when the phone DOES normalize", async () => {
+    const insertCalls: Record<string, unknown>[] = [];
+    const result = await findOrCreateContact(
+      fakeDbWithInsertTracking(insertCalls),
+      "acct-1",
+      "owner-1",
+      "+1 (555) 123-4567",
+      "Real Person",
+    );
+
+    expect(result?.wasCreated).toBe(true);
+    expect(insertCalls).toHaveLength(1);
+    // Persists the NORMALIZED value, not the raw caller-supplied string.
+    expect(insertCalls[0]).toMatchObject({ phone: "15551234567" });
+    expect(h.findExistingContact).toHaveBeenCalledWith(
+      expect.anything(),
+      "acct-1",
+      "15551234567",
+    );
+  });
+});
