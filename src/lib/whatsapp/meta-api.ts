@@ -24,18 +24,144 @@ export interface MetaPhoneInfo {
 }
 
 interface MetaErrorResponse {
-  error?: { message?: string; code?: number; type?: string }
+  error?: {
+    message?: string
+    code?: number
+    error_subcode?: number
+    type?: string
+    fbtrace_id?: string
+    /** Meta sometimes attaches extra structured detail here (shape varies
+     *  by error type) — preserved opaquely, never parsed or relied on. */
+    error_data?: unknown
+  }
+}
+
+export interface MetaApiErrorArgs {
+  /** Exactly Meta's own `error.message` when present, otherwise the
+   *  caller's fallback string — never rewritten or augmented. */
+  message: string
+  code?: number
+  errorSubcode?: number
+  type?: string
+  /** Always `response.status` — the actual HTTP status of the failed
+   *  call, independent of whatever internal `code` Meta's error body
+   *  carries. Never optional: every MetaApiError comes from a real,
+   *  already-received HTTP response. */
+  httpStatus: number
+  retryAfterSeconds?: number
+  fbtraceId?: string
+  errorData?: unknown
+}
+
+/**
+ * A non-2xx response from a Meta Graph API call, with the metadata Meta
+ * sent preserved instead of collapsed into a plain `Error(message)`.
+ *
+ * Deliberately narrow about what it carries: `message`/`code`/
+ * `errorSubcode`/`type`/`httpStatus`/`retryAfterSeconds`/`fbtraceId`/
+ * `errorData` — never the access token, the outgoing request payload, or
+ * response headers wholesale. `errorData` is whatever Meta itself put in
+ * `error.error_data` (shape varies by error type) — opaque structured
+ * detail Meta chose to expose, not anything this codebase added.
+ *
+ * `extends Error` (not a plain object) so every existing callsite that
+ * does `err instanceof Error ? err.message : String(err)` — there are
+ * several, e.g. `isRecipientNotAllowedError`'s callers — keeps working
+ * completely unchanged: `.message` is still exactly Meta's own message
+ * (or the caller's fallback), `instanceof Error` is still `true`, and
+ * `String(err)` still reads naturally. Only code that specifically wants
+ * the extra fields needs to know this class exists at all.
+ */
+export class MetaApiError extends Error {
+  readonly code?: number
+  readonly errorSubcode?: number
+  readonly type?: string
+  readonly httpStatus: number
+  readonly retryAfterSeconds?: number
+  readonly fbtraceId?: string
+  readonly errorData?: unknown
+
+  constructor(args: MetaApiErrorArgs) {
+    super(args.message)
+    this.name = 'MetaApiError'
+    this.code = args.code
+    this.errorSubcode = args.errorSubcode
+    this.type = args.type
+    this.httpStatus = args.httpStatus
+    this.retryAfterSeconds = args.retryAfterSeconds
+    this.fbtraceId = args.fbtraceId
+    this.errorData = args.errorData
+  }
+}
+
+/**
+ * Parse an HTTP `Retry-After` header value into a positive integer
+ * number of seconds, or `undefined` when it's missing, malformed,
+ * negative, or (for the HTTP-date form) already in the past.
+ *
+ * Accepts both forms RFC 9110 allows:
+ *   - delta-seconds: a plain non-negative integer, e.g. `"120"`.
+ *   - HTTP-date: an absolute date, e.g. `"Wed, 21 Oct 2026 07:28:00 GMT"`
+ *     — converted to a whole number of seconds from `now`.
+ *
+ * `now` is injectable (defaults to the real clock) so tests can assert
+ * the HTTP-date branch deterministically without real-clock flakiness —
+ * pass a fixed `now` instead of reaching for fake timers.
+ */
+export function parseRetryAfterSeconds(
+  headerValue: string | null,
+  now: Date = new Date(),
+): number | undefined {
+  if (!headerValue) return undefined
+  const trimmed = headerValue.trim()
+  if (!trimmed) return undefined
+
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = Number(trimmed)
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : undefined
+  }
+
+  const asDate = new Date(trimmed)
+  if (Number.isNaN(asDate.getTime())) return undefined
+  const deltaMs = asDate.getTime() - now.getTime()
+  if (deltaMs <= 0) return undefined
+  return Math.ceil(deltaMs / 1000)
 }
 
 async function throwMetaError(response: Response, fallback: string): Promise<never> {
   let message = fallback
+  let code: number | undefined
+  let errorSubcode: number | undefined
+  let type: string | undefined
+  let fbtraceId: string | undefined
+  let errorData: unknown
+
   try {
     const data = (await response.json()) as MetaErrorResponse
     if (data.error?.message) message = data.error.message
+    code = data.error?.code
+    errorSubcode = data.error?.error_subcode
+    type = data.error?.type
+    fbtraceId = data.error?.fbtrace_id
+    errorData = data.error?.error_data
   } catch {
-    // response body wasn't JSON — keep the fallback
+    // response body wasn't JSON, was empty, or was an unexpected shape
+    // (e.g. literal `null`) — keep the fallback message; every other
+    // field stays undefined rather than guessing.
   }
-  throw new Error(message)
+
+  throw new MetaApiError({
+    message,
+    code,
+    errorSubcode,
+    type,
+    // ALWAYS the real HTTP status of this response — never derived from
+    // Meta's own error body, which can carry an unrelated internal code.
+    httpStatus: response.status,
+    retryAfterSeconds: parseRetryAfterSeconds(response.headers.get('retry-after')),
+    fbtraceId,
+    errorData,
+  })
 }
 
 // ============================================================

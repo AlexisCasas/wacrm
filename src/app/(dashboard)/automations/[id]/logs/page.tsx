@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import {
   ArrowLeft,
   Check,
+  Clock,
   Loader2,
   X,
   ChevronDown,
@@ -187,17 +188,32 @@ function StatusBadge({ status, t }: { status: AutomationLog["status"], t: Return
 }
 
 function StepRow({ result }: { result: AutomationLogStepResult }) {
-  const ok = result.status === "success"
+  // `retry_scheduled` (Meta 131056 durable retry) gets its OWN amber
+  // "waiting" treatment — same family as the log-level `partial` badge
+  // above — deliberately distinct from both success (green) and a real
+  // terminal failure (red). Before this, `skipped`/`failed` shared the
+  // same red-X styling, which made a step merely waiting on a scheduled
+  // retry look identical to one that had actually failed for good.
+  const iconVariant =
+    result.status === "success" ? "ok" : result.status === "retry_scheduled" ? "pending" : "failed"
   return (
     <li className="flex items-start gap-2 text-xs">
       <span
         className={cn(
           "mt-0.5 flex h-4 w-4 flex-shrink-0 items-center justify-center rounded-full",
-          ok ? "bg-primary/20 text-primary" : "bg-red-500/20 text-red-400",
+          iconVariant === "ok" && "bg-primary/20 text-primary",
+          iconVariant === "pending" && "bg-amber-500/20 text-amber-400",
+          iconVariant === "failed" && "bg-red-500/20 text-red-400",
         )}
         aria-hidden
       >
-        {ok ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+        {iconVariant === "ok" ? (
+          <Check className="h-3 w-3" />
+        ) : iconVariant === "pending" ? (
+          <Clock className="h-3 w-3" />
+        ) : (
+          <X className="h-3 w-3" />
+        )}
       </span>
       <span className="text-muted-foreground">{result.step_type}</span>
       {result.detail && (

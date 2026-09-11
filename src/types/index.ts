@@ -681,7 +681,12 @@ export interface AutomationStep {
 export interface AutomationLogStepResult {
   step_id: string;
   step_type: AutomationStepType;
-  status: 'success' | 'skipped' | 'failed';
+  /** `retry_scheduled` — Meta 131056 (or a future retryable reason) was
+   *  hit on an outbound send; a durable retry pending was scheduled.
+   *  Distinct from `failed` so the UI never renders a step that's
+   *  merely waiting to retry with the same terminal-failure styling —
+   *  see automations/[id]/logs/page.tsx's StepRow. */
+  status: 'success' | 'skipped' | 'failed' | 'retry_scheduled';
   detail?: string;
 }
 
