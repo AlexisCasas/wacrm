@@ -2,6 +2,7 @@ import type {
   Automation,
   AutomationLogStepResult,
   AutomationStep,
+  AutomationStepType,
   AutomationTriggerType,
   ConditionStepConfig,
   KeywordMatchTriggerConfig,
@@ -25,6 +26,162 @@ import { MAX_TAG_CHAIN_DEPTH, getTagChainDepth } from '@/lib/contacts/tag-chain'
 import { engineSendText, engineSendTemplate, engineSendInteractive, engineSendMedia } from './meta-send'
 import { validateInteractivePayload } from '@/lib/whatsapp/interactive'
 import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
+import { classifyMetaSendError } from '@/lib/whatsapp/meta-error-classify'
+import { MAX_META_RATE_LIMIT_RETRIES, metaRateLimitDelayMs } from './meta-retry-backoff'
+import { resolveOutboundTransport } from '@/lib/whatsapp/send-message'
+
+/**
+ * The 5 step types that can ever reach Meta and thus ever throw a
+ * MetaApiError worth classifying for retry (Meta 131056, Phase 3 — see
+ * docs/META_131056_AUTOMATION_RETRY_AUDIT.md). Every other step type
+ * (tag/field/deal/webhook/condition/wait/etc.) NEVER attempts a durable
+ * retry even if it somehow throws something that happens to satisfy
+ * `classifyMetaSendError` — retry is scoped to "this step is one of the
+ * 5 outbound Meta sends", checked independently of what the error
+ * itself looks like.
+ */
+const OUTBOUND_SEND_STEP_TYPES: ReadonlySet<AutomationStepType> = new Set([
+  'send_message',
+  'send_media',
+  'send_buttons',
+  'send_list',
+  'send_template',
+])
+
+/**
+ * Meta 131056 durable retry, PHASE 3.1 — crash/redeploy recovery.
+ *
+ * How long a claimed `automation_pending_executions` row (a `wait` OR a
+ * retry — both use the SAME claim/lease mechanism, see below) is
+ * considered legitimately "in progress" before ANOTHER worker is
+ * allowed to reclaim it, assuming the original claimant died mid-flight
+ * (crash, redeploy, OOM-kill) between claiming the row and calling
+ * markPending.
+ *
+ * 15 minutes, chosen conservatively rather than derived from a real
+ * upper bound, because none exists today: audited every `fetch()` call
+ * in src/lib/whatsapp/meta-api.ts (every Meta Graph API call this
+ * codebase makes) and NONE of them pass an AbortSignal/timeout — a
+ * hung TCP connection or an unresponsive Meta endpoint has no
+ * application-level ceiling. On any realistic serverless deployment
+ * (Vercel included) the FUNCTION's own execution-time limit would kill
+ * the invocation long before 15 minutes regardless (typical limits top
+ * out in the tens of seconds to a few minutes even on generous plans),
+ * so in practice this lease should almost never fire while a call is
+ * still genuinely in flight — it exists to bound the OTHER case: the
+ * process is simply gone and nothing will ever call markPending. This
+ * is a documented, deliberately NOT-implemented follow-up — see the
+ * audit doc's Phase 3.1 section for the recommendation to add an
+ * explicit `AbortSignal.timeout()` to meta-api.ts's fetch calls in a
+ * later, separate change (out of scope here: it touches every sender).
+ */
+export const AUTOMATION_PENDING_LEASE_MS = 15 * 60 * 1000
+
+/**
+ * Preventive Meta pacing (Phase 4 — see
+ * docs/META_131056_AUTOMATION_RETRY_AUDIT.md section "Fase 4").
+ *
+ * Meta 131056 is a REACTIVE defense — it fires only after a pair
+ * rate-limit already happened, then backs off and retries. This
+ * constant is the PROACTIVE half: a minimum spacing between two
+ * outbound Meta sends produced by the SAME automation execution, so a
+ * burst of sends (e.g. 3 `send_message` steps with no delay between
+ * them) doesn't hand Meta a reason to rate-limit the pair in the first
+ * place. 1500ms, deterministic, no jitter — jitter belongs to the
+ * REACTIVE backoff in meta-retry-backoff.ts, not to this preventive
+ * spacing (see that module's own doc for why 131056 retries need
+ * jitter and this doesn't: this delay is never retried/scheduled
+ * durably, it's a single bounded wait inline in one execution, so
+ * there's no "thundering herd of retries" for jitter to break up).
+ */
+export const AUTOMATION_META_OUTBOUND_PACING_MS = 1500
+
+/**
+ * Per-execution, in-memory, never-persisted pacing state. One instance
+ * is created at each of the TWO true entry points —
+ * `executeAutomation` (a fresh synchronous dispatch) and
+ * `resumePendingExecution` (a cron-driven resume, whether a plain
+ * `wait` or a Meta 131056 retry) — and the SAME object reference flows
+ * through every recursive/ancestor call from there: a `condition`
+ * branch's recursive `executeStepsFrom` call, and every scope
+ * `resumeAndUnwind` climbs through. Nothing here ever gets copied by
+ * value — every call site propagates it via `{...args, ...}` /
+ * `{...base, ...}` without ever re-assigning the `runtime` key, so all
+ * of them share the exact same mutable object.
+ *
+ * Deliberately NOT persisted (no new column, no migration 051, no
+ * Redis, no module-level global Map keyed by execution/account/contact
+ * — see section 16/17 of the Fase 4 spec): this is a best-effort,
+ * SAME-invocation-only guard. It resets to a fresh `{}` at every
+ * Pending-row boundary (a `wait` OR a retry resume both start a BRAND
+ * NEW `resumePendingExecution` call, hence a brand new runtime) and
+ * never survives a crash/redeploy — Meta 131056's durable, DB-backed
+ * retry (Phase 3) remains the actual safety net; this is purely
+ * preventive, reducing how often that reactive path needs to fire.
+ */
+export interface AutomationExecutionRuntime {
+  /** `Date.now()` right after the most recent Meta-bound send in THIS
+   *  execution/resume completed successfully. `undefined` means no
+   *  Meta send has completed yet in this runtime — the very next
+   *  Meta-bound send goes out immediately, no delay. */
+  lastMetaSendCompletedAtMs?: number
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/**
+ * Waits out whatever's left of `AUTOMATION_META_OUTBOUND_PACING_MS`
+ * since `runtime.lastMetaSendCompletedAtMs`, if anything — NEVER the
+ * full interval if part of it already elapsed doing other work (a
+ * `condition` evaluation, a DB write, a non-Meta step). Returns the
+ * actual number of milliseconds slept (0 if no wait was needed), so
+ * the caller can tell whether real wall-clock time passed — see
+ * section 10's ownership recheck, which only matters when it did.
+ */
+async function paceMetaOutbound(runtime: AutomationExecutionRuntime): Promise<number> {
+  if (runtime.lastMetaSendCompletedAtMs == null) return 0
+  const elapsed = Date.now() - runtime.lastMetaSendCompletedAtMs
+  const remaining = AUTOMATION_META_OUTBOUND_PACING_MS - elapsed
+  if (remaining > 0) {
+    await sleep(remaining)
+    return remaining
+  }
+  return 0
+}
+
+/**
+ * Whether `stepType` is a step that will actually reach Meta's Cloud
+ * API for THIS account, and therefore must participate in Meta
+ * pacing. NOT the same question as `OUTBOUND_SEND_STEP_TYPES` above
+ * (which asks "is this one of the 5 step types that can EVER reach
+ * Meta" — relevant for 131056 retry classification, transport-blind):
+ * `send_message`/`send_media` can ALSO go out via the temporary
+ * ManyChat bridge (`resolveOutboundTransport`, reused verbatim from
+ * `@/lib/whatsapp/send-message` — never duplicate
+ * WHATSAPP_OUTBOUND_TRANSPORT/MANYCHAT_INGEST_ACCOUNT_ID resolution
+ * here), and a ManyChat send has no Meta rate limit to pace against.
+ * `send_buttons`/`send_list`/`send_template` have no ManyChat
+ * equivalent today (ManyChat's Public API has no template-send or
+ * interactive-send primitive to bridge to — see meta-send.ts's own
+ * doc) — they stay Meta-bound regardless of the account's transport
+ * setting, so a ManyChat-bridged account's `send_template` step still
+ * paces against Meta.
+ */
+function isAutomationMetaOutboundStep(stepType: AutomationStepType, accountId: string): boolean {
+  switch (stepType) {
+    case 'send_buttons':
+    case 'send_list':
+    case 'send_template':
+      return true
+    case 'send_message':
+    case 'send_media':
+      return resolveOutboundTransport(accountId) === 'meta'
+    default:
+      return false
+  }
+}
 
 type AdminClient = ReturnType<typeof supabaseAdmin>
 
@@ -144,6 +301,15 @@ export async function resumePendingExecution(pending: {
   branch: 'yes' | 'no' | null
   next_step_position: number
   context: AutomationContext
+  /** Meta 131056 durable retry, PHASE 3.1 — the token the CALLER (the
+   *  cron route) minted at claim time. This is the caller's OWN claim
+   *  on this specific execution attempt — everything below re-confirms
+   *  it against a fresh read before trusting it, exactly like every
+   *  other field on `pending`. See AUTOMATION_PENDING_LEASE_MS's doc
+   *  comment for why a claim can expire and be handed to someone else
+   *  entirely, and markPending/isPendingExecutionStillRunning for how
+   *  that ownership is enforced at every subsequent step. */
+  claim_token: string
 }): Promise<void> {
   const db = supabaseAdmin()
 
@@ -158,7 +324,7 @@ export async function resumePendingExecution(pending: {
   // re-deriving an answer from the contact's current blocked state.
   const { data: freshPending, error: freshPendingErr } = await db
     .from('automation_pending_executions')
-    .select('id, status, automation_id, account_id, contact_id')
+    .select('id, status, automation_id, account_id, contact_id, retry_count, retry_reason, retry_step_id, claim_token')
     .eq('id', pending.id)
     .maybeSingle()
   if (freshPendingErr) {
@@ -173,13 +339,48 @@ export async function resumePendingExecution(pending: {
     freshPending.status !== 'running' ||
     freshPending.automation_id !== pending.automation_id ||
     freshPending.account_id !== pending.account_id ||
-    freshPending.contact_id !== pending.contact_id
+    freshPending.contact_id !== pending.contact_id ||
+    // Meta 131056 durable retry, PHASE 3.1 — if this row's lease
+    // expired and ANOTHER worker already reclaimed it (a fresh
+    // claim_token was minted), this caller is no longer the owner even
+    // though it still believes it is. Stopping here is what makes an
+    // old, merely-slow-but-not-actually-dead worker back off the
+    // moment a newer claim exists, rather than racing the new owner.
+    freshPending.claim_token !== pending.claim_token
   ) {
-    // Already done/failed, or the row/ids don't match what the caller
-    // thinks it claimed. Most commonly: block_contact_internal already
-    // cancelled it. Never execute steps, never send, never re-derive
-    // "should this run?" from the contact's CURRENT blocked state —
-    // that's precisely the unblock-revives-an-old-run bug this closes.
+    // Already done/failed, already reclaimed by someone else, or the
+    // row/ids don't match what the caller thinks it claimed. Most
+    // commonly: block_contact_internal already cancelled it, or a
+    // stale worker's lease already expired and was reclaimed. Never
+    // execute steps, never send, never re-derive "should this run?"
+    // from the contact's CURRENT blocked state — that's precisely the
+    // unblock-revives-an-old-run bug this closes (and the exact same
+    // posture now closes the reclaimed-by-a-newer-worker case too).
+    return
+  }
+
+  // Meta 131056 durable retry (Phase 3) — retry_count/retry_reason/
+  // retry_step_id are read from THIS SAME fresh row, never from
+  // whatever the cron passed in `pending` (that type doesn't even
+  // carry them) — the exact same "don't trust the caller's copy of
+  // anything semantically important" posture as status/automation_id/
+  // account_id/contact_id just above. The DB CHECK constraint
+  // (migration 050) already enforces this shape, but re-validating here
+  // costs nothing and protects against a mocked/degraded read path in
+  // tests, or a future direct write that bypasses the constraint.
+  const retryCount = freshPending.retry_count as number
+  const retryReason = freshPending.retry_reason as string | null
+  const retryStepId = freshPending.retry_step_id as string | null
+  const isRetryRow = retryCount > 0
+  const retryMetadataConsistent = isRetryRow
+    ? retryReason === 'meta_pair_rate_limit' && retryStepId !== null
+    : retryReason === null && retryStepId === null
+  if (!retryMetadataConsistent) {
+    console.error('[automations] resume: inconsistent retry metadata on pending', pending.id, {
+      retryCount, retryReason, retryStepId,
+    })
+    await markPending(pending.id, 'done', pending.claim_token)
+    await finalizeLog(pending.log_id, 'failed', 'retry_metadata_inconsistent')
     return
   }
 
@@ -191,29 +392,234 @@ export async function resumePendingExecution(pending: {
 
   if (error || !automation) {
     console.error('[automations] resume: missing automation', pending.automation_id, error)
-    await markPending(pending.id, 'failed')
+    await markPending(pending.id, 'failed', pending.claim_token)
     return
   }
 
-  try {
-    await executeStepsFrom({
-      automation: automation as Automation,
-      contactId: pending.contact_id,
-      context: pending.context ?? {},
+  // Meta 131056 durable retry (Phase 3) — EXACT-STEP VALIDATION.
+  // retry_step_id alone isn't enough: the automation may have been
+  // edited (step deleted/replaced/moved/reparented) WHILE this retry
+  // was pending. Re-confirm, against the CURRENT automation_steps
+  // state, that the step this retry claims to resume still exists at
+  // exactly the same automation/position/parent/branch, and is still
+  // one of the 5 outbound send types. If anything shifted, fail closed
+  // — NEVER execute whatever step now happens to occupy that position;
+  // that could be a completely different, unrelated step the user
+  // added later. No ancestor continuation either — the whole run stops
+  // here, log ends 'failed'.
+  if (isRetryRow) {
+    const matchesTarget = await isRetryTargetStillValid({
+      db,
+      automationId: pending.automation_id,
+      retryStepId: retryStepId as string,
+      nextStepPosition: pending.next_step_position,
       parentStepId: pending.parent_step_id,
       branch: pending.branch,
-      startPosition: pending.next_step_position,
-      logId: pending.log_id,
-      triggerEvent: 'resumed_wait',
-      // Lets executeStepsFrom re-confirm, before EACH step (not just
-      // once here), that this pending row hasn't been cancelled MID-
-      // resume — see the checks at the top of its loop.
-      pendingExecutionId: pending.id,
     })
-    await markPending(pending.id, 'done')
+    if (!matchesTarget) {
+      await markPending(pending.id, 'done', pending.claim_token)
+      await finalizeLog(pending.log_id, 'failed', 'retry_target_changed')
+      return
+    }
+  }
+
+  try {
+    // resumeAndUnwind resumes the branch this pending row was parked in
+    // and, once (if) it completes, walks back up through however many
+    // condition scopes contain it — reconstructed from automation_steps,
+    // no persisted stack — until it either reaches the automation's real
+    // root (and finishes it) or hits a paused/failed outcome along the
+    // way. See docs/META_131056_AUTOMATION_RETRY_AUDIT.md section C.
+    const { outcome, failedBeforeRoot } = await resumeAndUnwind(
+      {
+        automation: automation as Automation,
+        contactId: pending.contact_id,
+        context: pending.context ?? {},
+        logId: pending.log_id,
+        triggerEvent: 'resumed_wait',
+        // Carried unchanged through EVERY scope this unwind visits — a
+        // concurrent block_contact_internal cancelling THIS SAME pending
+        // row must be able to stop the unwind at any ancestor level, not
+        // just within the branch it originally resumed. See engine.test.ts
+        // CP-I.
+        pendingExecutionId: pending.id,
+        // Meta 131056 durable retry, Phase 3.1 — the claim token this
+        // worker was granted when it claimed pending.id. Threaded through
+        // the same way pendingExecutionId already is, and re-checked at
+        // every single step throughout the WHOLE ancestor unwind (see
+        // isPendingExecutionStillRunning): if a stale worker somehow
+        // resumes after its lease expired and was reclaimed by a newer
+        // worker, this token mismatches on the very next check and the
+        // stale worker's unwind stops immediately.
+        claimToken: pending.claim_token,
+        // Preventive Meta pacing (Phase 4) — a FRESH runtime for this
+        // resume. Deliberately does NOT carry anything over from
+        // whatever the previous invocation's runtime looked like before
+        // it paused on this pending row (a `wait` or a 131056 retry) —
+        // the pacing constant guards against a BURST within one
+        // execution, not across a boundary that already introduced a
+        // real gap (minutes, by construction) on its own. The SAME
+        // instance then flows through every ancestor scope this unwind
+        // climbs, exactly like pendingExecutionId/claimToken above.
+        runtime: {},
+      },
+      pending.parent_step_id,
+      pending.branch,
+      pending.next_step_position,
+      // Meta 131056 durable retry (Phase 3) — seeds ONLY the very first
+      // executeStepsFrom call in the unwind (the one that resumes
+      // `retryStepId` itself). resumeAndUnwind resets this to 0 for
+      // every scope it climbs into afterward — see that function's own
+      // comment for why a step reached only because an earlier one
+      // succeeded must never inherit a prior step's retry count.
+      retryCount,
+    )
+
+    // Pending A's own lifecycle is independent of the unwind's outcome —
+    // this specific queued resume was consumed either way: it completed
+    // all the way up, it handed off to a brand-new Pending B (paused
+    // again), or it failed. None of those leave Pending A itself
+    // re-runnable, so it is always 'done' here.
+    await markPending(pending.id, 'done', pending.claim_token)
+
+    // A failure that happened BEFORE the unwind ever reached the true
+    // root left automation_logs.status unwritten — executeStepsFrom's
+    // nested-scope convention deliberately never decides global status
+    // (appendResults with status: null), correct for a synchronous
+    // dispatch where the real root's own loop is still running to make
+    // that call eventually, but there is no such loop left running
+    // during a resume. Without this, the log would stay stuck at
+    // whatever it was before (typically 'partial' from the original
+    // wait) forever — see engine.test.ts CP-C.
+    if (failedBeforeRoot && outcome.kind === 'failed') {
+      await finalizeLog(pending.log_id, 'failed', outcome.message)
+    }
   } catch (err) {
     console.error('[automations] resume failed:', err)
-    await markPending(pending.id, 'failed')
+    await markPending(pending.id, 'failed', pending.claim_token)
+  }
+}
+
+/**
+ * Meta 131056 durable retry (Phase 3) — the exact-step check
+ * `resumePendingExecution` runs before ever resuming a retry row (never
+ * for a plain wait, where `retry_count` is 0 and this is skipped
+ * entirely). Confirms `retryStepId` still exists at exactly the
+ * automation/position/parent/branch the retry pending recorded, and is
+ * still one of the 5 outbound send types — a `null` parent_step_id/
+ * branch needs `.is()`, a real UUID/string needs `.eq()`, so both are
+ * built explicitly rather than trying to coerce one query builder call
+ * to accept either.
+ */
+async function isRetryTargetStillValid(input: {
+  db: AdminClient
+  automationId: string
+  retryStepId: string
+  nextStepPosition: number
+  parentStepId: string | null
+  branch: 'yes' | 'no' | null
+}): Promise<boolean> {
+  const { db, automationId, retryStepId, nextStepPosition, parentStepId, branch } = input
+  let query = db
+    .from('automation_steps')
+    .select('id, step_type')
+    .eq('id', retryStepId)
+    .eq('automation_id', automationId)
+    .eq('position', nextStepPosition)
+  query = parentStepId === null ? query.is('parent_step_id', null) : query.eq('parent_step_id', parentStepId)
+  query = branch === null ? query.is('branch', null) : query.eq('branch', branch)
+
+  const { data: step, error } = await query.maybeSingle()
+  if (error || !step) return false
+  return OUTBOUND_SEND_STEP_TYPES.has(step.step_type as AutomationStepType)
+}
+
+/**
+ * Resume one paused branch and, if it completes, keep continuing
+ * whatever scope contains it — reconstructed from automation_steps —
+ * until either the automation's real root finishes or a
+ * paused/failed outcome stops the climb. Used ONLY by
+ * resumePendingExecution; the synchronous dispatch path
+ * (executeAutomation) never needs this because its own call stack IS
+ * the continuation (a condition's recursive call and its caller are
+ * the same JS execution, see executeStepsFrom's `condition` case).
+ *
+ * No persisted stack: automation_steps.parent_step_id/branch/position
+ * already encode the full ancestor chain, so each step up just needs
+ * ONE more row lookup — cheap, and always reflects the CURRENT step
+ * tree rather than a stack frozen at wait-schedule time.
+ */
+async function resumeAndUnwind(
+  base: Pick<
+    ExecuteArgs,
+    'automation' | 'contactId' | 'context' | 'logId' | 'triggerEvent' | 'pendingExecutionId' | 'claimToken' | 'runtime'
+  >,
+  initialParentStepId: string | null,
+  initialBranch: 'yes' | 'no' | null,
+  initialStartPosition: number,
+  /** Meta 131056 durable retry (Phase 3) — the retry count to seed ONLY
+   *  the very first executeStepsFrom call below (the one resuming the
+   *  actual retried step). 0 for a plain wait resume — identical to
+   *  Phase 1's behavior. Reset to 0 immediately after that first call
+   *  for every subsequent ancestor scope: a step reached only because
+   *  an earlier one in the SAME unwind succeeded has never itself been
+   *  retried, so it must start its own potential retry chain at 0, not
+   *  inherit this run's. See engine.ts's per-step retry-count handling
+   *  inside executeStepsFrom for the other half of this guarantee. */
+  initialRetryCount = 0,
+): Promise<{ outcome: ExecutionOutcome; failedBeforeRoot: boolean }> {
+  const db = supabaseAdmin()
+  let parentStepId = initialParentStepId
+  let branch = initialBranch
+  let startPosition = initialStartPosition
+  let retrySeed = initialRetryCount
+
+  for (;;) {
+    const isRoot = parentStepId === null
+    const outcome = await executeStepsFrom({ ...base, parentStepId, branch, startPosition, initialRetryCount: retrySeed })
+    retrySeed = 0
+
+    if (outcome.kind !== 'completed') {
+      // paused: a new pending already exists and already wrote 'partial'
+      // (if it turned out to be root) or nothing (if nested — an even
+      // later unwind, once THAT pending resumes, will keep climbing).
+      // failed: if this WAS root, executeStepsFrom already wrote
+      // 'failed' itself; if not, the caller must do it explicitly.
+      return { outcome, failedBeforeRoot: outcome.kind === 'failed' && !isRoot }
+    }
+    if (isRoot) {
+      // Completed all the way to the automation's real root —
+      // executeStepsFrom already finalized automation_logs as 'success'.
+      return { outcome, failedBeforeRoot: false }
+    }
+
+    // This scope (the branch under `parentStepId`) completed. Resolve
+    // the CONDITION step that owns it — scoped to THIS automation, and
+    // required to actually be a `condition` — so we know where to
+    // resume ITS containing scope from. Fail closed on anything else
+    // (missing, belongs to a different automation, or not a condition
+    // at all — automation_steps rows should never satisfy that, but a
+    // corrupted/foreign parent_step_id must never silently no-op or
+    // silently continue the wrong scope).
+    const { data: step, error } = await db
+      .from('automation_steps')
+      .select('id, automation_id, step_type, position, parent_step_id, branch')
+      .eq('id', parentStepId)
+      .eq('automation_id', base.automation.id)
+      .maybeSingle()
+
+    if (error || !step || step.step_type !== 'condition') {
+      return {
+        outcome: { kind: 'failed', message: 'ancestor_step_lookup_failed' },
+        failedBeforeRoot: true,
+      }
+    }
+
+    // Continue the scope that CONTAINS this condition, starting right
+    // AFTER it — never re-run the condition itself.
+    parentStepId = step.parent_step_id as string | null
+    branch = step.branch as 'yes' | 'no' | null
+    startPosition = (step.position as number) + 1
   }
 }
 
@@ -264,6 +670,9 @@ async function executeAutomation(automation: Automation, input: DispatchInput) {
     startPosition: 0,
     logId: log.id,
     triggerEvent: input.triggerType,
+    // Preventive Meta pacing (Phase 4) — a fresh runtime per synchronous
+    // dispatch; see AutomationExecutionRuntime's doc.
+    runtime: {},
   })
 
   // Atomic counter update via the SQL function from migration 007.
@@ -293,7 +702,76 @@ interface ExecuteArgs {
    *  SPECIFIC resumed execution since it started — the durable
    *  "was this cancelled" memory, independent of contacts.blocked. */
   pendingExecutionId?: string
+  /**
+   * Meta 131056 durable retry, Phase 3.1 — the claim token this worker
+   * was granted when it claimed `pendingExecutionId`. Always set
+   * together with `pendingExecutionId` (both come from the same pending
+   * row) and checked at the SAME points, by the SAME
+   * `isPendingExecutionStillRunning` call — a status of 'running' alone
+   * is no longer enough proof of ownership once a stale lease can be
+   * reclaimed by a different worker with a NEW token; the old worker's
+   * copy of this field stops matching the row's current claim_token the
+   * instant that happens, and every step-loop check after that returns
+   * 'cancelled' for it. See AUTOMATION_PENDING_LEASE_MS's comment for
+   * the lease design this backs.
+   */
+  claimToken?: string
+  /**
+   * Meta 131056 durable retry (Phase 3) — how many retries the step
+   * THIS CALL RESUMES has already used, seeded ONLY when resuming a
+   * genuine retry pending (never for a normal wait, and never
+   * propagated by `resumeAndUnwind` past the first call in its chain —
+   * see that function's own comment). PER-STEP, not per-run: applies
+   * exclusively to the FIRST step this call's loop processes; any step
+   * reached afterward (because the first one succeeded) starts its own
+   * potential retry chain at 0, never inheriting this value. Omitted or
+   * 0 means "no prior retries for this step" — the overwhelmingly
+   * common case (a fresh dispatch, a normal wait resume, or any step
+   * after the first in a call).
+   */
+  initialRetryCount?: number
+  /**
+   * Preventive Meta pacing (Phase 4) — the SAME shared, in-memory,
+   * never-persisted runtime object for the entire execution/resume this
+   * `ExecuteArgs` belongs to. See `AutomationExecutionRuntime`'s own
+   * doc. Always present: `executeAutomation` and
+   * `resumePendingExecution` each create exactly one fresh instance and
+   * every downstream call (`condition` recursion, `resumeAndUnwind`'s
+   * ancestor climb) propagates the SAME reference via `{...args, ...}`
+   * / `{...base, ...}` — never re-created, never copied by value.
+   */
+  runtime: AutomationExecutionRuntime
 }
+
+/**
+ * What one `executeStepsFrom` call (one scope — root, or one condition
+ * branch) actually did, reported to whoever called it.
+ *
+ *   completed — every step in this scope's range ran (or there were
+ *     none left). The ONLY outcome that lets a caller keep going past
+ *     the step that led here (a `condition`, during a synchronous
+ *     dispatch, or an ancestor scope during a cron resume unwind).
+ *   paused    — this scope suspended on a `wait` (or was stopped by a
+ *     P0 contact-blocking / pending-cancellation gate, which is the
+ *     same "stop cleanly, nothing failed" shape). A caller must NEVER
+ *     keep executing steps of its own scope after seeing this.
+ *   failed    — a step threw, or a technical lookup this function
+ *     depends on (steps query, blocked-check, pending re-check) errored.
+ *     A caller must never keep going, and must never let this be
+ *     mistaken for `completed` when deciding automation_logs.status.
+ *
+ * Before this type existed, `executeStepsFrom` returned `Promise<void>`
+ * and the `condition` handler did `await executeStepsFrom(child); continue`
+ * unconditionally — the root scope had no way to know a nested branch had
+ * paused or failed rather than finished, so it kept running its own next
+ * steps regardless (confirmed bug, see
+ * docs/META_131056_AUTOMATION_RETRY_AUDIT.md section F). This type, plus
+ * every exit point below returning it instead of void, is the fix.
+ */
+type ExecutionOutcome =
+  | { kind: 'completed' }
+  | { kind: 'paused' }
+  | { kind: 'failed'; message: string }
 
 /**
  * Re-reads `automation_pending_executions` fresh and confirms it's
@@ -306,11 +784,24 @@ interface ExecuteArgs {
  */
 async function isPendingExecutionStillRunning(
   db: AdminClient,
-  expected: { id: string; automation_id: string; account_id: string; contact_id: string | null },
+  expected: {
+    id: string
+    automation_id: string
+    account_id: string
+    contact_id: string | null
+    /** Meta 131056 durable retry, Phase 3.1 — the claim token this
+     *  worker was granted. `status === 'running'` is no longer, by
+     *  itself, proof that THIS caller still owns the row: a lease can
+     *  expire and be reclaimed by a different worker (a new
+     *  claim_token), while the row stays 'running' throughout. A stale
+     *  worker must see that mismatch and stop, exactly like it already
+     *  stops on a cancelled/foreign row below. */
+    claimToken?: string
+  },
 ): Promise<'running' | 'cancelled' | 'error'> {
   const { data, error } = await db
     .from('automation_pending_executions')
-    .select('status, automation_id, account_id, contact_id')
+    .select('status, automation_id, account_id, contact_id, claim_token')
     .eq('id', expected.id)
     .maybeSingle()
   if (error) return 'error'
@@ -319,7 +810,8 @@ async function isPendingExecutionStillRunning(
     data.status !== 'running' ||
     data.automation_id !== expected.automation_id ||
     data.account_id !== expected.account_id ||
-    data.contact_id !== expected.contact_id
+    data.contact_id !== expected.contact_id ||
+    data.claim_token !== expected.claimToken
   ) {
     return 'cancelled'
   }
@@ -327,31 +819,81 @@ async function isPendingExecutionStillRunning(
 }
 
 /**
+ * Persist THIS scope's own accumulated `results` — exactly once, at
+ * whichever exit point the caller is returning from — and hand back the
+ * outcome unchanged so callers can write `return finishScope(...)`.
+ *
+ * The root/nested split below is the ONLY place that decides
+ * `automation_logs.status` during a scope's own natural execution:
+ *
+ *   - Root scope (`parentStepId === null`): this IS the outermost
+ *     scope for whatever chain of calls led here — during a synchronous
+ *     dispatch (executeAutomation), that's the true root; during a cron
+ *     resume, `resumeAndUnwind` only ever calls this with
+ *     `parentStepId: null` once the unwind has climbed all the way back
+ *     to the automation's real root. Either way, "I am parentStepId
+ *     null" means "nothing else will ever decide this run's final
+ *     status" — so it writes the real one: completed->success,
+ *     paused->partial, failed->failed.
+ *   - Nested scope (a condition branch): NEVER decides global status —
+ *     always appends with `status: null`. This used to be true only for
+ *     the loop's normal end-of-scope write; the `wait` step's own
+ *     append was a pre-existing exception that wrote 'partial'
+ *     unconditionally regardless of nesting (see the audit doc's
+ *     section F/C) — folding it through this same helper removes that
+ *     inconsistency: a `wait` inside a branch now correctly defers to
+ *     whatever scope above it is actually root, exactly like every
+ *     other early-return in this function.
+ */
+async function finishScope(
+  args: ExecuteArgs,
+  results: AutomationLogStepResult[],
+  outcome: ExecutionOutcome,
+  /** Explicit audit-trail reason for an auditable STOP (contact
+   *  blocked, pending cancelled, a technical lookup failing) — recorded
+   *  as `error_message` even when `outcome.kind` is `paused`, not just
+   *  `failed`. `stopExecution` always supplies this; the condition
+   *  propagation path and a genuine step failure leave it undefined so
+   *  the fallback below applies (null for paused/completed, the
+   *  failure's own message for failed). Preserves the pre-existing
+   *  behavior of recording WHY an auditable partial-stop happened, not
+   *  just that it happened. */
+  detail?: string,
+): Promise<ExecutionOutcome> {
+  const errorMessage = detail !== undefined ? detail : outcome.kind === 'failed' ? outcome.message : null
+  if (args.parentStepId === null) {
+    const status = outcome.kind === 'completed' ? 'success' : outcome.kind === 'paused' ? 'partial' : 'failed'
+    await appendResults(args.logId, results, status, errorMessage)
+  } else {
+    await appendResults(args.logId, results, null, errorMessage)
+  }
+  return outcome
+}
+
+/**
  * Stop the whole executeStepsFrom scope from THIS step onward: log an
- * auditable result for the step that never ran, finalize the log
- * (outermost scope only — nested branches just append), and return to
- * the caller. Shared by every "must not continue" gate in the loop
- * below (pending-execution cancelled, contact blocked, either check's
- * own lookup failing) so they all produce the same shape of audit
- * trail instead of three subtly different ones.
+ * auditable result for the step that never ran, persist this scope's
+ * results via finishScope (recording `detail` as the log's
+ * error_message even for a `paused` outcome — this is specifically an
+ * AUDITABLE stop, unlike a normal `wait`), and return the outcome.
+ * Shared by every "must not continue" gate in the loop below
+ * (pending-execution cancelled, contact blocked, either check's own
+ * lookup failing) so they all produce the same shape of audit trail
+ * instead of subtly different ones.
  */
 async function stopExecution(
   args: ExecuteArgs,
   results: AutomationLogStepResult[],
   step: AutomationStep,
   detail: string,
-  logStatus: 'partial' | 'failed',
+  outcome: ExecutionOutcome,
   stepStatus: 'skipped' | 'failed' = 'skipped',
-): Promise<void> {
+): Promise<ExecutionOutcome> {
   results.push({ step_id: step.id, step_type: step.step_type, status: stepStatus, detail })
-  if (args.parentStepId === null) {
-    await appendResults(args.logId, results, logStatus, detail)
-  } else {
-    await appendResults(args.logId, results, null, detail)
-  }
+  return finishScope(args, results, outcome, detail)
 }
 
-async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
+async function executeStepsFrom(args: ExecuteArgs): Promise<ExecutionOutcome> {
   const db = supabaseAdmin()
 
   const baseQuery = db
@@ -369,21 +911,28 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
   const { data: steps, error: stepsErr } = await scoped
 
   if (stepsErr) {
-    await finalizeLog(args.logId, 'failed', stepsErr.message)
-    return
+    return finishScope(args, [], { kind: 'failed', message: stepsErr.message })
   }
   if (!steps || steps.length === 0) {
-    if (args.parentStepId === null && args.logId) {
-      await finalizeLog(args.logId, 'success', null)
-    }
-    return
+    return finishScope(args, [], { kind: 'completed' })
   }
 
   const results: AutomationLogStepResult[] = []
-  let status: 'success' | 'partial' | 'failed' = 'success'
-  let errorMessage: string | null = null
 
-  for (const step of steps as AutomationStep[]) {
+  for (const [stepIndex, step] of (steps as AutomationStep[]).entries()) {
+    // Meta 131056 durable retry (Phase 3) — PER-STEP, not per-run.
+    // `args.initialRetryCount` only ever applies to the FIRST step this
+    // call processes (index 0) — the exact step a retry pending resumes
+    // (resumeAndUnwind seeds it there and nowhere else). Any step
+    // reached afterward in THIS SAME call, because the first one
+    // succeeded, starts its own potential retry chain at 0 — it has
+    // never been retried before. Without this reset, a step that
+    // succeeds after 2 retries would leak `retryCount=2` onto the NEXT
+    // step's first failure, scheduling it as "retry 3" instead of
+    // "retry 1" (see docs/META_131056_AUTOMATION_RETRY_AUDIT.md's
+    // Phase 3 section on per-step retry semantics).
+    const stepRetryCount = stepIndex === 0 ? (args.initialRetryCount ?? 0) : 0
+
     // A. Resumed-execution cancellation token. Checked FIRST, before
     // the contact-blocked check below: a resumed run whose pending row
     // was already cancelled (status -> 'done', by a concurrent
@@ -399,15 +948,17 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
         automation_id: args.automation.id,
         account_id: args.automation.account_id,
         contact_id: args.contactId,
+        claimToken: args.claimToken,
       })
       if (pendingState === 'error') {
         console.error('[automations] mid-run pending-execution recheck failed')
-        await stopExecution(args, results, step, 'pending_state_check_failed', 'failed', 'failed')
-        return
+        return stopExecution(
+          args, results, step, 'pending_state_check_failed',
+          { kind: 'failed', message: 'pending_state_check_failed' }, 'failed',
+        )
       }
       if (pendingState === 'cancelled') {
-        await stopExecution(args, results, step, 'pending_execution_cancelled', 'partial')
-        return
+        return stopExecution(args, results, step, 'pending_execution_cancelled', { kind: 'paused' })
       }
     }
 
@@ -434,12 +985,13 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
         .maybeSingle()
       if (contactErr) {
         console.error('[automations] mid-run contact blocked-check failed:', contactErr)
-        await stopExecution(args, results, step, 'contact_state_check_failed', 'failed', 'failed')
-        return
+        return stopExecution(
+          args, results, step, 'contact_state_check_failed',
+          { kind: 'failed', message: 'contact_state_check_failed' }, 'failed',
+        )
       }
       if (contactRow?.blocked) {
-        await stopExecution(args, results, step, 'contact_blocked', 'partial')
-        return
+        return stopExecution(args, results, step, 'contact_blocked', { kind: 'paused' })
       }
     }
 
@@ -487,15 +1039,16 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
             '[automations] schedule_automation_wait_if_contact_active failed:',
             scheduleErr,
           )
-          await stopExecution(args, results, step, 'wait_schedule_failed', 'failed', 'failed')
-          return
+          return stopExecution(
+            args, results, step, 'wait_schedule_failed',
+            { kind: 'failed', message: 'wait_schedule_failed' }, 'failed',
+          )
         }
         if (!scheduled) {
           // Contact not found in this account, or blocked — either
           // way, no row was inserted. Same audit shape as the
           // contact-blocked stop above.
-          await stopExecution(args, results, step, 'contact_blocked', 'partial')
-          return
+          return stopExecution(args, results, step, 'contact_blocked', { kind: 'paused' })
         }
       } else {
         // No contact on this run at all — contact blocking doesn't
@@ -522,9 +1075,12 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
         status: 'success',
         detail: `waiting ${cfg.amount} ${cfg.unit}`,
       })
-      status = 'partial'
-      await appendResults(args.logId, results, status, errorMessage)
-      return
+      // finishScope decides whether this actually writes 'partial' to
+      // automation_logs (only when THIS scope is root) or defers with
+      // status=null (nested — an ancestor, sync or via resumeAndUnwind,
+      // owns the real status). Previously this wrote 'partial'
+      // unconditionally regardless of nesting — see finishScope's doc.
+      return finishScope(args, results, { kind: 'paused' })
     }
 
     try {
@@ -539,17 +1095,78 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
         })
         // Recurse into the chosen branch at position 0 (children use their
         // own ordering within the branch scope).
-        await executeStepsFrom({
+        const childOutcome = await executeStepsFrom({
           ...args,
           parentStepId: step.id,
           branch: taken ? 'yes' : 'no',
           startPosition: 0,
           logId: args.logId,
         })
+        if (childOutcome.kind !== 'completed') {
+          // The branch paused or failed — persist THIS scope's own
+          // results (including the "condition -> branch=yes/no" entry
+          // just pushed above) exactly once via finishScope, and stop.
+          // The child already persisted its OWN results independently
+          // when IT returned — nothing here duplicates or drops them.
+          return finishScope(args, results, childOutcome)
+        }
         continue
       }
 
+      // Preventive Meta pacing (Phase 4). Only steps that will actually
+      // reach Meta's Cloud API for THIS account participate — a
+      // ManyChat-bridged send_message/send_media never waits and never
+      // touches runtime.lastMetaSendCompletedAtMs (see
+      // isAutomationMetaOutboundStep's own doc for why this can't just
+      // be OUTBOUND_SEND_STEP_TYPES).
+      const isMetaBoundStep = isAutomationMetaOutboundStep(step.step_type, args.automation.account_id)
+      if (isMetaBoundStep) {
+        const pacedMs = await paceMetaOutbound(args.runtime)
+        // Section 10 of the Fase 4 spec: a NON-ZERO delay means real
+        // wall-clock time just passed while this worker was asleep. If
+        // this execution is a resumed pending, its lease could have
+        // been reclaimed by another worker during that sleep — re-check
+        // ownership with the EXACT SAME mechanism the per-step
+        // cancellation gate above already uses (never a second
+        // ownership system) before actually sending. A delay of 0 means
+        // no time was spent sleeping, so there's nothing new to
+        // re-check beyond what gate A already confirmed at the top of
+        // this iteration.
+        if (pacedMs > 0 && args.pendingExecutionId) {
+          const pendingState = await isPendingExecutionStillRunning(db, {
+            id: args.pendingExecutionId,
+            automation_id: args.automation.id,
+            account_id: args.automation.account_id,
+            contact_id: args.contactId,
+            claimToken: args.claimToken,
+          })
+          if (pendingState === 'error') {
+            return stopExecution(
+              args, results, step, 'pending_state_check_failed',
+              { kind: 'failed', message: 'pending_state_check_failed' }, 'failed',
+            )
+          }
+          if (pendingState === 'cancelled') {
+            return stopExecution(args, results, step, 'pending_execution_cancelled', { kind: 'paused' })
+          }
+        }
+      }
+
       const detail = await runStep(step, args)
+      if (isMetaBoundStep) {
+        // Only after runStep returns WITHOUT throwing — never before the
+        // POST, and never for a 131056 retry-scheduled outcome (that
+        // path returns early via scheduleMetaRateLimitRetry below and
+        // never reaches this line), any other Meta non-2xx, a ManyChat
+        // error, a validation error, or a contact-blocked stop. All of
+        // those leave lastMetaSendCompletedAtMs untouched. The one
+        // special case — Meta accepts the send but the SUBSEQUENT DB
+        // persistence throws — also never reaches here (runStep itself
+        // throws in that case), but doesn't need to: that throw fails
+        // this whole scope, so no LATER send in this same run will ever
+        // exist to pace against.
+        args.runtime.lastMetaSendCompletedAtMs = Date.now()
+      }
       results.push({
         step_id: step.id,
         step_type: step.step_type,
@@ -558,24 +1175,140 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<void> {
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+
+      // Meta 131056 durable retry (Phase 3) — ONLY for the 5 outbound
+      // Meta send step types, and ONLY when there's a contact to retry
+      // against (always true for a real outbound send in practice, but
+      // checked explicitly rather than assumed). classifyMetaSendError
+      // is the SAME classifier used everywhere else — its own contract
+      // (docs/META_131056_AUTOMATION_RETRY_AUDIT.md Phase 2) already
+      // guarantees anything that isn't a real Meta 131056 comes back
+      // non-retryable, so no additional text/regex check is needed
+      // here: a ManyChat error, a DB-persistence-after-success error, a
+      // plain 429, a 131030, etc. all fall straight through to the
+      // existing terminal-failure path below exactly as before this
+      // phase existed. `scheduleMetaRateLimitRetry` always calls
+      // finishScope exactly once itself and returns that outcome — it
+      // is never called AND then followed by the plain failure path
+      // below, which would double-persist `results`.
+      if (OUTBOUND_SEND_STEP_TYPES.has(step.step_type) && args.contactId) {
+        const classification = classifyMetaSendError(err)
+        if (classification.retryable && stepRetryCount < MAX_META_RATE_LIMIT_RETRIES) {
+          return scheduleMetaRateLimitRetry({
+            args,
+            step,
+            results,
+            nextRetryCount: stepRetryCount + 1,
+            retryAfterSeconds: classification.retryAfterSeconds,
+            fallbackMessage: msg,
+          })
+        }
+      }
+
       results.push({
         step_id: step.id,
         step_type: step.step_type,
         status: 'failed',
         detail: msg,
       })
-      status = 'failed'
-      errorMessage = msg
-      break
+      return finishScope(args, results, { kind: 'failed', message: msg })
     }
   }
 
-  if (args.parentStepId === null) {
-    await appendResults(args.logId, results, status, errorMessage)
-  } else {
-    // Nested branch — just append results; parent scope decides final status.
-    await appendResults(args.logId, results, null, errorMessage)
+  return finishScope(args, results, { kind: 'completed' })
+}
+
+/**
+ * Meta 131056 durable retry (Phase 3) — schedule a retry pending for
+ * `step` (an outbound send that just threw a retryable MetaApiError)
+ * and produce the ExecutionOutcome this scope reports for it. Always
+ * calls `finishScope` exactly once and returns its result — callers
+ * must `return` this directly, never call it and then ALSO run the
+ * plain terminal-failure path (that would double-persist `results`).
+ *
+ * `next_step_position` is set to `step.position` — NOT `step.position +
+ * 1` like the `wait` step uses — because a retry must repeat the EXACT
+ * SAME step, never advance past it. `retry_step_id: step.id` is what
+ * lets the resume path (see `resumePendingExecution`'s exact-step
+ * validation) later confirm the automation wasn't edited out from under
+ * this retry before blindly re-running whatever now sits at that
+ * position.
+ */
+async function scheduleMetaRateLimitRetry(input: {
+  args: ExecuteArgs
+  step: AutomationStep
+  results: AutomationLogStepResult[]
+  /** 1-indexed — this is the retry about to be scheduled, always
+   *  `stepRetryCount + 1` at the call site. */
+  nextRetryCount: number
+  retryAfterSeconds?: number
+  /** The original error's message — used as the log's error_message
+   *  ONLY if the retry scheduling RPC itself fails technically (a
+   *  distinct, rarer failure from the Meta error that triggered this
+   *  in the first place). */
+  fallbackMessage: string
+}): Promise<ExecutionOutcome> {
+  const { args, step, results, nextRetryCount, retryAfterSeconds, fallbackMessage } = input
+  const db = supabaseAdmin()
+
+  // Deterministic per (automation, contact, step, retry number) — see
+  // meta-retry-backoff.ts's own doc for why this must never use
+  // Math.random(): the same logical retry must always back off by the
+  // same amount, and tests must never flake.
+  const seed = `${args.automation.id}:${args.contactId}:${step.id}:${nextRetryCount}`
+  const delayMs = metaRateLimitDelayMs({ retryNumber: nextRetryCount, retryAfterSeconds, seed })
+  const runAt = new Date(Date.now() + delayMs).toISOString()
+
+  const { data: scheduled, error: scheduleErr } = await db.rpc(
+    'schedule_automation_retry_if_contact_active',
+    {
+      p_automation_id: args.automation.id,
+      p_account_id: args.automation.account_id,
+      p_user_id: args.automation.user_id,
+      p_contact_id: args.contactId,
+      p_log_id: args.logId,
+      p_parent_step_id: args.parentStepId,
+      p_branch: args.branch,
+      // The SAME step, never +1 — a retry repeats it exactly.
+      p_next_step_position: step.position,
+      p_context: args.context,
+      p_run_at: runAt,
+      p_retry_count: nextRetryCount,
+      p_retry_reason: 'meta_pair_rate_limit',
+      p_retry_step_id: step.id,
+    },
+  )
+
+  if (scheduleErr) {
+    // Fail CLOSED, same posture as every other RPC-error branch in this
+    // file — a technical scheduling failure is terminal, NOT another
+    // retry attempt (retrying the retry-scheduler itself risks an
+    // unbounded loop with no backoff of its own).
+    console.error('[automations] schedule_automation_retry_if_contact_active failed:', scheduleErr)
+    results.push({ step_id: step.id, step_type: step.step_type, status: 'failed', detail: fallbackMessage })
+    return finishScope(args, results, { kind: 'failed', message: fallbackMessage })
   }
+
+  if (!scheduled) {
+    // Contact not found in this account, or blocked — same audit shape
+    // as the wait step's own !scheduled branch: stop, don't send, no
+    // ancestor continuation. Never falls back to treating the ORIGINAL
+    // Meta error as a plain failure — the correct read of "blocked" is
+    // "stopped for that reason", not "the send technically failed".
+    return stopExecution(args, results, step, 'contact_blocked', { kind: 'paused' })
+  }
+
+  results.push({
+    step_id: step.id,
+    step_type: step.step_type,
+    status: 'retry_scheduled',
+    detail: `Meta rate limit (131056) — retry ${nextRetryCount}/${MAX_META_RATE_LIMIT_RETRIES} scheduled for ${runAt}`,
+  })
+  // finishScope maps `paused` to automation_logs.status='partial' when
+  // this is the root scope (or defers with status=null when nested) —
+  // exactly like a normal `wait`. A retry IS a wait, from the log's
+  // point of view.
+  return finishScope(args, results, { kind: 'paused' })
 }
 
 async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string> {
@@ -1079,9 +1812,28 @@ async function finalizeLog(
     .eq('id', logId)
 }
 
-async function markPending(id: string, status: 'done' | 'failed') {
+/**
+ * Meta 131056 durable retry, Phase 3.1 — ownership-aware. Before this,
+ * any caller holding a `pending.id` could mark the row done/failed
+ * unconditionally; once a lease can expire and be reclaimed, that's
+ * exactly the "stale worker stomps the new owner's in-flight state"
+ * bug this closes. The UPDATE's WHERE clause requires BOTH
+ * `status = 'running'` AND `claim_token = expectedClaimToken` — if the
+ * row was already reclaimed by a newer worker (new token) or already
+ * moved on (done/failed/pending again), this is a no-op: 0 rows match,
+ * nothing is overwritten, and the stale caller has no way to tell the
+ * difference from here (it doesn't need to — its own next
+ * isPendingExecutionStillRunning check will already have stopped it).
+ * Clearing claim_token/lease_expires_at on success matches the CHECK
+ * constraint added in migration 050 (`status IN ('done','failed')`
+ * doesn't require it, but a real worker completing normally should
+ * still leave a clean row rather than a dangling token).
+ */
+async function markPending(id: string, status: 'done' | 'failed', expectedClaimToken: string) {
   await supabaseAdmin()
     .from('automation_pending_executions')
-    .update({ status })
+    .update({ status, claim_token: null, lease_expires_at: null })
     .eq('id', id)
+    .eq('status', 'running')
+    .eq('claim_token', expectedClaimToken)
 }

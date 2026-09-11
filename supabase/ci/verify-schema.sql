@@ -153,6 +153,125 @@ BEGIN
     RAISE EXCEPTION 'trg_tags_protect_is_default is missing on public.tags — migration 049 did not apply';
   END IF;
 
+  -- Meta 131056 durable retry (050) — retry metadata columns on
+  -- automation_pending_executions. Nullability matters: retry_reason/
+  -- retry_step_id must stay NULLABLE (a plain wait never sets them).
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'automation_pending_executions'
+      AND column_name = 'retry_count' AND is_nullable = 'NO' AND column_default = '0'
+  ) THEN
+    RAISE EXCEPTION 'automation_pending_executions.retry_count is missing, nullable, or not DEFAULT 0 — migration 050 did not apply as expected';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'automation_pending_executions'
+      AND column_name = 'retry_reason' AND is_nullable = 'YES'
+  ) THEN
+    RAISE EXCEPTION 'automation_pending_executions.retry_reason is missing or non-nullable — migration 050 did not apply as expected';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'automation_pending_executions'
+      AND column_name = 'retry_step_id' AND is_nullable = 'YES' AND data_type = 'uuid'
+  ) THEN
+    RAISE EXCEPTION 'automation_pending_executions.retry_step_id is missing, non-nullable, or not uuid — migration 050 did not apply as expected';
+  END IF;
+
+  -- Meta 131056 (050) — the wait-vs-retry consistency CHECK constraint.
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'automation_pending_executions_retry_metadata_check'
+      AND conrelid = 'public.automation_pending_executions'::regclass
+  ) THEN
+    RAISE EXCEPTION 'automation_pending_executions_retry_metadata_check is missing — migration 050 did not apply';
+  END IF;
+
+  -- Meta 131056 (050) — the retry scheduler RPC must exist, be
+  -- SECURITY DEFINER, and be closed to anon/authenticated/service_role
+  -- the same way create_default_account_tags was found to need in the
+  -- P3 review — a plain default PUBLIC grant is not enough; Supabase's
+  -- own default-privileges setup grants EXECUTE directly to all three
+  -- roles at CREATE time.
+  IF to_regprocedure(
+    'public.schedule_automation_retry_if_contact_active(uuid,uuid,uuid,uuid,uuid,uuid,text,integer,jsonb,timestamptz,integer,text,uuid)'
+  ) IS NULL THEN
+    RAISE EXCEPTION 'schedule_automation_retry_if_contact_active(...) is missing — migration 050 did not apply';
+  END IF;
+  IF has_function_privilege(
+    'anon',
+    'public.schedule_automation_retry_if_contact_active(uuid,uuid,uuid,uuid,uuid,uuid,text,integer,jsonb,timestamptz,integer,text,uuid)',
+    'EXECUTE'
+  ) OR has_function_privilege(
+    'authenticated',
+    'public.schedule_automation_retry_if_contact_active(uuid,uuid,uuid,uuid,uuid,uuid,text,integer,jsonb,timestamptz,integer,text,uuid)',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'schedule_automation_retry_if_contact_active(...) is EXECUTE-able by anon/authenticated — migration 050''s REVOKE did not apply or was undone';
+  END IF;
+  -- Phase 3.1 (section 17): explicitly confirm the POSITIVE grant too —
+  -- not just "anon/authenticated can't", but "service_role actually
+  -- can" — and that PUBLIC has no effective EXECUTE either (a bare
+  -- REVOKE FROM PUBLIC with no re-GRANT would otherwise pass the
+  -- anon/authenticated check above while silently leaving the RPC
+  -- uncallable by anyone, including the cron itself).
+  IF NOT has_function_privilege(
+    'service_role',
+    'public.schedule_automation_retry_if_contact_active(uuid,uuid,uuid,uuid,uuid,uuid,text,integer,jsonb,timestamptz,integer,text,uuid)',
+    'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'schedule_automation_retry_if_contact_active(...) is NOT EXECUTE-able by service_role — migration 050''s GRANT did not apply';
+  END IF;
+  -- has_function_privilege() takes a real role name/oid, not the PUBLIC
+  -- pseudo-role — checking PUBLIC's own grant requires reading the
+  -- function's ACL directly: aclexplode() reports PUBLIC grants as
+  -- grantee = 0.
+  IF EXISTS (
+    SELECT 1
+    FROM pg_proc p, aclexplode(p.proacl) acl
+    WHERE p.oid = 'public.schedule_automation_retry_if_contact_active(uuid,uuid,uuid,uuid,uuid,uuid,text,integer,jsonb,timestamptz,integer,text,uuid)'::regprocedure
+      AND acl.grantee = 0
+      AND acl.privilege_type = 'EXECUTE'
+  ) THEN
+    RAISE EXCEPTION 'schedule_automation_retry_if_contact_active(...) is EXECUTE-able by PUBLIC — migration 050''s REVOKE did not apply or was undone';
+  END IF;
+
+  -- Meta 131056 durable retry, Phase 3.1 — claim/lease crash-recovery
+  -- columns. No new RPC was introduced for claiming/reclaiming (the
+  -- cron's existing SELECT+CAS-UPDATE pattern was extended in place,
+  -- per the "no sobrearquitecturar" call in the Fase 3.1 spec — see
+  -- docs/META_131056_AUTOMATION_RETRY_AUDIT.md), so there is no second
+  -- RPC privilege check to add here; these columns/constraint/index are
+  -- the entire surface Phase 3.1 adds to the schema.
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'automation_pending_executions'
+      AND column_name = 'claim_token' AND data_type = 'uuid'
+  ) THEN
+    RAISE EXCEPTION 'automation_pending_executions.claim_token is missing or not uuid — migration 050 did not apply as expected';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'automation_pending_executions'
+      AND column_name = 'lease_expires_at' AND data_type = 'timestamp with time zone'
+  ) THEN
+    RAISE EXCEPTION 'automation_pending_executions.lease_expires_at is missing or not timestamptz — migration 050 did not apply as expected';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'automation_pending_executions_claim_lease_check'
+      AND conrelid = 'public.automation_pending_executions'::regclass
+  ) THEN
+    RAISE EXCEPTION 'automation_pending_executions_claim_lease_check is missing — migration 050 did not apply';
+  END IF;
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes
+    WHERE schemaname = 'public' AND tablename = 'automation_pending_executions'
+      AND indexname = 'idx_automation_pending_stale_running'
+  ) THEN
+    RAISE EXCEPTION 'idx_automation_pending_stale_running is missing — migration 050 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;
