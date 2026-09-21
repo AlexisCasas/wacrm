@@ -10,9 +10,13 @@ import {
 } from "@/lib/inbox/conversations";
 import {
   applyMessageActivity,
+  getConversationActivitySnapshot,
+  getMessageActivitySnapshot,
+  mergeConversationActivitySnapshot,
   mergeConversationUpdate,
   rollbackOptimisticMessageActivity,
   sortConversationsByActivity,
+  type ConversationActivitySnapshot,
 } from "@/lib/inbox/conversation-activity";
 import type { Conversation, Message, Contact, ConversationStatus, Tag } from "@/types";
 import { useRealtime } from "@/hooks/use-realtime";
@@ -54,15 +58,34 @@ function InboxPageInner() {
     useState<Conversation | null>(null);
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
-  // Snapshots let a failed optimistic send restore just its own list
-  // activity. A later realtime confirmation or a newer message wins instead.
-  const conversationsRef = useRef<Conversation[]>([]);
-  const optimisticActivitySnapshotsRef = useRef<
-    Map<string, Conversation | undefined>
+  // This synchronous, activity-only mirror closes the gap between a
+  // realtime setState call and its later React commit/effect. It is never a
+  // second conversation store: only optimistic rollback snapshots read it.
+  const latestActivityByConversationRef = useRef<
+    Map<string, ConversationActivitySnapshot>
   >(new Map());
-  useEffect(() => {
-    conversationsRef.current = conversations;
-  }, [conversations]);
+  const optimisticActivitySnapshotsRef = useRef<
+    Map<string, ConversationActivitySnapshot | undefined>
+  >(new Map());
+  const rememberConversationActivity = useCallback((conversation: Conversation) => {
+    const current = latestActivityByConversationRef.current.get(conversation.id);
+    latestActivityByConversationRef.current.set(
+      conversation.id,
+      mergeConversationActivitySnapshot(
+        current,
+        getConversationActivitySnapshot(conversation),
+      ),
+    );
+  }, []);
+  const rememberMessageActivity = useCallback((message: Message) => {
+    const current = latestActivityByConversationRef.current.get(
+      message.conversation_id,
+    );
+    latestActivityByConversationRef.current.set(
+      message.conversation_id,
+      mergeConversationActivitySnapshot(current, getMessageActivitySnapshot(message)),
+    );
+  }, []);
   const [whatsappConnected, setWhatsappConnected] = useState<boolean | null>(
     null
   );
@@ -183,6 +206,7 @@ function InboxPageInner() {
       }
       if (!data) return;
       const fetched = normalizeConversation(data);
+      rememberConversationActivity(fetched);
       setConversations((prev) => {
         const existing = prev.find((c) => c.id === fetched.id);
         if (existing) {
@@ -204,7 +228,7 @@ function InboxPageInner() {
     } finally {
       hydratingConvIdsRef.current.delete(convId);
     }
-  }, []);
+  }, [rememberConversationActivity]);
 
   // Check WhatsApp connection status on mount
   useEffect(() => {
@@ -252,6 +276,9 @@ function InboxPageInner() {
       const newMsg = event.new;
 
       if (event.eventType === "INSERT") {
+        // Capture activity before enqueueing state so an immediately
+        // following optimistic send cannot snapshot the pre-realtime value.
+        rememberMessageActivity(newMsg);
         // Add to messages if it belongs to active conversation
         if (
           activeConversation &&
@@ -301,7 +328,7 @@ function InboxPageInner() {
         );
       }
     },
-    [activeConversation, hydrateConversation]
+    [activeConversation, hydrateConversation, rememberMessageActivity]
   );
 
   // Handle realtime conversation events
@@ -314,6 +341,7 @@ function InboxPageInner() {
       const conv = event.new;
 
       if (event.eventType === "INSERT") {
+        rememberConversationActivity(conv);
         // Prepend immediately for snappy UX so the new conv shows in the
         // list right away, then hydrate to fill in the `contact` join
         // (realtime payloads never include joins). Skip both if we
@@ -329,6 +357,9 @@ function InboxPageInner() {
       }
 
       if (event.eventType === "UPDATE") {
+        // This monotonic mirror is deliberately updated before React queues
+        // the row patch, closing the snapshot race with an immediate send.
+        rememberConversationActivity(conv);
         if (knownConvIdsRef.current.has(conv.id)) {
           // If this UPDATE is for the conv the user is currently viewing,
           // suppress the incoming unread_count — the user is reading it
@@ -364,7 +395,7 @@ function InboxPageInner() {
         }
       }
     },
-    [activeConversation, hydrateConversation]
+    [activeConversation, hydrateConversation, rememberConversationActivity]
   );
 
   // Subscribe to realtime. The `isConnected` flag below feeds the
@@ -433,6 +464,13 @@ function InboxPageInner() {
   const handleConversationsLoaded = useCallback(
     (loaded: Conversation[]) => {
       const ordered = sortConversationsByActivity(loaded);
+      latestActivityByConversationRef.current.clear();
+      for (const conversation of ordered) {
+        latestActivityByConversationRef.current.set(
+          conversation.id,
+          getConversationActivitySnapshot(conversation),
+        );
+      }
       setConversations(ordered);
       // Resolve a pending deep-link here rather than in an effect — this
       // is an event handler, so the setState calls below are allowed by
@@ -545,7 +583,7 @@ function InboxPageInner() {
     if (msg.id.startsWith("temp-")) {
       optimisticActivitySnapshotsRef.current.set(
         msg.id,
-        conversationsRef.current.find((c) => c.id === msg.conversation_id),
+        latestActivityByConversationRef.current.get(msg.conversation_id),
       );
     }
     // The composer calls this before its network request. Keeping this
@@ -557,13 +595,26 @@ function InboxPageInner() {
     // materially ahead, the monotonic guard intentionally keeps this value
     // until the existing reconnect/visibility/manual resync loads canonical
     // server activity rather than allowing an older event to move it back.
+    rememberMessageActivity(msg);
     setConversations((prev) => applyMessageActivity(prev, msg));
-  }, []);
+  }, [rememberMessageActivity]);
 
   const handleMessageActivityFailed = useCallback((msg: Message) => {
     const snapshot = optimisticActivitySnapshotsRef.current.get(msg.id);
     optimisticActivitySnapshotsRef.current.delete(msg.id);
     if (!snapshot) return;
+
+    const optimisticActivity = getMessageActivitySnapshot(msg);
+    const currentActivity = latestActivityByConversationRef.current.get(
+      msg.conversation_id,
+    );
+    if (
+      currentActivity &&
+      currentActivity.last_message_at === optimisticActivity.last_message_at &&
+      currentActivity.last_message_text === optimisticActivity.last_message_text
+    ) {
+      latestActivityByConversationRef.current.set(msg.conversation_id, snapshot);
+    }
 
     // The failed bubble retains its established `failed` status in the
     // thread; this only removes its unconfirmed preview/order from the list.
@@ -672,6 +723,7 @@ function InboxPageInner() {
    */
   const handleContactBlocked = useCallback(
     (conversationId: string) => {
+      latestActivityByConversationRef.current.delete(conversationId);
       setConversations((prev) => prev.filter((c) => c.id !== conversationId));
       if (activeConversation?.id === conversationId) {
         handleCloseConversation();

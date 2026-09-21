@@ -1,5 +1,10 @@
 import type { Conversation, Message } from '@/types';
 
+export type ConversationActivitySnapshot = Pick<
+  Conversation,
+  'last_message_at' | 'last_message_text'
+>;
+
 /**
  * Returns a stable, human-readable preview for a message. Media without a
  * caption deliberately keeps its type marker instead of erasing the current
@@ -15,6 +20,42 @@ function timestampValue(timestamp: string | undefined): number | null {
   if (!timestamp) return null;
   const value = Date.parse(timestamp);
   return Number.isFinite(value) ? value : null;
+}
+
+/** Returns the activity-only fields that optimistic rollback may restore. */
+export function getConversationActivitySnapshot(
+  conversation: Conversation
+): ConversationActivitySnapshot {
+  return {
+    last_message_at: conversation.last_message_at,
+    last_message_text: conversation.last_message_text,
+  };
+}
+
+/**
+ * Keeps the newest valid activity snapshot. It is used by the page's
+ * synchronous event mirror so an optimistic send cannot snapshot activity
+ * that a queued React render has not committed yet.
+ */
+export function mergeConversationActivitySnapshot(
+  current: ConversationActivitySnapshot | undefined,
+  incoming: ConversationActivitySnapshot
+): ConversationActivitySnapshot {
+  const currentAt = timestampValue(current?.last_message_at);
+  const incomingAt = timestampValue(incoming.last_message_at);
+  if (incomingAt !== null && (currentAt === null || incomingAt >= currentAt)) {
+    return incoming;
+  }
+  return current ?? incoming;
+}
+
+export function getMessageActivitySnapshot(
+  message: Pick<Message, 'content_text' | 'content_type' | 'created_at'>
+): ConversationActivitySnapshot {
+  return {
+    last_message_at: message.created_at,
+    last_message_text: getMessagePreview(message),
+  };
 }
 
 function compareTimestampsDesc(
@@ -107,7 +148,7 @@ export function rollbackOptimisticMessageActivity(
     Message,
     'conversation_id' | 'content_text' | 'content_type' | 'created_at'
   >,
-  snapshot: Conversation | undefined
+  snapshot: ConversationActivitySnapshot | undefined
 ): Conversation[] {
   if (!snapshot) return conversations;
 
@@ -125,7 +166,11 @@ export function rollbackOptimisticMessageActivity(
   return sortConversationsByActivity(
     conversations.map((conversation) =>
       conversation.id === optimisticMessage.conversation_id
-        ? snapshot
+        ? {
+            ...conversation,
+            last_message_at: snapshot.last_message_at,
+            last_message_text: snapshot.last_message_text,
+          }
         : conversation
     )
   );

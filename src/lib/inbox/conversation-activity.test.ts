@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { Conversation, Message } from '@/types';
 import {
   applyMessageActivity,
+  getConversationActivitySnapshot,
+  mergeConversationActivitySnapshot,
   mergeConversationUpdate,
   rollbackOptimisticMessageActivity,
   sortConversationsByActivity,
@@ -139,6 +141,92 @@ describe('conversation activity ordering', () => {
       id: 'A',
       last_message_at: at(51),
       last_message_text: 'new inbound',
+    });
+  });
+
+  it('restores only activity after a failed optimistic send, preserving concurrent fields', () => {
+    const beforeOptimistic = {
+      ...conversation('A', at(40)),
+      last_message_text: 'old',
+    };
+    const optimistic = message('A', at(50), {
+      sender_type: 'agent',
+      content_text: 'sending',
+    });
+    const optimisticState = applyMessageActivity(
+      [beforeOptimistic],
+      optimistic
+    );
+    const concurrentlyUpdated = {
+      ...optimisticState[0],
+      status: 'pending' as const,
+      unread_count: 3,
+      assigned_agent_id: 'agent-new',
+      contact: {
+        id: 'contact-A',
+        user_id: 'user-1',
+        account_id: 'account-1',
+        phone: '+15550000000',
+        created_at: at(1),
+        updated_at: at(51),
+        tags: [
+          {
+            id: 'tag-new',
+            user_id: 'user-1',
+            name: 'New tag',
+            color: '#000000',
+            created_at: at(51),
+          },
+        ],
+      },
+    };
+    const result = rollbackOptimisticMessageActivity(
+      [concurrentlyUpdated],
+      optimistic,
+      getConversationActivitySnapshot(beforeOptimistic)
+    );
+
+    expect(result[0]).toMatchObject({
+      last_message_at: at(40),
+      last_message_text: 'old',
+      status: 'pending',
+      unread_count: 3,
+      assigned_agent_id: 'agent-new',
+      contact: { tags: [{ id: 'tag-new' }] },
+    });
+  });
+
+  it('restores the freshest pre-optimistic activity snapshot after a queued realtime update', () => {
+    const initialActivity = getConversationActivitySnapshot(
+      conversation('A', at(40))
+    );
+    const realtimeActivity = {
+      ...conversation('A', at(45)),
+      last_message_text: 'realtime before send',
+    };
+    // This mirrors the page's synchronous ref update that occurs before its
+    // React state update can commit.
+    const latestActivity = mergeConversationActivitySnapshot(
+      initialActivity,
+      getConversationActivitySnapshot(realtimeActivity)
+    );
+    const optimistic = message('A', at(50), {
+      sender_type: 'agent',
+      content_text: 'sending',
+    });
+    const afterOptimistic = applyMessageActivity(
+      [realtimeActivity],
+      optimistic
+    );
+    const result = rollbackOptimisticMessageActivity(
+      afterOptimistic,
+      optimistic,
+      latestActivity
+    );
+
+    expect(result[0]).toMatchObject({
+      last_message_at: at(45),
+      last_message_text: 'realtime before send',
     });
   });
 
