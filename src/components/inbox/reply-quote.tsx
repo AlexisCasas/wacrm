@@ -1,17 +1,29 @@
 "use client";
 
+import { useState } from "react";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { Message } from "@/types";
 import { useTranslations } from "next-intl";
+import { useMediaBlobUrl } from "@/hooks/use-media-blob-url";
 
-interface ReplyQuoteProps {
+/**
+ * The compact parent-message shape shared by bubbles and the composer.
+ * `id` is the internal messages UUID used by reply_to_message_id and by the
+ * existing MediaLightbox gallery.
+ */
+export interface ReplyQuoteData {
+  id: string;
+  authorLabel: string;
+  preview: string;
+  contentType?: Message["content_type"];
+  mediaUrl?: string;
+}
+
+interface ReplyQuoteProps extends ReplyQuoteData {
   /** Sender label of the quoted message: "You" for our own messages,
    *  contact name for customer-sent messages. Caller resolves this — the
    *  quote component doesn't see the parent Message. */
-  authorLabel: string;
-  /** Compact text preview. Falls back to a placeholder for media types. */
-  preview: string;
   /** Present → renders the composer-chip variant with an X button. Absent →
    *  renders the embedded-in-bubble variant. */
   onDismiss?: () => void;
@@ -19,16 +31,42 @@ interface ReplyQuoteProps {
    *  quote must read against the primary surface rather than the neutral
    *  foreground — otherwise it goes low-contrast in light mode. */
   onPrimary?: boolean;
+  /** Opens the existing thread lightbox for the quoted parent image. */
+  onOpenMedia?: (messageId: string) => void;
 }
 
 export function ReplyQuote({
+  id,
   authorLabel,
   preview,
+  contentType,
+  mediaUrl,
   onDismiss,
   onPrimary = false,
+  onOpenMedia,
 }: ReplyQuoteProps) {
   const t = useTranslations("Inbox.replyQuote");
   const isChip = !!onDismiss;
+  const { src, status } = useMediaBlobUrl(
+    contentType === "image" ? mediaUrl : undefined,
+  );
+  const [failedMediaUrl, setFailedMediaUrl] = useState<string | undefined>();
+  const imageFailed = failedMediaUrl === mediaUrl;
+
+  const hasImage = contentType === "image" && !!mediaUrl;
+  const canShowImage = hasImage && status === "ready" && !!src && !imageFailed;
+  const showImagePlaceholder = hasImage && status === "loading" && !imageFailed;
+
+  const thumbnail = canShowImage ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt=""
+      className="h-10 w-10 shrink-0 rounded object-cover"
+      onError={() => setFailedMediaUrl(mediaUrl)}
+    />
+  ) : null;
+
   return (
     <div
       className={cn(
@@ -41,6 +79,25 @@ export function ReplyQuote({
             : "mb-1.5 rounded-md bg-background/20",
       )}
     >
+      {showImagePlaceholder && (
+        <div
+          aria-hidden="true"
+          className="h-10 w-10 shrink-0 animate-pulse rounded bg-muted"
+        />
+      )}
+      {thumbnail &&
+        (onOpenMedia ? (
+          <button
+            type="button"
+            onClick={() => onOpenMedia(id)}
+            aria-label={preview}
+            className="shrink-0 rounded outline-none ring-offset-2 ring-offset-transparent focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            {thumbnail}
+          </button>
+        ) : (
+          thumbnail
+        ))}
       <div className="min-w-0 flex-1 overflow-hidden">
         <div
           className={cn(

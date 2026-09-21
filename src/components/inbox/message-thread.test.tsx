@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { useState } from "react";
@@ -36,7 +36,15 @@ vi.mock("@/hooks/use-presence", () => ({
 }));
 vi.mock("@/components/presence/presence-dot", () => ({ PresenceDot: () => null }));
 vi.mock("@/lib/presence", () => ({ presenceLabel: () => "offline" }));
-vi.mock("@/lib/media/gallery", () => ({ collectMediaGallery: () => [] }));
+vi.mock("@/lib/media/gallery", () => ({
+  collectMediaGallery: (messages: Message[]) =>
+    messages
+      .filter((message) =>
+        (message.content_type === "image" || message.content_type === "video") &&
+        message.media_url,
+      )
+      .map((message) => ({ messageId: message.id })),
+}));
 vi.mock("@/lib/storage/upload-media", () => ({
   CHAT_MEDIA_BUCKET: "chat-media",
   deleteAccountMedia: vi.fn(),
@@ -45,10 +53,21 @@ vi.mock("@/lib/whatsapp/template-body", () => ({ renderTemplateBody: () => "temp
 vi.mock("./reply-quote", () => ({ buildReplyPreview: () => "reply" }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 vi.mock("./message-bubble", () => ({
-  MessageBubble: ({ message }: { message: Message }) => <div>{message.id}</div>,
+  MessageBubble: ({ message, reply, onOpenReplyMedia }: { message: Message; reply?: { id: string; mediaUrl?: string; contentType?: string } | null; onOpenReplyMedia?: (id: string) => void }) => (
+    <div>
+      {message.id}
+      {reply && <span data-testid={`reply-${message.id}`}>{`${reply.contentType}:${reply.mediaUrl}`}</span>}
+      {reply && onOpenReplyMedia && <button onClick={() => onOpenReplyMedia(reply.id)}>{`open-reply-${message.id}`}</button>}
+    </div>
+  ),
 }));
 vi.mock("./message-actions", () => ({
-  MessageActions: ({ children }: { children: ReactNode }) => <>{children}</>,
+  MessageActions: ({ children, message, onReply }: { children: ReactNode; message: Message; onReply: () => void }) => (
+    <>
+      <button onClick={onReply}>{`reply-${message.id}`}</button>
+      {children}
+    </>
+  ),
 }));
 vi.mock("./message-composer", () => ({
   CHAT_MEDIA_BUCKET: "chat-media",
@@ -57,17 +76,20 @@ vi.mock("./message-composer", () => ({
     onSendMedia,
     onSendInteractive,
     onOpenTemplates,
+    replyTo,
   }: {
     onSend: (text: string) => void;
     onSendMedia: (payload: { kind: "image"; mediaUrl: string; path: string }) => void;
     onSendInteractive: (payload: { body: string }) => void;
     onOpenTemplates: () => void;
+    replyTo?: { contentType?: string; mediaUrl?: string } | null;
   }) => (
     <>
       <button onClick={() => onSend("outbound")}>send-text</button>
       <button onClick={() => onSendMedia({ kind: "image", mediaUrl: "https://media.test/image", path: "image" })}>send-media</button>
       <button onClick={() => onSendInteractive({ body: "interactive" })}>send-interactive</button>
       <button onClick={onOpenTemplates}>open-template</button>
+      {replyTo && <span data-testid="composer-reply-media">{`${replyTo.contentType}:${replyTo.mediaUrl}`}</span>}
     </>
   ),
 }));
@@ -77,7 +99,9 @@ vi.mock("./template-picker", () => ({
 }));
 vi.mock("./ai-thread-banner", () => ({ AiThreadBanner: () => null }));
 vi.mock("./flow-start-picker", () => ({ FlowStartPicker: () => null }));
-vi.mock("./media-lightbox", () => ({ MediaLightbox: () => null }));
+vi.mock("./media-lightbox", () => ({
+  MediaLightbox: ({ activeId }: { activeId: string | null }) => <span data-testid="lightbox-active-id">{activeId}</span>,
+}));
 vi.mock("@/components/ui/badge", () => ({ Badge: ({ children }: { children: ReactNode }) => <>{children}</> }));
 vi.mock("@/components/ui/button", () => ({ Button: ({ children }: { children: ReactNode }) => <button>{children}</button> }));
 vi.mock("@/components/ui/dialog", () => ({
@@ -262,6 +286,29 @@ beforeEach(() => {
 });
 
 describe("MessageThread scroll follow", () => {
+  it("keeps an image parent's visual metadata in the bubble quote and composer reply", async () => {
+    const parent = {
+      ...message("parent-image"),
+      sender_type: "agent" as const,
+      content_type: "image" as const,
+      content_text: "Promo S/299",
+      media_url: "https://cdn.test/parent.jpg",
+    };
+    const child = {
+      ...message("child-reply"),
+      reply_to_message_id: parent.id,
+    };
+    const view = render(<MessageThread {...threadProps([parent, child])} />);
+    attachScrollMetrics(view.container.querySelector<HTMLElement>(".overflow-y-auto")!);
+    await act(async () => h.resolveMessages([parent, child]));
+
+    expect(screen.getByTestId("reply-child-reply")).toHaveTextContent("image:https://cdn.test/parent.jpg");
+    fireEvent.click(screen.getByText("reply-parent-image"));
+    expect(screen.getByTestId("composer-reply-media")).toHaveTextContent("image:https://cdn.test/parent.jpg");
+    fireEvent.click(screen.getByText("open-reply-child-reply"));
+    expect(screen.getByTestId("lightbox-active-id")).toHaveTextContent("parent-image");
+  });
+
   it("opens fetched history at bottom, but preserves a reader above when an inbound row arrives", async () => {
     const initial = [message("one"), message("two")];
     const props = threadProps(initial);
