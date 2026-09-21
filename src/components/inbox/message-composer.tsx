@@ -52,7 +52,7 @@ import {
   looksLikeOpusOgg,
   normalizeOggFile,
 } from "@/lib/media/ogg-opus";
-import { ReplyQuote } from "./reply-quote";
+import { ReplyQuote, type ReplyQuoteData } from "./reply-quote";
 import { useTranslations } from "next-intl";
 import {
   InteractiveBuilder,
@@ -97,12 +97,7 @@ export interface SendMediaPayload {
   voiceNote?: boolean;
 }
 
-interface ReplyDraft {
-  /** Internal UUID of the message being replied to — sent back through onSend. */
-  id: string;
-  authorLabel: string;
-  preview: string;
-}
+type ReplyDraft = ReplyQuoteData;
 
 // Mirrors the chat-media bucket's allowed_mime_types (migration 023) for
 // the file picker so unsupported files are rejected before upload rather
@@ -150,6 +145,8 @@ interface MessageComposerProps {
   onOpenTemplates: () => void;
   replyTo?: ReplyDraft | null;
   onClearReply?: () => void;
+  /** Existing thread lightbox opener for an image parent, when viewable. */
+  onOpenReplyMedia?: (messageId: string) => void;
 }
 
 function formatDuration(seconds: number): string {
@@ -173,6 +170,7 @@ export function MessageComposer({
   onOpenTemplates,
   replyTo,
   onClearReply,
+  onOpenReplyMedia,
 }: MessageComposerProps) {
   const t = useTranslations("Inbox.composer");
 
@@ -657,9 +655,9 @@ export function MessageComposer({
       {replyTo && (
         <div className="mb-2">
           <ReplyQuote
-            authorLabel={replyTo.authorLabel}
-            preview={replyTo.preview}
+            {...replyTo}
             onDismiss={onClearReply}
+            onOpenMedia={onOpenReplyMedia}
           />
         </div>
       )}

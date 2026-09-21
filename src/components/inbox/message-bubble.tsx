@@ -13,7 +13,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { format } from "date-fns";
-import { ReplyQuote } from "./reply-quote";
+import { ReplyQuote, type ReplyQuoteData } from "./reply-quote";
 import { MessageReactions } from "./message-reactions";
 import {
   MediaAudioBubble,
@@ -28,7 +28,7 @@ import { useTranslations } from "next-intl";
 interface MessageBubbleProps {
   message: Message;
   /** Pre-computed quote info for messages that reply to another. */
-  reply?: { authorLabel: string; preview: string } | null;
+  reply?: ReplyQuoteData | null;
   reactions?: MessageReaction[];
   currentUserId?: string;
   onToggleReaction?: (emoji: string) => void;
@@ -38,6 +38,8 @@ interface MessageBubbleProps {
    * stays inline and non-clickable.
    */
   onOpenMedia?: (messageId: string) => void;
+  /** Opens the quoted parent in the existing gallery when it is viewable. */
+  onOpenReplyMedia?: (messageId: string) => void;
 }
 
 function StatusIcon({ status }: { status: Message["status"] }) {
@@ -222,6 +224,7 @@ export function MessageBubble({
   currentUserId,
   onToggleReaction,
   onOpenMedia,
+  onOpenReplyMedia,
 }: MessageBubbleProps) {
   const t = useTranslations("Inbox.bubble");
 
@@ -247,9 +250,9 @@ export function MessageBubble({
       >
         {reply && (
           <ReplyQuote
-            authorLabel={reply.authorLabel}
-            preview={reply.preview}
+            {...reply}
             onPrimary={isAgent}
+            onOpenMedia={onOpenReplyMedia}
           />
         )}
         <MessageContent

@@ -54,7 +54,7 @@ import {
 import { deleteAccountMedia } from "@/lib/storage/upload-media";
 import { TemplatePicker } from "./template-picker";
 import { AiThreadBanner } from "./ai-thread-banner";
-import { buildReplyPreview } from "./reply-quote";
+import { buildReplyPreview, type ReplyQuoteData } from "./reply-quote";
 import { renderTemplateBody } from "@/lib/whatsapp/template-body";
 import { toast } from "sonner";
 import { useCan } from "@/hooks/use-can";
@@ -74,11 +74,7 @@ import {
   shouldFollowLatest,
 } from "@/lib/inbox/message-scroll";
 
-interface ReplyDraft {
-  id: string;
-  authorLabel: string;
-  preview: string;
-}
+type ReplyDraft = ReplyQuoteData;
 
 interface MessageThreadProps {
   conversation: Conversation | null;
@@ -916,6 +912,10 @@ export function MessageThread({
   // Images + videos in the thread, in order — the set the media viewer
   // pages through with ← / →.
   const mediaGallery = useMemo(() => collectMediaGallery(messages), [messages]);
+  const mediaGalleryMessageIds = useMemo(
+    () => new Set(mediaGallery.map((item) => item.messageId)),
+    [mediaGallery],
+  );
 
   // Bucket reactions by their target message_id for O(1) per-bubble lookup.
   const reactionsByMessageId = useMemo(() => {
@@ -947,6 +947,8 @@ export function MessageThread({
         id: msg.id,
         authorLabel: authorLabelFor(msg),
         preview: buildReplyPreview(msg, tQuote),
+        contentType: msg.content_type,
+        mediaUrl: msg.media_url,
       });
     },
     [authorLabelFor],
@@ -1335,11 +1337,14 @@ export function MessageThread({
                       : null;
                     const reply = parent
                       ? {
+                          id: parent.id,
                           authorLabel:
                             parent.sender_type === "agent" || parent.sender_type === "bot"
                               ? t("me") 
                               : contact?.name || contact?.phone || "Unknown",
                           preview: buildReplyPreview(parent, tQuote),
+                          contentType: parent.content_type,
+                          mediaUrl: parent.media_url,
                         }
                       : null;
                     const msgReactions = reactionsByMessageId.get(msg.id);
@@ -1370,6 +1375,11 @@ export function MessageThread({
                           currentUserId={user?.id}
                           onToggleReaction={handlePillToggle}
                           onOpenMedia={handleMediaChange}
+                          onOpenReplyMedia={
+                            reply && mediaGalleryMessageIds.has(reply.id)
+                              ? handleMediaChange
+                              : undefined
+                          }
                         />
                       </MessageActions>
                     );
@@ -1422,6 +1432,11 @@ export function MessageThread({
         onOpenTemplates={handleOpenTemplates}
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
+        onOpenReplyMedia={
+          replyTo && mediaGalleryMessageIds.has(replyTo.id)
+            ? handleMediaChange
+            : undefined
+        }
       />
 
       <TemplatePicker
