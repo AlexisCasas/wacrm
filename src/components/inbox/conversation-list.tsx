@@ -8,6 +8,7 @@ import {
   needsHumanAttention,
   normalizeConversations,
 } from "@/lib/inbox/conversations";
+import { sortConversationsByActivity } from "@/lib/inbox/conversation-activity";
 import { cn } from "@/lib/utils";
 import type { Conversation, ConversationStatus, Tag } from "@/types";
 import { Search, ChevronDown, X, Hand } from "lucide-react";
@@ -129,7 +130,9 @@ export function ConversationList({
         return;
       }
 
-      onConversationsLoadedRef.current(normalizeConversations(data ?? []));
+      onConversationsLoadedRef.current(
+        sortConversationsByActivity(normalizeConversations(data ?? [])),
+      );
       setLoading(false);
     })();
 

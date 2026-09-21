@@ -82,6 +82,10 @@ interface MessageThreadProps {
   messages: Message[];
   onMessagesLoaded: (messages: Message[]) => void;
   onNewMessage: (message: Message) => void;
+  /** Restores list activity if an optimistic outgoing message fails. */
+  onMessageActivityFailed: (message: Message) => void;
+  /** Releases optimistic rollback state once the send request succeeds. */
+  onMessageActivityConfirmed: (tempMessageId: string) => void;
   onUpdateMessage: (id: string, updates: Partial<Message>) => void;
   onStatusChange: (conversationId: string, status: ConversationStatus) => void;
   onAssignChange: (
@@ -182,6 +186,8 @@ export function MessageThread({
   messages,
   onMessagesLoaded,
   onNewMessage,
+  onMessageActivityFailed,
+  onMessageActivityConfirmed,
   onUpdateMessage,
   onStatusChange,
   onAssignChange,
@@ -539,21 +545,24 @@ export function MessageThread({
           toast.error(t("sendFailed", { reason }));
           // Mark the optimistic bubble as failed so the user sees what happened
           onUpdateMessage(tempId, { status: "failed" });
+          onMessageActivityFailed(optimisticMsg);
           return;
         }
 
         // Success — the realtime INSERT event will replace the temp bubble
         // with the real DB row. If realtime hasn't arrived yet, at least
         // flip status to 'sent' so the UI stops showing "sending".
+        onMessageActivityConfirmed(tempId);
         onUpdateMessage(tempId, { status: "sent" });
       } catch (err) {
         console.error("Failed to send message:", err);
         const reason = err instanceof Error ? err.message : "network error";
         toast.error(t("sendFailed", { reason }));
         onUpdateMessage(tempId, { status: "failed" });
+        onMessageActivityFailed(optimisticMsg);
       }
     },
-    [conversation, onNewMessage, onUpdateMessage]
+    [conversation, onNewMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage]
   );
 
   const handleSendMedia = useCallback(
@@ -605,22 +614,25 @@ export function MessageThread({
           console.error("Failed to send media:", reason);
           toast.error(t("sendFailed", { reason }));
           onUpdateMessage(tempId, { status: "failed" });
+          onMessageActivityFailed(optimisticMsg);
           // The upload never reached the recipient — GC the orphaned
           // object rather than leaving it in the public bucket forever.
           void deleteAccountMedia(CHAT_MEDIA_BUCKET, payload.path).catch(() => {});
           return;
         }
 
+        onMessageActivityConfirmed(tempId);
         onUpdateMessage(tempId, { status: "sent" });
       } catch (err) {
         console.error("Failed to send media:", err);
         const reason = err instanceof Error ? err.message : "network error";
         toast.error(t("sendFailed", { reason }));
         onUpdateMessage(tempId, { status: "failed" });
+        onMessageActivityFailed(optimisticMsg);
         void deleteAccountMedia(CHAT_MEDIA_BUCKET, payload.path).catch(() => {});
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage],
   );
 
   const handleSendInteractive = useCallback(
@@ -662,18 +674,21 @@ export function MessageThread({
           console.error("Failed to send interactive message:", reason);
           toast.error(t("sendFailed", { reason }));
           onUpdateMessage(tempId, { status: "failed" });
+          onMessageActivityFailed(optimisticMsg);
           return;
         }
 
+        onMessageActivityConfirmed(tempId);
         onUpdateMessage(tempId, { status: "sent" });
       } catch (err) {
         console.error("Failed to send interactive message:", err);
         const reason = err instanceof Error ? err.message : "network error";
         toast.error(t("sendFailed", { reason }));
         onUpdateMessage(tempId, { status: "failed" });
+        onMessageActivityFailed(optimisticMsg);
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage],
   );
 
   const handleStatusChange = useCallback(
@@ -780,18 +795,21 @@ export function MessageThread({
           console.error("Failed to send template:", reason);
           toast.error(t("sendTemplateFailed", { reason }));
           onUpdateMessage(tempId, { status: "failed" });
+          onMessageActivityFailed(optimisticMsg);
           return;
         }
 
+        onMessageActivityConfirmed(tempId);
         onUpdateMessage(tempId, { status: "sent" });
       } catch (err) {
         console.error("Failed to send template:", err);
         const reason = err instanceof Error ? err.message : "network error";
         toast.error(t("sendTemplateFailed", { reason }));
         onUpdateMessage(tempId, { status: "failed" });
+        onMessageActivityFailed(optimisticMsg);
       }
     },
-    [conversation, onNewMessage, onUpdateMessage],
+    [conversation, onNewMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage],
   );
 
   // Build a quick id → Message map so reply quotes can be rendered without
