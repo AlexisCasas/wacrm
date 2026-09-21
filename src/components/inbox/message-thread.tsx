@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useLayoutEffect, useCallback, useRef, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { usePresence } from "@/hooks/use-presence";
@@ -42,7 +42,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { MessageBubble } from "./message-bubble";
 import { MessageActions } from "./message-actions";
 import { MediaLightbox } from "./media-lightbox";
@@ -69,6 +68,11 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import {
+  isNearBottom,
+  isOptimisticMessageReplacement,
+  shouldFollowLatest,
+} from "@/lib/inbox/message-scroll";
 
 interface ReplyDraft {
   id: string;
@@ -211,6 +215,17 @@ export function MessageThread({
   const { getPresence, getRow, now } = usePresence();
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollContentRef = useRef<HTMLDivElement>(null);
+  // This is intentionally a ref: recording every pixel of a user's scroll in
+  // state would rerender the entire message thread. It records the position
+  // before React adds content, which lets the layout effect decide whether
+  // following the latest message is allowed.
+  const isNearBottomRef = useRef(true);
+  const forceScrollAfterOwnSendRef = useRef(false);
+  const previousMessagesRef = useRef<Message[]>([]);
+  const trackedConversationIdRef = useRef<string | undefined>(undefined);
+  const initialScrollPendingRef = useRef(false);
+  const fetchedConversationIdRef = useRef<string | undefined>(undefined);
   const [templateModalOpen, setTemplateModalOpen] = useState(false);
   const [flowPickerOpen, setFlowPickerOpen] = useState(false);
   const [blockDialogOpen, setBlockDialogOpen] = useState(false);
@@ -352,6 +367,9 @@ export function MessageThread({
       if (error) {
         console.error("Failed to fetch messages:", error);
       } else {
+        // This data boundary prevents a transient render of the previous
+        // thread from being treated as the newly selected thread's history.
+        fetchedConversationIdRef.current = conversationId;
         onMessagesLoadedRef.current(data ?? []);
       }
 
@@ -497,13 +515,88 @@ export function MessageThread({
       });
   }, [conversationId, hasUnread]);
 
-  // Auto-scroll to bottom on new messages
-  useEffect(() => {
-    if (scrollRef.current) {
-      const el = scrollRef.current;
-      el.scrollTop = el.scrollHeight;
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    el.scrollTop = Math.max(0, el.scrollHeight - el.clientHeight);
+    isNearBottomRef.current = true;
+  }, []);
+
+  const handleThreadScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    isNearBottomRef.current = isNearBottom(el);
+  }, []);
+
+  const addOwnOptimisticMessage = useCallback(
+    (message: Message) => {
+      // Agent sends always reveal their own newly-created bubble, even if the
+      // agent was reading older history immediately before sending.
+      forceScrollAfterOwnSendRef.current = true;
+      onNewMessage(message);
+    },
+    [onNewMessage],
+  );
+
+  // Only follow content that was added while the reader was already at the
+  // bottom (or an explicit local send). Status/reaction updates keep the same
+  // ids, so they preserve the reader's exact position.
+  useLayoutEffect(() => {
+    if (trackedConversationIdRef.current !== conversationId) {
+      trackedConversationIdRef.current = conversationId;
+      initialScrollPendingRef.current = Boolean(conversationId);
+      previousMessagesRef.current = [];
+      isNearBottomRef.current = true;
+      forceScrollAfterOwnSendRef.current = false;
     }
-  }, [messages]);
+
+    if (!conversationId) return;
+
+    if (initialScrollPendingRef.current) {
+      if (fetchedConversationIdRef.current === conversationId && !loading) {
+        scrollToBottom();
+        initialScrollPendingRef.current = false;
+        previousMessagesRef.current = messages;
+      }
+      return;
+    }
+
+    const previousMessages = previousMessagesRef.current;
+    const previousMessageIds = new Set(previousMessages.map((message) => message.id));
+    const hasNewMessage = messages.some(
+      (message) =>
+        !previousMessageIds.has(message.id) &&
+        !isOptimisticMessageReplacement(previousMessages, message),
+    );
+    const shouldFollow = shouldFollowLatest({
+      hasNewMessage,
+      wasNearBottom: isNearBottomRef.current,
+      isOwnOptimisticSend: forceScrollAfterOwnSendRef.current,
+    });
+
+    if (shouldFollow) scrollToBottom();
+
+    forceScrollAfterOwnSendRef.current = false;
+    previousMessagesRef.current = messages;
+  }, [conversationId, loading, messages, scrollToBottom]);
+
+  // Images and videos can alter a bubble's height after the row first mounts.
+  // Keep a reader at bottom attached to the newest message, while preserving
+  // history for a reader who has scrolled up. Browser scroll anchoring remains
+  // enabled; this only handles the intentional follow case.
+  useEffect(() => {
+    const content = scrollContentRef.current;
+    if (!content || typeof ResizeObserver === "undefined") return;
+
+    const observer = new ResizeObserver(() => {
+      if (!initialScrollPendingRef.current && isNearBottomRef.current) {
+        scrollToBottom();
+      }
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [conversationId, scrollToBottom]);
 
   const handleSend = useCallback(
     async (text: string, replyToId?: string) => {
@@ -522,7 +615,7 @@ export function MessageThread({
         created_at: new Date().toISOString(),
         reply_to_message_id: replyToId,
       };
-      onNewMessage(optimisticMsg);
+      addOwnOptimisticMessage(optimisticMsg);
       setReplyTo(null);
 
       try {
@@ -562,7 +655,7 @@ export function MessageThread({
         onMessageActivityFailed(optimisticMsg);
       }
     },
-    [conversation, onNewMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage]
+    [conversation, addOwnOptimisticMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage]
   );
 
   const handleSendMedia = useCallback(
@@ -589,7 +682,7 @@ export function MessageThread({
         created_at: new Date().toISOString(),
         reply_to_message_id: payload.replyToId,
       };
-      onNewMessage(optimisticMsg);
+      addOwnOptimisticMessage(optimisticMsg);
       setReplyTo(null);
 
       try {
@@ -632,7 +725,7 @@ export function MessageThread({
         void deleteAccountMedia(CHAT_MEDIA_BUCKET, payload.path).catch(() => {});
       }
     },
-    [conversation, onNewMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage],
+    [conversation, addOwnOptimisticMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage],
   );
 
   const handleSendInteractive = useCallback(
@@ -653,7 +746,7 @@ export function MessageThread({
         created_at: new Date().toISOString(),
         reply_to_message_id: replyToId,
       };
-      onNewMessage(optimisticMsg);
+      addOwnOptimisticMessage(optimisticMsg);
 
       try {
         const res = await fetch("/api/whatsapp/send", {
@@ -688,7 +781,7 @@ export function MessageThread({
         onMessageActivityFailed(optimisticMsg);
       }
     },
-    [conversation, onNewMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage],
+    [conversation, addOwnOptimisticMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage],
   );
 
   const handleStatusChange = useCallback(
@@ -763,7 +856,7 @@ export function MessageThread({
         status: "sending",
         created_at: new Date().toISOString(),
       };
-      onNewMessage(optimisticMsg);
+      addOwnOptimisticMessage(optimisticMsg);
 
       try {
         const res = await fetch("/api/whatsapp/send", {
@@ -809,7 +902,7 @@ export function MessageThread({
         onMessageActivityFailed(optimisticMsg);
       }
     },
-    [conversation, onNewMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage],
+    [conversation, addOwnOptimisticMessage, onMessageActivityConfirmed, onMessageActivityFailed, onUpdateMessage],
   );
 
   // Build a quick id → Message map so reply quotes can be rendered without
@@ -1207,20 +1300,25 @@ export function MessageThread({
       </div>
 
       {/* Messages Area */}
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
-        {loading ? (
-          <div className="flex items-center justify-center py-12">
-            <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-          </div>
-        ) : messages.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-12">
-            <p className="text-sm text-muted-foreground">{t("noMessagesYet")}</p>
-            <p className="text-xs text-muted-foreground">
-              {t("sendTemplateHint")}
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-4">
+      <div
+        ref={scrollRef}
+        onScroll={handleThreadScroll}
+        className="flex-1 overflow-y-auto px-4 py-4"
+      >
+        <div ref={scrollContentRef}>
+          {loading && messages.length === 0 ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+            </div>
+          ) : messages.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-12">
+              <p className="text-sm text-muted-foreground">{t("noMessagesYet")}</p>
+              <p className="text-xs text-muted-foreground">
+                {t("sendTemplateHint")}
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-4">
             {messageGroups.map((group) => (
               <div key={group.date}>
                 {/* Date separator */}
@@ -1279,8 +1377,9 @@ export function MessageThread({
                 </div>
               </div>
             ))}
-          </div>
-        )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Blocked-contact banner — reachable when this conversation is
