@@ -16,6 +16,8 @@ import {
   HelpCircle,
   UserPlus,
   FileText,
+  Search,
+  X,
 } from "lucide-react";
 
 import { useTranslations } from "next-intl";
@@ -32,7 +34,19 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import {
+  listFlows,
+  type FlowSort,
+  type FlowStatusFilter,
+} from "@/lib/flows/listing";
 
 /**
  * Flows list page.
@@ -92,6 +106,15 @@ export default function FlowsPage() {
   const [newName, setNewName] = useState("");
   const [creating, setCreating] = useState(false);
   const [templates, setTemplates] = useState<TemplateSummary[]>([]);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<FlowStatusFilter>("all");
+  const [sort, setSort] = useState<FlowSort>("newest");
+
+  const listedFlows = listFlows(flows, {
+    query: search,
+    status: statusFilter,
+    sort,
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -230,16 +253,101 @@ export default function FlowsPage() {
           t={t}
         />
       ) : (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {flows.map((flow) => (
-            <FlowCard
-              key={flow.id}
-              flow={flow}
-              onEdit={() => router.push(`/flows/${flow.id}`)}
-              onDelete={() => handleDelete(flow)}
-              t={t}
-            />
-          ))}
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div className="grid w-full gap-3 sm:grid-cols-3 lg:max-w-3xl">
+              <div className="sm:col-span-3 lg:col-span-1">
+                <label htmlFor="flow-search" className="mb-1 block text-xs text-muted-foreground">
+                  {t("searchLabel")}
+                </label>
+                <div className="relative">
+                  <Search className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="flow-search"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    placeholder={t("searchPlaceholder")}
+                    className="bg-card pr-8 pl-8"
+                  />
+                  {search && (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className="absolute top-1/2 right-1 size-7 -translate-y-1/2"
+                      onClick={() => setSearch("")}
+                      aria-label={t("clearSearch")}
+                      title={t("clearSearch")}
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+
+              <div>
+                <label htmlFor="flow-status-filter" className="mb-1 block text-xs text-muted-foreground">
+                  {t("filterByStatus")}
+                </label>
+                <Select
+                  value={statusFilter}
+                  onValueChange={(value) => setStatusFilter(value as FlowStatusFilter)}
+                >
+                  <SelectTrigger id="flow-status-filter" className="w-full bg-card">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">{t("filterAll")}</SelectItem>
+                    <SelectItem value="active">{t("statusActive")}</SelectItem>
+                    <SelectItem value="draft">{t("statusDraft")}</SelectItem>
+                    <SelectItem value="archived">{t("statusArchived")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div>
+                <label htmlFor="flow-sort" className="mb-1 block text-xs text-muted-foreground">
+                  {t("sortBy")}
+                </label>
+                <Select value={sort} onValueChange={(value) => setSort(value as FlowSort)}>
+                  <SelectTrigger id="flow-sort" className="w-full bg-card">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="newest">{t("sortNewest")}</SelectItem>
+                    <SelectItem value="most-used">{t("sortMostUsed")}</SelectItem>
+                    <SelectItem value="least-used">{t("sortLeastUsed")}</SelectItem>
+                    <SelectItem value="last-executed">{t("sortLastExecuted")}</SelectItem>
+                    <SelectItem value="last-modified">{t("sortLastModified")}</SelectItem>
+                    <SelectItem value="name-asc">{t("sortNameAsc")}</SelectItem>
+                    <SelectItem value="name-desc">{t("sortNameDesc")}</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <p className="shrink-0 text-xs text-muted-foreground" aria-live="polite">
+              {t("showingCount", { shown: listedFlows.length, total: flows.length })}
+            </p>
+          </div>
+
+          {listedFlows.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border bg-card/50 px-6 py-12 text-center">
+              <p className="text-sm text-muted-foreground">{t("noResults")}</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {listedFlows.map((flow) => (
+                <FlowCard
+                  key={flow.id}
+                  flow={flow}
+                  onEdit={() => router.push(`/flows/${flow.id}`)}
+                  onDelete={() => handleDelete(flow)}
+                  t={t}
+                />
+              ))}
+            </div>
+          )}
         </div>
       )}
 
