@@ -42,6 +42,8 @@ import {
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
+import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition-capability";
+import { NATIVE_CONTACT_CONDITION_FIELDS } from "@/lib/flows/condition-references";
 import { ContactBlockedError } from "@/lib/contacts/blocking";
 import {
   type CollectInputNodeConfig,
@@ -510,34 +512,69 @@ async function evaluateConditionNode(
   run: FlowRunRow,
   cfg: ConditionNodeConfig,
 ): Promise<boolean> {
+  if (!run.contact_id && cfg.subject !== "var") {
+    throw new Error("condition_contact_missing");
+  }
   let subjectValue: string | undefined;
   if (cfg.subject === "var") {
     const v = run.vars[cfg.subject_key];
     subjectValue = typeof v === "string" ? v : v === undefined ? undefined : String(v);
   } else if (cfg.subject === "tag") {
-    const { count } = await db
+    // The service client bypasses RLS: establish both ownership links before
+    // looking at the join row, rather than trusting an id from JSONB.
+    const [{ data: contact, error: contactError }, { data: tag, error: tagError }] = await Promise.all([
+      db.from("contacts").select("id").eq("id", run.contact_id!).eq("account_id", run.account_id).maybeSingle(),
+      db.from("tags").select("id").eq("id", cfg.subject_key).eq("account_id", run.account_id).maybeSingle(),
+    ]);
+    if (contactError || tagError) throw new Error("condition_reference_lookup_failed");
+    if (!contact) throw new Error("condition_contact_not_in_account");
+    if (!tag) throw new Error("condition_tag_not_in_account");
+    const { count, error } = await db
       .from("contact_tags")
       .select("contact_id", { count: "exact", head: true })
       .eq("contact_id", run.contact_id!)
       .eq("tag_id", cfg.subject_key);
+    if (error) throw new Error("condition_tag_lookup_failed");
     // For tags, "present" really is the only meaningful test — the
     // `present`/`absent` operators are the natural fit. equals/contains
     // against a tag UUID would still work mechanically (compare its
     // existence to the value).
     subjectValue = (count ?? 0) > 0 ? cfg.subject_key : undefined;
   } else {
-    const ALLOWED = ["name", "email", "phone", "company"] as const;
-    type AllowedField = (typeof ALLOWED)[number];
-    if (!ALLOWED.includes(cfg.subject_key as AllowedField)) {
-      throw new Error(`unsupported contact_field: ${cfg.subject_key}`);
-    }
-    const { data } = await db
+    const { data: contact, error: contactError } = await db
       .from("contacts")
-      .select(cfg.subject_key)
+      .select("id, name, email, phone, company")
       .eq("id", run.contact_id!)
+      .eq("account_id", run.account_id)
       .maybeSingle();
-    const raw = (data as Record<string, unknown> | null)?.[cfg.subject_key];
-    subjectValue = typeof raw === "string" && raw.length > 0 ? raw : undefined;
+    if (contactError) throw new Error("condition_contact_lookup_failed");
+    if (!contact) throw new Error("condition_contact_not_in_account");
+    if (cfg.subject_key.startsWith("custom:")) {
+      if (!isCustomConditionEnabledForAccount(run.account_id)) {
+        throw new Error("custom_condition_capability_disabled");
+      }
+      const customFieldId = cfg.subject_key.slice("custom:".length);
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(customFieldId)) {
+        throw new Error("custom_condition_reference_invalid");
+      }
+      const { data: field, error: fieldError } = await db
+        .from("custom_fields").select("id")
+        .eq("id", customFieldId).eq("account_id", run.account_id).maybeSingle();
+      if (fieldError) throw new Error("custom_condition_field_lookup_failed");
+      if (!field) throw new Error("custom_condition_field_not_in_account");
+      const { data: value, error: valueError } = await db
+        .from("contact_custom_values").select("value")
+        .eq("contact_id", run.contact_id!).eq("custom_field_id", customFieldId).maybeSingle();
+      if (valueError) throw new Error("custom_condition_value_lookup_failed");
+      const raw = (value as { value?: unknown } | null)?.value;
+      subjectValue = typeof raw === "string" && raw.length > 0 ? raw : undefined;
+    } else {
+      if (!(NATIVE_CONTACT_CONDITION_FIELDS as readonly string[]).includes(cfg.subject_key)) {
+        throw new Error("condition_native_field_invalid");
+      }
+      const raw = (contact as Record<string, unknown>)[cfg.subject_key];
+      subjectValue = typeof raw === "string" && raw.length > 0 ? raw : undefined;
+    }
   }
   return evaluateConditionPredicate({
     operator: cfg.operator,
@@ -853,7 +890,9 @@ async function advanceFromNodeKey(
       } catch (err) {
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "condition_evaluation_failed",
-          detail: err instanceof Error ? err.message : String(err),
+          // Do not persist database messages or resolved field values in the
+          // run event; they can contain tenant or customer data.
+          code: err instanceof Error ? err.message : "condition_unknown_error",
         });
         await endRun(db, run.id, "failed", "condition_evaluation_failed");
         return { outcome: "completed" };

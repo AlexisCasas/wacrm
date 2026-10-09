@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
+import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
 
 /**
  * GET   /api/flows/[id]  — fetch one flow with its nodes.
@@ -97,90 +99,69 @@ export async function PUT(
   // it, but this route mutates via the service-role client which bypasses
   // RLS, so the role must be enforced here (a viewer passes ownership).
   try {
-    await requireRole('agent')
-  } catch (err) {
-    return toErrorResponse(err)
-  }
+    const account = await requireRole('agent')
+    const guard = await requireOwnership(id)
+    if (!guard.ok) return NextResponse.json(guard.body, { status: guard.status })
 
-  const guard = await requireOwnership(id)
-  if (!guard.ok) return NextResponse.json(guard.body, { status: guard.status })
-
-  const body = (await request.json().catch(() => null)) as PutBody | null
-  if (!body) {
-    return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
-  }
-  if (body.name !== undefined && !body.name.trim()) {
-    return NextResponse.json(
-      { error: 'name cannot be empty' },
-      { status: 400 },
-    )
-  }
-
-  const admin = supabaseAdmin()
-
-  // Update the flow row first — the body may not include `nodes` (a
-  // header-only save for editing the trigger config without touching
-  // the graph). Skip node replacement in that case.
-  const flowPatch: Record<string, unknown> = {
-    updated_at: new Date().toISOString(),
-  }
-  if (body.name !== undefined) flowPatch.name = body.name.trim()
-  if (body.description !== undefined)
-    flowPatch.description = body.description
-  if (body.trigger_type !== undefined) flowPatch.trigger_type = body.trigger_type
-  if (body.trigger_config !== undefined)
-    flowPatch.trigger_config = body.trigger_config
-  if (body.entry_node_id !== undefined)
-    flowPatch.entry_node_id = body.entry_node_id
-  if (body.fallback_policy !== undefined)
-    flowPatch.fallback_policy = body.fallback_policy
-
-  const { error: updErr } = await admin
-    .from('flows')
-    .update(flowPatch)
-    .eq('id', id)
-  if (updErr) {
-    return NextResponse.json({ error: updErr.message }, { status: 500 })
-  }
-
-  if (body.nodes !== undefined) {
-    // Delete-then-insert. Not transactional but the runner handles
-    // mid-edit reads safely (a node_not_found ends the run cleanly).
-    const { error: delErr } = await admin
-      .from('flow_nodes')
-      .delete()
-      .eq('flow_id', id)
-    if (delErr) {
-      return NextResponse.json({ error: delErr.message }, { status: 500 })
+    const body = (await request.json().catch(() => null)) as PutBody | null
+    if (!body) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    if (body.name !== undefined && !body.name.trim()) {
+      return NextResponse.json({ error: 'name cannot be empty' }, { status: 400 })
     }
-    if (body.nodes.length > 0) {
-      const { error: insErr } = await admin.from('flow_nodes').insert(
-        body.nodes.map((n) => ({
-          flow_id: id,
-          node_key: n.node_key,
-          node_type: n.node_type,
-          config: n.config,
-          position_x: n.position_x ?? 0,
-          position_y: n.position_y ?? 0,
-        })),
-      )
-      if (insErr) {
-        return NextResponse.json({ error: insErr.message }, { status: 500 })
+
+    const admin = supabaseAdmin()
+    // Validate ALL external references before the existing delete+insert
+    // replacement starts, so an invalid request cannot leave partial nodes.
+    if (body.nodes !== undefined) {
+      const capabilityEnabled = isCustomConditionEnabledForAccount(account.accountId)
+      const { data: currentNodes, error: currentNodesError } = !capabilityEnabled
+        ? await admin.from('flow_nodes').select('node_key, node_type, config').eq('flow_id', id)
+        : { data: [], error: null }
+      if (currentNodesError) return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
+      const existingCustom = new Set((currentNodes ?? []).filter((node) => node.node_type === 'condition' && (node.config as Record<string, unknown>).subject === 'contact_field' && typeof (node.config as Record<string, unknown>).subject_key === 'string').map((node) => `${node.node_key}:${(node.config as Record<string, unknown>).subject_key}`))
+      const issues = (await validateConditionReferences(
+        account.supabase,
+        account.accountId,
+        body.nodes,
+        capabilityEnabled,
+      )).filter((issue) => issue.issue !== 'custom_condition_capability_disabled' || !existingCustom.has(`${issue.node_key}:${(body.nodes ?? []).find((node) => node.node_key === issue.node_key)?.config.subject_key}`))
+      if (issues.length) return NextResponse.json({ error: 'Invalid condition reference', issues }, { status: 422 })
+    }
+
+    // Update the flow row first — the body may not include `nodes` (a
+    // header-only save for editing the trigger config without touching
+    // the graph). Skip node replacement in that case.
+    const flowPatch: Record<string, unknown> = {
+      updated_at: new Date().toISOString(),
+    }
+    if (body.name !== undefined) flowPatch.name = body.name.trim()
+    if (body.description !== undefined) flowPatch.description = body.description
+    if (body.trigger_type !== undefined) flowPatch.trigger_type = body.trigger_type
+    if (body.trigger_config !== undefined) flowPatch.trigger_config = body.trigger_config
+    if (body.entry_node_id !== undefined) flowPatch.entry_node_id = body.entry_node_id
+    if (body.fallback_policy !== undefined) flowPatch.fallback_policy = body.fallback_policy
+
+    const { error: updErr } = await admin.from('flows').update(flowPatch).eq('id', id)
+    if (updErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
+    if (body.nodes !== undefined) {
+      const { error: delErr } = await admin.from('flow_nodes').delete().eq('flow_id', id)
+      if (delErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
+      if (body.nodes.length) {
+        const { error: insErr } = await admin.from('flow_nodes').insert(body.nodes.map((n) => ({ flow_id: id, node_key: n.node_key, node_type: n.node_type, config: n.config, position_x: n.position_x ?? 0, position_y: n.position_y ?? 0 })))
+        if (insErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
       }
     }
+    const [{ data: flow }, { data: nodes }] = await Promise.all([
+      admin.from('flows').select('*').eq('id', id).maybeSingle(),
+      admin.from('flow_nodes').select('*').eq('flow_id', id).order('created_at', { ascending: true }),
+    ])
+    return NextResponse.json({ flow, nodes: nodes ?? [] })
+  } catch (err) {
+    if (err instanceof ConditionReferenceInfrastructureError) {
+      return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
+    }
+    return toErrorResponse(err)
   }
-
-  // Re-fetch and return the new state — the editor uses the response
-  // to reconcile its local form state.
-  const [{ data: flow }, { data: nodes }] = await Promise.all([
-    admin.from('flows').select('*').eq('id', id).maybeSingle(),
-    admin
-      .from('flow_nodes')
-      .select('*')
-      .eq('flow_id', id)
-      .order('created_at', { ascending: true }),
-  ])
-  return NextResponse.json({ flow, nodes: nodes ?? [] })
 }
 
 export async function DELETE(
