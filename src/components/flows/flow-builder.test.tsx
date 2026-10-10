@@ -34,7 +34,7 @@ vi.mock("sonner", () => ({
   toast: { success: (...a: unknown[]) => toastSuccess(...a), error: (...a: unknown[]) => toastError(...a) },
 }));
 
-const t = useTranslations("Flows.builder");
+const t = ((key: string) => key) as ReturnType<typeof useTranslations>;
 
 afterEach(() => {
   cleanup();

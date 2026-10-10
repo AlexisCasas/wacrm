@@ -71,11 +71,16 @@ let lastRecorder: {
   start: () => Promise<void>;
   stop: () => Promise<void>;
 } | null = null;
+
+function captureRecorder(recorder: NonNullable<typeof lastRecorder>) {
+  lastRecorder = recorder;
+}
+
 vi.mock("opus-recorder", () => ({
   default: class FakeRecorder {
     ondataavailable: ((bytes: Uint8Array) => void) | null = null;
     constructor() {
-      lastRecorder = this;
+      captureRecorder(this);
     }
     start() {
       return Promise.resolve();
