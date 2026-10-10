@@ -66,9 +66,20 @@ export async function DELETE(_request: Request, context: Context) {
         { error: 'Could not delete folder' },
         { status: 503 }
       );
-    if (!data)
+    const rows = (data ?? []) as Array<{
+      deleted: boolean;
+      flow_id: string | null;
+      flow_updated_at: string | null;
+    }>;
+    const result = rows[0];
+    if (!result?.deleted)
       return NextResponse.json({ error: 'Folder not found' }, { status: 404 });
-    return NextResponse.json({ ok: true });
+    return NextResponse.json({
+      ok: true,
+      flows: rows
+        .filter((row) => row.flow_id)
+        .map((row) => ({ id: row.flow_id, updated_at: row.flow_updated_at })),
+    });
   } catch (error) {
     return toErrorResponse(error);
   }

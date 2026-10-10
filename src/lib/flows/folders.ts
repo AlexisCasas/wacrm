@@ -24,3 +24,14 @@ export function isUniqueViolation(error: unknown): boolean {
     error.code === '23505'
   );
 }
+
+/** Constraint failures are safe to expose as a generic client conflict. */
+export function isIntegrityViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string' &&
+    error.code.startsWith('23')
+  );
+}

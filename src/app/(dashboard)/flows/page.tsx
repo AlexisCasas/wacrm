@@ -135,6 +135,20 @@ export default function FlowsPage() {
   const [statusFilter, setStatusFilter] = useState<FlowStatusFilter>('all');
   const [sort, setSort] = useState<FlowSort>('newest');
 
+  // Counts deliberately derive from the complete local flow catalogue rather
+  // than a second mutable counter. Every successful create/delete/move then
+  // has one source of truth and cannot drive a folder negative.
+  const folderCounts = new Map<string, number>();
+  let unfiledCount = 0;
+  for (const flow of flows) {
+    if (flow.folder_id)
+      folderCounts.set(
+        flow.folder_id,
+        (folderCounts.get(flow.folder_id) ?? 0) + 1
+      );
+    else unfiledCount += 1;
+  }
+
   const folderFlows =
     selectedFolder === 'all'
       ? flows
@@ -301,12 +315,24 @@ export default function FlowsPage() {
         method: 'DELETE',
       });
       if (!response.ok) throw new Error('Folder delete failed');
+      const json = (await response.json()) as {
+        flows: Array<{ id: string; updated_at: string }>;
+      };
+      const unfiledFlows = new Map(
+        json.flows.map((flow) => [flow.id, flow.updated_at])
+      );
       setFolders((previous) =>
         previous.filter((item) => item.id !== folder.id)
       );
       setFlows((previous) =>
         previous.map((flow) =>
-          flow.folder_id === folder.id ? { ...flow, folder_id: null } : flow
+          unfiledFlows.has(flow.id)
+            ? {
+                ...flow,
+                folder_id: null,
+                updated_at: unfiledFlows.get(flow.id)!,
+              }
+            : flow
         )
       );
       if (selectedFolder === folder.id) setSelectedFolder('unfiled');
@@ -328,19 +354,19 @@ export default function FlowsPage() {
         body: JSON.stringify({ folder_id }),
       });
       if (!response.ok) throw new Error('Flow move failed');
+      const json = (await response.json()) as {
+        flow: Pick<FlowRow, 'id' | 'folder_id' | 'updated_at'>;
+      };
       setFlows((previous) =>
         previous.map((flow) =>
-          flow.id === moveFlow.id ? { ...flow, folder_id } : flow
+          flow.id === json.flow.id
+            ? {
+                ...flow,
+                folder_id: json.flow.folder_id,
+                updated_at: json.flow.updated_at,
+              }
+            : flow
         )
-      );
-      setFolders((previous) =>
-        previous.map((folder) => ({
-          ...folder,
-          flow_count:
-            folder.flow_count +
-            (moveFlow.folder_id === folder.id ? -1 : 0) +
-            (folder_id === folder.id ? 1 : 0),
-        }))
       );
       setMoveFlow(null);
       toast.success(t('moveSuccess'));
@@ -419,7 +445,7 @@ export default function FlowsPage() {
             active={selectedFolder === 'unfiled'}
             onClick={() => setSelectedFolder('unfiled')}
           >
-            {t('unfiled')} ({flows.filter((flow) => !flow.folder_id).length})
+            {t('unfiled')} ({unfiledCount})
           </FolderFilterButton>
           {folders.map((folder) => (
             <div key={folder.id} className="flex items-center gap-1">
@@ -427,7 +453,7 @@ export default function FlowsPage() {
                 active={selectedFolder === folder.id}
                 onClick={() => setSelectedFolder(folder.id)}
               >
-                {folder.name} ({folder.flow_count})
+                {folder.name} ({folderCounts.get(folder.id) ?? 0})
               </FolderFilterButton>
               {canCreate && (
                 <>

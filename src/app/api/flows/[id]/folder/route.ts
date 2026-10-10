@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
-import { isUuid } from '@/lib/flows/folders';
+import { isIntegrityViolation, isUuid } from '@/lib/flows/folders';
 
 type Context = { params: Promise<{ id: string }> };
 
@@ -62,12 +62,17 @@ export async function PATCH(request: Request, context: Context) {
       .from('flows')
       .update({ folder_id: body.folder_id })
       .eq('id', id)
-      .select('id, folder_id')
+      .select('id, folder_id, updated_at')
       .maybeSingle();
-    if (error)
+    if (isIntegrityViolation(error))
       return NextResponse.json(
         { error: 'Could not move flow' },
         { status: 409 }
+      );
+    if (error)
+      return NextResponse.json(
+        { error: 'Could not move flow' },
+        { status: 503 }
       );
     if (!data)
       return NextResponse.json({ error: 'Flow not found' }, { status: 404 });
