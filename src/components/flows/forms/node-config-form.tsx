@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker";
 import { slugify, type BuilderNode } from "../shared";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
@@ -625,8 +626,10 @@ interface TagCatalog { tags: UserTag[]; state: CatalogState }
 /** RLS-scoped catalog: never use the administrative client in the browser. */
 export function useAccountTags(): TagCatalog {
   const [catalog, setCatalog] = useState<TagCatalog>({ tags: [], state: "loading" });
+  const { accountId } = useAuth();
   useEffect(() => {
     let cancelled = false;
+    setCatalog({ tags: [], state: "loading" });
     (async () => {
       try {
         const { data, error } = await createClient().from("tags").select("id, name, color").order("name");
@@ -638,7 +641,7 @@ export function useAccountTags(): TagCatalog {
       }
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [accountId]);
   return catalog;
 }
 

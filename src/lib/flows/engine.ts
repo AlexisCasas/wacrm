@@ -507,7 +507,7 @@ async function executeHandoff(
  *     `subject_key` IS the tag UUID; the SELECT returns 1 row or 0.
  *   - `contact_field` → one of name/email/phone/company on `contacts`.
  */
-async function evaluateConditionNode(
+export async function evaluateConditionNode(
   db: AdminClient,
   run: FlowRunRow,
   cfg: ConditionNodeConfig,

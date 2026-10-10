@@ -87,3 +87,14 @@ describe('summarizeNode — delay / set_contact_field', () => {
     expect(summarizeNode(noField)).toBeNull();
   });
 });
+
+describe('summarizeNode — tag catalog', () => {
+  const tags = new Map([['tag-1', 'Cliente interesado']]);
+  it('uses the catalog name for condition and set-tag summaries', () => {
+    expect(summarizeNode({ node_key: 'c', node_type: 'condition', config: { subject: 'tag', subject_key: 'tag-1', operator: 'present' } }, undefined, tags)).toBe('has tag Cliente interesado');
+    expect(summarizeNode({ node_key: 's', node_type: 'set_tag', config: { mode: 'add', tag_id: 'tag-1' } }, undefined, tags)).toBe('Add tag Cliente interesado…');
+  });
+  it('does not substitute a different tag when a reference is unavailable', () => {
+    expect(summarizeNode({ node_key: 'c', node_type: 'condition', config: { subject: 'tag', subject_key: 'deleted-id', operator: 'present' } }, undefined, tags)).toContain('deleted-id');
+  });
+});

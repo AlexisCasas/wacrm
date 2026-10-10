@@ -47,10 +47,11 @@ export async function POST(
 
     const admin = supabaseAdmin()
     if (status === 'active') {
-      const [{ data: flow }, { data: nodes }] = await Promise.all([
+      const [{ data: flow, error: flowError }, { data: nodes, error: nodesError }] = await Promise.all([
         admin.from('flows').select('name, trigger_type, trigger_config, entry_node_id').eq('id', id).maybeSingle(),
         admin.from('flow_nodes').select('node_key, node_type, config').eq('flow_id', id),
       ])
+      if (flowError || nodesError) return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
       if (!flow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
       const issues = validateFlowForActivation(flow as { name: string; trigger_type: 'keyword' | 'first_inbound_message' | 'manual'; trigger_config: Record<string, unknown>; entry_node_id: string | null }, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>)
       const referenceIssues = await validateConditionReferences(account.supabase, account.accountId, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, isCustomConditionEnabledForAccount(account.accountId))

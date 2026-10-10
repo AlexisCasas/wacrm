@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import {
   matchReplyId,
   matchesKeywordTrigger,
@@ -6,7 +6,9 @@ import {
   isSuspending,
   isTerminal,
   evaluateConditionPredicate,
+  evaluateConditionNode,
 } from "./engine";
+import { CUSTOM_CONDITION_ACCOUNT_IDS_ENV } from "./custom-condition-capability";
 
 describe("matchReplyId", () => {
   it("returns null for nodes without options", () => {
@@ -303,5 +305,61 @@ describe("evaluateConditionPredicate", () => {
         configValue: "anything",
       }),
     ).toBe(false);
+  });
+});
+
+describe("evaluateConditionNode — custom fields", () => {
+  const accountId = "11111111-1111-4111-8111-111111111111";
+  const fieldId = "22222222-2222-4222-8222-222222222222";
+  const previous = process.env[CUSTOM_CONDITION_ACCOUNT_IDS_ENV];
+
+  function conditionDb(rows: Record<string, { data: unknown; error?: unknown }>) {
+    return {
+      from(table: string) {
+        const row = rows[table] ?? { data: null };
+        const query = { eq: () => query, maybeSingle: async () => ({ data: row.data, error: row.error ?? null }) };
+        return { select: () => query };
+      },
+    } as never;
+  }
+
+  function run() {
+    return { account_id: accountId, contact_id: "contact-1", vars: {} } as never;
+  }
+
+  function config(operator: "equals" | "contains" | "present" | "absent", value?: string) {
+    return { subject: "contact_field", subject_key: `custom:${fieldId}`, operator, value, true_next: "yes", false_next: "no" } as never;
+  }
+
+  beforeEach(() => { process.env[CUSTOM_CONDITION_ACCOUNT_IDS_ENV] = accountId; });
+  afterEach(() => { if (previous === undefined) delete process.env[CUSTOM_CONDITION_ACCOUNT_IDS_ENV]; else process.env[CUSTOM_CONDITION_ACCOUNT_IDS_ENV] = previous; });
+
+  it("evaluates custom values with the existing four predicate semantics", async () => {
+    const db = conditionDb({ contacts: { data: { id: "contact-1", name: null, email: null, phone: "x", company: null } }, custom_fields: { data: { id: fieldId } }, contact_custom_values: { data: { value: "Interested" } } });
+    await expect(evaluateConditionNode(db, run(), config("present"))).resolves.toBe(true);
+    await expect(evaluateConditionNode(db, run(), config("equals", "Interested"))).resolves.toBe(true);
+    await expect(evaluateConditionNode(db, run(), config("contains", "terest"))).resolves.toBe(true);
+    await expect(evaluateConditionNode(db, run(), config("absent"))).resolves.toBe(false);
+  });
+
+  it("treats null and empty values as absent without selecting the false route on infrastructure errors", async () => {
+    for (const value of [null, ""]) {
+      const db = conditionDb({ contacts: { data: { id: "contact-1" } }, custom_fields: { data: { id: fieldId } }, contact_custom_values: { data: { value } } });
+      await expect(evaluateConditionNode(db, run(), config("absent"))).resolves.toBe(true);
+      await expect(evaluateConditionNode(db, run(), config("equals", "anything"))).resolves.toBe(false);
+    }
+    const failing = conditionDb({ contacts: { data: { id: "contact-1" } }, custom_fields: { data: { id: fieldId } }, contact_custom_values: { data: null, error: { message: "db unavailable" } } });
+    await expect(evaluateConditionNode(failing, run(), config("absent"))).rejects.toThrow("custom_condition_value_lookup_failed");
+  });
+
+  it("rejects a missing or foreign contact/field rather than reading across accounts", async () => {
+    await expect(evaluateConditionNode(conditionDb({ contacts: { data: null } }), run(), config("present"))).rejects.toThrow("condition_contact_not_in_account");
+    await expect(evaluateConditionNode(conditionDb({ contacts: { data: { id: "contact-1" } }, custom_fields: { data: null } }), run(), config("present"))).rejects.toThrow("custom_condition_field_not_in_account");
+  });
+
+  it("fails the condition explicitly if the pilot capability is disabled during an active run", async () => {
+    delete process.env[CUSTOM_CONDITION_ACCOUNT_IDS_ENV];
+    const db = conditionDb({ contacts: { data: { id: "contact-1" } } });
+    await expect(evaluateConditionNode(db, run(), config("present"))).rejects.toThrow("custom_condition_capability_disabled");
   });
 });

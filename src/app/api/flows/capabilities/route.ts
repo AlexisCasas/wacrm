@@ -6,7 +6,10 @@ import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition
 export async function GET() {
   try {
     const ctx = await getCurrentAccount();
-    return NextResponse.json({ customConditions: isCustomConditionEnabledForAccount(ctx.accountId) });
+    return NextResponse.json(
+      { customConditions: isCustomConditionEnabledForAccount(ctx.accountId) },
+      { headers: { "Cache-Control": "private, no-store" } },
+    );
   } catch (error) {
     return toErrorResponse(error);
   }
