@@ -65,7 +65,7 @@ CREATE INDEX idx_flows_account_folder ON public.flows (account_id, folder_id);
 -- A concurrent move to this folder blocks on the lock and then fails
 -- referential integrity instead of leaving a dangling/cross-tenant row.
 CREATE FUNCTION public.delete_flow_folder(p_folder_id UUID)
-RETURNS TABLE(deleted BOOLEAN, flow_id UUID, flow_updated_at TIMESTAMPTZ)
+RETURNS BOOLEAN
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = public
@@ -80,27 +80,19 @@ BEGIN
     FOR UPDATE;
 
   IF NOT FOUND THEN
-    deleted := FALSE;
-    RETURN NEXT;
-    RETURN;
+    RETURN FALSE;
   END IF;
 
-  RETURN QUERY
-  WITH cleared AS (
-    UPDATE public.flows
-      SET folder_id = NULL
-      WHERE account_id = v_account_id
-        AND folder_id = p_folder_id
-      RETURNING id, updated_at
-  ), removed AS (
-    DELETE FROM public.flow_folders
-      WHERE id = p_folder_id
-        AND account_id = v_account_id
-      RETURNING id
-  )
-  SELECT TRUE, cleared.id, cleared.updated_at
-    FROM removed
-    LEFT JOIN cleared ON TRUE;
+  UPDATE public.flows
+    SET folder_id = NULL
+    WHERE account_id = v_account_id
+      AND folder_id = p_folder_id;
+
+  DELETE FROM public.flow_folders
+    WHERE id = p_folder_id
+      AND account_id = v_account_id;
+
+  RETURN FOUND;
 END;
 $$;
 

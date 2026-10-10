@@ -1284,6 +1284,7 @@
       "folderLoadError": "Couldn't load folders.",
       "folderDeleteConfirm": "Delete \"{name}\"? Its flows will be kept as unfiled.",
       "folderDeleted": "Folder deleted.",
+      "folderDeletedReloadError": "Folder deleted, but flows could not be refreshed. Reload this page before making another change.",
       "moveTo": "Move to…",
       "moveFlow": "Move flow",
       "moveFlowDescription": "Choose where this flow should appear.",

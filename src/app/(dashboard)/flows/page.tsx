@@ -310,36 +310,30 @@ export default function FlowsPage() {
   async function deleteFolder(folder: FolderSummary) {
     if (!window.confirm(t('folderDeleteConfirm', { name: folder.name })))
       return;
+    let deleted = false;
     try {
       const response = await fetch(`/api/flows/folders/${folder.id}`, {
         method: 'DELETE',
       });
       if (!response.ok) throw new Error('Folder delete failed');
-      const json = (await response.json()) as {
-        flows: Array<{ id: string; updated_at: string }>;
-      };
-      const unfiledFlows = new Map(
-        json.flows.map((flow) => [flow.id, flow.updated_at])
-      );
+      deleted = true;
+      // A successful DELETE is never retried. Reload the complete paginated
+      // catalogue once to reconcile folder_id, trigger-maintained updated_at,
+      // folder counts, and the "last modified" ordering for any folder size.
+      const flowsResponse = await fetch('/api/flows');
+      if (!flowsResponse.ok) throw new Error('Flow reload failed');
+      const flowsJson = (await flowsResponse.json()) as { flows: FlowRow[] };
       setFolders((previous) =>
         previous.filter((item) => item.id !== folder.id)
       );
-      setFlows((previous) =>
-        previous.map((flow) =>
-          unfiledFlows.has(flow.id)
-            ? {
-                ...flow,
-                folder_id: null,
-                updated_at: unfiledFlows.get(flow.id)!,
-              }
-            : flow
-        )
-      );
       if (selectedFolder === folder.id) setSelectedFolder('unfiled');
+      setFlows(flowsJson.flows ?? []);
       toast.success(t('folderDeleted'));
     } catch (error) {
       console.error(error);
-      toast.error(t('folderDeleteError'));
+      toast.error(
+        deleted ? t('folderDeletedReloadError') : t('folderDeleteError')
+      );
     }
   }
 

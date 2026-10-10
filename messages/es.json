@@ -1284,6 +1284,7 @@
       "folderLoadError": "No se pudieron cargar las carpetas.",
       "folderDeleteConfirm": "¿Eliminar \"{name}\"? Sus flows se conservarán sin carpeta.",
       "folderDeleted": "Carpeta eliminada.",
+      "folderDeletedReloadError": "La carpeta se eliminó, pero no se pudieron recargar los flows. Recarga esta página antes de realizar otro cambio.",
       "moveTo": "Mover a…",
       "moveFlow": "Mover flow",
       "moveFlowDescription": "Elige dónde debe aparecer este flow.",

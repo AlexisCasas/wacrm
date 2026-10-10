@@ -66,20 +66,12 @@ export async function DELETE(_request: Request, context: Context) {
         { error: 'Could not delete folder' },
         { status: 503 }
       );
-    const rows = (data ?? []) as Array<{
-      deleted: boolean;
-      flow_id: string | null;
-      flow_updated_at: string | null;
-    }>;
-    const result = rows[0];
-    if (!result?.deleted)
+    if (!data)
       return NextResponse.json({ error: 'Folder not found' }, { status: 404 });
-    return NextResponse.json({
-      ok: true,
-      flows: rows
-        .filter((row) => row.flow_id)
-        .map((row) => ({ id: row.flow_id, updated_at: row.flow_updated_at })),
-    });
+    // The RPC deliberately returns one boolean rather than every unfiled
+    // flow. The client performs one complete, paginated catalogue reload so
+    // large folders cannot be truncated by a PostgREST response limit.
+    return NextResponse.json({ ok: true });
   } catch (error) {
     return toErrorResponse(error);
   }
