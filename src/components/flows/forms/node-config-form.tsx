@@ -24,7 +24,7 @@
  * renders the advanced rows.
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 
@@ -39,6 +39,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "@/hooks/use-auth";
 import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker";
 import { slugify, type BuilderNode } from "../shared";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
@@ -619,6 +620,50 @@ interface UserTag {
   color?: string;
 }
 
+type CatalogState = "loading" | "ready" | "empty" | "error";
+interface TagCatalog { tags: UserTag[]; state: CatalogState }
+
+/** RLS-scoped catalog: never use the administrative client in the browser. */
+export function useAccountTags(): TagCatalog {
+  const [catalog, setCatalog] = useState<TagCatalog>({ tags: [], state: "loading" });
+  const { accountId } = useAuth();
+  useEffect(() => {
+    let cancelled = false;
+    setCatalog({ tags: [], state: "loading" });
+    (async () => {
+      try {
+        const { data, error } = await createClient().from("tags").select("id, name, color").order("name");
+        if (error) throw error;
+        const tags = (data as UserTag[] | null) ?? [];
+        if (!cancelled) setCatalog({ tags, state: tags.length ? "ready" : "empty" });
+      } catch {
+        if (!cancelled) setCatalog({ tags: [], state: "error" });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [accountId]);
+  return catalog;
+}
+
+function TagSelect({ value, catalog, onChange, t }: { value: string; catalog: TagCatalog; onChange: (value: string) => void; t: ReturnType<typeof useTranslations> }) {
+  const [query, setQuery] = useState("");
+  const visible = useMemo(() => catalog.tags.filter((tag) => tag.name.toLocaleLowerCase().includes(query.toLocaleLowerCase())), [catalog.tags, query]);
+  const selectedMissing = Boolean(value) && !catalog.tags.some((tag) => tag.id === value);
+  if (catalog.state === "loading") return <p className="text-xs text-muted-foreground">{t("loadingTags")}</p>;
+  if (catalog.state === "error") return <p className="text-xs text-destructive">{t("tagsLoadError")}</p>;
+  if (catalog.state === "empty") return <p className="text-xs text-muted-foreground">{t("noTags")}</p>;
+  return <div className="space-y-1">
+    {selectedMissing && <p className="text-xs text-amber-600 dark:text-amber-400">{t("tagUnavailable")}</p>}
+    <Select value={selectedMissing ? "" : value} onValueChange={(next) => { if (next !== null) onChange(next); }}>
+      <SelectTrigger className="bg-muted"><SelectValue placeholder={t("pickTag")} /></SelectTrigger>
+      <SelectContent>
+        <Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("searchTags")} className="m-1 w-[calc(100%-0.5rem)]" aria-label={t("searchTags")} />
+        {visible.length ? visible.map((tag) => <SelectItem key={tag.id} value={tag.id}>{tag.name}</SelectItem>) : <p className="px-2 py-1 text-xs text-muted-foreground">{t("noTags")}</p>}
+      </SelectContent>
+    </Select>
+  </div>;
+}
+
 function ConditionForm({
   cfg,
   allNodes,
@@ -632,7 +677,9 @@ function ConditionForm({
   onUpdateConfig: (patch: Record<string, unknown>) => void;
   t: ReturnType<typeof useTranslations>;
 }) {
-  const tags = useUserTags();
+  const tagCatalog = useAccountTags();
+  const fields = useAccountCustomFields();
+  const customConditionsEnabled = useCustomConditionCapability();
 
   const subject = cfg.subject ?? "var";
   const operator = cfg.operator ?? "equals";
@@ -667,23 +714,10 @@ function ConditionForm({
                 ? t("tagLabel")
                 : t("fieldLabel")}
           </label>
-          {subject === "tag" && tags.length > 0 ? (
-            <Select
-              value={cfg.subject_key ?? ""}
-              onValueChange={(v) => onUpdateConfig({ subject_key: v })}
-            >
-              <SelectTrigger className="bg-muted">
-                <SelectValue placeholder={t("pickTag")} />
-              </SelectTrigger>
-              <SelectContent>
-                {tags.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+          {subject === "tag" ? (
+            <TagSelect value={cfg.subject_key ?? ""} catalog={tagCatalog} onChange={(v) => onUpdateConfig({ subject_key: v })} t={t} />
           ) : subject === "contact_field" ? (
+            <>
             <Select
               value={cfg.subject_key ?? ""}
               onValueChange={(v) => onUpdateConfig({ subject_key: v })}
@@ -696,8 +730,12 @@ function ConditionForm({
                 <SelectItem value="email">email</SelectItem>
                 <SelectItem value="phone">phone</SelectItem>
                 <SelectItem value="company">company</SelectItem>
+                {customConditionsEnabled && fields.map((field) => <SelectItem key={field.id} value={`custom:${field.id}`}>{field.field_name}</SelectItem>)}
               </SelectContent>
             </Select>
+            {typeof cfg.subject_key === "string" && cfg.subject_key.startsWith("custom:") && !fields.some((field) => `custom:${field.id}` === cfg.subject_key) && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t("customFieldUnavailable")}</p>}
+            {!customConditionsEnabled && <p className="mt-1 text-xs text-muted-foreground">{t("customConditionCapabilityDisabled")}</p>}
+            </>
           ) : (
             <Input
               value={cfg.subject_key ?? ""}
@@ -791,7 +829,7 @@ function SetTagForm({
   onUpdateConfig: (patch: Record<string, unknown>) => void;
   t: ReturnType<typeof useTranslations>;
 }) {
-  const tags = useUserTags();
+  const tagCatalog = useAccountTags();
 
   return (
     <>
@@ -815,30 +853,7 @@ function SetTagForm({
         </div>
         <div>
           <label className="mb-1 block text-xs text-muted-foreground">{t("tagLabel")}</label>
-          {tags.length > 0 ? (
-            <Select
-              value={cfg.tag_id ?? ""}
-              onValueChange={(v) => onUpdateConfig({ tag_id: v })}
-            >
-              <SelectTrigger className="bg-muted">
-                <SelectValue placeholder={t("pickTag")} />
-              </SelectTrigger>
-              <SelectContent>
-                {tags.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <Input
-              value={cfg.tag_id ?? ""}
-              onChange={(e) => onUpdateConfig({ tag_id: e.target.value })}
-              placeholder={t("tagUuidPlaceholder")}
-              className="bg-muted font-mono text-xs"
-            />
-          )}
+          <TagSelect value={cfg.tag_id ?? ""} catalog={tagCatalog} onChange={(v) => onUpdateConfig({ tag_id: v })} t={t} />
         </div>
       </div>
       <NextNodeRow
@@ -852,30 +867,25 @@ function SetTagForm({
   );
 }
 
-/**
- * Shared loader for both `condition` (subject=tag) and `set_tag`.
- * Falls back to raw UUID input if the endpoint is absent on older
- * deployments — the form remains authorable in that case.
- */
-function useUserTags(): UserTag[] {
-  const [tags, setTags] = useState<UserTag[]>([]);
+function useCustomConditionCapability(): boolean {
+  const [enabled, setEnabled] = useState(false);
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch("/api/tags").catch(() => null);
-        if (!res || !res.ok) return;
-        const json = (await res.json()) as { tags?: UserTag[] };
-        if (!cancelled) setTags(json.tags ?? []);
+        const response = await fetch("/api/flows/capabilities");
+        if (!response.ok) return;
+        const data = (await response.json()) as { customConditions?: boolean };
+        if (!cancelled) setEnabled(data.customConditions === true);
       } catch {
-        // Tags endpoint absent — caller falls back to raw input.
+        // Remain fail-closed; the server enforces this independently.
       }
     })();
     return () => {
       cancelled = true;
     };
   }, []);
-  return tags;
+  return enabled;
 }
 
 // ============================================================

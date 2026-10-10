@@ -63,7 +63,7 @@ import {
   type BuilderNode,
   type NodeType,
 } from './shared';
-import { NodeConfigForm } from './forms/node-config-form';
+import { NodeConfigForm, useAccountTags } from './forms/node-config-form';
 import { NodeKeySelect } from './forms/fields';
 import { IssueLine } from './validation-panel';
 import { useFlowEditor, type BuilderState } from './flow-editor-state';
@@ -95,6 +95,8 @@ export function FlowBuilder() {
     updateNodeConfig,
     removeNode: removeNodeCtx,
   } = useFlowEditor();
+  const tagCatalog = useAccountTags();
+  const tagNames = useMemo(() => new Map(tagCatalog.tags.map((tag) => [tag.id, tag.name])), [tagCatalog.tags]);
 
   // List-only UI state: which cards are expanded + scroll refs for
   // jump-to-node. The flash itself is read from context (flashKey)
@@ -208,6 +210,7 @@ export function FlowBuilder() {
                 setState((s) => ({ ...s, entry_node_id: node.node_key }))
               }
               t={t}
+              tagNames={tagNames}
             />
           ))
         )}
@@ -613,6 +616,7 @@ function NodeCard({
   onRemove,
   onSetEntry,
   t,
+  tagNames,
 }: {
   node: BuilderNode;
   allNodes: BuilderNode[];
@@ -627,12 +631,13 @@ function NodeCard({
   onRemove: () => void;
   onSetEntry: () => void;
   t: ReturnType<typeof useTranslations>;
+  tagNames: ReadonlyMap<string, string>;
 }) {
   const meta = NODE_META[node.node_type];
   const c = nodeColors(node.node_type);
   const hasError = issues.some((i) => i.severity === 'error');
   const tSummary = useTranslations('Flows.summary');
-  const preview = summarizeNode(node, tSummary);
+  const preview = summarizeNode(node, tSummary, tagNames);
   return (
     <div
       ref={cardRef}

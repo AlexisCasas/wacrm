@@ -96,7 +96,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useFlowEditor } from './flow-editor-state';
-import { NodeConfigForm } from './forms/node-config-form';
+import { NodeConfigForm, useAccountTags } from './forms/node-config-form';
 
 // React-Flow node `data` payload — the bits our custom renderer needs.
 interface NodeData extends Record<string, unknown> {
@@ -105,6 +105,7 @@ interface NodeData extends Record<string, unknown> {
   /** Validator's "look here" pulse — flashes the card border for
    *  ~1.6s. Drives a CSS animation, doesn't change layout. */
   isFlashed: boolean;
+  tagNames: Record<string, string>;
 }
 
 const NODE_WIDTH = 240;
@@ -135,11 +136,11 @@ function slotColor(nodeType: NodeType, slotId: string, fallback: string) {
 
 function FlowNodeCard({ data, selected }: NodeProps) {
   const t = useTranslations('Flows.builder');
-  const { node, isEntry, isFlashed } = data as NodeData;
+  const { node, isEntry, isFlashed, tagNames } = data as NodeData;
   const meta = NODE_META[node.node_type];
   const c = nodeColors(node.node_type);
   const tSummary = useTranslations('Flows.summary');
-  const summary = summarizeNode(node, tSummary);
+  const summary = summarizeNode(node, tSummary, new Map(Object.entries(tagNames)));
   const slots = outgoingSlots(node);
   // Start nodes are entry-only; nothing ever targets them, so they
   // don't need an incoming Handle. Every other node type accepts
@@ -287,6 +288,8 @@ function FlowCanvasInner() {
   const reactFlow = useReactFlow();
   const builderNodes = state.nodes;
   const entryNodeId = state.entry_node_id;
+  const tagCatalog = useAccountTags();
+  const tagNames = useMemo(() => Object.fromEntries(tagCatalog.tags.map((tag) => [tag.id, tag.name])), [tagCatalog.tags]);
 
   // Side-panel state — which node's form is open. Canvas-only UI; the
   // list view's analogue is the per-card expanded set in
@@ -345,12 +348,13 @@ function FlowCanvasInner() {
           node: n,
           isEntry: n.node_key === entryNodeId,
           isFlashed: n.node_key === flashKey,
+          tagNames,
         },
       };
     });
 
     return nodes;
-  }, [builderNodes, entryNodeId, flashKey, autoLayoutPositions]);
+  }, [builderNodes, entryNodeId, flashKey, autoLayoutPositions, tagNames]);
 
   const [rfNodes, setRfNodes] = useState<RfNode<NodeData>[]>(derivedRfNodes);
 
