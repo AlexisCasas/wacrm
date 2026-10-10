@@ -591,6 +591,7 @@ export default function FlowsPage() {
                 <FlowCard
                   key={flow.id}
                   flow={flow}
+                  canAct={canCreate}
                   onEdit={() => router.push(`/flows/${flow.id}`)}
                   onDelete={() => handleDelete(flow)}
                   onMove={() => {
@@ -830,12 +831,14 @@ function EmptyState({
 
 function FlowCard({
   flow,
+  canAct,
   onEdit,
   onDelete,
   onMove,
   t,
 }: {
   flow: FlowRow;
+  canAct: boolean;
   onEdit: () => void;
   onDelete: () => void;
   onMove: () => void;
@@ -880,25 +883,27 @@ function FlowCard({
         </span>
       </div>
 
-      <div className="border-border mt-4 flex items-center justify-end gap-2 border-t pt-3">
-        <Button variant="ghost" size="sm" onClick={onEdit}>
-          <Pencil className="h-3.5 w-3.5" />
-          {t('edit')}
-        </Button>
-        <Button variant="ghost" size="sm" onClick={onMove}>
-          <Folder className="h-3.5 w-3.5" />
-          {t('moveTo')}
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onDelete}
-          className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          {t('delete')}
-        </Button>
-      </div>
+      {canAct && (
+        <div className="border-border mt-4 flex items-center justify-end gap-2 border-t pt-3">
+          <Button variant="ghost" size="sm" onClick={onEdit}>
+            <Pencil className="h-3.5 w-3.5" />
+            {t('edit')}
+          </Button>
+          <Button variant="ghost" size="sm" onClick={onMove}>
+            <Folder className="h-3.5 w-3.5" />
+            {t('moveTo')}
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onDelete}
+            className="text-red-400 hover:bg-red-500/10 hover:text-red-300"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            {t('delete')}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

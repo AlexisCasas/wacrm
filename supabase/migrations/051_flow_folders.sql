@@ -29,6 +29,13 @@ CREATE TRIGGER set_updated_at
 
 ALTER TABLE public.flow_folders ENABLE ROW LEVEL SECURITY;
 
+-- Do not rely on project-level default privileges for this new table.
+-- PostgreSQL grants are only the coarse gate; the policies below remain
+-- mandatory and distinguish viewer from agent/admin/owner.
+REVOKE ALL ON TABLE public.flow_folders FROM PUBLIC;
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE public.flow_folders TO authenticated;
+GRANT ALL ON TABLE public.flow_folders TO service_role;
+
 CREATE POLICY flow_folders_select ON public.flow_folders
   FOR SELECT USING (public.is_account_member(account_id));
 CREATE POLICY flow_folders_insert ON public.flow_folders
