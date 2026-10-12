@@ -43,3 +43,22 @@ BEGIN
             FROM public.flow_nodes n WHERE n.flow_id = f.id), '[]'::jsonb)) INTO d;
   PERFORM public.publish_flow_version(f.id, f.updated_at, p_user, d);
 END $$;
+
+-- B1.2 helpers. qa_new_contact/qa_new_run make a fresh contact (and a versioned
+-- run on flow 5000..01) per call so every test owns its row; ids derive from n.
+CREATE OR REPLACE FUNCTION public.qa_new_contact(n int) RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE cid uuid := ('31000000-0000-4000-8000-' || lpad(n::text, 12, '0'))::uuid; f public.flows%ROWTYPE;
+BEGIN
+  SELECT * INTO f FROM public.flows WHERE id = '50000000-0000-4000-8000-000000000001';
+  INSERT INTO public.contacts (id, user_id, account_id, phone, name)
+  VALUES (cid, f.user_id, f.account_id, '+1556' || lpad(n::text, 7, '0'), 'QA contact ' || n) ON CONFLICT DO NOTHING;
+  RETURN cid;
+END $$;
+CREATE OR REPLACE FUNCTION public.qa_new_run(n int) RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE r record; f public.flows%ROWTYPE;
+BEGIN
+  SELECT * INTO f FROM public.flows WHERE id = '50000000-0000-4000-8000-000000000001';
+  SELECT * INTO r FROM public.create_versioned_flow_run(f.account_id, f.id, public.qa_new_contact(n), NULL);
+  IF NOT r.created THEN RAISE EXCEPTION 'qa_new_run % failed: %', n, r.reason; END IF;
+  RETURN r.flow_run_id;
+END $$;
