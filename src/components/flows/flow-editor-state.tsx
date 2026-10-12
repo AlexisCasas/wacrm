@@ -104,7 +104,7 @@ export interface FlowEditorContextValue {
   removeNode: (key: string) => void;
 
   // Actions
-  save: () => Promise<void>;
+  save: () => Promise<boolean>;
   setStatus: (status: BuilderState["status"]) => Promise<void>;
   deleteFlow: () => Promise<void>;
 
@@ -266,6 +266,11 @@ export function FlowEditorProvider({
 
   const [saving, setSaving] = useState(false);
   const [activating, setActivating] = useState(false);
+  // The API uses this server-issued value as an optimistic concurrency
+  // token. Keeping it outside authored state means a 409 never discards
+  // the user's local edits.
+  const revisionRef = useRef(initialFlow.updated_at);
+  const statusRequestRef = useRef(false);
   // dirty flips on user edits; status-only updates (after the activate
   // API succeeds) use setStateRaw so they don't falsely re-flag the
   // form as dirty.
@@ -350,21 +355,28 @@ export function FlowEditorProvider({
           trigger_config: state.trigger_config,
           entry_node_id: state.entry_node_id,
           nodes: state.nodes,
+          expected_updated_at: revisionRef.current,
         }),
       });
+      const json = await res.json().catch(() => ({}));
       if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
         throw new Error(json.error ?? `Save failed: ${res.status}`);
       }
+      if (typeof json.updated_at !== "string") {
+        throw new Error("Save response did not include a revision");
+      }
+      revisionRef.current = json.updated_at;
       setDirty(false);
       toast.success(t("saved"));
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Save failed";
       toast.error(msg);
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [initialFlow.id, state]);
+  }, [initialFlow.id, state, t]);
 
   // ---- Activate / Pause / Archive ----
   const setStatus = useCallback(
@@ -373,23 +385,30 @@ export function FlowEditorProvider({
         toast.error(t("fixIssues"));
         return;
       }
+      if (statusRequestRef.current) return;
+      statusRequestRef.current = true;
       setActivating(true);
       try {
         // Always save first so the activation validator sees the
         // latest state — the user shouldn't have to remember "save
         // then activate".
         if (next === "active") {
-          await save();
+          const saved = await save();
+          if (!saved) return;
         }
         const res = await fetch(`/api/flows/${initialFlow.id}/activate`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: next }),
+          body: JSON.stringify({ status: next, expected_updated_at: revisionRef.current }),
         });
+        const json = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const json = await res.json().catch(() => ({}));
           throw new Error(json.error ?? `${t("statusUpdateFailed")}: ${res.status}`);
         }
+        if (typeof json.updated_at !== "string") {
+          throw new Error(t("statusUpdateFailed"));
+        }
+        revisionRef.current = json.updated_at;
         setStateRaw((s) => ({ ...s, status: next }));
         toast.success(
           next === "active"
@@ -403,6 +422,7 @@ export function FlowEditorProvider({
         toast.error(msg);
       } finally {
         setActivating(false);
+        statusRequestRef.current = false;
       }
     },
     [canActivate, save, initialFlow.id, t],
