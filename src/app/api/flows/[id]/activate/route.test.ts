@@ -27,12 +27,12 @@ const revision = "2026-10-12T12:00:00.000Z";
 
 function clientForActivation() {
   let flowCalls = 0;
-  const flow = { name: "Flow", trigger_type: "manual", trigger_config: {}, entry_node_id: "start" };
+  const flow = { id: "flow-1", name: "Flow", description: null, trigger_type: "manual", trigger_config: {}, entry_node_id: "start", fallback_policy: {} };
   const nodes = [{ node_key: "start", node_type: "start", config: {} }];
   const supabase = {
     from: vi.fn((table: string) => {
       if (table === "flow_nodes") {
-        return { select: vi.fn(() => ({ eq: vi.fn(() => Promise.resolve({ data: nodes, error: null })) })) };
+        return { select: vi.fn(() => ({ eq: vi.fn(() => ({ order: vi.fn(() => Promise.resolve({ data: nodes, error: null })) })) })) };
       }
       flowCalls += 1;
       const data = flowCalls === 1 ? { id: "flow-1" } : flow;
@@ -103,6 +103,9 @@ describe("POST /api/flows/[id]/activate", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ updated_at: "2026-10-12T12:01:00.000Z", active_version: { id: "version-1", version_number: 1 } });
-    expect(admin.rpc).toHaveBeenCalledWith("publish_flow_version", expect.objectContaining({ p_published_by: "user-1" }));
+    expect(admin.rpc).toHaveBeenCalledWith("publish_flow_version", expect.objectContaining({
+      p_published_by: "user-1",
+      p_expected_definition: expect.objectContaining({ flow: expect.objectContaining({ id: "flow-1" }) }),
+    }));
   });
 });

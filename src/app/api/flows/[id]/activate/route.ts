@@ -55,8 +55,8 @@ export async function POST(
 
     if (status === 'active') {
       const [{ data: flow, error: flowError }, { data: nodes, error: nodesError }] = await Promise.all([
-        account.supabase.from('flows').select('name, trigger_type, trigger_config, entry_node_id').eq('id', id).maybeSingle(),
-        account.supabase.from('flow_nodes').select('node_key, node_type, config').eq('flow_id', id),
+        account.supabase.from('flows').select('id, name, description, trigger_type, trigger_config, entry_node_id, fallback_policy').eq('id', id).maybeSingle(),
+        account.supabase.from('flow_nodes').select('node_key, node_type, config, position_x, position_y').eq('flow_id', id).order('node_key', { ascending: true }),
       ])
       if (flowError || nodesError) return NextResponse.json({ error: 'Could not validate flow' }, { status: 503 })
       if (!flow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -77,10 +77,30 @@ export async function POST(
         return NextResponse.json({ error: 'Cannot activate flow — fix the issues below first.', issues }, { status: 422 })
       }
 
+      const expectedDefinition = {
+        flow: {
+          id: flow.id,
+          name: flow.name,
+          description: flow.description,
+          trigger_type: flow.trigger_type,
+          trigger_config: flow.trigger_config,
+          entry_node_id: flow.entry_node_id,
+          fallback_policy: flow.fallback_policy,
+        },
+        nodes: (nodes ?? []).map((node) => ({
+          node_key: node.node_key,
+          node_type: node.node_type,
+          config: node.config,
+          position_x: node.position_x,
+          position_y: node.position_y,
+        })),
+      }
+
       const { data, error: publishError } = await supabaseAdmin().rpc('publish_flow_version', {
         p_flow_id: id,
         p_expected_updated_at: body.expected_updated_at,
         p_published_by: account.userId,
+        p_expected_definition: expectedDefinition,
       })
       if (publishError) return revisionFailure(publishError, 'Could not publish flow version')
       const published = singlePublishResult(data)

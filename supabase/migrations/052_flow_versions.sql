@@ -74,17 +74,20 @@ CREATE TRIGGER flow_versions_immutable
 -- policy, but only the publication RPC can transition a flow to active.
 -- This closes the direct Data API UPDATE path that would otherwise create
 -- an active flow without an immutable version.
-CREATE FUNCTION public.guard_flow_activation()
+CREATE FUNCTION public.guard_flow_publication_fields()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path = public
 AS $$
 BEGIN
-  IF NEW.status = 'active'
-    AND OLD.status IS DISTINCT FROM 'active'
+  IF (
+      (TG_OP = 'INSERT' AND NEW.status = 'active')
+      OR (TG_OP = 'UPDATE' AND NEW.status = 'active' AND OLD.status IS DISTINCT FROM 'active')
+      OR (TG_OP = 'UPDATE' AND NEW.active_version_id IS DISTINCT FROM OLD.active_version_id)
+    )
     AND current_setting('app.flow_publication', true) IS DISTINCT FROM 'on' THEN
-    RAISE EXCEPTION 'flows must be published through the publication API'
+    RAISE EXCEPTION 'active flows and versions must be published through the publication API'
       USING ERRCODE = '42501';
   END IF;
   RETURN NEW;
@@ -92,8 +95,33 @@ END;
 $$;
 
 CREATE TRIGGER flows_require_publication_for_activation
-  BEFORE UPDATE OF status ON public.flows
-  FOR EACH ROW EXECUTE FUNCTION public.guard_flow_activation();
+  BEFORE INSERT OR UPDATE OF status, active_version_id ON public.flows
+  FOR EACH ROW EXECUTE FUNCTION public.guard_flow_publication_fields();
+
+-- Direct node writes remain available to agents for existing APIs, but they
+-- advance the parent revision. A publication therefore cannot silently use a
+-- graph changed between API validation and the publication lock.
+CREATE FUNCTION public.bump_flow_revision_for_node_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+DECLARE
+  v_flow_id UUID;
+BEGIN
+  v_flow_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.flow_id ELSE NEW.flow_id END;
+  IF current_setting('app.flow_draft_save', true) IS DISTINCT FROM 'on' THEN
+    UPDATE public.flows SET updated_at = clock_timestamp() WHERE id = v_flow_id;
+  END IF;
+  IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER flow_nodes_bump_parent_revision
+  AFTER INSERT OR UPDATE OR DELETE ON public.flow_nodes
+  FOR EACH ROW EXECUTE FUNCTION public.bump_flow_revision_for_node_change();
 
 -- Atomically replace a draft graph. The caller is authenticated and RLS
 -- scoped; the revision comparison prevents a stale editor from deleting a
@@ -149,6 +177,7 @@ BEGIN
    RETURNING public.flows.updated_at INTO v_updated_at;
 
   IF p_nodes IS NOT NULL THEN
+    PERFORM set_config('app.flow_draft_save', 'on', true);
     -- Constraints on flow_nodes (including the node-type check and unique
     -- node_key) make any bad insert abort the whole function transaction.
     DELETE FROM public.flow_nodes WHERE flow_id = v_flow.id;
@@ -181,7 +210,8 @@ $$;
 CREATE FUNCTION public.publish_flow_version(
   p_flow_id UUID,
   p_expected_updated_at TIMESTAMPTZ,
-  p_published_by UUID
+  p_published_by UUID,
+  p_expected_definition JSONB
 )
 RETURNS TABLE (version_id UUID, version_number INTEGER, updated_at TIMESTAMPTZ)
 LANGUAGE plpgsql
@@ -195,7 +225,8 @@ DECLARE
   v_version_number INTEGER;
   v_updated_at TIMESTAMPTZ;
 BEGIN
-  IF p_expected_updated_at IS NULL OR p_published_by IS NULL THEN
+  IF p_expected_updated_at IS NULL OR p_published_by IS NULL
+    OR jsonb_typeof(p_expected_definition) <> 'object' THEN
     RAISE EXCEPTION 'invalid flow publication request' USING ERRCODE = '22023';
   END IF;
 
@@ -219,6 +250,11 @@ BEGIN
   IF v_flow.updated_at IS DISTINCT FROM p_expected_updated_at THEN
     RAISE EXCEPTION 'flow revision conflict' USING ERRCODE = '40001';
   END IF;
+
+  -- Lock the graph as well as its header. Direct node writes take this lock
+  -- through their parent-revision trigger, so neither can interleave with a
+  -- successful snapshot.
+  PERFORM 1 FROM public.flow_nodes WHERE flow_id = v_flow.id FOR UPDATE;
 
   SELECT jsonb_build_object(
     'flow', jsonb_build_object(
@@ -244,6 +280,10 @@ BEGIN
       WHERE n.flow_id = v_flow.id
     ), '[]'::jsonb)
   ) INTO v_definition;
+
+  IF v_definition IS DISTINCT FROM p_expected_definition THEN
+    RAISE EXCEPTION 'flow definition changed after validation' USING ERRCODE = '40001';
+  END IF;
 
   SELECT COALESCE(MAX(fv.version_number), 0) + 1
     INTO v_version_number
@@ -275,8 +315,9 @@ $$;
 
 REVOKE ALL ON FUNCTION public.reject_flow_version_mutation() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.save_flow_draft(UUID, TIMESTAMPTZ, JSONB, JSONB) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.guard_flow_activation() FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ, UUID) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ, UUID) FROM anon;
+REVOKE ALL ON FUNCTION public.guard_flow_publication_fields() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.bump_flow_revision_for_node_change() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ, UUID, JSONB) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ, UUID, JSONB) FROM anon;
 GRANT EXECUTE ON FUNCTION public.save_flow_draft(UUID, TIMESTAMPTZ, JSONB, JSONB) TO authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ, UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ, UUID, JSONB) TO service_role;
