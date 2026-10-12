@@ -294,7 +294,7 @@ describe.skipIf(!container)('E4.2B1.3 versioned interpreter on PostgreSQL', () =
 
     const fr = await makeFlow(startEnd)
     const frRun = await createRun(fr.id)
-    await psql.sql(`insert into public.flow_run_call_frames (flow_run_id,account_id,caller_flow_id,caller_flow_version_id,call_node_key,return_node_key,depth) values ('${frRun}','${acct}','${fr.id}','${fr.versionId}','start','end',1)`)
+    await psql.sql(`insert into public.flow_run_call_frames (flow_run_id,account_id,caller_flow_id,caller_flow_version_id,call_node_key,return_node_key,depth,callee_flow_id,callee_flow_version_id) values ('${frRun}','${acct}','${fr.id}','${fr.versionId}','start','end',1,'${BASE_FLOW}',(select active_version_id from public.flows where id='${BASE_FLOW}'))`)
     expect(await runVersionedFlow(newStore(), opts(frRun, 'w'))).toMatchObject({ kind: 'failed', reason: 'end_with_active_frames' })
     expect(await row(frRun)).toMatchObject({ status: 'failed', versioned_node_key: 'end', versioned_nodes_executed: 1 })
     pass('I20', 'END with an active call frame refuses to complete the run (failed/end_with_active_frames)')

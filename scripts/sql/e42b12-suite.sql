@@ -240,7 +240,7 @@ BEGIN
     ('unknown node',    format('SELECT * FROM public.commit_versioned_run_transition(%L,%L,%L,%s,0,%L::jsonb)', a, rid, 'w1', r.fencing_token,
                                 jsonb_build_object('cursor', jsonb_build_object('flow_version_id', v, 'node_key', 'ghost'), 'step', 1)), 'checkpoint cursor is not a node of a published version'),
     ('foreign version', format('SELECT * FROM public.commit_versioned_run_transition(%L,%L,%L,%s,0,%L::jsonb)', a, rid, 'w1', r.fencing_token,
-                                jsonb_build_object('cursor', jsonb_build_object('flow_version_id', (SELECT active_version_id FROM public.flows WHERE id='60000000-0000-4000-8000-000000000001'), 'node_key', 'end'), 'step', 1)), 'checkpoint cursor is not a node of a published version'),
+                                jsonb_build_object('cursor', jsonb_build_object('flow_version_id', (SELECT active_version_id FROM public.flows WHERE id='60000000-0000-4000-8000-000000000001'), 'node_key', 'end'), 'step', 1)), 'cursor can only change flow version through call frames'),   -- B2.1 rule; same SQLSTATE 22023
     ('status timed_out', format('SELECT * FROM public.commit_versioned_run_transition(%L,%L,%L,%s,0,%L::jsonb,%L)', a, rid, 'w1', r.fencing_token,
                                 jsonb_build_object('cursor', jsonb_build_object('flow_version_id', v, 'node_key', 'end'), 'step', 1), 'timed_out'), 'invalid versioned run request')
   ) AS x(label, sql, msg) LOOP
