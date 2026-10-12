@@ -62,3 +62,88 @@ BEGIN
   IF NOT r.created THEN RAISE EXCEPTION 'qa_new_run % failed: %', n, r.reason; END IF;
   RETURN r.flow_run_id;
 END $$;
+
+-- B2.1 helpers. Synthetic published flows: a flow_versions row is inserted with a valid E4.1-shaped
+-- definition (including node types the live editor cannot produce yet, e.g. execute_flow) and the
+-- flow is activated through the same app.flow_publication switch publish_flow_version uses. No trigger,
+-- constraint or validator is weakened. Calling it again for the same flow = a republication.
+CREATE OR REPLACE FUNCTION public.qa_synth_flow(p_flow uuid, p_nodes jsonb, p_entry text, p_user uuid DEFAULT '10000000-0000-4000-8000-000000000001')
+RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE v_acct uuid; v_def jsonb; v_ver uuid; v_no int; v_name text := 'synthetic ' || left(p_flow::text, 8);
+BEGIN
+  SELECT account_id INTO v_acct FROM public.profiles WHERE user_id = p_user;
+  INSERT INTO public.flows (id, user_id, account_id, name, trigger_type, entry_node_id) VALUES (p_flow, p_user, v_acct, v_name, 'manual', p_entry)
+    ON CONFLICT (id) DO UPDATE SET entry_node_id = EXCLUDED.entry_node_id;
+  SELECT jsonb_build_object(
+    'flow', jsonb_build_object('id', f.id, 'name', f.name, 'description', f.description, 'trigger_type', f.trigger_type,
+            'trigger_config', f.trigger_config, 'entry_node_id', p_entry, 'fallback_policy', f.fallback_policy),
+    'nodes', (SELECT jsonb_agg(jsonb_build_object('node_key', n->>'node_key', 'node_type', n->>'node_type',
+              'config', COALESCE(n->'config', '{}'::jsonb), 'position_x', 0, 'position_y', 0) ORDER BY n->>'node_key')
+              FROM jsonb_array_elements(p_nodes) n)) INTO v_def FROM public.flows f WHERE f.id = p_flow;
+  SELECT COALESCE(max(version_number), 0) + 1 INTO v_no FROM public.flow_versions WHERE flow_id = p_flow;
+  INSERT INTO public.flow_versions (flow_id, account_id, version_number, definition, definition_hash, published_by)
+  VALUES (p_flow, v_acct, v_no, v_def, encode(extensions.digest(v_def::text, 'sha256'), 'hex'), p_user) RETURNING id INTO v_ver;
+  PERFORM set_config('app.flow_publication', 'on', true);
+  UPDATE public.flows SET status = 'active', active_version_id = v_ver, entry_node_id = p_entry, updated_at = clock_timestamp() WHERE id = p_flow;
+  PERFORM set_config('app.flow_publication', 'off', true);
+  RETURN v_ver;
+END $$;
+
+-- Run on a synthetic (or fixture) flow for a fresh contact; returns the run id.
+CREATE OR REPLACE FUNCTION public.qa_flow_run(p_flow uuid, n int) RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE r record; f public.flows%ROWTYPE;
+BEGIN
+  SELECT * INTO f FROM public.flows WHERE id = p_flow;
+  SELECT * INTO r FROM public.create_versioned_flow_run(f.account_id, f.id, public.qa_new_contact(n), NULL);
+  IF NOT r.created THEN RAISE EXCEPTION 'qa_flow_run % failed: %', n, r.reason; END IF;
+  RETURN r.flow_run_id;
+END $$;
+
+-- Lease helper: acquires (or fails loudly) and returns the fencing token.
+CREATE OR REPLACE FUNCTION public.qa_lease(p_run uuid, p_owner text DEFAULT 'w1') RETURNS int LANGUAGE plpgsql AS $$
+DECLARE r record; a uuid;
+BEGIN
+  SELECT account_id INTO a FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO r FROM public.acquire_versioned_run_lease(a, p_run, p_owner, 600);
+  IF NOT r.acquired THEN RAISE EXCEPTION 'qa_lease failed: %', r.reason; END IF;
+  RETURN r.fencing_token;
+END $$;
+
+-- Moves the cursor to another node of the CURRENT version through the generic CAS commit.
+CREATE OR REPLACE FUNCTION public.qa_goto(p_run uuid, p_owner text, p_node text) RETURNS void LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE; c record;
+BEGIN
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO c FROM public.commit_versioned_run_transition(run.account_id, p_run, p_owner, run.versioned_lease, run.versioned_revision,
+    jsonb_build_object('cursor', jsonb_build_object('flow_version_id', run.current_flow_version_id, 'node_key', p_node),
+                       'step', (run.versioned_checkpoint->>'step')::int + 1));
+  IF NOT c.committed THEN RAISE EXCEPTION 'qa_goto refused: %', c.reason; END IF;
+END $$;
+
+-- push/pop with the run's current token and revision; returns the whole result row as jsonb.
+CREATE OR REPLACE FUNCTION public.qa_push(p_run uuid, p_owner text, p_call text, p_return text, p_target uuid) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE; r record;
+BEGIN
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO r FROM public.push_versioned_run_subflow(run.account_id, p_run, p_owner, run.versioned_lease, run.versioned_revision, p_call, p_return, p_target);
+  RETURN to_jsonb(r);
+END $$;
+CREATE OR REPLACE FUNCTION public.qa_pop(p_run uuid, p_owner text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE; r record;
+BEGIN
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO r FROM public.pop_versioned_run_subflow(run.account_id, p_run, p_owner, run.versioned_lease, run.versioned_revision);
+  RETURN to_jsonb(r);
+END $$;
+
+-- Cursor/frames invariant: depth = number of frames = top frame depth, and the cursor sits in the
+-- callee version of the top frame (or, at depth 0, in a version of the run's root flow).
+CREATE OR REPLACE FUNCTION public.qa_stack_ok(p_run uuid) RETURNS boolean LANGUAGE sql AS $$
+  SELECT r.versioned_depth = (SELECT count(*) FROM public.flow_run_call_frames f WHERE f.flow_run_id = r.id)
+     AND r.versioned_depth = COALESCE((SELECT max(f.depth) FROM public.flow_run_call_frames f WHERE f.flow_run_id = r.id), 0)
+     AND (r.versioned_depth = 0 OR r.current_flow_version_id = (SELECT f.callee_flow_version_id FROM public.flow_run_call_frames f WHERE f.flow_run_id = r.id AND f.depth = r.versioned_depth))
+     AND (r.versioned_depth > 0 OR r.current_flow_version_id = r.root_flow_version_id)
+     AND (r.versioned_checkpoint #>> '{cursor,flow_version_id}') = r.current_flow_version_id::text
+     AND (r.versioned_checkpoint #>> '{cursor,node_key}') = r.versioned_node_key
+  FROM public.flow_runs r WHERE r.id = p_run
+$$;
