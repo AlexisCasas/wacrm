@@ -31,3 +31,32 @@ export function parsePublishedFlowDefinition(value: unknown): PublishedFlowDefin
   }
   return { flow: flow as PublishedFlowDefinition['flow'], nodes }
 }
+
+/** Persisted shape of flow_runs.versioned_checkpoint. `cursor` always names the node that is pending
+ * (or, for a terminal checkpoint, the node that ended the run); `confirmed` names the last node whose
+ * transition was committed, so a restarted process never executes it twice. */
+export interface VersionedCheckpoint {
+  cursor: FlowExecutionCursor
+  step: number
+  state: 'pending' | 'terminal'
+  confirmed: { flow_version_id: string; node_key: string; step: number } | null
+  failure: string | null
+}
+
+/** Accepts the checkpoint written by create_versioned_flow_run ({cursor, step}) as well as interpreter checkpoints. */
+export function parseVersionedCheckpoint(value: unknown): VersionedCheckpoint | null {
+  if (!record(value) || !record(value.cursor)) return null
+  const { flow_version_id, node_key } = value.cursor
+  if (typeof flow_version_id !== 'string' || !flow_version_id || typeof node_key !== 'string' || !node_key) return null
+  if (typeof value.step !== 'number' || !Number.isInteger(value.step) || value.step < 0) return null
+  const state = value.state === undefined ? 'pending' : value.state
+  if (state !== 'pending' && state !== 'terminal') return null
+  let confirmed: VersionedCheckpoint['confirmed'] = null
+  if (value.confirmed !== undefined && value.confirmed !== null) {
+    const c = value.confirmed
+    if (!record(c) || typeof c.flow_version_id !== 'string' || typeof c.node_key !== 'string' || typeof c.step !== 'number' || !Number.isInteger(c.step)) return null
+    confirmed = { flow_version_id: c.flow_version_id, node_key: c.node_key, step: c.step }
+  }
+  if (value.failure !== undefined && value.failure !== null && typeof value.failure !== 'string') return null
+  return { cursor: { flow_version_id, node_key }, step: value.step, state, confirmed, failure: typeof value.failure === 'string' ? value.failure : null }
+}
