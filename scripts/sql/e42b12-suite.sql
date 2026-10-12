@@ -264,7 +264,7 @@ BEGIN
   rid := public.qa_new_run(113);
   fns := ARRAY['acquire_versioned_run_lease(uuid,uuid,text,integer)','reclaim_versioned_run_lease(uuid,uuid,text,integer)',
     'renew_versioned_run_lease(uuid,uuid,text,integer,integer)','release_versioned_run_lease(uuid,uuid,text,integer)',
-    'commit_versioned_run_transition(uuid,uuid,text,integer,bigint,jsonb,text,text)'];
+    'commit_versioned_run_transition(uuid,uuid,text,integer,bigint,jsonb,text,text,integer,integer)'];
   FOREACH sig IN ARRAY fns LOOP
     IF EXISTS (SELECT 1 FROM pg_proc p, aclexplode(p.proacl) x WHERE p.oid = ('public.' || sig)::regprocedure AND x.grantee = 0) THEN ok := false; out := out || (sig || ' has PUBLIC'); END IF;
     IF NOT has_function_privilege('service_role', 'public.' || sig, 'EXECUTE') THEN ok := false; out := out || (sig || ' lacks service_role'); END IF;

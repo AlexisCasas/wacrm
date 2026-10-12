@@ -36,7 +36,7 @@ INSERT INTO public.flows (id, user_id, account_id, name, trigger_type, entry_nod
  ('50000000-0000-4000-8000-000000000006','10000000-0000-4000-8000-000000000001',:'acct','QA null entry','manual',NULL),
  ('60000000-0000-4000-8000-000000000001','10000000-0000-4000-8000-000000000002',:'acct_b','QA other account','manual','start');
 INSERT INTO public.flow_nodes (flow_id, node_key, node_type, config)
-SELECT f, k, t, CASE t WHEN 'start' THEN '{"next":"end"}'::jsonb ELSE '{}'::jsonb END
+SELECT f, k, t, CASE t WHEN 'start' THEN '{"next_node_key":"end"}'::jsonb ELSE '{}'::jsonb END
 FROM unnest(ARRAY[
   '50000000-0000-4000-8000-000000000001','50000000-0000-4000-8000-000000000002','50000000-0000-4000-8000-000000000003',
   '50000000-0000-4000-8000-000000000005','50000000-0000-4000-8000-000000000006','60000000-0000-4000-8000-000000000001']::uuid[]) f,
