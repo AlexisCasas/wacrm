@@ -1,79 +1,10 @@
 import { NextResponse } from 'next/server'
-import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
 import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
 
-/**
- * GET   /api/flows/[id]  — fetch one flow with its nodes.
- * PUT   /api/flows/[id]  — replace name/trigger/entry/fallback + the
- *                          full node graph (delete-then-insert under
- *                          the hood; not atomic, but the runner is
- *                          resilient to mid-edit reads — node_not_found
- *                          gracefully ends the run).
- * DELETE /api/flows/[id] — hard delete (RLS+CASCADE clean up nodes,
- *                          runs, events).
- *
- * All three require a signed-in caller who owns the flow. Flows is in
- * soft-GA — the beta gate that previously 404'd non-beta accounts is
- * gone; the "Beta" label in the UI is the only remaining signal.
- */
-
-async function requireOwnership(
-  flowId: string,
-): Promise<
-  | {
-      ok: true
-      userId: string
-      supabase: Awaited<ReturnType<typeof createClient>>
-    }
-  | { ok: false; status: number; body: { error: string } }
-> {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-  if (!user) {
-    return { ok: false, status: 401, body: { error: 'Unauthorized' } }
-  }
-  // RLS scopes this to the caller — a flow owned by another user
-  // returns null (404 below).
-  const { data: flow } = await supabase
-    .from('flows')
-    .select('id')
-    .eq('id', flowId)
-    .maybeSingle()
-  if (!flow) {
-    return { ok: false, status: 404, body: { error: 'Not found' } }
-  }
-  return { ok: true, userId: user.id, supabase }
-}
-
-export async function GET(
-  _request: Request,
-  context: { params: Promise<{ id: string }> },
-) {
-  const { id } = await context.params
-  const guard = await requireOwnership(id)
-  if (!guard.ok) return NextResponse.json(guard.body, { status: guard.status })
-  const { supabase } = guard
-
-  const [{ data: flow }, { data: nodes }] = await Promise.all([
-    supabase.from('flows').select('*').eq('id', id).maybeSingle(),
-    supabase
-      .from('flow_nodes')
-      .select('*')
-      .eq('flow_id', id)
-      .order('created_at', { ascending: true }),
-  ])
-  if (!flow) {
-    return NextResponse.json({ error: 'Not found' }, { status: 404 })
-  }
-  return NextResponse.json({ flow, nodes: nodes ?? [] })
-}
-
 interface PutBody {
+  expected_updated_at?: string
   name?: string
   description?: string | null
   trigger_type?: 'keyword' | 'first_inbound_message' | 'manual'
@@ -89,73 +20,107 @@ interface PutBody {
   }>
 }
 
+function rpcFailure(error: { code?: string } | null, fallback: string) {
+  if (error?.code === '40001') {
+    return NextResponse.json(
+      { error: 'This flow was changed by another editor. Reload it before saving again.', code: 'flow_revision_conflict' },
+      { status: 409 },
+    )
+  }
+  if (error?.code === 'P0002') return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  if (error?.code === '42501') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
+  if (error?.code === '22023') return NextResponse.json({ error: 'Invalid flow data' }, { status: 400 })
+  return NextResponse.json({ error: fallback }, { status: 503 })
+}
+
+function singleSaveResult(data: unknown): { updated_at: string } | null {
+  if (!Array.isArray(data) || data.length !== 1) return null
+  const [result] = data
+  return result && typeof result.updated_at === 'string' ? { updated_at: result.updated_at } : null
+}
+
+async function readableFlow(supabase: Awaited<ReturnType<typeof requireRole>>['supabase'], id: string) {
+  const { data, error } = await supabase.from('flows').select('id').eq('id', id).maybeSingle()
+  if (error) return { ok: false as const, response: NextResponse.json({ error: 'Could not read flow' }, { status: 503 }) }
+  if (!data) return { ok: false as const, response: NextResponse.json({ error: 'Not found' }, { status: 404 }) }
+  return { ok: true as const, flow: data }
+}
+
+export async function GET(
+  _request: Request,
+  context: { params: Promise<{ id: string }> },
+): Promise<Response> {
+  const { id } = await context.params
+  try {
+    const account = await requireRole('viewer')
+    const readable = await readableFlow(account.supabase, id)
+    if (!readable.ok) return readable.response
+    const [{ data: flow, error: flowError }, { data: nodes, error: nodesError }] = await Promise.all([
+      account.supabase.from('flows').select('*').eq('id', id).maybeSingle(),
+      account.supabase.from('flow_nodes').select('*').eq('flow_id', id).order('created_at', { ascending: true }),
+    ])
+    if (flowError || nodesError) return NextResponse.json({ error: 'Could not read flow' }, { status: 503 })
+    if (!flow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    return NextResponse.json({ flow, nodes: nodes ?? [] })
+  } catch (err) {
+    return toErrorResponse(err)
+  }
+}
+
 export async function PUT(
   request: Request,
   context: { params: Promise<{ id: string }> },
-) {
+): Promise<Response> {
   const { id } = await context.params
-
-  // Writes require at least `agent` — the RLS flows_update policy demands
-  // it, but this route mutates via the service-role client which bypasses
-  // RLS, so the role must be enforced here (a viewer passes ownership).
   try {
     const account = await requireRole('agent')
-    const guard = await requireOwnership(id)
-    if (!guard.ok) return NextResponse.json(guard.body, { status: guard.status })
+    const readable = await readableFlow(account.supabase, id)
+    if (!readable.ok) return readable.response
 
     const body = (await request.json().catch(() => null)) as PutBody | null
     if (!body) return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 })
+    if (!body.expected_updated_at || Number.isNaN(Date.parse(body.expected_updated_at))) {
+      return NextResponse.json({ error: 'expected_updated_at is required' }, { status: 400 })
+    }
     if (body.name !== undefined && !body.name.trim()) {
       return NextResponse.json({ error: 'name cannot be empty' }, { status: 400 })
     }
 
-    const admin = supabaseAdmin()
-    // Validate ALL external references before the existing delete+insert
-    // replacement starts, so an invalid request cannot leave partial nodes.
     if (body.nodes !== undefined) {
       const capabilityEnabled = isCustomConditionEnabledForAccount(account.accountId)
       const { data: currentNodes, error: currentNodesError } = !capabilityEnabled
-        ? await admin.from('flow_nodes').select('node_key, node_type, config').eq('flow_id', id)
+        ? await account.supabase.from('flow_nodes').select('node_key, node_type, config').eq('flow_id', id)
         : { data: [], error: null }
       if (currentNodesError) return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
-      const existingCustom = new Set((currentNodes ?? []).filter((node) => node.node_type === 'condition' && (node.config as Record<string, unknown>).subject === 'contact_field' && typeof (node.config as Record<string, unknown>).subject_key === 'string').map((node) => `${node.node_key}:${(node.config as Record<string, unknown>).subject_key}`))
-      const issues = (await validateConditionReferences(
-        account.supabase,
-        account.accountId,
-        body.nodes,
-        capabilityEnabled,
-      )).filter((issue) => issue.issue !== 'custom_condition_capability_disabled' || !existingCustom.has(`${issue.node_key}:${(body.nodes ?? []).find((node) => node.node_key === issue.node_key)?.config.subject_key}`))
+      const existingCustom = new Set(
+        (currentNodes ?? [])
+          .filter((node) => node.node_type === 'condition' && (node.config as Record<string, unknown>).subject === 'contact_field' && typeof (node.config as Record<string, unknown>).subject_key === 'string')
+          .map((node) => `${node.node_key}:${(node.config as Record<string, unknown>).subject_key}`),
+      )
+      const issues = (await validateConditionReferences(account.supabase, account.accountId, body.nodes, capabilityEnabled)).filter(
+        (issue) => issue.issue !== 'custom_condition_capability_disabled' || !existingCustom.has(`${issue.node_key}:${(body.nodes ?? []).find((node) => node.node_key === issue.node_key)?.config.subject_key}`),
+      )
       if (issues.length) return NextResponse.json({ error: 'Invalid condition reference', issues }, { status: 422 })
     }
 
-    // Update the flow row first — the body may not include `nodes` (a
-    // header-only save for editing the trigger config without touching
-    // the graph). Skip node replacement in that case.
-    const flowPatch: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
-    }
-    if (body.name !== undefined) flowPatch.name = body.name.trim()
-    if (body.description !== undefined) flowPatch.description = body.description
-    if (body.trigger_type !== undefined) flowPatch.trigger_type = body.trigger_type
-    if (body.trigger_config !== undefined) flowPatch.trigger_config = body.trigger_config
-    if (body.entry_node_id !== undefined) flowPatch.entry_node_id = body.entry_node_id
-    if (body.fallback_policy !== undefined) flowPatch.fallback_policy = body.fallback_policy
+    const patch: Record<string, unknown> = {}
+    if (body.name !== undefined) patch.name = body.name.trim()
+    if (body.description !== undefined) patch.description = body.description
+    if (body.trigger_type !== undefined) patch.trigger_type = body.trigger_type
+    if (body.trigger_config !== undefined) patch.trigger_config = body.trigger_config
+    if (body.entry_node_id !== undefined) patch.entry_node_id = body.entry_node_id
+    if (body.fallback_policy !== undefined) patch.fallback_policy = body.fallback_policy
 
-    const { error: updErr } = await admin.from('flows').update(flowPatch).eq('id', id)
-    if (updErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
-    if (body.nodes !== undefined) {
-      const { error: delErr } = await admin.from('flow_nodes').delete().eq('flow_id', id)
-      if (delErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
-      if (body.nodes.length) {
-        const { error: insErr } = await admin.from('flow_nodes').insert(body.nodes.map((n) => ({ flow_id: id, node_key: n.node_key, node_type: n.node_type, config: n.config, position_x: n.position_x ?? 0, position_y: n.position_y ?? 0 })))
-        if (insErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
-      }
-    }
-    const [{ data: flow }, { data: nodes }] = await Promise.all([
-      admin.from('flows').select('*').eq('id', id).maybeSingle(),
-      admin.from('flow_nodes').select('*').eq('flow_id', id).order('created_at', { ascending: true }),
-    ])
-    return NextResponse.json({ flow, nodes: nodes ?? [] })
+    const { data, error: saveError } = await account.supabase.rpc('save_flow_draft', {
+      p_flow_id: id,
+      p_expected_updated_at: body.expected_updated_at,
+      p_patch: patch,
+      p_nodes: body.nodes ?? null,
+    })
+    if (saveError) return rpcFailure(saveError, 'Could not save flow')
+    const saved = singleSaveResult(data)
+    if (!saved) return NextResponse.json({ error: 'Could not confirm saved flow revision' }, { status: 503 })
+    return NextResponse.json({ updated_at: saved.updated_at })
   } catch (err) {
     if (err instanceof ConditionReferenceInfrastructureError) {
       return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
@@ -167,29 +132,19 @@ export async function PUT(
 export async function DELETE(
   _request: Request,
   context: { params: Promise<{ id: string }> },
-) {
+): Promise<Response> {
   const { id } = await context.params
-
-  // Writes require at least `agent` — see the PUT handler note. The
-  // service-role client below bypasses the agent-gated flows_delete RLS.
   try {
-    await requireRole('agent')
+    const account = await requireRole('agent')
+    const readable = await readableFlow(account.supabase, id)
+    if (!readable.ok) return readable.response
+    const { error } = await account.supabase.from('flows').delete().eq('id', id)
+    if (error?.code === '23503') {
+      return NextResponse.json({ error: 'Published flows cannot be deleted because their versions are retained.' }, { status: 409 })
+    }
+    if (error) return NextResponse.json({ error: 'Could not delete flow' }, { status: 503 })
+    return NextResponse.json({ ok: true })
   } catch (err) {
     return toErrorResponse(err)
   }
-
-  const guard = await requireOwnership(id)
-  if (!guard.ok) return NextResponse.json(guard.body, { status: guard.status })
-
-  // CASCADE on flow_nodes / flow_runs / flow_run_events handles the
-  // children. Active runs end abruptly — there's no graceful "drain"
-  // mechanism in v1, but that's intentional: deleting a flow is a
-  // deliberate destructive action and the partial unique index will
-  // free up the contact for new triggers immediately.
-  const { error } = await supabaseAdmin().from('flows').delete().eq('id', id)
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-  return NextResponse.json({ ok: true })
 }
-

@@ -314,6 +314,8 @@ export interface FlowRow {
   fallback_policy: FlowFallbackPolicy;
   execution_count: number;
   last_executed_at: string | null;
+  /** Latest immutable snapshot, populated only after an activation. */
+  active_version_id?: string | null;
   created_at: string;
   updated_at: string;
 }
