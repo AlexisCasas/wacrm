@@ -14,10 +14,13 @@ psql_() { docker exec -i -e PGOPTIONS="-c client_min_messages=${QA_MIN_MSG:-noti
 # the QA bootstrap, every migration in order, and the assertion helpers.
 qa_start() {
   docker run -d --rm --name "$NAME" --network none -e POSTGRES_PASSWORD=qa "$IMAGE" >/dev/null
-  local _
-  for _ in $(seq 1 90); do
-    sleep 2
-    if psql_ -Atc 'select 1' >/dev/null 2>&1; then sleep 3; psql_ -Atc 'select 1' >/dev/null 2>&1 && break; fi
+  local _ log
+  # The image starts a throwaway init server, shuts it down, then starts the real one. Wait for the
+  # log to show init finished AND a second "ready to accept connections" before probing.
+  for _ in $(seq 1 120); do
+    sleep 1
+    log="$(docker logs "$NAME" 2>&1 || true)"
+    if grep -q 'PostgreSQL init process complete' <<<"$log" && [ "$(grep -c 'ready to accept connections' <<<"$log")" -ge 2 ] && psql_ -Atc 'select 1' >/dev/null 2>&1; then break; fi
   done
   psql_ -Atc 'select version()'
   QA_MIN_MSG=warning psql_ < "$SQL/e42b11-qa-bootstrap.sql"
@@ -37,6 +40,12 @@ qa_txn_phase() {
 }
 qa_commit_fixtures() { QA_MIN_MSG=warning psql_ -o /dev/null < "$SQL/e42b11-fixtures.sql"; }
 qa_conc() { "$SQL/$1" "$NAME" 2>&1 | tee -a "$LOG"; }
+
+# qa_vitest <test file>: Node tests that talk to the container through docker exec (no ports, no network).
+qa_vitest() {
+  QA_PG_CONTAINER="$NAME" npx vitest run "$1" --reporter=verbose 2>&1 | tee -a "$LOG"
+  [ "${PIPESTATUS[0]}" = 0 ] || { echo "ERROR: vitest failed for $1" | tee -a "$LOG"; }
+}
 
 # qa_verdict <label> <test ids...>: every id needs a PASS line and nothing may FAIL.
 qa_verdict() {
