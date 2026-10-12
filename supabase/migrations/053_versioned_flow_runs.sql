@@ -1,4 +1,7 @@
 -- E4.2A: additive persistence only. Legacy execution remains untouched.
+ALTER TABLE public.flow_versions
+  ADD CONSTRAINT flow_versions_id_account_key UNIQUE (id, account_id);
+
 ALTER TABLE public.flow_runs
   ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'legacy' CHECK (execution_mode IN ('legacy', 'versioned')),
   ADD COLUMN root_flow_version_id UUID REFERENCES public.flow_versions(id) ON DELETE RESTRICT,
