@@ -23,8 +23,8 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM public.contacts WHERE id=p_contact_id AND account_id=p_account_id) THEN
     RAISE EXCEPTION 'contact not found in account' USING ERRCODE = 'P0002';
   END IF;
-  IF p_conversation_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.conversations WHERE id=p_conversation_id AND account_id=p_account_id) THEN
-    RAISE EXCEPTION 'conversation not found in account' USING ERRCODE = 'P0002';
+  IF p_conversation_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM public.conversations WHERE id=p_conversation_id AND account_id=p_account_id AND contact_id=p_contact_id) THEN
+    RAISE EXCEPTION 'conversation not found for contact in account' USING ERRCODE = 'P0002';
   END IF;
   SELECT * INTO v_version FROM public.flow_versions WHERE id=v_flow.active_version_id AND flow_id=v_flow.id AND account_id=p_account_id;
   IF NOT FOUND THEN RAISE EXCEPTION 'published version not found' USING ERRCODE='P0002'; END IF;
