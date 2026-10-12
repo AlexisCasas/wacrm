@@ -79,4 +79,18 @@ describe("PUT /api/flows/[id]", () => {
     await expect(response.json()).resolves.toMatchObject({ code: "flow_revision_conflict" });
     expect(supabase.rpc).toHaveBeenCalledWith("save_flow_draft", expect.objectContaining({ p_expected_updated_at: revision }));
   });
+
+  it("returns the one PostgREST row's revision after a successful save", async () => {
+    const supabase = readableClient();
+    supabase.rpc.mockResolvedValue({ data: [{ updated_at: "2026-10-12T12:01:00.000Z" }], error: null });
+    mocks.requireRole.mockResolvedValue({ accountId: "11111111-1111-4111-8111-111111111111", supabase });
+
+    const response = await PUT(new Request("http://localhost/api/flows/flow-1", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expected_updated_at: revision, name: "Renamed" }),
+    }), params);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ updated_at: "2026-10-12T12:01:00.000Z" });
+  });
 });

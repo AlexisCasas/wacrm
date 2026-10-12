@@ -33,6 +33,12 @@ function rpcFailure(error: { code?: string } | null, fallback: string) {
   return NextResponse.json({ error: fallback }, { status: 503 })
 }
 
+function singleSaveResult(data: unknown): { updated_at: string } | null {
+  if (!Array.isArray(data) || data.length !== 1) return null
+  const [result] = data
+  return result && typeof result.updated_at === 'string' ? { updated_at: result.updated_at } : null
+}
+
 async function readableFlow(supabase: Awaited<ReturnType<typeof requireRole>>['supabase'], id: string) {
   const { data, error } = await supabase.from('flows').select('id').eq('id', id).maybeSingle()
   if (error) return { ok: false as const, response: NextResponse.json({ error: 'Could not read flow' }, { status: 503 }) }
@@ -105,20 +111,16 @@ export async function PUT(
     if (body.entry_node_id !== undefined) patch.entry_node_id = body.entry_node_id
     if (body.fallback_policy !== undefined) patch.fallback_policy = body.fallback_policy
 
-    const { data: revision, error: saveError } = await account.supabase.rpc('save_flow_draft', {
+    const { data, error: saveError } = await account.supabase.rpc('save_flow_draft', {
       p_flow_id: id,
       p_expected_updated_at: body.expected_updated_at,
       p_patch: patch,
       p_nodes: body.nodes ?? null,
     })
     if (saveError) return rpcFailure(saveError, 'Could not save flow')
-
-    const [{ data: flow, error: flowError }, { data: nodes, error: nodesError }] = await Promise.all([
-      account.supabase.from('flows').select('*').eq('id', id).maybeSingle(),
-      account.supabase.from('flow_nodes').select('*').eq('flow_id', id).order('created_at', { ascending: true }),
-    ])
-    if (flowError || nodesError || !flow) return NextResponse.json({ error: 'Flow saved but could not be reloaded' }, { status: 503 })
-    return NextResponse.json({ flow, nodes: nodes ?? [], updated_at: revision })
+    const saved = singleSaveResult(data)
+    if (!saved) return NextResponse.json({ error: 'Could not confirm saved flow revision' }, { status: 503 })
+    return NextResponse.json({ updated_at: saved.updated_at })
   } catch (err) {
     if (err instanceof ConditionReferenceInfrastructureError) {
       return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })

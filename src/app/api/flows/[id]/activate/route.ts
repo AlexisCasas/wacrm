@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateFlowForActivation } from '@/lib/flows/validate'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
 import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
@@ -19,6 +20,13 @@ function revisionFailure(error: { code?: string } | null, fallback: string) {
   if (error?.code === 'P0002') return NextResponse.json({ error: 'Not found' }, { status: 404 })
   if (error?.code === '42501') return NextResponse.json({ error: 'Forbidden' }, { status: 403 })
   return NextResponse.json({ error: fallback }, { status: 503 })
+}
+
+function singlePublishResult(data: unknown): { version_id: string; version_number: number; updated_at: string } | null {
+  if (!Array.isArray(data) || data.length !== 1) return null
+  const [result] = data
+  if (!result || typeof result.version_id !== 'string' || typeof result.version_number !== 'number' || typeof result.updated_at !== 'string') return null
+  return result
 }
 
 export async function POST(
@@ -69,14 +77,18 @@ export async function POST(
         return NextResponse.json({ error: 'Cannot activate flow — fix the issues below first.', issues }, { status: 422 })
       }
 
-      const { data: published, error: publishError } = await account.supabase.rpc('publish_flow_version', {
+      const { data, error: publishError } = await supabaseAdmin().rpc('publish_flow_version', {
         p_flow_id: id,
         p_expected_updated_at: body.expected_updated_at,
+        p_published_by: account.userId,
       })
       if (publishError) return revisionFailure(publishError, 'Could not publish flow version')
-      const { data: updated, error: updatedError } = await account.supabase.from('flows').select('*').eq('id', id).maybeSingle()
-      if (updatedError || !updated) return NextResponse.json({ error: 'Flow published but could not be reloaded' }, { status: 503 })
-      return NextResponse.json({ flow: updated, updated_at: published?.updated_at, active_version: published })
+      const published = singlePublishResult(data)
+      if (!published) return NextResponse.json({ error: 'Could not confirm published flow version' }, { status: 503 })
+      return NextResponse.json({
+        updated_at: published.updated_at,
+        active_version: { id: published.version_id, version_number: published.version_number },
+      })
     }
 
     const { data: updated, error: updateError } = await account.supabase

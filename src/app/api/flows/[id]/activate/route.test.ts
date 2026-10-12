@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   validateGraph: vi.fn(),
   validateReferences: vi.fn(),
   enabled: vi.fn(),
+  admin: vi.fn(),
 }));
 
 vi.mock("@/lib/auth/account", () => ({
@@ -17,6 +18,7 @@ vi.mock("@/lib/flows/condition-references", () => ({
   validateConditionReferences: mocks.validateReferences,
 }));
 vi.mock("@/lib/flows/custom-condition-capability", () => ({ isCustomConditionEnabledForAccount: mocks.enabled }));
+vi.mock("@/lib/flows/admin-client", () => ({ supabaseAdmin: mocks.admin }));
 
 import { POST } from "./route";
 
@@ -46,6 +48,7 @@ beforeEach(() => {
   mocks.validateGraph.mockReturnValue([]);
   mocks.validateReferences.mockResolvedValue([]);
   mocks.enabled.mockReturnValue(false);
+  mocks.admin.mockReturnValue({ rpc: vi.fn() });
 });
 
 describe("POST /api/flows/[id]/activate", () => {
@@ -64,12 +67,13 @@ describe("POST /api/flows/[id]/activate", () => {
     );
 
     expect(response.status).toBe(422);
-    expect(supabase.rpc).not.toHaveBeenCalled();
+    expect(mocks.admin().rpc).not.toHaveBeenCalled();
   });
 
   it("maps a concurrent publication to HTTP 409 without exposing database details", async () => {
     const supabase = clientForActivation();
-    supabase.rpc.mockResolvedValue({ data: null, error: { code: "40001", message: "raw SQL state" } });
+    const admin = { rpc: vi.fn().mockResolvedValue({ data: null, error: { code: "40001", message: "raw SQL state" } }) };
+    mocks.admin.mockReturnValue(admin);
     mocks.requireRole.mockResolvedValue({ accountId: "11111111-1111-4111-8111-111111111111", supabase });
 
     const response = await POST(
@@ -83,6 +87,22 @@ describe("POST /api/flows/[id]/activate", () => {
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toMatchObject({ code: "flow_revision_conflict" });
-    expect(supabase.rpc).toHaveBeenCalledWith("publish_flow_version", expect.objectContaining({ p_expected_updated_at: revision }));
+    expect(admin.rpc).toHaveBeenCalledWith("publish_flow_version", expect.objectContaining({ p_expected_updated_at: revision }));
+  });
+
+  it("normalizes the single PostgREST publication row", async () => {
+    const supabase = clientForActivation();
+    const admin = { rpc: vi.fn().mockResolvedValue({ data: [{ version_id: "version-1", version_number: 1, updated_at: "2026-10-12T12:01:00.000Z" }], error: null }) };
+    mocks.admin.mockReturnValue(admin);
+    mocks.requireRole.mockResolvedValue({ accountId: "11111111-1111-4111-8111-111111111111", userId: "user-1", supabase });
+
+    const response = await POST(new Request("http://localhost/api/flows/flow-1/activate", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ status: "active", expected_updated_at: revision }),
+    }), params);
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ updated_at: "2026-10-12T12:01:00.000Z", active_version: { id: "version-1", version_number: 1 } });
+    expect(admin.rpc).toHaveBeenCalledWith("publish_flow_version", expect.objectContaining({ p_published_by: "user-1" }));
   });
 });

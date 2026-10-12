@@ -70,6 +70,31 @@ CREATE TRIGGER flow_versions_immutable
   BEFORE UPDATE OR DELETE ON public.flow_versions
   FOR EACH ROW EXECUTE FUNCTION public.reject_flow_version_mutation();
 
+-- An agent may still update draft/archive state through the normal flows
+-- policy, but only the publication RPC can transition a flow to active.
+-- This closes the direct Data API UPDATE path that would otherwise create
+-- an active flow without an immutable version.
+CREATE FUNCTION public.guard_flow_activation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = public
+AS $$
+BEGIN
+  IF NEW.status = 'active'
+    AND OLD.status IS DISTINCT FROM 'active'
+    AND current_setting('app.flow_publication', true) IS DISTINCT FROM 'on' THEN
+    RAISE EXCEPTION 'flows must be published through the publication API'
+      USING ERRCODE = '42501';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER flows_require_publication_for_activation
+  BEFORE UPDATE OF status ON public.flows
+  FOR EACH ROW EXECUTE FUNCTION public.guard_flow_activation();
+
 -- Atomically replace a draft graph. The caller is authenticated and RLS
 -- scoped; the revision comparison prevents a stale editor from deleting a
 -- newer graph. p_nodes=NULL supports header-only saves.
@@ -155,7 +180,8 @@ $$;
 -- it checks the caller's JWT-backed account membership before every write.
 CREATE FUNCTION public.publish_flow_version(
   p_flow_id UUID,
-  p_expected_updated_at TIMESTAMPTZ
+  p_expected_updated_at TIMESTAMPTZ,
+  p_published_by UUID
 )
 RETURNS TABLE (version_id UUID, version_number INTEGER, updated_at TIMESTAMPTZ)
 LANGUAGE plpgsql
@@ -169,7 +195,7 @@ DECLARE
   v_version_number INTEGER;
   v_updated_at TIMESTAMPTZ;
 BEGIN
-  IF p_expected_updated_at IS NULL OR auth.uid() IS NULL THEN
+  IF p_expected_updated_at IS NULL OR p_published_by IS NULL THEN
     RAISE EXCEPTION 'invalid flow publication request' USING ERRCODE = '22023';
   END IF;
 
@@ -181,7 +207,13 @@ BEGIN
   IF NOT FOUND THEN
     RAISE EXCEPTION 'flow not found' USING ERRCODE = 'P0002';
   END IF;
-  IF NOT public.is_account_member(v_flow.account_id, 'agent') THEN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.profiles p
+    WHERE p.user_id = p_published_by
+      AND p.account_id = v_flow.account_id
+      AND p.account_role IN ('owner', 'admin', 'agent')
+  ) THEN
     RAISE EXCEPTION 'insufficient role' USING ERRCODE = '42501';
   END IF;
   IF v_flow.updated_at IS DISTINCT FROM p_expected_updated_at THEN
@@ -226,9 +258,10 @@ BEGIN
     v_version_number,
     v_definition,
     encode(digest(v_definition::text, 'sha256'), 'hex'),
-    auth.uid()
+    p_published_by
   ) RETURNING id INTO v_version_id;
 
+  PERFORM set_config('app.flow_publication', 'on', true);
   UPDATE public.flows
      SET status = 'active',
          active_version_id = v_version_id,
@@ -242,7 +275,8 @@ $$;
 
 REVOKE ALL ON FUNCTION public.reject_flow_version_mutation() FROM PUBLIC;
 REVOKE ALL ON FUNCTION public.save_flow_draft(UUID, TIMESTAMPTZ, JSONB, JSONB) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ) FROM PUBLIC;
-REVOKE ALL ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ) FROM anon;
+REVOKE ALL ON FUNCTION public.guard_flow_activation() FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ, UUID) FROM PUBLIC;
+REVOKE ALL ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ, UUID) FROM anon;
 GRANT EXECUTE ON FUNCTION public.save_flow_draft(UUID, TIMESTAMPTZ, JSONB, JSONB) TO authenticated, service_role;
-GRANT EXECUTE ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.publish_flow_version(UUID, TIMESTAMPTZ, UUID) TO service_role;
