@@ -45,6 +45,7 @@ import { slugify, type BuilderNode } from "../shared";
 import { useFlowEditor } from "../flow-editor-state";
 import { useSubflowAuthoringCapability } from "../use-subflow-authoring";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
+import { FlowPicker } from "./flow-picker";
 
 interface NodeConfigFormProps {
   node: BuilderNode;
@@ -1198,20 +1199,19 @@ function ExecuteFlowForm({
     <>
       <div>
         <label className="mb-1 block text-xs text-muted-foreground">{t("targetFlow")}</label>
-        <Select value={target} onValueChange={(v) => onUpdateConfig({ target_flow_id: v ?? "" })} disabled={!enabled}>
-          <SelectTrigger className="bg-muted" aria-label={t("targetFlow")}>
-            <span className={cn("truncate", !selected && "text-muted-foreground")}>
-              {selected ? `${selected.name} · ${statusLabel(selected.status)}` : target ? t("targetFlowUnavailable") : t("pickTargetFlow")}
-            </span>
-          </SelectTrigger>
-          <SelectContent>
-            {options.map((f) => (
-              <SelectItem key={f.id} value={f.id}>
-                {f.name} · {statusLabel(f.status)}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <FlowPicker
+          options={options}
+          value={target}
+          onChange={(id) => onUpdateConfig({ target_flow_id: id })}
+          disabled={!enabled}
+          ariaLabel={t("targetFlow")}
+          placeholder={t("pickTargetFlow")}
+          unavailableLabel={t("targetFlowUnavailable")}
+          searchPlaceholder={t("searchFlows")}
+          emptyLabel={t("noFlowsMatch")}
+          cappedLabel={(shown, total) => t("flowSearchCapped", { shown, total })}
+          statusLabel={statusLabel}
+        />
         {loaded && target && !selected && (
           <p role="alert" className="mt-1 text-xs text-destructive">{t("targetFlowMissing")}</p>
         )}
