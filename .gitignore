@@ -48,3 +48,5 @@ next-env.d.ts
 /qa/flows-safe-save/staging/pw/
 /qa/flows-safe-save/staging/state/
 /qa/flows-safe-save/staging/shots/
+/qa/subflow-pilot/state/
+/qa/subflow-pilot/shots/

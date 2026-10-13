@@ -38,3 +38,16 @@ EOT
   . "$STATE/env"
 }
 psql_db() { docker exec -i "$DB" psql -U supabase_admin -h /var/run/postgresql -d postgres -v ON_ERROR_STOP=1 -q "$@"; }
+
+# the app: built on the host, served here with next start. Runtime secrets are synthetic. $STATE/app.env (optional, written
+# by staging/pilot-flag.sh) carries per-account pilot flags for THIS staging only.
+start_app() {
+  docker rm -f "$LOCALPROXY" "$APP" >/dev/null 2>&1 || true
+  local extra=(); [ -f "$STATE/app.env" ] && extra=(--env-file "$STATE/app.env")
+  docker run -d --name "$APP" --network "$NET_INT" -v "$ROOT":"$ROOT" "${extra[@]}" \
+    -v "$ROOT/qa/flows-safe-save":/qa -v "$ROOT/qa/subflow-pilot":/qa-pilot -w "$ROOT" -e NODE_ENV=production \
+    -e NEXT_PUBLIC_SUPABASE_URL="$URL" -e NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY" -e SUPABASE_SERVICE_ROLE_KEY="$SERVICE_KEY" \
+    -e ENCRYPTION_KEY="$ENCRYPTION_KEY" -e META_APP_SECRET="$META_APP_SECRET" -e NEXT_PUBLIC_SITE_URL="$URL" -e NEXT_TELEMETRY_DISABLED=1 \
+    "$PW_IMAGE" node node_modules/next/dist/bin/next start -p 3000 >/dev/null
+  docker run -d --name "$LOCALPROXY" --network "container:$APP" -v "$STATE/Caddyfile.local":/etc/caddy/Caddyfile:ro "$CADDY_IMAGE" >/dev/null
+}

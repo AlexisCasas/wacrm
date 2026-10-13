@@ -27,12 +27,6 @@ docker run -d --name "$AUTH" --network "$NET_INT" \
 docker run -d --name "$REST" --network "$NET_INT" -e PGRST_DB_URI="postgres://authenticator:$PG_PASSWORD@$DB:5432/postgres" \
   -e PGRST_DB_SCHEMAS=public -e PGRST_DB_ANON_ROLE=anon -e PGRST_JWT_SECRET="$JWT_SECRET" -e PGRST_ADMIN_SERVER_PORT=3001 "$REST_IMAGE" >/dev/null
 
-# the app: built on the host, served here with next start. Runtime secrets are synthetic.
-docker run -d --name "$APP" --network "$NET_INT" -v "$ROOT":"$ROOT" \
-  -v "$ROOT/qa/flows-safe-save":/qa -w "$ROOT" -e NODE_ENV=production \
-  -e NEXT_PUBLIC_SUPABASE_URL="$URL" -e NEXT_PUBLIC_SUPABASE_ANON_KEY="$ANON_KEY" -e SUPABASE_SERVICE_ROLE_KEY="$SERVICE_KEY" \
-  -e ENCRYPTION_KEY="$ENCRYPTION_KEY" -e META_APP_SECRET="$META_APP_SECRET" -e NEXT_PUBLIC_SITE_URL="$URL" -e NEXT_TELEMETRY_DISABLED=1 \
-  "$PW_IMAGE" node node_modules/next/dist/bin/next start -p 3000 >/dev/null
 # `localhost:$PORT` must mean the same thing for the browser (through the published port) and for the server (this proxy)
 cat > "$STATE/Caddyfile.gw" <<EOT
 :8000 {
@@ -56,7 +50,7 @@ cat > "$STATE/Caddyfile.local" <<EOT
 EOT
 docker run -d --name "$GW" --network "$NET_FRONT" -p "127.0.0.1:$PORT:8000" -v "$STATE/Caddyfile.gw":/etc/caddy/Caddyfile:ro "$CADDY_IMAGE" >/dev/null
 docker network connect "$NET_INT" "$GW"
-docker run -d --name "$LOCALPROXY" --network "container:$APP" -v "$STATE/Caddyfile.local":/etc/caddy/Caddyfile:ro "$CADDY_IMAGE" >/dev/null
+start_app
 
 echo "waiting for services..."
 for _ in $(seq 1 90); do
