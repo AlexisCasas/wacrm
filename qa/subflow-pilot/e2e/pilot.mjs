@@ -31,6 +31,8 @@ async function createFlow(page, name) {
 }
 const menuItems = async (page) => { await page.locator('[role=menuitem]').first().waitFor({ state: 'visible', timeout: 8000 }); const items = await page.locator('[role=menuitem]').allTextContents(); await page.keyboard.press('Escape'); await page.waitForTimeout(300); return items }
 async function add(page, label) { await page.getByRole('button', { name: 'Add node' }).first().click(); await page.getByRole('menuitem', { name: new RegExp('^' + label) }).click(); await page.waitForTimeout(250) }
+// the "Flow to run" field is a searchable picker: open it, type part of the name, click the match
+async function pickFlow(page, combobox, name) { await combobox.click(); await page.getByPlaceholder('Search flows by name…').fill(name); await page.getByRole('option', { name: new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')) }).first().click(); await page.waitForTimeout(250) }
 async function pickIn(page, combobox, option) { await combobox.click(); await page.getByRole('option', { name: option, exact: true }).click(); await page.waitForTimeout(200) }
 const stamp = Date.now().toString(36)
 const NAME_A = `Pilot A ${stamp}`, NAME_B = `Pilot B ${stamp}`, NAME_C = `Pilot C ${stamp}`
@@ -55,7 +57,7 @@ await add(page, 'Start'); await add(page, 'Run another flow'); await add(page, '
 const cbs = () => page.getByRole('combobox')
 await page.getByPlaceholder('support, help, hi').fill('hola, piloto')
 await pickIn(page, cbs().nth(2), 'run_another_flow')                                     // start -> call
-await pickIn(page, page.getByRole('combobox', { name: 'Flow to run' }), `${NAME_B} · draft`)   // target = B
+await pickFlow(page, page.getByRole('combobox', { name: 'Flow to run' }), NAME_B)   // target = B
 await pickIn(page, cbs().nth(4), 'send_message')                                         // when B ends, continue at send_message
 await page.locator('textarea').last().fill('Volvimos del flujo B'); await pickIn(page, cbs().nth(5), 'end')
 const draftNotice = await page.getByText(/Running them is not enabled yet/).first().isVisible()
@@ -78,7 +80,7 @@ const canvasCard = await page.locator('.react-flow__node').filter({ hasText: /ru
 await page.getByRole('button', { name: 'Add node' }).last().click(); const canvasMenu = await menuItems(page)
 await page.getByRole('button', { name: 'Add node' }).last().click(); await page.getByRole('menuitem', { name: /^Run another flow/ }).click(); await page.waitForTimeout(600)
 await page.locator('.react-flow__node').filter({ hasText: /run_another_flow_2/ }).first().click(); await page.waitForTimeout(600)
-await pickIn(page, page.getByRole('combobox', { name: 'Flow to run' }).last(), `${NAME_B} · draft`)
+await pickFlow(page, page.getByRole('combobox', { name: 'Flow to run' }).last(), NAME_B)
 await page.keyboard.press('Escape'); await page.waitForTimeout(300)
 await page.getByRole('button', { name: 'Save' }).click(); await page.waitForTimeout(1500)
 a = await hostJson(`flowdb ${flowA}`); const calls = a.nodes.filter((n) => n.node_type === 'execute_flow')
@@ -89,7 +91,7 @@ await shot(page, 'p-04-canvas')
 
 // P-05 change the reference to another flow (C) and save
 const flowC = await createFlow(page, NAME_C); await page.goto(`${URL}/flows/${flowA}`); await settle(page); await page.getByRole('button', { name: 'List' }).click()
-await pickIn(page, page.getByRole('combobox', { name: 'Flow to run' }).first(), `${NAME_C} · draft`)
+await pickFlow(page, page.getByRole('combobox', { name: 'Flow to run' }).first(), NAME_C)
 await page.getByRole('button', { name: 'Save' }).click(); await page.waitForTimeout(1500)
 a = await hostJson(`flowdb ${flowA}`)
 check('P-05', a.nodes.find((n) => n.node_key === 'run_another_flow').config.target_flow_id === flowC, `the first node now points at Flow C; saved`)

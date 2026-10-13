@@ -17,6 +17,8 @@ handle() { local cmd="$1"; shift || true; case "$cmd" in
   same) [ "$(q "$(fstate "$2")")" = "$(cat "$D/snap-$1")" ] && echo same || echo different;;
   hash-other) q "$(fstate "$(q "select id from public.flows where name like 'OTHER COMPANY%' limit 1")")";;
   hash) q "$(fstate "$1")";;
+  seedflows) q "delete from public.flows where account_id=$(acct "$USER_A_EMAIL") and (name like 'Catalogo %' or name in ('Cotización Ñandú','Bienvenida clientes','Seguimiento Post-Venta','QA - Lead capture'))" >/dev/null; q "insert into public.flows (user_id, account_id, name, trigger_type) select (select u.id from auth.users u where u.email='$USER_A_EMAIL'), $(acct "$USER_A_EMAIL"), n, 'manual' from unnest(array['Cotización Ñandú','Bienvenida clientes','Seguimiento Post-Venta','QA - Lead capture']) n union all select (select u.id from auth.users u where u.email='$USER_A_EMAIL'), $(acct "$USER_A_EMAIL"), 'Catalogo ' || lpad(g::text, 3, '0'), 'manual' from generate_series(1, $1) g returning 1" | wc -l;;
+  flowid) q "select id from public.flows where account_id=$(acct "$USER_A_EMAIL") and name='${*//\'/}' order by created_at desc limit 1";;
   counts) q "select json_build_object('active_flows_a',(select count(*) from public.flows where account_id=$(acct "$USER_A_EMAIL") and status='active'),'flow_runs',(select count(*) from public.flow_runs),'active_flows',(select count(*) from public.flows where account_id=$(acct "$USER_A_EMAIL") and status='active'),'flow_runs',(select count(*) from public.flow_runs r join public.flows f on f.id=r.flow_id where f.account_id=$(acct "$USER_A_EMAIL")))";;
   *) echo "unknown command $cmd";; esac; }
 watch() { while [ ! -f "$STOP" ]; do for r in "$D"/*.req; do [ -e "$r" ] || continue; id=$(basename "$r" .req); read -r -a parts < "$r" || true; rm -f "$r"
@@ -24,8 +26,8 @@ watch() { while [ ! -f "$STOP" ]; do for r in "$D"/*.req; do [ -e "$r" ] || cont
 "$HERE/fault.sh" off >/dev/null; watch & WATCH=$!
 trap 'touch "$STOP"; wait $WATCH 2>/dev/null; "$HERE/fault.sh" off >/dev/null 2>&1 || true' EXIT
 set +e
-docker exec -e URL="$URL" -e EMAIL_A="$USER_A_EMAIL" -e EMAIL_B="$USER_B_EMAIL" -e PASSWORD="$USER_PASSWORD" "$APP" node /qa-pilot/e2e/pilot.mjs 2>&1 | tee "$D/run.log"
+docker exec -e URL="$URL" -e EMAIL_A="$USER_A_EMAIL" -e EMAIL_B="$USER_B_EMAIL" -e PASSWORD="$USER_PASSWORD" "$APP" node /qa-pilot/e2e/${PILOT_SCRIPT:-pilot.mjs} 2>&1 | tee "$D/run.log"
 RC=${PIPESTATUS[0]}
-echo "---- matrix"; for t in P-01 P-02 P-03 P-04 P-05 P-06 P-07 P-08 P-09 P-10; do grep -q "QA-RESULT $t PASS" "$D/run.log" && echo "$t PASS" || echo "$t FAIL/MISSING"; done
+echo "---- matrix"; for t in ${PILOT_MATRIX:-P-01 P-02 P-03 P-04 P-05 P-06 P-07 P-08 P-09 P-10}; do grep -q "QA-RESULT $t PASS" "$D/run.log" && echo "$t PASS" || echo "$t FAIL/MISSING"; done
 [ "$RC" = 0 ] && echo "SUBFLOW PILOT FUNCTIONAL QA (automated browser) PASS" || echo "SUBFLOW PILOT FUNCTIONAL QA (automated browser) FAILED"
 exit "$RC"
