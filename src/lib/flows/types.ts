@@ -236,6 +236,16 @@ export interface SetContactFieldNodeConfig {
   next_node_key: string;
 }
 
+/**
+ * Versioned-execution only (F06): calls another published flow of the same account and resumes at
+ * `next_node_key` of THIS flow when the callee reaches its END. The legacy runner does not support it
+ * (it ends the run as unknown_node_type) and the legacy validator rejects it.
+ */
+export interface ExecuteFlowNodeConfig {
+  target_flow_id: string;
+  next_node_key: string;
+}
+
 // Terminal nodes carry no config — they just stop the run.
 export type EndNodeConfig = Record<string, never>;
 
@@ -259,7 +269,8 @@ export type FlowNodeConfig =
   | { node_type: "delay"; config: DelayNodeConfig }
   | { node_type: "set_contact_field"; config: SetContactFieldNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
-  | { node_type: "end"; config: EndNodeConfig };
+  | { node_type: "end"; config: EndNodeConfig }
+  | { node_type: "execute_flow"; config: ExecuteFlowNodeConfig };
 
 export type FlowNodeType = FlowNodeConfig["node_type"];
 
