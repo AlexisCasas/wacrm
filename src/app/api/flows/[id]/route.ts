@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
+import { isSubflowAuthoringEnabledForAccount } from '@/lib/flows/subflow-authoring-capability'
 import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
 
 /**
@@ -62,6 +63,10 @@ function saveFailure(code: string | undefined) {
       return NextResponse.json({ error: 'Not found' }, { status: 404 })
     case '22023':
       return NextResponse.json({ error: 'Invalid flow data. Nothing was saved.' }, { status: 400 })
+    case '23503': // migration 068: execute_flow target is not a flow of this account
+      return NextResponse.json({ error: 'A connected flow does not exist anymore or does not belong to this account. Nothing was saved.', code: 'invalid_subflow_target' }, { status: 422 })
+    case '0A000': // migration 068: execute_flow nodes cannot live in an active flow
+      return NextResponse.json({ error: 'Connected flows can only be edited while the flow is a draft. Nothing was saved.', code: 'subflow_requires_draft' }, { status: 409 })
     case '23505': // duplicate node_key
     case '23514': // unknown node_type / bad trigger_type
     case '23502': // missing node_key / node_type
@@ -71,6 +76,37 @@ function saveFailure(code: string | undefined) {
     default:
       return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
   }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Checks every execute_flow target against the caller's OWN account. An empty target is fine (an unfinished draft);
+ * a malformed id, the flow itself, or a flow that is missing / deleted / in another account is reported per node.
+ * Returns null when the lookup itself failed (the caller must not save on an unverified reference).
+ */
+async function subflowTargetIssues(
+  admin: ReturnType<typeof supabaseAdmin>,
+  accountId: string,
+  flowId: string,
+  nodes: Array<{ node_key: string; config: Record<string, unknown> }>,
+): Promise<Array<{ node_key: string; issue: 'invalid_target' | 'target_is_self' | 'target_not_found' }> | null> {
+  const issues: Array<{ node_key: string; issue: 'invalid_target' | 'target_is_self' | 'target_not_found' }> = []
+  const wanted = new Map<string, string[]>()
+  for (const node of nodes) {
+    const raw = (node.config ?? {}).target_flow_id
+    if (raw === undefined || raw === null || raw === '') continue
+    if (typeof raw !== 'string' || !UUID_RE.test(raw)) { issues.push({ node_key: node.node_key, issue: 'invalid_target' }); continue }
+    if (raw.toLowerCase() === flowId.toLowerCase()) { issues.push({ node_key: node.node_key, issue: 'target_is_self' }); continue }
+    wanted.set(raw.toLowerCase(), [...(wanted.get(raw.toLowerCase()) ?? []), node.node_key])
+  }
+  if (wanted.size) {
+    const { data, error } = await admin.from('flows').select('id').eq('account_id', accountId).in('id', [...wanted.keys()])
+    if (error) return null
+    const found = new Set((data ?? []).map((row: { id: string }) => row.id.toLowerCase()))
+    for (const [target, keys] of wanted) if (!found.has(target)) for (const key of keys) issues.push({ node_key: key, issue: 'target_not_found' })
+  }
+  return issues
 }
 
 export async function GET(
@@ -151,6 +187,20 @@ export async function PUT(
         capabilityEnabled,
       )).filter((issue) => issue.issue !== 'custom_condition_capability_disabled' || !existingCustom.has(`${issue.node_key}:${(body.nodes ?? []).find((node) => node.node_key === issue.node_key)?.config.subject_key}`))
       if (issues.length) return NextResponse.json({ error: 'Invalid condition reference', issues }, { status: 422 })
+    }
+
+    // "Run another flow" nodes (pilot): only accounts opted in on the server may write them, and every target must be
+    // an existing flow of the caller's own account (never the flow itself). Migration 068 enforces the same in SQL.
+    const subflowNodes = (body.nodes ?? []).filter((n) => n.node_type === 'execute_flow')
+    if (subflowNodes.length) {
+      if (!isSubflowAuthoringEnabledForAccount(account.accountId)) {
+        return NextResponse.json({ error: 'Connecting flows is not enabled for this account.', code: 'subflow_authoring_disabled' }, { status: 403 })
+      }
+      const subflowIssues = await subflowTargetIssues(admin, account.accountId, id, subflowNodes)
+      if (subflowIssues === null) return NextResponse.json({ error: 'Could not validate the connected flows' }, { status: 503 })
+      if (subflowIssues.length) {
+        return NextResponse.json({ error: 'A connected flow does not exist anymore or does not belong to this account. Nothing was saved.', code: 'invalid_subflow_target', issues: subflowIssues }, { status: 422 })
+      }
     }
 
     // Only the fields the client sent are patched: a header-only save (no `nodes`) leaves the graph alone.

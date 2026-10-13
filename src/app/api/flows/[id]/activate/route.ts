@@ -6,6 +6,9 @@ import { validateFlowForActivation } from '@/lib/flows/validate'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
 import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
 
+// Pilot: flows that run another flow can be authored as drafts but NOT activated until subflow execution exists.
+const SUBFLOW_EXECUTION_DISABLED = { error: 'This flow runs another flow. Running connected flows is not enabled yet, so it can only be kept as a draft.', code: 'subflow_execution_disabled' }
+
 /**
  * POST /api/flows/[id]/activate
  *
@@ -53,13 +56,15 @@ export async function POST(
       ])
       if (flowError || nodesError) return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
       if (!flow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+      if ((nodes ?? []).some((node) => node.node_type === 'execute_flow')) return NextResponse.json(SUBFLOW_EXECUTION_DISABLED, { status: 409 })
       const issues = validateFlowForActivation(flow as { name: string; trigger_type: 'keyword' | 'first_inbound_message' | 'manual'; trigger_config: Record<string, unknown>; entry_node_id: string | null }, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>)
       const referenceIssues = await validateConditionReferences(account.supabase, account.accountId, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, isCustomConditionEnabledForAccount(account.accountId))
       for (const issue of referenceIssues) issues.push({ severity: 'error', scope: 'node', node_key: issue.node_key, field: 'subject_key', message: issue.issue })
       if (issues.some((issue) => issue.severity === 'error')) return NextResponse.json({ error: 'Cannot activate flow — fix the issues below first.', issues }, { status: 422 })
     }
     const { data: updated, error } = await admin.from('flows').update({ status, updated_at: new Date().toISOString() }).eq('id', id).select().maybeSingle()
-    if (error) return NextResponse.json({ error: 'Could not update flow' }, { status: 500 })
+    // 0A000 = migration 068's database guard (covers a node added between the check above and this update)
+    if (error) return error.code === '0A000' ? NextResponse.json(SUBFLOW_EXECUTION_DISABLED, { status: 409 }) : NextResponse.json({ error: 'Could not update flow' }, { status: 500 })
     return NextResponse.json({ flow: updated })
   } catch (err) {
     if (err instanceof ConditionReferenceInfrastructureError) return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })

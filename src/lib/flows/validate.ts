@@ -48,9 +48,18 @@ interface NodeInput {
   config: Record<string, unknown>;
 }
 
+export interface ValidateFlowOptions {
+  /**
+   * F06 versioned execution. Off by default: the legacy runner cannot execute `execute_flow`, so the
+   * default validator keeps rejecting it and no existing activation path can publish such a flow.
+   */
+  versionedExecution?: boolean;
+}
+
 export function validateFlowForActivation(
   flow: FlowInput,
   nodes: NodeInput[],
+  options: ValidateFlowOptions = {},
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
@@ -112,7 +121,7 @@ export function validateFlowForActivation(
 
   // Per-node rules (Meta limits + dead-end + edge resolution).
   for (const n of nodes) {
-    issues.push(...validateNode(n, keys));
+    issues.push(...validateNode(n, keys, options));
   }
 
   // Reachability — every non-orphan node must be reachable from the
@@ -182,9 +191,12 @@ function validateTrigger(
 // Per-node
 // ============================================================
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function validateNode(
   node: NodeInput,
   knownKeys: Set<string>,
+  options: ValidateFlowOptions = {},
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
@@ -812,6 +824,46 @@ function validateNode(
       // beyond their existence.
       break;
 
+    case "execute_flow": {
+      if (!options.versionedExecution) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          message: "execute_flow nodes require versioned execution and are not supported by this runner.",
+        });
+        break;
+      }
+      const cfg = node.config as { target_flow_id?: unknown; next_node_key?: unknown };
+      if (typeof cfg.target_flow_id !== "string" || !UUID_RE.test(cfg.target_flow_id)) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "target_flow_id",
+          message: "Execute-flow node needs the id (uuid) of the flow to call.",
+        });
+      }
+      if (typeof cfg.next_node_key !== "string" || !cfg.next_node_key) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: "Execute-flow node must name the node to continue at after the called flow ends.",
+        });
+      } else if (!knownKeys.has(cfg.next_node_key)) {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "next_node_key",
+          message: `Execute-flow continues at non-existent node "${cfg.next_node_key}".`,
+        });
+      }
+      break;
+    }
+
     default:
       issues.push({
         severity: "error",
@@ -858,7 +910,8 @@ function outgoingEdges(node: NodeInput): string[] {
     case "collect_input":
     case "set_tag":
     case "delay":
-    case "set_contact_field": {
+    case "set_contact_field":
+    case "execute_flow": {
       const cfg = node.config as { next_node_key?: string };
       return cfg.next_node_key ? [cfg.next_node_key] : [];
     }

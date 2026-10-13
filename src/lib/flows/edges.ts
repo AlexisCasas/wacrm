@@ -50,7 +50,8 @@ export function deriveCanvasEdges(nodes: BuilderNode[]): CanvasEdge[] {
       case "collect_input":
       case "set_tag":
       case "delay":
-      case "set_contact_field": {
+      case "set_contact_field":
+      case "execute_flow": {
         const next = (cfg as { next_node_key?: string }).next_node_key;
         if (next && knownKeys.has(next)) {
           edges.push({
@@ -183,6 +184,7 @@ export function outgoingSlots(node: BuilderNode): OutgoingSlot[] {
     case "set_tag":
     case "delay":
     case "set_contact_field":
+    case "execute_flow":
       return [{ id: "next", label: "Next" }];
 
     case "condition":
@@ -259,6 +261,7 @@ export function applyEdgeConnection(
     case "set_tag":
     case "delay":
     case "set_contact_field":
+    case "execute_flow":
       if (sourceHandle === "next") return { next_node_key: targetKey };
       return null;
 
@@ -354,7 +357,8 @@ function patchedConfigWithoutKey(
     case "collect_input":
     case "set_tag":
     case "delay":
-    case "set_contact_field": {
+    case "set_contact_field":
+    case "execute_flow": {
       const next = (cfg as { next_node_key?: string }).next_node_key;
       if (next !== deletedKey) return null;
       return { ...cfg, next_node_key: "" };
