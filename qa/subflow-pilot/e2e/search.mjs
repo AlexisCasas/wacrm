@@ -38,7 +38,7 @@ const NAME_A = `Search host ${stamp}`
 const page = await newPage()
 const requests = []; page.on('request', (r) => { if (r.url().includes('/api/flows')) requests.push(`${r.method()} ${r.url().replace(URL, '')}`) })
 await login(page, EMAIL_A)
-const ids = await hostJson('ids'); const otherBefore = await host('hash-other')
+const otherBefore = await host('hash-other')
 const seeded = await host('seedflows 150')      // staging account A only: 154 extra drafts, 4 with distinctive (accented) names
 const flowA = await createFlow(page, NAME_A)
 await page.getByRole('button', { name: 'List' }).click()
