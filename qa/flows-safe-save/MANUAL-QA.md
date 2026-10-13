@@ -21,7 +21,9 @@ ssh -L 38088:127.0.0.1:38088 <usuario>@<vps>
 
 Credenciales sintéticas (solo existen en este staging): correos `owner@pilot-staging.test` (cuenta A, la "empresa de prueba")
 y `owner@other-staging.test` (cuenta B, otra empresa). La contraseña está en
-`/opt/apps/wacrm-flows-safe-save/.qa-staging/env` (variable `USER_PASSWORD`; `grep USER_PASSWORD` en ese archivo).
+`.qa-staging/env` **del worktree desde el que se levantó el staging** (variable `USER_PASSWORD`). Cada worktree genera sus
+propios secretos: usar el archivo de otro worktree da `400 Invalid login credentials`. Para saber cuál es el vigente:
+`docker inspect f3-stg-app --format '{{range .Mounts}}{{.Source}}{{"\n"}}{{end}}' | head -3` (el directorio raíz que aparece es el worktree).
 
 Apagar y limpiar: `qa/flows-safe-save/staging/down.sh` (borra contenedores y redes; `.qa-staging/` guarda solo secretos sintéticos).
 
