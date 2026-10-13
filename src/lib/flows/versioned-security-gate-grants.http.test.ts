@@ -43,4 +43,42 @@ describe.skipIf(!REST_URL || !container)('F06 security gate: permission defects 
     expect(ok.status).toBe(200); expect(await versions(FLOW_A)).toBe(String(Number(before) + 1))
     pass('G01', `publish_flow_version over HTTP with every input correct: B posing as A's owner, B, A and anon are all refused (HTTP ${seen.join('/')}), no version is created; service_role (what the activate route uses) still publishes (HTTP 200)`)
   })
+
+  it('G02: internal engine helpers are not callable through PostgREST by anon or authenticated users', async () => {
+    const before = await sql(`select count(*) from public.flow_run_events`)
+    const calls: Array<[string, Record<string, unknown>]> = [
+      ['lock_versioned_run', { p_account_id: randomUUID(), p_run_id: randomUUID() }],
+      ['versioned_run_gate', { p_run: { id: randomUUID() }, p_owner: 'x', p_token: 1 }],
+    ]
+    const seen: number[] = []
+    for (const [fn, a] of calls) for (const tk of [anon, userA, userB]) { const r = await raw('POST', `/rpc/${fn}`, { token: tk, body: a }); seen.push(r.status); expect(r.status, fn).toBeGreaterThanOrEqual(400); expect(r.json?.code, fn).not.toBe('P0002') }
+    expect(await sql(`select count(*) from public.flow_run_events`)).toBe(before)
+    for (const sig of ['lock_versioned_run(uuid,uuid)', 'versioned_run_gate(flow_runs,text,integer)'])
+      for (const role of ['anon', 'authenticated']) expect(await sql(`select has_function_privilege('${role}','public.${sig}','EXECUTE')`), `${role} ${sig}`).toBe('f')
+    expect(await sql(`select has_function_privilege('service_role','public.lock_versioned_run(uuid,uuid)','EXECUTE')`)).toBe('t')
+    pass('G02', `lock_versioned_run and versioned_run_gate: anon / A / B rejected over HTTP (${[...new Set(seen)].join('/')}), no EXECUTE for anon or authenticated, service_role keeps it`)
+  })
+
+  it('G03: users keep READ access to the engine tables they need and nothing else (no write, TRUNCATE, TRIGGER or REFERENCES privilege)', async () => {
+    const privs = async (table: string, role: string) => (await sql(`select coalesce(string_agg(p, ',' order by p), '') from unnest(array['SELECT','INSERT','UPDATE','DELETE','TRUNCATE','REFERENCES','TRIGGER']) p where has_table_privilege('${role}','public.${table}',p)`))
+    const expected: Record<string, Record<string, string>> = {
+      flow_runs: { anon: '', authenticated: 'SELECT' }, flow_versions: { anon: '', authenticated: 'SELECT' }, flow_run_call_frames: { anon: '', authenticated: 'SELECT' },
+      flow_run_effects: { anon: '', authenticated: '' }, flow_run_effect_messages: { anon: '', authenticated: '' } }
+    const got: string[] = []
+    for (const [table, roles] of Object.entries(expected)) for (const [role, want] of Object.entries(roles)) {
+      const have = await privs(table, role); got.push(`${table}/${role}=[${have}]`)
+      // anon may keep a read grant on flow_runs from the platform defaults; it can never see a row (auth.uid() is NULL) and may not write
+      if (table === 'flow_runs' && role === 'anon') expect(have === '' || have === 'SELECT', `${table}/${role}`).toBe(true)
+      else expect(have, `${table}/${role}`).toBe(want)
+    }
+    // the user can still read their own run and call frames over HTTP
+    expect((await raw('GET', '/flow_runs?select=id&limit=1', { token: userA })).status).toBe(200)
+    expect((await raw('GET', '/flow_run_call_frames?select=id&limit=1', { token: userA })).status).toBe(200)
+    // a role that holds TRUNCATE ignores RLS: prove a real session as `authenticated` cannot wipe the engine tables
+    for (const t of ['flow_run_call_frames', 'flow_versions', 'flow_runs']) {
+      const r = await psql.run(`begin; set local role authenticated; truncate public.${t}; rollback`)
+      expect('error' in r && r.error.code, `TRUNCATE ${t} as authenticated`).toBe('42501')
+    }
+    pass('G03', `engine table privileges: ${got.join(' ')}; users still read their runs and call frames over HTTP; TRUNCATE as authenticated is denied (42501) on flow_runs, flow_versions, flow_run_call_frames`)
+  })
 })
