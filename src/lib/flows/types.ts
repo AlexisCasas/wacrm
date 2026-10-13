@@ -209,9 +209,15 @@ export interface SetTagNodeConfig {
 export interface DelayNodeConfig {
   /** Whole seconds to wait. Clamped to [1, 30] at execution time — the
    *  builder also clamps on input so authored flows can't drift out of
-   *  range. */
+   *  range. Absent on a durable wait. */
   seconds: number;
   next_node_key: string;
+  /**
+   * Durable wait (migration 069): when `unit` is present the node does NOT sleep in-process. The run is parked in
+   * flow_runs.wait_* and the scheduler resumes it after `amount` x `unit` (1 second .. 30 days). See durable-wait.ts.
+   */
+  amount?: number;
+  unit?: "seconds" | "minutes" | "hours" | "days";
 }
 
 /**
@@ -366,6 +372,11 @@ export interface FlowRunRow {
   last_advanced_at: string;
   ended_at: string | null;
   end_reason: string | null;
+  /** Durable wait (migration 069). NULL unless the run is parked at a durable `delay`. */
+  wait_until?: string | null;
+  wait_node_key?: string | null;
+  wait_claim_token?: string | null;
+  wait_claimed_at?: string | null;
 }
 
 // ============================================================
