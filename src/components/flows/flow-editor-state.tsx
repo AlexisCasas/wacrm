@@ -104,7 +104,8 @@ export interface FlowEditorContextValue {
   removeNode: (key: string) => void;
 
   // Actions
-  save: () => Promise<void>;
+  /** Resolves true only when the server confirmed the save; false on ANY failure (the error is already shown). */
+  save: () => Promise<boolean>;
   setStatus: (status: BuilderState["status"]) => Promise<void>;
   deleteFlow: () => Promise<void>;
 
@@ -358,13 +359,16 @@ export function FlowEditorProvider({
       }
       setDirty(false);
       toast.success(t("saved"));
+      return true;
     } catch (err) {
+      // `dirty` stays as it was: the edits are still unsaved and the user can retry.
       const msg = err instanceof Error ? err.message : "Save failed";
       toast.error(msg);
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [initialFlow.id, state]);
+  }, [initialFlow.id, state, t]);
 
   // ---- Activate / Pause / Archive ----
   const setStatus = useCallback(
@@ -379,7 +383,10 @@ export function FlowEditorProvider({
         // latest state — the user shouldn't have to remember "save
         // then activate".
         if (next === "active") {
-          await save();
+          // A failed save must stop the activation: /activate would publish the
+          // PREVIOUS server version while the editor still shows unsaved edits.
+          const saved = await save();
+          if (!saved) return;
         }
         const res = await fetch(`/api/flows/${initialFlow.id}/activate`, {
           method: "POST",
