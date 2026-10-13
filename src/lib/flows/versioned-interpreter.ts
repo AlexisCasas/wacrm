@@ -2,7 +2,7 @@ import { SnapshotError, SnapshotLoader, type VersionSnapshot } from './versioned
 import { VERSIONED_LIMITS, parseExecuteFlowConfig, parseVersionedCheckpoint, type VersionedCheckpoint } from './versioned-runtime'
 import { VersionedStoreError, type CommitResult, type SubflowResult, type VersionedRunRow, type VersionedRunStore } from './versioned-store'
 import type { EffectRow } from './versioned-effects'
-import { parseMessageNode, parseOutboundPayload, effectOccurrenceKey, type MessagingOptions, type SendOutcome } from './versioned-messaging'
+import { parseMessageNode, parseOutboundPayload, effectOccurrenceKey, MAX_DEFER_SECONDS, type MessagingOptions, type SendOutcome } from './versioned-messaging'
 
 /**
  * Interpreter for versioned runs (E4.2B1.3 + B2.2 + C2): START, END, execute_flow (subflows) and, only when
@@ -316,6 +316,8 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
             const cap = m.maxRetryableAttempts ?? 6
             if (effect.attempt >= cap) {
               outcome = { kind: 'rejected', errorCode: 'rate_limit_exhausted' }        // too many temporary refusals: stop waiting
+            } else if (outcome.retryAfterSeconds !== undefined && outcome.retryAfterSeconds > MAX_DEFER_SECONDS) {
+              outcome = { kind: 'rejected', errorCode: 'retry_after_exceeds_limit' }   // never retry EARLIER than the provider asked
             } else {
               // provably not accepted: re-open the effect with a persisted wait. Never retried inside this invocation.
               for (let tries = 0; ; tries++) {

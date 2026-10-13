@@ -41,6 +41,12 @@ export interface OutboundRequest {
  * - not_dispatched  failed with proof that the request never reached the provider; the ONLY outcome that can
  *                   justify an immediate automatic retry
  */
+/**
+ * Longest provider Retry-After (seconds) the engine will wait for: 7 days. A longer one is never shortened into an earlier
+ * retry: the effect fails definitively as `retry_after_exceeds_limit`. Mirrors defer_versioned_effect (migration 064).
+ */
+export const MAX_DEFER_SECONDS = 604_800
+
 export type SendOutcome =
   | { kind: 'accepted'; providerMessageId: string }
   | { kind: 'rejected'; errorCode: string }

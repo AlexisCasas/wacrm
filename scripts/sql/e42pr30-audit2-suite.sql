@@ -107,4 +107,63 @@ BEGIN
   PERFORM public.qa_result('Q16', ok, 'RLS: the account member reads the repaired conversation in confirmation order A,B; a member of another account reads nothing' || detail);
 END $$;
 
+
+-- Q18: Retry-After above a day is honoured EXACTLY up to 7 days (604800 s); above that nothing is shortened or deferred
+DO $$
+DECLARE rid uuid; eid uuid; a uuid; d jsonb; e0 jsonb; run0 jsonb; ok boolean := true; detail text := ''; v int; secs numeric; ev jsonb; evn int;
+BEGIN
+  rid := public.qa_flow_run_conv('58000000-0000-4000-8000-0000000000a0', 6301); PERFORM public.qa_lease(rid);
+  eid := (public.qa_eff_register(rid, 'w1', 'send_message', '{"kind":"text","text":"long wait"}')->>'effect_id')::uuid;
+  FOREACH v IN ARRAY ARRAY[86400, 86401, 90000, 100000, 604799, 604800] LOOP
+    a := (public.qa_eff_claim(rid, 'w1', eid)->>'claimed_attempt_id')::uuid;
+    d := public.qa_defer(rid, 'w1', eid, a, v);
+    SELECT extract(epoch FROM (retry_not_before - clock_timestamp())) INTO secs FROM public.flow_run_effects WHERE id = eid;
+    IF NOT (d->>'deferred')::bool OR (d->>'wait_seconds')::int <> v OR secs > v OR secs < v - 5 THEN ok := false; detail := detail || ' [' || v || ' s: ' || d::text || ' / ' || coalesce(secs::text, 'null') || ']'; END IF;
+    SELECT count(*) INTO evn FROM public.flow_run_events WHERE flow_run_id = rid AND event_type = 'effect_deferred' AND payload->>'wait_source' = 'retry_after' AND (payload->>'wait_seconds')::int = v;
+    IF evn <> 1 THEN ok := false; detail := detail || ' [event ' || v || ']'; END IF;
+    PERFORM public.qa_make_due(eid);
+  END LOOP;
+  -- above the limit: refused, state untouched (still claimed, no retry time, no event, no attempt consumed)
+  FOREACH v IN ARRAY ARRAY[604801, 1000000, 2147483647] LOOP
+    a := (public.qa_eff_claim(rid, 'w1', eid)->>'claimed_attempt_id')::uuid;
+    e0 := (SELECT to_jsonb(x) FROM public.flow_run_effects x WHERE id = eid); run0 := to_jsonb((SELECT x FROM public.flow_runs x WHERE id = rid)); evn := (SELECT count(*) FROM public.flow_run_events WHERE flow_run_id = rid AND event_type = 'effect_deferred');
+    d := public.qa_defer(rid, 'w1', eid, a, v);
+    IF (d->>'deferred')::bool OR d->>'reason' <> 'retry_after_too_long' OR d->>'effect_state' <> 'claimed' THEN ok := false; detail := detail || ' [' || v || ' s not refused: ' || d::text || ']'; END IF;
+    IF (SELECT to_jsonb(x) FROM public.flow_run_effects x WHERE id = eid) <> e0 OR to_jsonb((SELECT x FROM public.flow_runs x WHERE id = rid)) <> run0
+       OR (SELECT count(*) FROM public.flow_run_events WHERE flow_run_id = rid AND event_type = 'effect_deferred') <> evn THEN ok := false; detail := detail || ' [' || v || ' s changed state]'; END IF;
+    -- the caller can still settle the claimed attempt as failed (what the interpreter does)
+    IF v = 604801 THEN
+      d := public.qa_eff_settle(rid, 'w1', eid, a, 'failed', NULL, 'retry_after_exceeds_limit');
+      IF NOT (d->>'settled')::bool OR (SELECT state || '/' || error_code FROM public.flow_run_effects WHERE id = eid) <> 'failed/retry_after_exceeds_limit' THEN ok := false; detail := detail || ' [settle failed: ' || d::text || ']'; END IF;
+      EXIT;
+    END IF;
+  END LOOP;
+  PERFORM public.qa_result('Q18', ok, 'defer honours 86400, 86401, 90000, 100000, 604799 and 604800 s EXACTLY (retry time, wait_seconds and event all equal the provider''s value, source retry_after); 604801 s is refused as retry_after_too_long with the effect still claimed and nothing changed (no retry time, no event, run identical) and can then be settled as failed' || detail);
+END $$;
+
+-- Q19: restart - a long persisted wait survives a new process (new owner/lease) and is enforced to the second
+DO $$
+DECLARE rid uuid; eid uuid; a uuid; d jsonb; c jsonb; ok boolean := true; detail text := ''; t1 timestamptz; t2 timestamptz;
+BEGIN
+  rid := public.qa_flow_run_conv('58000000-0000-4000-8000-0000000000a0', 6302); PERFORM public.qa_lease(rid);
+  eid := (public.qa_eff_register(rid, 'w1', 'send_message', '{"kind":"text","text":"restart"}')->>'effect_id')::uuid;
+  a := (public.qa_eff_claim(rid, 'w1', eid)->>'claimed_attempt_id')::uuid;
+  d := public.qa_defer(rid, 'w1', eid, a, 100000);
+  SELECT retry_not_before INTO t1 FROM public.flow_run_effects WHERE id = eid;
+  -- the first process dies; its lease is taken over by another worker
+  UPDATE public.flow_runs SET versioned_lease_expires_at = clock_timestamp() - interval '1 second' WHERE id = rid;
+  PERFORM * FROM public.reclaim_versioned_run_lease((SELECT account_id FROM public.flow_runs WHERE id = rid), rid, 'w2', 600);
+  PERFORM public.qa_eff_recover(rid, 'w2');
+  c := public.qa_eff_claim(rid, 'w2', eid);
+  IF (c->>'claimed')::bool OR c->>'reason' <> 'retry_not_due' THEN ok := false; detail := detail || ' [a new process claimed before the persisted time: ' || c::text || ']'; END IF;
+  SELECT retry_not_before INTO t2 FROM public.flow_run_effects WHERE id = eid;
+  IF t2 IS DISTINCT FROM t1 THEN ok := false; detail := detail || ' [the persisted time moved]'; END IF;
+  -- one second before the time: still held; at the time: claimable (attempt 2)
+  UPDATE public.flow_run_effects SET retry_not_before = clock_timestamp() + interval '2 seconds' WHERE id = eid;
+  IF (public.qa_eff_claim(rid, 'w2', eid)->>'claimed')::bool THEN ok := false; detail := detail || ' [claimed 2 s early]'; END IF;
+  UPDATE public.flow_run_effects SET retry_not_before = clock_timestamp() - interval '1 second' WHERE id = eid;
+  c := public.qa_eff_claim(rid, 'w2', eid);
+  IF NOT (c->>'claimed')::bool OR (c->>'attempt_no')::int <> 2 THEN ok := false; detail := detail || ' [due claim: ' || c::text || ']'; END IF;
+  PERFORM public.qa_result('Q19', ok, 'a 100000 s Retry-After (above a day) persists across a process death and lease takeover: the successor is refused retry_not_due with the time unchanged, still refused 2 s early, and claims attempt 2 only once due' || detail);
+END $$;
 DROP TRIGGER qa_pr30b_block_messages ON public.messages;

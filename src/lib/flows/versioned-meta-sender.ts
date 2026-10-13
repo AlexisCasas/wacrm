@@ -119,11 +119,14 @@ export function isRateLimited(status: number, meta: { code?: number }): boolean 
   return definitiveVerdict && meta.code !== undefined && RATE_LIMIT_CODES.has(meta.code)
 }
 
-const MAX_RETRY_AFTER_SECONDS = 86_400
+/** Largest value a PostgreSQL INTEGER (the RPC argument) holds; far above any deferral limit, so it never shortens a decision. */
+const MAX_INT32_SECONDS = 2_147_483_647
 /**
- * A usable Retry-After as whole seconds in 1..86400, else undefined. Accepts delta-seconds and an HTTP-date (compared with
- * `nowMs`); zero, negative, past, empty or malformed values are NOT usable, so a bad header can never mean "retry right now";
- * a value above a day is clamped to a day. The header name is matched case-insensitively.
+ * A usable Retry-After as whole seconds (>= 1), else undefined. Accepts delta-seconds and an HTTP-date (compared with
+ * `nowMs`); zero, negative, past, empty or malformed values are NOT usable, so a bad header can never mean "retry right now".
+ * The provider's value is returned exactly: it is NOT shortened here (the interpreter and the database decide what is too
+ * long to wait for); only a value that would not fit a PostgreSQL integer is held at 2^31-1, which is far above any limit.
+ * The header name is matched case-insensitively.
  */
 export function parseRetryAfter(headers: Record<string, string> | undefined, nowMs: number): number | undefined {
   if (!headers) return undefined
@@ -138,7 +141,7 @@ export function parseRetryAfter(headers: Record<string, string> | undefined, now
     seconds = Math.ceil((at - nowMs) / 1000)
   }
   if (!Number.isFinite(seconds) || seconds < 1) return undefined
-  return Math.min(seconds, MAX_RETRY_AFTER_SECONDS)
+  return Math.min(seconds, MAX_INT32_SECONDS)
 }
 
 /** Definitive refusal codes worth naming; anything else becomes `meta_<code>` / `http_<status>`. */

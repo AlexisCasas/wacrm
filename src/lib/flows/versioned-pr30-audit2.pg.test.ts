@@ -63,4 +63,55 @@ describe.skipIf(!container)('PR #30 audit round 2', () => {
     expect(t.requests).toHaveLength(2)
     pass('R23', 'Meta (simulated) confirmed A with the Inbox down and B after it came back; repairing A afterwards stores it at its confirmation time before B, leaves the preview and last_message_at on B, the run and effects byte-identical, a second repair is a no-op and Meta saw exactly 2 requests')
   })
+
+  // ---------------------------------------- case 3: a Retry-After above one day is never shortened
+  it('R24/R25: a Retry-After above a day is honoured exactly up to 7 days; above that the effect fails definitively', async () => {
+    const wait = async (header: string) => {
+      const f = await kit.flows(); const t = new MockMetaTransport().script('rate_limited'); t.retryAfterHeader = header
+      const out = await go(proc(t), f.runId, 'w1')
+      return { f, t, out }
+    }
+    for (const sec of [86400, 86401, 100000, 604800]) {
+      const { f, t, out } = await wait(String(sec))
+      expect(out, `${sec}`).toMatchObject({ kind: 'effect_retry_scheduled', attempts: 1 })
+      const left = await kit.secondsUntilRetry(f.runId)
+      expect(left, `${sec}`).toBeGreaterThan(sec - 10); expect(left, `${sec}`).toBeLessThanOrEqual(sec)           // not shortened, not backoff
+      expect((await h.events(f.runId)).filter((e) => e.event_type === 'effect_deferred')[0].payload, `${sec}`).toMatchObject({ wait_seconds: sec, wait_source: 'retry_after' })
+      expect(t.requests, `${sec}`).toHaveLength(1)
+      expect(await h.run(f.runId), `${sec}`).toMatchObject({ status: 'active', versioned_messages_executed: 0 })
+    }
+    pass('R24', 'Retry-After 86400, 86401, 100000 and 604800 s each persist exactly that wait (event wait_source retry_after, remaining time within 10 s of it): never the 30..900 s backoff, never clamped to a day; run active, budget 0, 1 request')
+    // 7 days + 1 s, and a header that does not even fit an integer: the effect fails, nothing is deferred or retried
+    for (const header of ['604801', '99999999', '999999999']) {
+      const { f, t, out } = await wait(header)
+      expect(out, header).toMatchObject({ kind: 'failed', reason: 'effect_failed' })
+      const [eff] = await effects(f.runId)
+      expect(eff, header).toMatchObject({ state: 'failed', error_code: 'retry_after_exceeds_limit', retry_not_before: null, provider_message_id: null })
+      expect((await h.events(f.runId)).filter((e) => e.event_type === 'effect_deferred'), header).toHaveLength(0)
+      expect(await inbox(f.conversationId), header).toHaveLength(0)
+      expect(await go(proc(t), f.runId, 'again'), header).toMatchObject({ kind: 'not_active' })
+      expect(t.requests, header).toHaveLength(1)                                                    // never resent
+      expect(await h.run(f.runId), header).toMatchObject({ status: 'failed', versioned_messages_executed: 0 })
+    }
+    pass('R25', 'Retry-After 604801 s, 99999999 s and 999999999 s: the run fails definitively with retry_after_exceeds_limit (effect failed, no retry time, no deferral event, no Inbox row), a new invocation does nothing and Meta saw exactly 1 request each')
+  })
+
+  it('R26: a long persisted wait survives a process restart and is enforced to the end', async () => {
+    const f = await kit.flows(); const t = new MockMetaTransport().script('rate_limited'); t.retryAfterHeader = '100000'
+    expect(await go(proc(t), f.runId, 'w1')).toMatchObject({ kind: 'effect_retry_scheduled' })
+    const [eff0] = await effects(f.runId)
+    const idle = new MockMetaTransport()                                                            // a fresh process: it must never be asked to send
+    for (let i = 0; i < 3; i++) expect(await go(proc(idle), f.runId, `restart-${i}`)).toMatchObject({ kind: 'effect_retry_scheduled' })
+    expect(idle.requests).toHaveLength(0)
+    expect((await effects(f.runId))[0]).toMatchObject({ state: 'pending', attempt: 1, retry_not_before: eff0.retry_not_before })
+    expect(t.requests).toHaveLength(1)
+    // when the persisted time passes the successor sends exactly once more
+    await kit.makeDue(f.runId)
+    const t2 = new MockMetaTransport()
+    expect(await go(proc(t2), f.runId, 'w2')).toMatchObject({ kind: 'completed' })
+    expect(t2.requests).toHaveLength(1)
+    expect((await effects(f.runId))[0]).toMatchObject({ state: 'confirmed', attempt: 2 })
+    expect(await inbox(f.conversationId)).toHaveLength(1)
+    pass('R26', 'a 100000 s wait: three fresh processes before the time all report effect_retry_scheduled with the same persisted time and send nothing; once due, one new process sends exactly once (attempt 2) and the message reaches the Inbox once')
+  })
 })

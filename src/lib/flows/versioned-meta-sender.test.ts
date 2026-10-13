@@ -122,7 +122,8 @@ describe('temporary rejections (HTTP 429 / Meta throttling)', () => {
     expect(await run('120')).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited', retryAfterSeconds: 120 })
     expect(await run(undefined)).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited' })
     for (const bad of ['', 'soon', '0', '-5', '1.5', '12abc']) expect(await run(bad), bad).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited' })
-    expect(await run('999999')).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited', retryAfterSeconds: 86400 })
+    // the provider's deadline is passed on exactly, also above a day (the limit is decided downstream, never by shortening here)
+    for (const sec of [86400, 86401, 999999, 604800, 604801]) expect(await run(String(sec)), String(sec)).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited', retryAfterSeconds: sec })
   })
   it('Meta throttling codes count even when the HTTP status is 400', async () => {
     const t = new MockMetaTransport().script('throttled_400')
@@ -162,7 +163,7 @@ describe('temporary rejections (HTTP 429 / Meta throttling)', () => {
 
 describe('parseRetryAfter', () => {
   const NOW = Date.parse('2026-10-14T10:00:00Z')
-  it('reads delta-seconds and HTTP-dates, case-insensitively, and bounds the result to 1..86400', () => {
+  it('reads delta-seconds and HTTP-dates, case-insensitively, and returns the provider value exactly (no clamp)', () => {
     expect(parseRetryAfter({ 'Retry-After': '30' }, NOW)).toBe(30)
     expect(parseRetryAfter({ 'retry-after': ' 45 ' }, NOW)).toBe(45)
     expect(parseRetryAfter({ 'RETRY-AFTER': '1' }, NOW)).toBe(1)
@@ -170,7 +171,12 @@ describe('parseRetryAfter', () => {
     expect(parseRetryAfter({ 'Retry-After': 'Wed, 14 Oct 2026 10:00:01 GMT' }, NOW)).toBe(1)
     expect(parseRetryAfter({ 'Retry-After': 'Wed, 14 Oct 2026 10:00:00 GMT' }, NOW)).toBeUndefined()      // not in the future: unusable
     expect(parseRetryAfter({ 'Retry-After': 'Wed, 14 Oct 2026 09:00:00 GMT' }, NOW)).toBeUndefined()
-    expect(parseRetryAfter({ 'Retry-After': 'Fri, 16 Oct 2026 10:00:00 GMT' }, NOW)).toBe(86400)
+    expect(parseRetryAfter({ 'Retry-After': 'Fri, 16 Oct 2026 10:00:00 GMT' }, NOW)).toBe(172800)          // two days, not clamped to one
+    expect(parseRetryAfter({ 'Retry-After': 'Wed, 21 Oct 2026 10:00:00 GMT' }, NOW)).toBe(604800)
+    expect(parseRetryAfter({ 'Retry-After': 'Wed, 21 Oct 2026 10:00:01 GMT' }, NOW)).toBe(604801)
+    for (const v of ['86400', '86401', '90000', '604800', '604801', '999999999']) expect(parseRetryAfter({ 'Retry-After': v }, NOW), v).toBe(Number(v))
+    // a date so far away that it would overflow a PostgreSQL integer is held at 2^31-1 (far above the 7-day limit, so it still fails)
+    expect(parseRetryAfter({ 'Retry-After': 'Fri, 31 Dec 9999 23:59:59 GMT' }, NOW)).toBe(2_147_483_647)
     for (const bad of ['', '0', '-1', 'abc', '1e3', '99999999999']) expect(parseRetryAfter({ 'Retry-After': bad }, NOW), bad).toBeUndefined()
     expect(parseRetryAfter(undefined, NOW)).toBeUndefined(); expect(parseRetryAfter({}, NOW)).toBeUndefined()
   })
@@ -278,5 +284,16 @@ describe('the adapter is not wired to anything', () => {
     }
     walk(join(process.cwd(), 'src'))
     expect(offenders).toEqual([])
+  })
+})
+
+describe('deferral limit', () => {
+  it('the interpreter limit is 7 days and matches the database function (migration 064)', async () => {
+    const { MAX_DEFER_SECONDS } = await import('./versioned-messaging')
+    expect(MAX_DEFER_SECONDS).toBe(7 * 86_400)
+    const { readFileSync } = await import('node:fs')
+    const sql = readFileSync('supabase/migrations/064_versioned_effect_retry_after_limit.sql', 'utf8')
+    expect(sql).toContain(`p_retry_after_seconds > ${MAX_DEFER_SECONDS}`)
+    expect(sql).toContain(`BETWEEN 1 AND ${MAX_DEFER_SECONDS}`)
   })
 })

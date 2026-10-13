@@ -55,7 +55,7 @@ END $$;
 
 -- Q07: no usable Retry-After -> bounded exponential backoff by attempt
 DO $$
-DECLARE rid uuid; eid uuid; a uuid; d jsonb; waits int[] := '{}'; ok boolean := true; detail text := ''; i int; src text; inputs int[] := ARRAY[NULL, 0, -5, 90000, 86401]; x int; run public.flow_runs%ROWTYPE;
+DECLARE rid uuid; eid uuid; a uuid; d jsonb; waits int[] := '{}'; ok boolean := true; detail text := ''; i int; src text; inputs int[] := ARRAY[NULL, 0, -5, NULL, 0]; x int; run public.flow_runs%ROWTYPE;
 BEGIN
   rid := public.qa_flow_run_conv('58000000-0000-4000-8000-0000000000a0', 7002);
   PERFORM public.qa_lease(rid);
@@ -76,7 +76,7 @@ BEGIN
   d := public.qa_defer(rid, 'w1', eid, a, 86400); IF (d->>'wait_seconds')::int <> 86400 THEN ok := false; detail := detail || ' [86400s]'; END IF;
   SELECT * INTO run FROM public.flow_runs WHERE id = rid;
   IF run.versioned_messages_executed <> 0 OR run.versioned_revision <> 0 THEN ok := false; detail := detail || ' [budget or revision moved by 9 deferrals]'; END IF;
-  PERFORM public.qa_result('Q07', ok, 'missing / 0 / negative / above-a-day Retry-After falls back to backoff 30,60,120,240,480,900,900 s (attempt-based, capped); 1 s and 86400 s are honoured as given; nine deferrals consumed no budget and moved no revision' || detail);
+  PERFORM public.qa_result('Q07', ok, 'missing / 0 / negative Retry-After falls back to backoff 30,60,120,240,480,900,900 s (attempt-based, capped); 1 s and 86400 s are honoured as given (values above a day: Q18); nine deferrals consumed no budget and moved no revision' || detail);
 END $$;
 
 -- Q08: who may defer, and what a refusal leaves behind
