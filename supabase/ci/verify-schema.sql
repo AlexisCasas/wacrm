@@ -272,6 +272,16 @@ BEGIN
     RAISE EXCEPTION 'idx_automation_pending_stale_running is missing — migration 050 did not apply';
   END IF;
 
+  -- 067: the atomic draft save exists and only service_role may run it (anon / authenticated inherit EXECUTE unless revoked).
+  IF NOT EXISTS (SELECT 1 FROM pg_proc WHERE oid = to_regprocedure('public.replace_flow_draft_atomic(uuid,uuid,jsonb,jsonb)')) THEN
+    RAISE EXCEPTION 'replace_flow_draft_atomic is missing — migration 067 did not apply';
+  END IF;
+  IF has_function_privilege('anon', 'public.replace_flow_draft_atomic(uuid,uuid,jsonb,jsonb)', 'EXECUTE')
+     OR has_function_privilege('authenticated', 'public.replace_flow_draft_atomic(uuid,uuid,jsonb,jsonb)', 'EXECUTE')
+     OR NOT has_function_privilege('service_role', 'public.replace_flow_draft_atomic(uuid,uuid,jsonb,jsonb)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'replace_flow_draft_atomic must be executable by service_role only';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;
