@@ -11,7 +11,7 @@ BEGIN
   FOR n IN SELECT * FROM jsonb_array_elements(p_nodes) LOOP
     INSERT INTO public.flow_nodes (flow_id, node_key, node_type, config) VALUES (f, n->>'k', n->>'t', coalesce(n->'c', '{}'::jsonb));
   END LOOP;
-  IF p_status = 'active' THEN UPDATE public.flows SET status = 'active' WHERE id = f; END IF;
+  IF p_status = 'active' THEN PERFORM set_config('app.flow_publication', 'on', true); UPDATE public.flows SET status = 'active' WHERE id = f; END IF;
   RETURN f;
 END $$;
 -- flow that calls `target` and continues at `ret`

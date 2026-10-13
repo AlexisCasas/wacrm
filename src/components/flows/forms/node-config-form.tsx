@@ -239,9 +239,20 @@ export function NodeConfigForm({
 
     case "end":
       return (
-        <p className="text-xs text-muted-foreground">
-          {t("endNodeHelp")}
-        </p>
+        <>
+          <p className="text-xs text-muted-foreground">{t("endNodeHelp")}</p>
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">{t("endScopeLabel")}</label>
+            <Select value={(cfg as { scope?: string }).scope ?? "run"} onValueChange={(v) => { if (v) onUpdateConfig({ scope: v === "run" ? undefined : v }); }}>
+              <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="run">{t("endScopeRun")}</SelectItem>
+                <SelectItem value="subflow">{t("endScopeSubflow")}</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">{t("endScopeHelp")}</p>
+          </div>
+        </>
       );
   }
 }
@@ -744,7 +755,16 @@ function ConditionForm({
           {isActivity ? (
             <div className="space-y-1">
               {!customerReplyEnabled && <p className="text-xs text-amber-600 dark:text-amber-400">{t("customerReplyDisabled")}</p>}
-              {referenceCandidates.length === 0 ? (
+              <Select value={cfg.subject_key === "$inherited" ? "inherited" : "own"} onValueChange={(v) => { if (v) onUpdateConfig({ subject_key: v === "inherited" ? "$inherited" : "", operator: "replied_after_reference" }); }}>
+                <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="own">{t("referenceSourceOwn")}</SelectItem>
+                  <SelectItem value="inherited">{t("referenceSourceInherited")}</SelectItem>
+                </SelectContent>
+              </Select>
+              {cfg.subject_key === "$inherited" ? (
+                <p className="text-xs text-muted-foreground">{t("referenceInheritedHelp")}</p>
+              ) : referenceCandidates.length === 0 ? (
                 <p className="text-xs text-muted-foreground">{t("noReferenceCandidates")}</p>
               ) : (
                 <NodeKeySelect
@@ -1265,6 +1285,8 @@ function SendMediaForm({
 interface ExecuteFlowCfg {
   target_flow_id?: string;
   next_node_key?: string;
+  reference_node_key?: string;
+  on_customer_reply?: "stop" | "continue";
 }
 
 interface AccountFlowOption {
@@ -1343,6 +1365,35 @@ function ExecuteFlowForm({
         onChange={(v) => onUpdateConfig({ next_node_key: v })}
         label={t("continuesAfterFlow")}
       />
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("callReferenceLabel")}</label>
+        <div className="flex items-center gap-2">
+          <div className="flex-1">
+            <NodeKeySelect
+              value={cfg.reference_node_key || null}
+              nodes={allNodes.filter((n) => n.node_type === "send_message" || n.node_type === "send_media")}
+              excludeKey={currentKey}
+              onChange={(v) => onUpdateConfig({ reference_node_key: v ?? undefined })}
+              placeholder={t("callReferenceNone")}
+            />
+          </div>
+          {cfg.reference_node_key && (
+            <Button type="button" variant="ghost" size="sm" onClick={() => onUpdateConfig({ reference_node_key: undefined })}>{t("callReferenceClear")}</Button>
+          )}
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">{t("callReferenceHelp")}</p>
+      </div>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("onCustomerReplyLabel")}</label>
+        <Select value={cfg.on_customer_reply ?? "stop"} onValueChange={(v) => { if (v) onUpdateConfig({ on_customer_reply: v }); }}>
+          <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="stop">{t("onCustomerReplyStop")}</SelectItem>
+            <SelectItem value="continue">{t("onCustomerReplyContinue")}</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="mt-1 text-xs text-muted-foreground">{t("onCustomerReplyHelp")}</p>
+      </div>
       <p className="text-xs text-muted-foreground">{enabled ? t("subflowDraftOnly") : t("subflowAuthoringDisabled")}</p>
     </>
   );

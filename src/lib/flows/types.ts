@@ -252,11 +252,22 @@ export interface SetContactFieldNodeConfig {
  */
 export interface ExecuteFlowNodeConfig {
   target_flow_id: string;
+  /** Node of THIS flow where the run resumes when the callee finishes normally. */
   next_node_key: string;
+  /** P8: a send node of THIS flow whose first send is handed to the callee as its inherited reference message. */
+  reference_node_key?: string;
+  /** P8: "stop" (default) ends the run, instead of returning, when the customer wrote spontaneously while the callee was waiting. */
+  on_customer_reply?: "stop" | "continue";
 }
 
 // Terminal nodes carry no config — they just stop the run.
-export type EndNodeConfig = Record<string, never>;
+export interface EndNodeConfig {
+  /**
+   * P8. "run" (default, the historic behaviour): ends the whole execution, whatever flow the run is inside.
+   * "subflow": inside a called flow, ends THIS flow and returns to the caller; outside one it ends the run like "run".
+   */
+  scope?: "run" | "subflow";
+}
 
 /**
  * Total union — every concrete node_type the v1 engine understands.
@@ -380,6 +391,8 @@ export interface FlowRunRow {
   wait_node_key?: string | null;
   wait_claim_token?: string | null;
   wait_claimed_at?: string | null;
+  /** Subflow execution (migration 070). NULL = the run is inside its root flow (flow_id); otherwise the flow it is currently inside. */
+  current_flow_id?: string | null;
 }
 
 // ============================================================

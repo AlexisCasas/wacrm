@@ -29,28 +29,49 @@ export function isCustomerActivityConfig(config: unknown): config is { subject: 
   return typeof config === "object" && config !== null && (config as { subject?: unknown }).subject === CUSTOMER_ACTIVITY_SUBJECT;
 }
 
-/** What the engine remembers about the reference send: the `messages` row it created (DB clock). */
-export interface SendReference { message_id: string; conversation_id: string; sent_at: string }
+/** Key under which a flow hands its chosen reference down to the flow it calls (migration 070 maintains it per frame). */
+export const INHERITED_REFERENCE_KEY = "$inherited";
+export const MAX_PRE_EXISTING_IDS = 20;
 
-export function parseSendReference(vars: Record<string, unknown>, nodeKey: string): SendReference | null {
-  const refs = vars[REFERENCE_VARS_KEY];
-  if (typeof refs !== "object" || refs === null || Array.isArray(refs)) return null;
-  const ref = (refs as Record<string, unknown>)[nodeKey];
-  if (typeof ref !== "object" || ref === null) return null;
-  const { message_id, conversation_id, sent_at } = ref as Record<string, unknown>;
+/**
+ * What the engine remembers about the reference send: the `messages` row it created (DB clock) plus the customer messages that
+ * ALREADY existed inside the reference second. Meta stamps inbound messages with whole seconds, so a real reply sent within the
+ * same second as our message can look "older" than the reference. The comparison is therefore
+ * "created_at >= window_start (the reference second, rounded down) AND not one of pre_ids": whatever was already stored when the
+ * reference was recorded can never count as a reply, whatever arrives afterwards can, even inside the same second.
+ */
+export interface SendReference { message_id: string; conversation_id: string; sent_at: string; window_start: string; pre_ids: string[] }
+
+/** The qualified key of a send node's reference: two flows can both have a node called "info". */
+export function referenceKey(flowId: string, nodeKey: string): string { return `${flowId}#${nodeKey}`; }
+
+export function floorToSecondIso(iso: string): string { return new Date(Math.floor(Date.parse(iso) / 1000) * 1000).toISOString(); }
+
+export function parseReferenceObject(ref: unknown): SendReference | null {
+  if (typeof ref !== "object" || ref === null || Array.isArray(ref)) return null;
+  const { message_id, conversation_id, sent_at, window_start, pre_ids } = ref as Record<string, unknown>;
   if (typeof message_id !== "string" || !UUID.test(message_id)) return null;
   if (typeof conversation_id !== "string" || !UUID.test(conversation_id)) return null;
   if (typeof sent_at !== "string" || Number.isNaN(Date.parse(sent_at))) return null;
-  return { message_id, conversation_id, sent_at };
+  if (typeof window_start !== "string" || Number.isNaN(Date.parse(window_start)) || window_start !== floorToSecondIso(sent_at)) return null;
+  if (!Array.isArray(pre_ids) || pre_ids.length > MAX_PRE_EXISTING_IDS || !pre_ids.every((id) => typeof id === "string" && UUID.test(id))) return null;
+  return { message_id, conversation_id, sent_at, window_start, pre_ids: pre_ids as string[] };
 }
 
-/** Node keys that some customer-activity condition uses as its reference. */
+export function parseSendReference(vars: Record<string, unknown>, key: string): SendReference | null {
+  const refs = vars[REFERENCE_VARS_KEY];
+  if (typeof refs !== "object" || refs === null || Array.isArray(refs)) return null;
+  return parseReferenceObject((refs as Record<string, unknown>)[key]);
+}
+
+/** Node keys of THIS flow whose first send must be remembered: the reference of a customer-activity condition, or the one a call hands down. */
 export function referencedSendKeys(nodes: Iterable<{ node_type: string; config: unknown }>): Set<string> {
   const keys = new Set<string>();
   for (const node of nodes) {
-    if (node.node_type !== "condition" || !isCustomerActivityConfig(node.config)) continue;
-    const key = node.config.subject_key;
-    if (typeof key === "string" && key) keys.add(key);
+    let key: unknown;
+    if (node.node_type === "condition" && isCustomerActivityConfig(node.config)) key = node.config.subject_key;
+    else if (node.node_type === "execute_flow" && typeof node.config === "object" && node.config !== null) key = (node.config as { reference_node_key?: unknown }).reference_node_key;
+    if (typeof key === "string" && key && key !== INHERITED_REFERENCE_KEY) keys.add(key);
   }
   return keys;
 }

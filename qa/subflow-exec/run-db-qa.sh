@@ -20,7 +20,7 @@ M067=supabase/migrations/067_replace_flow_draft_atomic.sql; M068=supabase/migrat
 
 suite() { # <label>
   QA_MIN_MSG=warning psql_ < "$FS/fixtures.sql" >/dev/null 2>&1 || true
-  { echo 'BEGIN;'; cat "$HERE/helpers.sql" "$HERE/db-subflow.sql"; echo 'ROLLBACK;'; } | psql_ -o /dev/null 2>&1 | sed "s/^NOTICE:  QA-RESULT \([A-Z0-9]*\)/QA-RESULT [$1] \1/" | tee -a "$LOG" | grep -E 'QA-RESULT|ERROR' || true
+  { echo 'BEGIN;'; echo "SELECT set_config('app.flow_publication', 'on', false);"; cat "$HERE/helpers.sql" "$HERE/db-subflow.sql"; echo 'ROLLBACK;'; } | psql_ -o /dev/null 2>&1 | sed "s/^NOTICE:  QA-RESULT \([A-Z0-9]*\)/QA-RESULT [$1] \1/" | tee -a "$LOG" | grep -E 'QA-RESULT|ERROR' || true
 }
 races() { # <label> real concurrent sessions
   local ua=a1000000-0000-4000-8000-000000000001 acct r fa fb fc res1 res2 at

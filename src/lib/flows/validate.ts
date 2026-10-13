@@ -60,6 +60,11 @@ export interface ValidateFlowOptions {
    * a durable wait stays a draft, so nothing can run it (and the database refuses it too).
    */
   durableWaitExecution?: boolean;
+  /**
+   * P8: the account may activate flows that RUN other flows (migration 070 + FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS). Off by default:
+   * the legacy runner then keeps refusing execute_flow exactly as before.
+   */
+  subflowExecution?: boolean;
 }
 
 export function validateFlowForActivation(
@@ -646,11 +651,14 @@ function validateNode(
       }
       if (cfg.subject === "customer_activity") {
         // P7: "the customer replied after the reference message". The reference is an explicit send node of THIS flow.
+        const inherited = cfg.subject_key === "$inherited";
         const referenceNode = allNodes.find((candidate) => candidate.node_key === cfg.subject_key);
         if (cfg.operator !== "replied_after_reference") {
           issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "operator", message: "A customer-activity condition must use the operator replied_after_reference." });
         }
-        if (!cfg.subject_key?.trim() || !referenceNode) {
+        if (inherited) {
+          // Handed down by the calling flow (execute_flow.reference_node_key). Nothing to check here: without a caller it fails closed.
+        } else if (!cfg.subject_key?.trim() || !referenceNode) {
           issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", message: "Pick the message that marks the start (the reference message) from this flow." });
         } else if (referenceNode.node_type !== "send_message" && referenceNode.node_type !== "send_media") {
           issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", message: "The reference must be a Send message or Send media step." });
@@ -859,13 +867,17 @@ function validateNode(
     }
 
     case "handoff":
-    case "end":
-      // Terminal nodes have no outgoing edges; nothing to validate
-      // beyond their existence.
+    case "end": {
+      // Terminal nodes have no outgoing edges. The only setting is P8's scope: end the whole execution (default) or return to the caller.
+      const scope = (node.config as { scope?: unknown }).scope;
+      if (scope !== undefined && scope !== "run" && scope !== "subflow") {
+        issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "scope", message: "End scope must be \"run\" or \"subflow\"." });
+      }
       break;
+    }
 
     case "execute_flow": {
-      if (!options.versionedExecution) {
+      if (!options.versionedExecution && !options.subflowExecution) {
         issues.push({
           severity: "error",
           scope: "node",
@@ -874,7 +886,16 @@ function validateNode(
         });
         break;
       }
-      const cfg = node.config as { target_flow_id?: unknown; next_node_key?: unknown };
+      const cfg = node.config as { target_flow_id?: unknown; next_node_key?: unknown; reference_node_key?: unknown; on_customer_reply?: unknown };
+      if (cfg.reference_node_key !== undefined) {
+        const refNode = typeof cfg.reference_node_key === "string" ? allNodes.find((candidate) => candidate.node_key === cfg.reference_node_key) : undefined;
+        if (!refNode || (refNode.node_type !== "send_message" && refNode.node_type !== "send_media")) {
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "reference_node_key", message: "The reference message must be a Send message or Send media step of this flow." });
+        }
+      }
+      if (cfg.on_customer_reply !== undefined && cfg.on_customer_reply !== "stop" && cfg.on_customer_reply !== "continue") {
+        issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "on_customer_reply", message: "On customer reply must be \"stop\" or \"continue\"." });
+      }
       if (typeof cfg.target_flow_id !== "string" || !UUID_RE.test(cfg.target_flow_id)) {
         issues.push({
           severity: "error",

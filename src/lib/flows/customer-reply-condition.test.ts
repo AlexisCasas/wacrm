@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS_ENV, REFERENCE_VARS_KEY, isCustomerActivityConfig, isCustomerReplyConditionEnabledForAccount, parseSendReference, referencedSendKeys, withSendReference } from "./customer-reply-condition";
+import { CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS_ENV, INHERITED_REFERENCE_KEY, MAX_PRE_EXISTING_IDS, REFERENCE_VARS_KEY, floorToSecondIso, parseReferenceObject, referenceKey, isCustomerActivityConfig, isCustomerReplyConditionEnabledForAccount, parseSendReference, referencedSendKeys, withSendReference } from "./customer-reply-condition";
 import { validateFlowForActivation } from "./validate";
 import { inspectDowngradeCompatibility } from "./downgrade-compatibility";
 
 const A = "11111111-1111-4111-8111-111111111111"; const B = "22222222-2222-4222-8222-222222222222"; const M = "33333333-3333-4333-8333-333333333333"; const C = "44444444-4444-4444-8444-444444444444";
-const ref = { message_id: M, conversation_id: C, sent_at: "2026-10-14T10:00:00.123456+00:00" };
+const ref = { message_id: M, conversation_id: C, sent_at: "2026-10-14T10:00:00.123Z", window_start: "2026-10-14T10:00:00.000Z", pre_ids: [] as string[] };
 afterEach(() => { delete process.env[CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS_ENV]; });
 
 describe("account gate", () => {
@@ -28,9 +28,23 @@ describe("send reference stored in the run", () => {
     [{ [REFERENCE_VARS_KEY]: { info: { message_id: M, conversation_id: 5, sent_at: ref.sent_at } } }], [{ [REFERENCE_VARS_KEY]: { info: { message_id: M, conversation_id: C, sent_at: "yesterday-ish" } } }]])("a missing or corrupt reference parses to null (the engine then fails closed): %j", (vars) => {
     expect(parseSendReference(vars as Record<string, unknown>, "info")).toBeNull();
   });
-  it("finds only the nodes that some customer-activity condition points at", () => {
-    const keys = referencedSendKeys([{ node_type: "send_message", config: {} }, { node_type: "condition", config: { subject: "var", subject_key: "x" } }, { node_type: "condition", config: { subject: "customer_activity", subject_key: "info" } }, { node_type: "condition", config: { subject: "customer_activity", subject_key: "" } }]);
-    expect([...keys]).toEqual(["info"]); expect(isCustomerActivityConfig({ subject: "customer_activity" })).toBe(true); expect(isCustomerActivityConfig({ subject: "tag" })).toBe(false); expect(isCustomerActivityConfig(null)).toBe(false);
+  it("the reference second is the DB timestamp rounded down; a stored window that disagrees, or too many pre-existing ids, is corrupt", () => {
+    expect(floorToSecondIso("2026-10-14T10:00:00.999Z")).toBe("2026-10-14T10:00:00.000Z");
+    expect(parseReferenceObject({ ...ref, window_start: "2026-10-14T09:59:59.000Z" })).toBeNull();
+    expect(parseReferenceObject({ ...ref, pre_ids: Array.from({ length: MAX_PRE_EXISTING_IDS + 1 }, () => M) })).toBeNull();
+    expect(parseReferenceObject({ ...ref, pre_ids: [M, "nope"] })).toBeNull();
+    expect(parseReferenceObject({ ...ref, pre_ids: [M] })?.pre_ids).toEqual([M]);
+  });
+  it("references are qualified by flow, so two flows can both have a node called info; the inherited key is separate", () => {
+    const k1 = referenceKey("flow-a", "info"); const k2 = referenceKey("flow-b", "info"); expect(k1).not.toBe(k2);
+    let vars = withSendReference({}, k1, ref); vars = withSendReference(vars, k2, { ...ref, message_id: B }); vars = withSendReference(vars, INHERITED_REFERENCE_KEY, { ...ref, message_id: A });
+    expect(parseSendReference(vars, k1)?.message_id).toBe(M); expect(parseSendReference(vars, k2)?.message_id).toBe(B); expect(parseSendReference(vars, INHERITED_REFERENCE_KEY)?.message_id).toBe(A);
+    expect(parseSendReference(vars, "info")).toBeNull();                                                      // the unqualified key never matches
+  });
+  it("finds the nodes whose first send must be remembered: a condition's reference or the one a call hands down (never the inherited key)", () => {
+    const keys = referencedSendKeys([{ node_type: "send_message", config: {} }, { node_type: "condition", config: { subject: "var", subject_key: "x" } }, { node_type: "condition", config: { subject: "customer_activity", subject_key: "info" } }, { node_type: "condition", config: { subject: "customer_activity", subject_key: "" } },
+      { node_type: "condition", config: { subject: "customer_activity", subject_key: "$inherited" } }, { node_type: "execute_flow", config: { target_flow_id: "x", next_node_key: "n", reference_node_key: "intro" } }, { node_type: "execute_flow", config: { target_flow_id: "x", next_node_key: "n" } }]);
+    expect([...keys].sort()).toEqual(["info", "intro"]); expect(isCustomerActivityConfig({ subject: "customer_activity" })).toBe(true); expect(isCustomerActivityConfig({ subject: "tag" })).toBe(false); expect(isCustomerActivityConfig(null)).toBe(false);
   });
 });
 

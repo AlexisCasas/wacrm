@@ -11,7 +11,7 @@ describe("inspectDowngradeCompatibility", () => {
       flows: [{ id: "f1", status: "active" }],
       nodes: [{ flow_id: "f1", node_type: "condition", config: { subject: "contact_field", subject_key: "custom:11111111-1111-4111-8111-111111111111" } }],
       runs: [{ flow_id: "f1", status: "active" }],
-    })).toEqual({ result: "BLOCKED_BY_CUSTOM_CONDITIONS", custom_condition_flow_ids: ["f1"], execute_flow_flow_ids: [], durable_wait_flow_ids: [], waiting_run_ids: [], customer_reply_condition_flow_ids: [], active_custom_condition_flow_ids: ["f1"], active_run_flow_ids: ["f1"] });
+    })).toEqual({ result: "BLOCKED_BY_CUSTOM_CONDITIONS", custom_condition_flow_ids: ["f1"], execute_flow_flow_ids: [], durable_wait_flow_ids: [], waiting_run_ids: [], customer_reply_condition_flow_ids: [], nested_run_ids: [], active_custom_condition_flow_ids: ["f1"], active_run_flow_ids: ["f1"] });
   });
 
   it("blocks drafts too and de-duplicates active run flow ids", () => {
@@ -19,7 +19,7 @@ describe("inspectDowngradeCompatibility", () => {
       flows: [{ id: "draft", status: "draft" }, { id: "native", status: "active" }],
       nodes: [{ flow_id: "draft", node_type: "condition", config: { subject: "contact_field", subject_key: "custom:x" } }],
       runs: [{ flow_id: "draft", status: "active" }, { flow_id: "draft", status: "active" }],
-    })).toEqual({ result: "BLOCKED_BY_CUSTOM_CONDITIONS", custom_condition_flow_ids: ["draft"], execute_flow_flow_ids: [], durable_wait_flow_ids: [], waiting_run_ids: [], customer_reply_condition_flow_ids: [], active_custom_condition_flow_ids: [], active_run_flow_ids: ["draft"] });
+    })).toEqual({ result: "BLOCKED_BY_CUSTOM_CONDITIONS", custom_condition_flow_ids: ["draft"], execute_flow_flow_ids: [], durable_wait_flow_ids: [], waiting_run_ids: [], customer_reply_condition_flow_ids: [], nested_run_ids: [], active_custom_condition_flow_ids: [], active_run_flow_ids: ["draft"] });
   });
 
   it("blocks a downgrade while any flow holds a 'run another flow' node (pilot), even as a draft", () => {
@@ -28,7 +28,7 @@ describe("inspectDowngradeCompatibility", () => {
       nodes: [{ flow_id: "a", node_type: "execute_flow", config: { target_flow_id: "b", next_node_key: "end" } }, { flow_id: "a", node_type: "execute_flow", config: {} }],
       runs: [],
     });
-    expect(report).toEqual({ result: "BLOCKED_BY_SUBFLOW_NODES", custom_condition_flow_ids: [], execute_flow_flow_ids: ["a"], durable_wait_flow_ids: [], waiting_run_ids: [], customer_reply_condition_flow_ids: [], active_custom_condition_flow_ids: [], active_run_flow_ids: [] });
+    expect(report).toEqual({ result: "BLOCKED_BY_SUBFLOW_NODES", custom_condition_flow_ids: [], execute_flow_flow_ids: ["a"], durable_wait_flow_ids: [], waiting_run_ids: [], customer_reply_condition_flow_ids: [], nested_run_ids: [], active_custom_condition_flow_ids: [], active_run_flow_ids: [] });
   });
 
   it("blocks a downgrade while a flow holds a durable wait or a run is parked on one", () => {

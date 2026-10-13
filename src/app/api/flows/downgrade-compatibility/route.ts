@@ -111,21 +111,22 @@ export async function GET() {
           .map((node) => node.flow_id)
       ),
     ];
-    const runs: Array<{ flow_id: string; status: string; id?: string; wait_until?: string | null }> = [];
+    const runs: Array<{ flow_id: string; status: string; id?: string; wait_until?: string | null; current_flow_id?: string | null }> = [];
     // Historical, completed runs cannot make an E1 rollback operationally
     // unsafe. Limit the scan to active runs of flows already found incompatible.
     // Active runs matter for flows an older build could not drive: custom-field conditions and durable waits.
-    const watchedFlowIds = [...new Set([...customFlowIds, ...nodes.filter((node) => node.node_type === 'delay' && typeof node.config.unit === 'string').map((node) => node.flow_id)])]
+    const watchedFlowIds = [...new Set([...customFlowIds, ...nodes.filter((node) => (node.node_type === 'delay' && typeof node.config.unit === 'string') || node.node_type === 'execute_flow').map((node) => node.flow_id)])]
     for (const ids of inBatches(watchedFlowIds, FLOW_ID_BATCH_SIZE)) {
       const batch = await collectCompletePages<{
         flow_id: string;
         status: string;
         id: string;
         wait_until: string | null;
+        current_flow_id: string | null;
       }>((from, to) =>
         ctx.supabase
           .from('flow_runs')
-          .select('id, flow_id, status, wait_until', { count: 'exact' })
+          .select('id, flow_id, status, wait_until, current_flow_id', { count: 'exact' })
           .in('flow_id', ids)
           .eq('status', 'active')
           .order('id', { ascending: true })

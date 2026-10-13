@@ -199,6 +199,16 @@ export async function PUT(
       if (!isSubflowAuthoringEnabledForAccount(account.accountId)) {
         return NextResponse.json({ error: 'Connecting flows is not enabled for this account.', code: 'subflow_authoring_disabled' }, { status: 403 })
       }
+      // P8 settings of the call: the reference must be a send step of THIS payload, the reply policy one of two values.
+      const sendKeys = new Set((body.nodes ?? []).filter((n) => n.node_type === 'send_message' || n.node_type === 'send_media').map((n) => n.node_key))
+      const badSettings = subflowNodes.flatMap((n) => {
+        const c = n.config as { reference_node_key?: unknown; on_customer_reply?: unknown }
+        const issues: Array<{ node_key: string; issue: string }> = []
+        if (c.reference_node_key !== undefined && (typeof c.reference_node_key !== 'string' || !sendKeys.has(c.reference_node_key))) issues.push({ node_key: n.node_key, issue: 'invalid_reference_node' })
+        if (c.on_customer_reply !== undefined && c.on_customer_reply !== 'stop' && c.on_customer_reply !== 'continue') issues.push({ node_key: n.node_key, issue: 'invalid_on_customer_reply' })
+        return issues
+      })
+      if (badSettings.length) return NextResponse.json({ error: 'A call setting is not valid. Nothing was saved.', code: 'invalid_subflow_settings', issues: badSettings }, { status: 422 })
       const subflowIssues = await subflowTargetIssues(admin, account.accountId, id, subflowNodes)
       if (subflowIssues === null) return NextResponse.json({ error: 'Could not validate the connected flows' }, { status: 503 })
       if (subflowIssues.length) {
@@ -218,6 +228,10 @@ export async function PUT(
         return NextResponse.json({ error: 'A wait is not valid (whole amount of at least 1 second, at most 30 days). Nothing was saved.', code: 'invalid_durable_wait', issues: badWaits }, { status: 422 })
       }
     }
+
+    // End scope (P8): "run" (default) or "subflow". Anything else is refused before anything is written.
+    const badEnds = (body.nodes ?? []).filter((n) => n.node_type === 'end' && (n.config as { scope?: unknown })?.scope !== undefined && !['run', 'subflow'].includes(String((n.config as { scope?: unknown }).scope)))
+    if (badEnds.length) return NextResponse.json({ error: 'An End step has an invalid scope. Nothing was saved.', code: 'invalid_end_scope', issues: badEnds.map((n) => ({ node_key: n.node_key })) }, { status: 422 })
 
     // Customer-activity conditions (P7): only accounts opted in on the server may write them. Drafts only: activation is
     // blocked by the validator (and the engine fails closed at run time), so saving one never runs anything.

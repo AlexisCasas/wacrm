@@ -7,6 +7,7 @@ import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition
 import { isDurableWaitExecutionEnabledForAccount } from '@/lib/flows/durable-wait-capability'
 import { isDurableWaitConfig } from '@/lib/flows/durable-wait'
 import { isCustomerActivityConfig, isCustomerReplyConditionEnabledForAccount } from '@/lib/flows/customer-reply-condition'
+import { analyzeCallGraph, isSubflowExecutionAllowed, type AccountFlowInfo } from '@/lib/flows/subflow-activation'
 import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
 
 // Pilot: flows that run another flow can be authored as drafts but NOT activated until subflow execution exists.
@@ -61,11 +62,20 @@ export async function POST(
       ])
       if (flowError || nodesError) return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
       if (!flow) return NextResponse.json({ error: 'Not found' }, { status: 404 })
-      if ((nodes ?? []).some((node) => node.node_type === 'execute_flow')) return NextResponse.json(SUBFLOW_EXECUTION_DISABLED, { status: 409 })
+      const callNodes = (nodes ?? []).filter((node) => node.node_type === 'execute_flow')
+      let subflowAllowed = false
+      if (callNodes.length) {
+        // Running other flows needs BOTH the server flag and the account's row in flow_execution_enablement (fail closed otherwise).
+        subflowAllowed = await isSubflowExecutionAllowed(admin, account.accountId)
+        if (!subflowAllowed) return NextResponse.json(SUBFLOW_EXECUTION_DISABLED, { status: 409 })
+      }
       const durableEnabled = isDurableWaitExecutionEnabledForAccount(account.accountId)
       if (!durableEnabled && (nodes ?? []).some((node) => node.node_type === 'delay' && isDurableWaitConfig(node.config))) return NextResponse.json(DURABLE_WAIT_EXECUTION_DISABLED, { status: 409 })
       if ((nodes ?? []).some((node) => node.node_type === 'condition' && isCustomerActivityConfig(node.config)) && !isCustomerReplyConditionEnabledForAccount(account.accountId)) return NextResponse.json(CUSTOMER_REPLY_DISABLED, { status: 409 })
-      const issues = validateFlowForActivation(flow as { name: string; trigger_type: 'keyword' | 'first_inbound_message' | 'manual'; trigger_config: Record<string, unknown>; entry_node_id: string | null }, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, { durableWaitExecution: durableEnabled })
+      const callGraphIssues = callNodes.length ? await callGraphIssuesFor(admin, account.accountId, id, callNodes as Array<{ node_key: string; config: Record<string, unknown> }>) : []
+      if (callGraphIssues === null) return NextResponse.json({ error: 'Could not validate the connected flows' }, { status: 503 })
+      const issues = validateFlowForActivation(flow as { name: string; trigger_type: 'keyword' | 'first_inbound_message' | 'manual'; trigger_config: Record<string, unknown>; entry_node_id: string | null }, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, { durableWaitExecution: durableEnabled, subflowExecution: subflowAllowed })
+      for (const issue of callGraphIssues) issues.push({ severity: issue.severity, scope: 'node', node_key: issue.node_key, field: 'target_flow_id', message: issue.message })
       const referenceIssues = await validateConditionReferences(account.supabase, account.accountId, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, isCustomConditionEnabledForAccount(account.accountId))
       for (const issue of referenceIssues) issues.push({ severity: 'error', scope: 'node', node_key: issue.node_key, field: 'subject_key', message: issue.issue })
       if (issues.some((issue) => issue.severity === 'error')) return NextResponse.json({ error: 'Cannot activate flow — fix the issues below first.', issues }, { status: 422 })
@@ -78,4 +88,25 @@ export async function POST(
     if (err instanceof ConditionReferenceInfrastructureError) return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
     return toErrorResponse(err)
   }
+}
+
+/** Every flow of the account with the calls it makes: enough for the cycle / depth / return checks. null = could not read (fail closed). */
+async function callGraphIssuesFor(admin: ReturnType<typeof supabaseAdmin>, accountId: string, flowId: string, callNodes: Array<{ node_key: string; config: Record<string, unknown> }>) {
+  const { data: flows, error: flowsError } = await admin.from('flows').select('id, status').eq('account_id', accountId)
+  if (flowsError) return null
+  const ids = (flows ?? []).map((f: { id: string }) => f.id)
+  const { data: rows, error: nodesError } = ids.length
+    ? await admin.from('flow_nodes').select('flow_id, node_type, config, node_key').in('flow_id', ids).in('node_type', ['execute_flow', 'end'])
+    : { data: [], error: null }
+  if (nodesError) return null
+  const info = new Map<string, AccountFlowInfo>()
+  for (const f of (flows ?? []) as Array<{ id: string; status: string }>) info.set(f.id, { status: f.status, targets: [], endScopes: [] })
+  for (const n of (rows ?? []) as Array<{ flow_id: string; node_type: string; config: Record<string, unknown> }>) {
+    const entry = info.get(n.flow_id)
+    if (!entry) continue
+    if (n.node_type === 'execute_flow' && typeof n.config?.target_flow_id === 'string') entry.targets.push(n.config.target_flow_id.toLowerCase())
+    if (n.node_type === 'end') entry.endScopes.push(typeof n.config?.scope === 'string' ? n.config.scope : undefined)
+  }
+  const mine = { status: 'draft', targets: callNodes.map((n) => String(n.config.target_flow_id ?? '').toLowerCase()), endScopes: [], callNodes: callNodes.map((n) => ({ node_key: n.node_key, target: String(n.config.target_flow_id ?? '').toLowerCase() })) }
+  return analyzeCallGraph(flowId, mine, info)
 }
