@@ -43,7 +43,8 @@ import { useAuth } from "@/hooks/use-auth";
 import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker";
 import { slugify, type BuilderNode } from "../shared";
 import { useFlowEditor } from "../flow-editor-state";
-import { useSubflowAuthoringCapability } from "../use-subflow-authoring";
+import { useDurableWaitAuthoringCapability, useSubflowAuthoringCapability } from "../use-subflow-authoring";
+import { WAIT_UNITS, isDurableWaitConfig, maxAmountFor, type WaitUnit } from "@/lib/flows/durable-wait";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
 import { FlowPicker } from "./flow-picker";
 
@@ -909,6 +910,9 @@ function useCustomConditionCapability(): boolean {
 interface DelayCfg {
   seconds?: number;
   next_node_key?: string;
+  /** Durable wait (migration 069): present only when the node is a durable wait. */
+  amount?: number;
+  unit?: WaitUnit;
 }
 
 const DELAY_MIN_SECONDS = 1;
@@ -927,6 +931,92 @@ function DelayForm({
   onUpdateConfig: (patch: Record<string, unknown>) => void;
   t: ReturnType<typeof useTranslations>;
 }) {
+  const durableEnabled = useDurableWaitAuthoringCapability();
+  const durable = isDurableWaitConfig(cfg);
+  const unitLabel = (unit: WaitUnit) => t(`delayUnit_${unit}`);
+  // Accounts without the pilot (and flows that never used it) keep exactly the original short-delay form.
+  if (durableEnabled || durable) {
+    const unit: WaitUnit = (WAIT_UNITS as readonly string[]).includes(cfg.unit ?? "") ? (cfg.unit as WaitUnit) : "minutes";
+    const amount = typeof cfg.amount === "number" ? cfg.amount : 13;
+    return (
+      <>
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">{t("delayKind")}</label>
+          <Select
+            value={durable ? "durable" : "short"}
+            disabled={!durableEnabled}
+            onValueChange={(v) => v === "durable"
+              ? onUpdateConfig({ amount: 13, unit: "minutes", seconds: undefined })
+              : onUpdateConfig({ seconds: 5, amount: undefined, unit: undefined })}
+          >
+            <SelectTrigger className="bg-muted" aria-label={t("delayKind")}>
+              <span>{durable ? t("delayKindDurable") : t("delayKindShort")}</span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="short">{t("delayKindShort")}</SelectItem>
+              <SelectItem value="durable">{t("delayKindDurable")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {durable ? (
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">{t("delayAmountLabel")}</label>
+            <div className="flex gap-2">
+              <Input
+                type="number"
+                min={1}
+                max={maxAmountFor(unit)}
+                value={amount}
+                disabled={!durableEnabled}
+                aria-label={t("delayAmountLabel")}
+                onChange={(e) => {
+                  const raw = Math.round(Number(e.target.value));
+                  onUpdateConfig({ amount: Number.isFinite(raw) ? Math.min(maxAmountFor(unit), Math.max(1, raw)) : 1 });
+                }}
+                className="bg-muted"
+              />
+              <Select
+                value={unit}
+                disabled={!durableEnabled}
+                onValueChange={(v) => { const next = v as WaitUnit; onUpdateConfig({ unit: next, amount: Math.min(amount, maxAmountFor(next)) }); }}
+              >
+                <SelectTrigger className="bg-muted" aria-label={t("delayUnitLabel")}>
+                  <span>{unitLabel(unit)}</span>
+                </SelectTrigger>
+                <SelectContent>
+                  {WAIT_UNITS.map((u) => <SelectItem key={u} value={u}>{unitLabel(u)}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">{durableEnabled ? t("delayDurableHelp") : t("delayDurableDisabled")}</p>
+          </div>
+        ) : (
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">{t("delaySecondsLabel")}</label>
+            <Input
+              type="number"
+              min={DELAY_MIN_SECONDS}
+              max={DELAY_MAX_SECONDS}
+              value={cfg.seconds ?? 5}
+              onChange={(e) => {
+                const raw = Math.round(Number(e.target.value));
+                onUpdateConfig({ seconds: Number.isFinite(raw) ? Math.min(DELAY_MAX_SECONDS, Math.max(DELAY_MIN_SECONDS, raw)) : DELAY_MIN_SECONDS });
+              }}
+              className="bg-muted"
+            />
+            <p className="mt-1 text-[10px] text-muted-foreground">{t("delayHelp", { min: DELAY_MIN_SECONDS, max: DELAY_MAX_SECONDS })}</p>
+          </div>
+        )}
+        <NextNodeRow
+          value={cfg.next_node_key ?? ""}
+          allNodes={allNodes}
+          currentKey={currentKey}
+          onChange={(v) => onUpdateConfig({ next_node_key: v })}
+          label={t("advancesTo")}
+        />
+      </>
+    );
+  }
   return (
     <>
       <div>

@@ -9,7 +9,6 @@ import { createClient } from '@supabase/supabase-js'
  * Skipped unless QA_REST_URL is set (run through qa/durable-wait/run-engine-qa.sh). Ids E01...
  */
 const REST = process.env.QA_REST_URL ?? ''
-const SECRET = process.env.QA_JWT_SECRET ?? ''
 const CONTAINER = process.env.QA_PG_CONTAINER ?? ''
 vi.setConfig({ testTimeout: 180_000 })
 const pass = (id: string, detail: string) => console.log(`QA-RESULT ${id} PASS ${detail}`)

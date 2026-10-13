@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ requireRole: vi.fn(), createClient: vi.fn(), admin: vi.fn(), validateReferences: vi.fn(), enabled: vi.fn(), toErrorResponse: vi.fn(), subflow: vi.fn() }));
+const mocks = vi.hoisted(() => ({ requireRole: vi.fn(), createClient: vi.fn(), admin: vi.fn(), validateReferences: vi.fn(), enabled: vi.fn(), toErrorResponse: vi.fn(), subflow: vi.fn(), durableAuthoring: vi.fn() }));
 vi.mock("@/lib/auth/account", () => ({ requireRole: mocks.requireRole, toErrorResponse: mocks.toErrorResponse }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: mocks.createClient }));
 vi.mock("@/lib/flows/admin-client", () => ({ supabaseAdmin: mocks.admin }));
 vi.mock("@/lib/flows/condition-references", () => ({ ConditionReferenceInfrastructureError: class extends Error {}, validateConditionReferences: mocks.validateReferences }));
 vi.mock("@/lib/flows/custom-condition-capability", () => ({ isCustomConditionEnabledForAccount: mocks.enabled }));
 vi.mock("@/lib/flows/subflow-authoring-capability", () => ({ isSubflowAuthoringEnabledForAccount: mocks.subflow }));
+vi.mock("@/lib/flows/durable-wait-capability", () => ({ isDurableWaitAuthoringEnabledForAccount: mocks.durableAuthoring }));
 
 import { PUT } from "./route";
 
@@ -46,6 +47,7 @@ beforeEach(() => {
   mocks.validateReferences.mockResolvedValue([]);
   mocks.enabled.mockReturnValue(true);
   mocks.subflow.mockReturnValue(false);
+  mocks.durableAuthoring.mockReturnValue(false);
 });
 
 describe("PUT /api/flows/[id]", () => {
@@ -227,6 +229,34 @@ describe("PUT /api/flows/[id]", () => {
         expect((await put({ nodes: [{ node_key: "m", node_type: "send_message", config: { text: "hi" } }] })).status).toBe(200);
         expect(rpc).toHaveBeenCalledTimes(1); expect(lookups).toHaveLength(0);
       }
+    });
+  });
+
+  describe("durable waits (delay with a unit)", () => {
+    const wait = (config: Record<string, unknown>) => ({ nodes: [{ node_key: "start", node_type: "start", config: { next_node_key: "pause" } }, { node_key: "pause", node_type: "delay", config: { ...config, next_node_key: "end" } }, { node_key: "end", node_type: "end", config: {} }] });
+
+    it("an account without the flag cannot save one: 403, nothing written; the flag is the session account's, never the body's", async () => {
+      const { rpc } = adminDouble();
+      const response = await put({ ...wait({ amount: 13, unit: "minutes" }), durableWaitAuthoring: true });
+      expect(response.status).toBe(403); expect(await response.json()).toMatchObject({ code: "durable_wait_authoring_disabled" });
+      expect(rpc).not.toHaveBeenCalled(); expect(mocks.durableAuthoring).toHaveBeenCalledWith(ACCOUNT);
+    });
+    it("an authorised account saves a 13-minute wait exactly as authored (amount and unit are kept)", async () => {
+      mocks.durableAuthoring.mockReturnValue(true); const { rpc } = adminDouble();
+      expect((await put(wait({ amount: 13, unit: "minutes" }))).status).toBe(200);
+      expect(rpc.mock.calls[0][1].p_nodes.find((n: { node_key: string }) => n.node_key === "pause").config).toEqual({ amount: 13, unit: "minutes", next_node_key: "end" });
+    });
+    it.each([[{ amount: 31, unit: "days" }, "too_long"], [{ amount: 0, unit: "minutes" }, "invalid_amount"], [{ amount: 1.5, unit: "hours" }, "invalid_amount"], [{ amount: 5, unit: "weeks" }, "invalid_unit"]])("rejects %j (%s) with 422 and writes nothing", async (config, issue) => {
+      mocks.durableAuthoring.mockReturnValue(true); const { rpc } = adminDouble();
+      const response = await put(wait(config)); expect(response.status).toBe(422);
+      expect(await response.json()).toMatchObject({ code: "invalid_durable_wait", issues: [{ node_key: "pause", issue }] }); expect(rpc).not.toHaveBeenCalled();
+    });
+    it("legacy short delays are untouched for every account", async () => {
+      const { rpc } = adminDouble(); expect((await put(wait({ seconds: 10 }))).status).toBe(200); expect(rpc).toHaveBeenCalledTimes(1); expect(mocks.durableAuthoring).not.toHaveBeenCalled();
+    });
+    it("maps the database guard for a wait in an active flow", async () => {
+      mocks.durableAuthoring.mockReturnValue(true); adminDouble({ error: { code: "0A000", message: "durable waits cannot be added to an active flow: waiting is not enabled" } });
+      const response = await put(wait({ amount: 5, unit: "minutes" })); expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ code: "durable_wait_requires_draft" });
     });
   });
 });

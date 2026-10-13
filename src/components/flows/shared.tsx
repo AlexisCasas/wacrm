@@ -448,6 +448,11 @@ export function summarizeNode(
         : t ? t('tagNone', { mode }) : `${mode} tag (none picked)`;
     }
     case 'delay': {
+      if (typeof cfg.unit === 'string' && typeof cfg.amount === 'number') {
+        return t
+          ? t(`waitDuration_${cfg.unit}`, { amount: cfg.amount })
+          : `Wait ${cfg.amount} ${cfg.unit}`;
+      }
       const seconds = typeof cfg.seconds === 'number' ? cfg.seconds : null;
       return seconds
         ? t
