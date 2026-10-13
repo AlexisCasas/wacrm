@@ -59,13 +59,15 @@ describe('createSupabaseEffectStore', () => {
 })
 
 describe('isolation from production code', () => {
-  it('the effect ledger module is not imported by any non-test module and sends nothing', () => {
+  it('the effect ledger module is only used by sibling versioned-* modules and sends nothing', () => {
     const offenders: string[] = []
     const walk = (dir: string) => {
       for (const name of readdirSync(dir)) {
         const p = join(dir, name)
         if (statSync(p).isDirectory()) { walk(p); continue }
         if (!/\.(ts|tsx)$/.test(name) || /\.test\.tsx?$/.test(name) || p.includes('/test-support/') || name === 'versioned-effects.ts') continue
+        // sibling internal modules of the versioned runtime (interpreter, messaging) may use it; routes, dispatchers and cron may not
+        if (/^versioned-[a-z-]+\.ts$/.test(name) && p.includes('/src/lib/flows/')) continue
         if (/versioned-effects['"]/.test(readFileSync(p, 'utf8'))) offenders.push(p)
       }
     }

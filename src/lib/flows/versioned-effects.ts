@@ -45,7 +45,19 @@ export interface CommitEffectStepResult {
   reason: LeaseRefusal | 'revision_conflict' | 'effect_not_current' | 'effect_not_confirmed' | 'budget_exceeded' | null
 }
 
+/** The persisted ledger row, as read back by the interpreter to decide what to do next. */
+export interface EffectRow {
+  id: string; account_id: string; flow_run_id: string; flow_version_id: string; node_key: string; occurrence_revision: number
+  effect_type: EffectType; state: EffectState; attempt: number; attempt_id: string | null
+  claimed_owner: string | null; claimed_fencing_token: number | null
+  contact_id: string | null; conversation_id: string | null
+  /** What the sender must send. Written once at registration and never rebuilt from run variables. */
+  request: Record<string, unknown>; payload_hash: string; provider_message_id: string | null; error_code: string | null
+}
+
 export interface VersionedEffectStore {
+  /** Reads the effect of one occurrence (run + revision) straight from the ledger; null when none was registered. */
+  loadEffectAt(accountId: string, runId: string, occurrenceRevision: number): Promise<EffectRow | null>
   registerEffect(input: RegisterEffectInput): Promise<RegisterEffectResult>
   claimEffect(caller: EffectCaller, effectId: string): Promise<ClaimEffectResult>
   settleEffect(input: SettleEffectInput): Promise<SettleEffectResult>
@@ -89,6 +101,16 @@ export function createSupabaseEffectStore(client: SupabaseClient): VersionedEffe
   }
   const who = (c: EffectCaller) => ({ p_account_id: c.accountId, p_run_id: c.runId, p_owner: c.owner, p_fencing_token: c.fencingToken })
   return {
+    async loadEffectAt(accountId, runId, occurrenceRevision) {
+      const { data, error } = await client.from('flow_run_effects')
+        .select('id,account_id,flow_run_id,flow_version_id,node_key,occurrence_revision,effect_type,state,attempt,attempt_id,claimed_owner,claimed_fencing_token,contact_id,conversation_id,request,payload_hash,provider_message_id,error_code')
+        .eq('account_id', accountId).eq('flow_run_id', runId).eq('occurrence_revision', occurrenceRevision).maybeSingle()
+      if (error) throw new VersionedStoreError(error.code || 'query_error', `flow_run_effects: ${error.message}`)
+      if (!data) return null
+      const r = data as unknown as EffectRow
+      return { ...r, occurrence_revision: toInt(r.occurrence_revision, 'occurrence_revision'), attempt: toInt(r.attempt, 'attempt'),
+        claimed_fencing_token: r.claimed_fencing_token === null ? null : toInt(r.claimed_fencing_token, 'claimed_fencing_token') }
+    },
     async registerEffect(i) {
       const row = firstRow(await rpc('register_versioned_effect', { ...who(i), p_expected_revision: i.expectedRevision, p_effect_type: i.effectType, p_request: i.request }), 'register_versioned_effect')
       return { registered: toBool(row.registered, 'registered'), effectId: toStr(row.effect_id, 'effect_id'), state: toStr(row.effect_state, 'effect_state') as EffectState | null,
