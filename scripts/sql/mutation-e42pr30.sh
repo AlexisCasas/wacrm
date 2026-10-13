@@ -58,7 +58,7 @@ expect_failure "maxVariants > 1 re-enables alternative numbers" Z04 $UNIT
 cp "$B_SENDER" "$SENDER"
 
 # Z05: 429 fails the run again
-mutate_ts "$SENDER" "$B_SENDER" "if (status === 429) return true" "if (status === 429) return false"
+mutate_ts "$SENDER" "$B_SENDER" "if (status === 429) return true" "return false"
 expect_failure "HTTP 429 is classified as a definitive rejection again" Z05 $UNIT
 expect_failure "HTTP 429 fails the run (interpreter + Inbox + ledger)" Z05b PGT "R09/R10/R11"
 cp "$B_SENDER" "$SENDER"
