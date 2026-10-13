@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Shared plumbing for the E4.2 SQL QA runners (source it, do not execute).
 # Each run is a throwaway PostgreSQL 17 container (supabase/postgres image):
-# no published ports, no network, destroyed on exit, always from a clean DB.
+# no published ports, no network (QA_NETWORK may name an --internal Docker network), destroyed on exit, always from a clean DB.
 SQL=scripts/sql
 IMAGE="${QA_PG_IMAGE:-supabase/postgres:17.6.1.136}"
 NAME="e42-qa-$$"
@@ -13,7 +13,7 @@ psql_() { docker exec -i -e PGOPTIONS="-c client_min_messages=${QA_MIN_MSG:-noti
 # Starts the container, waits for the post-init restart to settle, then applies
 # the QA bootstrap, every migration in order, and the assertion helpers.
 qa_start() {
-  docker run -d --rm --name "$NAME" --network none -e POSTGRES_PASSWORD=qa "$IMAGE" >/dev/null
+  docker run -d --rm --name "$NAME" --network "${QA_NETWORK:-none}" -e POSTGRES_PASSWORD=qa "$IMAGE" >/dev/null
   local _ log
   # The image starts a throwaway init server, shuts it down, then starts the real one. Wait for the
   # log to show init finished AND a second "ready to accept connections" before probing.
