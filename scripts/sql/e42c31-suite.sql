@@ -114,7 +114,7 @@ END $$;
 
 -- P05: a provider message id can be used by one effect only; messages already stored are linked, not duplicated
 DO $$
-DECLARE rid1 uuid; rid2 uuid; e1 uuid; e2 uuid; ok boolean := true; detail text := ''; s jsonb; rs jsonb; n int; run2 public.flow_runs%ROWTYPE; pre uuid; rid3 uuid; run3 public.flow_runs%ROWTYPE; e3 uuid; cv_before text; cv_after text; l public.flow_run_effect_messages%ROWTYPE;
+DECLARE snap_run jsonb; snap_link1 jsonb; snap_msg1 jsonb; n_msgs_before int; n_links_before int; rid1 uuid; rid2 uuid; e1 uuid; e2 uuid; ok boolean := true; detail text := ''; s jsonb; rs jsonb; n int; run2 public.flow_runs%ROWTYPE; pre uuid; rid3 uuid; run3 public.flow_runs%ROWTYPE; e3 uuid; cv_before text; cv_after text; l public.flow_run_effect_messages%ROWTYPE;
 BEGIN
   rid1 := public.qa_flow_run_conv('56000000-0000-4000-8000-0000000000a0', 3007);
   PERFORM public.qa_lease(rid1);
@@ -124,10 +124,22 @@ BEGIN
   PERFORM public.qa_lease(rid2);
   SELECT * INTO run2 FROM public.flow_runs WHERE id = rid2;
   e2 := (public.qa_eff_register(rid2, 'w1', 'send_message', '{"kind":"text","text":"second"}')->>'effect_id')::uuid;
+  SELECT to_jsonb(x) - 'attempt_id' INTO snap_run FROM public.flow_runs x WHERE id = rid2;
+  snap_link1 := (SELECT to_jsonb(lk) FROM public.flow_run_effect_messages lk WHERE lk.effect_id = e1);
+  snap_msg1 := (SELECT to_jsonb(mx) FROM public.messages mx WHERE mx.message_id = 'wamid.P05SHARED');
+  n_msgs_before := (SELECT count(*) FROM public.messages);
+  n_links_before := (SELECT count(*) FROM public.flow_run_effect_messages);
   s := public.qa_eff_accept(rid2, 'w1', e2, 'wamid.P05SHARED');
   IF NOT (s->>'reason' = 'provider_message_conflict' AND (s->>'settled')::bool = false AND s->>'effect_state' = 'claimed') THEN ok := false; detail := detail || ' [settle conflict ' || s::text || ']'; END IF;
   IF (SELECT state FROM public.flow_run_effects WHERE id = e2) <> 'claimed' OR (SELECT provider_message_id FROM public.flow_run_effects WHERE id = e2) IS NOT NULL THEN ok := false; detail := detail || ' [conflict changed the effect]'; END IF;
   IF EXISTS (SELECT 1 FROM public.messages WHERE conversation_id = run2.conversation_id) THEN ok := false; detail := detail || ' [message created on conflict]'; END IF;
+  -- the refused confirmation must not move the run, consume budget, touch the first message or its link
+  IF (SELECT to_jsonb(x) - 'attempt_id' FROM public.flow_runs x WHERE id = rid2) <> snap_run THEN ok := false; detail := detail || ' [conflict changed the run (cursor/revision/budget)]'; END IF;
+  IF (SELECT versioned_messages_executed FROM public.flow_runs WHERE id = rid2) <> 0 OR (SELECT versioned_node_key FROM public.flow_runs WHERE id = rid2) <> 'm' THEN ok := false; detail := detail || ' [cursor or message budget moved]'; END IF;
+  IF (SELECT to_jsonb(lk) FROM public.flow_run_effect_messages lk WHERE lk.effect_id = e1) IS DISTINCT FROM snap_link1 THEN ok := false; detail := detail || ' [first effect link changed]'; END IF;
+  IF (SELECT to_jsonb(mx) FROM public.messages mx WHERE mx.message_id = 'wamid.P05SHARED') IS DISTINCT FROM snap_msg1 THEN ok := false; detail := detail || ' [first message overwritten]'; END IF;
+  IF EXISTS (SELECT 1 FROM public.flow_run_effect_messages WHERE effect_id = e2) THEN ok := false; detail := detail || ' [link created for the conflicting effect]'; END IF;
+  IF (SELECT count(*) FROM public.messages) <> n_msgs_before OR (SELECT count(*) FROM public.flow_run_effect_messages) <> n_links_before THEN ok := false; detail := detail || ' [row counts changed]'; END IF;
   -- as an explicit ambiguous result it is recorded, and resolving with the same id conflicts too
   PERFORM public.qa_eff_settle(rid2, 'w1', e2, (SELECT attempt_id FROM public.flow_run_effects WHERE id = e2), 'ambiguous', NULL, 'wamid_conflict');
   rs := public.qa_eff_resolve(rid2, 'w1', e2, 'confirmed', 'receipt', 'wamid.P05SHARED');
@@ -144,7 +156,7 @@ BEGIN
   SELECT count(*) INTO n FROM public.messages WHERE conversation_id = run3.conversation_id;
   SELECT last_message_text INTO cv_after FROM public.conversations WHERE id = run3.conversation_id;
   IF l.message_id <> pre OR n <> 1 OR (SELECT status FROM public.messages WHERE id = pre) <> 'delivered' OR cv_after <> 'before' THEN ok := false; detail := detail || ' [pre-existing row was duplicated or altered]'; END IF;
-  PERFORM public.qa_result('P05', ok, 'a wamid used by another effect: settle/resolve refuse with provider_message_conflict and change nothing (an explicit ambiguous settle is recorded); a message row already stored for the wamid is linked once, left untouched (status delivered kept) and the preview is not overwritten' || detail);
+  PERFORM public.qa_result('P05', ok, 'a wamid used by another effect: settle/resolve refuse with provider_message_conflict and change nothing (run cursor, revision and message budget, the first message and its link, row counts all identical) (an explicit ambiguous settle is recorded); a message row already stored for the wamid is linked once, left untouched (status delivered kept) and the preview is not overwritten' || detail);
 END $$;
 
 -- P06: tenant isolation

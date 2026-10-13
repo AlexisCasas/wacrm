@@ -226,6 +226,45 @@ describe.skipIf(!container)('E4.2C3.1 Meta adapter offline through the interpret
     pass('N16', 'stale fencing: the worker whose lease was taken while the request was in flight could not confirm or persist anything (lease_lost, no Inbox row); the next holder recovered it to ambiguous and sent nothing')
   })
 
+  it('N19: a wamid already used by another effect never duplicates, overwrites or advances anything', async () => {
+    const f1 = await flows(); const t1 = new MockMetaTransport()
+    expect(await go(proc(t1), f1.runId, 'w1')).toMatchObject({ kind: 'completed' })
+    const wamid = t1.wamids[0]
+    const [msg1] = await inbox(f1.conversationId); const [link1] = await links(f1.runId); const [eff1] = await effects(f1.runId)
+    // a second run whose provider answers with the SAME wamid
+    const f2 = await flows(); const t2 = new MockMetaTransport(); t2.nextWamid = wamid
+    const before = await h.run(f2.runId)
+    const totalMsgs = await h.psql.sql('select count(*) from public.messages'); const totalLinks = await h.psql.sql('select count(*) from public.flow_run_effect_messages')
+    const out = await go(proc(t2), f2.runId, 'w1')
+    expect(out).toMatchObject({ kind: 'awaiting_effect_resolution' })
+    expect(t2.requests).toHaveLength(1)
+    const [eff2] = await effects(f2.runId)
+    expect(eff2).toMatchObject({ state: 'ambiguous', error_code: 'wamid_conflict', provider_message_id: null, attempt: 1 })
+    const run2 = await h.run(f2.runId)
+    // cursor and budget: only the nodes before the message node ran (start, call, bstart); the message node did not complete
+    expect(run2).toMatchObject({ status: 'active', versioned_node_key: 'bmsg', versioned_messages_executed: 0, versioned_depth: 1 })
+    expect(run2.versioned_revision).toBe(before.versioned_revision + 3)
+    expect(await inbox(f2.conversationId)).toHaveLength(0)
+    expect(await links(f2.runId)).toHaveLength(0)
+    // the first message, its link and its effect are exactly as they were
+    expect(await inbox(f1.conversationId)).toEqual([msg1])
+    expect(await links(f1.runId)).toEqual([link1])
+    expect((await effects(f1.runId))[0]).toEqual(eff1)
+    expect(await h.psql.sql('select count(*) from public.messages')).toBe(totalMsgs)
+    expect(await h.psql.sql('select count(*) from public.flow_run_effect_messages')).toBe(totalLinks)
+    // it keeps waiting (no resend) and a human can resolve it with a DIFFERENT id, which then advances it once
+    expect(await go(proc(t2), f2.runId, 'w2')).toMatchObject({ kind: 'awaiting_effect_resolution' })
+    expect(t2.requests).toHaveLength(1)
+    const q = proc(t2)
+    expect(await resolveAmbiguousEffect(q.runs, q.effects, { accountId: await h.account(), runId: f2.runId, owner: 'operator', effectId: eff2.id, resolution: 'confirmed', evidence: 'synthetic: the real id differs', providerMessageId: wamid })).toMatchObject({ resolved: false, reason: 'provider_message_conflict' })
+    expect(await inbox(f2.conversationId)).toHaveLength(0)
+    expect(await resolveAmbiguousEffect(q.runs, q.effects, { accountId: await h.account(), runId: f2.runId, owner: 'operator', effectId: eff2.id, resolution: 'confirmed', evidence: 'synthetic: the real id differs', providerMessageId: `${wamid}Z` })).toMatchObject({ resolved: true })
+    expect(await go(proc(t2), f2.runId, 'w3')).toMatchObject({ kind: 'completed' })
+    expect(await inbox(f2.conversationId)).toHaveLength(1)
+    expect(t2.requests).toHaveLength(1)
+    pass('N19', 'second run answered with an already-used wamid: recorded as ambiguous/wamid_conflict, no Inbox row or link for it, its cursor stayed on the message node with 0 messages of budget, the first run message, link and effect are byte-identical, row counts unchanged; resolving with the same id is refused again, with a different id it advanced once')
+  })
+
   it('N17/N18: isolation, legacy runs and the absence of network and real credentials', async () => {
     const f = await flows(); const t = new MockMetaTransport()
     const p = proc(t)

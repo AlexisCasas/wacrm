@@ -27,6 +27,8 @@ export class MockMetaTransport implements HttpTransport {
   readonly delivered: Array<{ wamid: string; to: string; body: Record<string, unknown> }> = []
   /** Runs before the behavior is applied (e.g. to take the lease away while a request is in flight). */
   onPost?: (request: RecordedRequest) => Promise<void> | void
+  /** Forces the next accepted request to answer with this exact wamid (to simulate a provider id that is already in use). */
+  nextWamid?: string
   private queue: MetaBehavior[] = []
   private fallback: MetaBehavior = 'accept'
   private counter = 0
@@ -42,7 +44,7 @@ export class MockMetaTransport implements HttpTransport {
     this.requests.push(rec)
     await this.onPost?.(rec)
     const b = this.queue.shift() ?? this.fallback
-    const deliver = () => { const wamid = `wamid.HBg${this.namespace}${++this.counter}AA=`; this.delivered.push({ wamid, to: rec.to, body }); return wamid }
+    const deliver = () => { const wamid = this.nextWamid ?? `wamid.HBg${this.namespace}${++this.counter}AA=`; this.nextWamid = undefined; this.delivered.push({ wamid, to: rec.to, body }); return wamid }
     const err = (status: number, code: number, message: string): HttpResponse => ({ status, body: JSON.stringify({ error: { message, type: 'OAuthException', code, fbtrace_id: 'TRACE' } }) })
     switch (b) {
       case 'accept': return { status: 200, body: JSON.stringify({ messaging_product: 'whatsapp', contacts: [{ input: rec.to, wa_id: rec.to }], messages: [{ id: deliver() }] }) }
