@@ -42,3 +42,9 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# QA staging state (synthetic secrets) and Playwright tooling
+/.qa-staging/
+/qa/flows-safe-save/staging/pw/
+/qa/flows-safe-save/staging/state/
+/qa/flows-safe-save/staging/shots/
