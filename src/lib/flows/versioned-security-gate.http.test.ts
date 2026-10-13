@@ -51,7 +51,7 @@ describe.skipIf(!REST_URL || !container)('F06 security gate over real PostgREST'
   const note = (r: Raw) => { leaks.push(r.text); return r }
 
   /** Engine RPCs and a syntactically valid argument set for each (all must be service_role only). */
-  const run0 = randomUUID(); const eff0 = randomUUID(); const att0 = randomUUID(); const flow0 = randomUUID()
+  const att0 = randomUUID(); const flow0 = randomUUID()
   const ENGINE_RPC = (acct: string, run: string, eff: string): Record<string, Record<string, unknown>> => ({
     acquire_versioned_run_lease: { p_account_id: acct, p_run_id: run, p_owner: 'x', p_ttl_seconds: 60 },
     reclaim_versioned_run_lease: { p_account_id: acct, p_run_id: run, p_owner: 'x', p_ttl_seconds: 60 },
