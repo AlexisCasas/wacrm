@@ -33,12 +33,12 @@ export interface ClaimEffectResult {
 export type SettleOutcome = 'confirmed' | 'failed' | 'ambiguous'
 export interface SettleEffectInput extends EffectCaller { effectId: string; attemptId: string; outcome: SettleOutcome; providerMessageId?: string; errorCode?: string }
 export interface SettleEffectResult {
-  settled: boolean; state: EffectState | null; reason: LeaseRefusal | 'effect_not_current' | 'effect_not_claimed' | 'attempt_mismatch' | null
+  settled: boolean; state: EffectState | null; reason: LeaseRefusal | 'effect_not_current' | 'effect_not_claimed' | 'attempt_mismatch' | 'provider_message_conflict' | null
 }
 export interface RecoveredEffect { effectId: string; previousState: EffectState; newState: EffectState }
 export type ResolveOutcome = 'confirmed' | 'not_sent' | 'failed'
 export interface ResolveEffectInput extends EffectCaller { effectId: string; resolution: ResolveOutcome; evidence: string; providerMessageId?: string }
-export interface ResolveEffectResult { resolved: boolean; state: EffectState | null; reason: LeaseRefusal | 'effect_not_current' | 'effect_not_ambiguous' | null }
+export interface ResolveEffectResult { resolved: boolean; state: EffectState | null; reason: LeaseRefusal | 'effect_not_current' | 'effect_not_ambiguous' | 'provider_message_conflict' | null }
 export interface CommitEffectStepInput extends EffectCaller { expectedRevision: number; effectId: string; checkpoint: unknown }
 export interface CommitEffectStepResult {
   committed: boolean; revision: number; nodesExecuted: number; messagesExecuted: number

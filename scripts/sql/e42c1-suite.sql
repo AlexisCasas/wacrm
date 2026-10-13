@@ -506,7 +506,7 @@ END $$;
 
 -- E17: shape constraints
 DO $$
-DECLARE rid uuid; eid uuid; run public.flow_runs%ROWTYPE; ok boolean := true; detail text := ''; st text; t record;
+DECLARE rid uuid; eid uuid; run public.flow_runs%ROWTYPE; ok boolean := true; detail text := ''; st text; t record; r jsonb;
 BEGIN
   rid := public.qa_flow_run('55000000-0000-4000-8000-0000000000a0', 1022);
   PERFORM public.qa_lease(rid);
@@ -528,8 +528,12 @@ BEGIN
   rid := public.qa_flow_run('55000000-0000-4000-8000-0000000000a0', 1023);
   PERFORM public.qa_lease(rid);
   eid := (public.qa_eff_register(rid, 'w1')->>'effect_id')::uuid;
+  -- since migration 060 settle REFUSES (provider_message_conflict, state untouched) instead of raising 23505
+  r := public.qa_eff_settle(rid, 'w1', eid, (public.qa_eff_claim(rid, 'w1', eid)->>'claimed_attempt_id')::uuid, 'confirmed', 'wamid.UNIQUE');
+  IF NOT (r->>'reason' = 'provider_message_conflict' AND (r->>'settled')::bool = false) OR (SELECT state FROM public.flow_run_effects WHERE id = eid) <> 'claimed' THEN ok := false; detail := detail || ' [duplicate provider id: ' || r::text || ']'; END IF;
+  -- the table constraint itself still forbids it for any writer that bypasses the RPC
   st := NULL;
-  BEGIN PERFORM public.qa_eff_settle(rid, 'w1', eid, (public.qa_eff_claim(rid, 'w1', eid)->>'claimed_attempt_id')::uuid, 'confirmed', 'wamid.UNIQUE'); EXCEPTION WHEN OTHERS THEN st := SQLSTATE; END;
-  IF st IS DISTINCT FROM '23505' THEN ok := false; detail := detail || ' [duplicate provider id: ' || coalesce(st, 'accepted') || ']'; END IF;
+  BEGIN UPDATE public.flow_run_effects SET state = 'confirmed', provider_message_id = 'wamid.UNIQUE', finished_at = now() WHERE id = eid; EXCEPTION WHEN OTHERS THEN st := SQLSTATE; END;
+  IF st IS DISTINCT FROM '23505' THEN ok := false; detail := detail || ' [direct update: ' || coalesce(st, 'accepted') || ']'; END IF;
   PERFORM public.qa_result('E17', ok, 'duplicate (run, revision), confirmed without provider id, claimed without owner, unknown effect type, cross-account run reference, non-object request and a provider message id reused within the account are all rejected by constraints' || detail);
 END $$;

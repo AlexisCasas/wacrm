@@ -306,7 +306,7 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
             outcome = { kind: 'ambiguous', errorCode: 'sender_error' }      // an exception says nothing about delivery
           }
           if (outcome.kind === 'accepted' && (typeof outcome.providerMessageId !== 'string' || !outcome.providerMessageId)) outcome = { kind: 'ambiguous', errorCode: 'accepted_without_id' }
-          const settle = outcome.kind === 'accepted' ? { outcome: 'confirmed' as const, providerMessageId: outcome.providerMessageId }
+          let settle = outcome.kind === 'accepted' ? { outcome: 'confirmed' as const, providerMessageId: outcome.providerMessageId }
             : outcome.kind === 'rejected' ? { outcome: 'failed' as const, errorCode: outcome.errorCode }
             : { outcome: 'ambiguous' as const, errorCode: outcome.errorCode }
 
@@ -317,6 +317,11 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
               if (r.settled) break
               if (r.reason === 'stale_lease' || r.reason === 'lease_expired') return { ...base, steps, kind: 'lease_lost', reason: r.reason }
               if (r.reason === 'run_not_active') return notActive()
+              if (r.reason === 'provider_message_conflict') {
+                // the provider id is already another effect's: keep the attempt, record it as ambiguous for a human to reconcile
+                settle = { outcome: 'ambiguous' as const, errorCode: 'wamid_conflict' }
+                continue
+              }
               const now = await m.effects.loadEffectAt(accountId, runId, run.versioned_revision)
               if (now?.state === 'claimed') return corrupt(`settle refused: ${r.reason ?? 'unknown'}`)
               break
