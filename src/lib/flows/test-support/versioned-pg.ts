@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { createSupabaseRunStore, type VersionedRunStore } from '../versioned-store'
+import { createSupabaseEffectStore, type VersionedEffectStore } from '../versioned-effects'
 import { createPsql, createPsqlSupabaseClient, lit } from './psql-client'
 
 /**
@@ -16,8 +17,11 @@ export type StoreMethod = 'commitTransition' | 'pushSubflow' | 'popSubflow'
 export function createHarness(container: string) {
   const psql = createPsql(container)
   const newStore = (): VersionedRunStore => createSupabaseRunStore(createPsqlSupabaseClient(psql))
+  const newEffectStore = (): VersionedEffectStore => createSupabaseEffectStore(createPsqlSupabaseClient(psql))
   let acct = ''
-  let contactSeq = 700
+  // Every harness numbers its contacts from its own random base: one active run per contact is enforced by the
+  // database, and several test files (and re-runs) share one container.
+  let contactSeq = 100_000 + Math.floor(Math.random() * 8_000_000)
   const account = async () => (acct ||= await psql.sql(`select account_id from public.flows where id='${BASE_FLOW}'`))
 
   async function synth(flowId: string, nodes: NodeSpec[], entry: string): Promise<string> {
@@ -82,6 +86,33 @@ export function createHarness(container: string) {
     return { store: wrapped as unknown as VersionedRunStore, calls }
   }
 
-  return { psql, newStore, account, synth, call, start, end, createRun, run, frames, events, activeVersion, expireLease, id, dyingStore, flakyStore, USER, BASE_FLOW }
+  /**
+   * One simulated OS process: everything wrapped by it (run store, effect store, sender) stops working the moment
+   * the chosen call happens, exactly like a process that was killed. `spec` says after/before which method call.
+   */
+  function processDeath() {
+    let dead = false
+    const wrap = <T extends object>(real: T, spec?: { method: string; when: 'before' | 'after'; nth?: number }): T => {
+      let seen = 0
+      const wrapped = {} as Record<string, unknown>
+      for (const [name, fn] of Object.entries(real) as Array<[string, unknown]>) {
+        if (typeof fn !== 'function') { wrapped[name] = fn; continue }
+        wrapped[name] = async (...args: unknown[]) => {
+          if (dead) throw new Error('process is gone')
+          if (spec && name === spec.method && ++seen === (spec.nth ?? 1)) {
+            if (spec.when === 'before') { dead = true; throw new Error('simulated crash before the call') }
+            await (fn as (...a: unknown[]) => Promise<unknown>).apply(real, args)
+            dead = true
+            throw new Error('simulated crash after the call returned')
+          }
+          return (fn as (...a: unknown[]) => Promise<unknown>).apply(real, args)
+        }
+      }
+      return wrapped as T
+    }
+    return { wrap, isDead: () => dead }
+  }
+
+  return { psql, newStore, newEffectStore, processDeath, account, synth, call, start, end, createRun, run, frames, events, activeVersion, expireLease, id, dyingStore, flakyStore, USER, BASE_FLOW }
 }
 export type Harness = ReturnType<typeof createHarness>
