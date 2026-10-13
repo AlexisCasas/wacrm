@@ -8,10 +8,11 @@ import { ConditionReferenceInfrastructureError, validateConditionReferences } fr
 /**
  * GET   /api/flows/[id]  — fetch one flow with its nodes.
  * PUT   /api/flows/[id]  — replace name/trigger/entry/fallback + the
- *                          full node graph (delete-then-insert under
- *                          the hood; not atomic, but the runner is
- *                          resilient to mid-edit reads — node_not_found
- *                          gracefully ends the run).
+ *                          full node graph in ONE database transaction
+ *                          (replace_flow_draft_atomic, migration 067):
+ *                          either the whole save is applied or nothing
+ *                          changes. A draft may be incomplete; activation,
+ *                          not saving, validates the graph.
  * DELETE /api/flows/[id] — hard delete (RLS+CASCADE clean up nodes,
  *                          runs, events).
  *
@@ -48,6 +49,28 @@ async function requireOwnership(
     return { ok: false, status: 404, body: { error: 'Not found' } }
   }
   return { ok: true, userId: user.id, supabase }
+}
+
+/**
+ * Maps a failed atomic save to a response that explains what happened without echoing database text. In every case the
+ * previous version of the flow is intact: the save is a single transaction.
+ */
+function saveFailure(code: string | undefined) {
+  console.error('[flows PUT] atomic save failed', code ?? 'no-code')
+  switch (code) {
+    case 'P0002':
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    case '22023':
+      return NextResponse.json({ error: 'Invalid flow data. Nothing was saved.' }, { status: 400 })
+    case '23505': // duplicate node_key
+    case '23514': // unknown node_type / bad trigger_type
+    case '23502': // missing node_key / node_type
+    case '22P02': // value of the wrong type
+    case '22003': // number out of range
+      return NextResponse.json({ error: 'The flow definition is not valid (for example a duplicated or unknown node). Nothing was saved.' }, { status: 422 })
+    default:
+      return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
+  }
 }
 
 export async function GET(
@@ -108,10 +131,12 @@ export async function PUT(
     if (body.name !== undefined && !body.name.trim()) {
       return NextResponse.json({ error: 'name cannot be empty' }, { status: 400 })
     }
+    if (body.nodes !== undefined && !Array.isArray(body.nodes)) {
+      return NextResponse.json({ error: 'nodes must be an array' }, { status: 400 })
+    }
 
     const admin = supabaseAdmin()
-    // Validate ALL external references before the existing delete+insert
-    // replacement starts, so an invalid request cannot leave partial nodes.
+    // Validate ALL external references before anything is written, so an invalid request never reaches the database.
     if (body.nodes !== undefined) {
       const capabilityEnabled = isCustomConditionEnabledForAccount(account.accountId)
       const { data: currentNodes, error: currentNodesError } = !capabilityEnabled
@@ -128,12 +153,8 @@ export async function PUT(
       if (issues.length) return NextResponse.json({ error: 'Invalid condition reference', issues }, { status: 422 })
     }
 
-    // Update the flow row first — the body may not include `nodes` (a
-    // header-only save for editing the trigger config without touching
-    // the graph). Skip node replacement in that case.
-    const flowPatch: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
-    }
+    // Only the fields the client sent are patched: a header-only save (no `nodes`) leaves the graph alone.
+    const flowPatch: Record<string, unknown> = {}
     if (body.name !== undefined) flowPatch.name = body.name.trim()
     if (body.description !== undefined) flowPatch.description = body.description
     if (body.trigger_type !== undefined) flowPatch.trigger_type = body.trigger_type
@@ -141,16 +162,15 @@ export async function PUT(
     if (body.entry_node_id !== undefined) flowPatch.entry_node_id = body.entry_node_id
     if (body.fallback_policy !== undefined) flowPatch.fallback_policy = body.fallback_policy
 
-    const { error: updErr } = await admin.from('flows').update(flowPatch).eq('id', id)
-    if (updErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
-    if (body.nodes !== undefined) {
-      const { error: delErr } = await admin.from('flow_nodes').delete().eq('flow_id', id)
-      if (delErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
-      if (body.nodes.length) {
-        const { error: insErr } = await admin.from('flow_nodes').insert(body.nodes.map((n) => ({ flow_id: id, node_key: n.node_key, node_type: n.node_type, config: n.config, position_x: n.position_x ?? 0, position_y: n.position_y ?? 0 })))
-        if (insErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
-      }
-    }
+    // ONE call = ONE transaction. The account comes from the authenticated session (requireRole), never from the
+    // request body, and the function only writes a flow that belongs to it.
+    const { error: saveErr } = await admin.rpc('replace_flow_draft_atomic', {
+      p_account_id: account.accountId,
+      p_flow_id: id,
+      p_patch: flowPatch,
+      p_nodes: body.nodes === undefined ? null : body.nodes.map((n) => ({ node_key: n.node_key, node_type: n.node_type, config: n.config, position_x: n.position_x ?? 0, position_y: n.position_y ?? 0 })),
+    })
+    if (saveErr) return saveFailure(saveErr.code)
     const [{ data: flow }, { data: nodes }] = await Promise.all([
       admin.from('flows').select('*').eq('id', id).maybeSingle(),
       admin.from('flow_nodes').select('*').eq('flow_id', id).order('created_at', { ascending: true }),
