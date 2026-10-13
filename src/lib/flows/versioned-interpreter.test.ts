@@ -14,7 +14,7 @@ const versionRow = (nodes: unknown[], over = {}) => ({ id: V, flow_id: 'flow-1',
 const runRow = (over: Partial<VersionedRunRow> = {}): VersionedRunRow => ({
   id: RUN, account_id: A, flow_id: 'flow-1', status: 'active', execution_mode: 'versioned', root_flow_version_id: V, current_flow_version_id: V, versioned_node_key: 'start',
   versioned_nodes_executed: 0, versioned_messages_executed: 0, versioned_depth: 0, versioned_checkpoint: { cursor: { flow_version_id: V, node_key: 'start' }, step: 0 },
-  versioned_lease: 0, versioned_revision: 0, versioned_lease_owner: null, versioned_lease_expires_at: null, ...over,
+  versioned_lease: 1, versioned_revision: 0, versioned_lease_owner: 'w1', versioned_lease_expires_at: 'x', ...over,
 })
 
 function stubStore(over: Partial<VersionedRunStore> = {}): VersionedRunStore & { calls: string[] } {
@@ -29,6 +29,8 @@ function stubStore(over: Partial<VersionedRunStore> = {}): VersionedRunStore & {
     renewLease: track('renew', { renewed: true, leaseExpiresAt: 'x', reason: null }),
     releaseLease: track('release', { released: true, reason: null }),
     commitTransition: track('commit', { committed: true, revision: 1, reason: null, nodesExecuted: 1, messagesExecuted: 0 }),
+    pushSubflow: track('push', { committed: true, revision: 1, reason: null, newDepth: 1, cursorFlowVersionId: 'v2', cursorNodeKey: 'entry', nodesExecuted: 1, messagesExecuted: 0 }),
+    popSubflow: track('pop', { committed: true, revision: 1, reason: null, newDepth: 0, cursorFlowVersionId: V, cursorNodeKey: 'x', nodesExecuted: 1, messagesExecuted: 0 }),
     ...over,
   }
   return Object.assign(store, { calls })
@@ -118,9 +120,12 @@ describe('runVersionedFlow control flow (stubbed store)', () => {
     const store = stubStore({ loadRun: vi.fn().mockResolvedValueOnce(runRow()).mockResolvedValue(runRow({ versioned_node_key: 'end' })) })
     expect(await runVersionedFlow(store, opts)).toMatchObject({ kind: 'corrupt_checkpoint' })
   })
-  it('on a thrown error (process death) leaves the lease alone', async () => {
-    const store = stubStore({ commitTransition: async () => { throw new Error('boom') } })
-    await expect(runVersionedFlow(store, opts)).rejects.toThrow('boom')
+  it('a dead process (every later call fails) leaves the lease alone', async () => {
+    const store = stubStore({
+      loadRun: vi.fn().mockResolvedValueOnce(runRow()).mockResolvedValueOnce(runRow()).mockRejectedValue(new Error('process is gone')),
+      commitTransition: async () => { throw new Error('boom') },
+    })
+    await expect(runVersionedFlow(store, opts)).rejects.toThrow('process is gone')
     expect(store.calls).toEqual(['acquire'])
   })
   it('treats stale_lease / lease_expired commits as lease_lost without releasing', async () => {

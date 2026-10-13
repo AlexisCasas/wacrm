@@ -60,3 +60,13 @@ export function parseVersionedCheckpoint(value: unknown): VersionedCheckpoint | 
   if (value.failure !== undefined && value.failure !== null && typeof value.failure !== 'string') return null
   return { cursor: { flow_version_id, node_key }, step: value.step, state, confirmed, failure: typeof value.failure === 'string' ? value.failure : null }
 }
+
+export interface ExecuteFlowConfig { target_flow_id: string; next_node_key: string }
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Contract of an `execute_flow` node in a published snapshot; null when it is not usable. */
+export function parseExecuteFlowConfig(config: unknown): ExecuteFlowConfig | null {
+  if (!record(config) || typeof config.target_flow_id !== 'string' || !UUID_RE.test(config.target_flow_id)) return null
+  if (typeof config.next_node_key !== 'string' || !config.next_node_key) return null
+  return { target_flow_id: config.target_flow_id.toLowerCase(), next_node_key: config.next_node_key }
+}

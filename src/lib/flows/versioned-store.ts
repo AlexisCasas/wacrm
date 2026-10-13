@@ -29,6 +29,17 @@ export interface CommitInput {
 }
 export interface CommitResult { committed: boolean; revision: number; reason: CommitDenial | null; nodesExecuted: number; messagesExecuted: number }
 
+export type SubflowDenial = CommitDenial | 'cursor_mismatch' | 'depth_exceeded' | 'recursion_detected' | 'no_frame' | 'cursor_not_at_end'
+export interface PushSubflowInput {
+  accountId: string; runId: string; owner: string; fencingToken: number; expectedRevision: number
+  callNodeKey: string; returnNodeKey: string; targetFlowId: string
+}
+export interface PopSubflowInput { accountId: string; runId: string; owner: string; fencingToken: number; expectedRevision: number }
+export interface SubflowResult {
+  committed: boolean; revision: number; reason: SubflowDenial | null; newDepth: number
+  cursorFlowVersionId: string | null; cursorNodeKey: string | null; nodesExecuted: number; messagesExecuted: number
+}
+
 export interface VersionedRunStore {
   loadRun(accountId: string, runId: string): Promise<VersionedRunRow | null>
   loadVersion(accountId: string, versionId: string): Promise<FlowVersionRow | null>
@@ -38,6 +49,10 @@ export interface VersionedRunStore {
   renewLease(accountId: string, runId: string, owner: string, fencingToken: number, ttlSeconds: number): Promise<RenewResult>
   releaseLease(accountId: string, runId: string, owner: string, fencingToken: number): Promise<ReleaseResult>
   commitTransition(input: CommitInput): Promise<CommitResult>
+  /** The only authorised way to change flow version: pushes a call frame and enters the target's pinned version. */
+  pushSubflow(input: PushSubflowInput): Promise<SubflowResult>
+  /** Returns to the caller recorded in the top frame (valid only while the callee cursor is on an END node). */
+  popSubflow(input: PopSubflowInput): Promise<SubflowResult>
 }
 
 const RUN_COLUMNS = 'id,account_id,flow_id,status,execution_mode,root_flow_version_id,current_flow_version_id,versioned_node_key,versioned_nodes_executed,versioned_messages_executed,versioned_depth,versioned_checkpoint,versioned_lease,versioned_revision,versioned_lease_owner,versioned_lease_expires_at'
@@ -75,6 +90,11 @@ export function createSupabaseRunStore(client: SupabaseClient): VersionedRunStor
     acquired: toBool(row.acquired, 'acquired'), fencingToken: toInt(row.fencing_token, 'fencing_token'),
     leaseExpiresAt: toNullableString(row.lease_expires_at, 'lease_expires_at'), revision: toInt(row.revision, 'revision'),
     reason: toNullableString(row.reason, 'reason') as LeaseDenial | null,
+  })
+  const subflow = (row: Record<string, unknown>): SubflowResult => ({
+    committed: toBool(row.committed, 'committed'), revision: toInt(row.revision, 'revision'), reason: toNullableString(row.reason, 'reason') as SubflowDenial | null,
+    newDepth: toInt(row.new_depth, 'new_depth'), cursorFlowVersionId: toNullableString(row.cursor_flow_version_id, 'cursor_flow_version_id'),
+    cursorNodeKey: toNullableString(row.cursor_node_key, 'cursor_node_key'), nodesExecuted: toInt(row.nodes_executed, 'nodes_executed'), messagesExecuted: toInt(row.messages_executed, 'messages_executed'),
   })
   return {
     async loadRun(accountId, runId) {
@@ -118,6 +138,17 @@ export function createSupabaseRunStore(client: SupabaseClient): VersionedRunStor
       })
       return { committed: toBool(row.committed, 'committed'), revision: toInt(row.revision, 'revision'), reason: toNullableString(row.reason, 'reason') as CommitDenial | null,
         nodesExecuted: toInt(row.nodes_executed, 'nodes_executed'), messagesExecuted: toInt(row.messages_executed, 'messages_executed') }
+    },
+    async pushSubflow(i) {
+      return subflow(await rpc('push_versioned_run_subflow', {
+        p_account_id: i.accountId, p_run_id: i.runId, p_owner: i.owner, p_fencing_token: i.fencingToken, p_expected_revision: i.expectedRevision,
+        p_call_node_key: i.callNodeKey, p_return_node_key: i.returnNodeKey, p_target_flow_id: i.targetFlowId,
+      }))
+    },
+    async popSubflow(i) {
+      return subflow(await rpc('pop_versioned_run_subflow', {
+        p_account_id: i.accountId, p_run_id: i.runId, p_owner: i.owner, p_fencing_token: i.fencingToken, p_expected_revision: i.expectedRevision,
+      }))
     },
   }
 }
