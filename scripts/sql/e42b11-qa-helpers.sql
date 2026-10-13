@@ -147,3 +147,58 @@ CREATE OR REPLACE FUNCTION public.qa_stack_ok(p_run uuid) RETURNS boolean LANGUA
      AND (r.versioned_checkpoint #>> '{cursor,node_key}') = r.versioned_node_key
   FROM public.flow_runs r WHERE r.id = p_run
 $$;
+
+-- C1 helpers (effect ledger). They read the run's current lease token / revision, like qa_push/qa_pop.
+CREATE OR REPLACE FUNCTION public.qa_eff_register(p_run uuid, p_owner text, p_type text DEFAULT 'send_message', p_request jsonb DEFAULT '{"text":"hello"}') RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE; r record;
+BEGIN
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO r FROM public.register_versioned_effect(run.account_id, p_run, p_owner, run.versioned_lease, run.versioned_revision, p_type, p_request);
+  RETURN to_jsonb(r);
+END $$;
+CREATE OR REPLACE FUNCTION public.qa_eff_claim(p_run uuid, p_owner text, p_effect uuid) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE; r record;
+BEGIN
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO r FROM public.claim_versioned_effect(run.account_id, p_run, p_owner, run.versioned_lease, p_effect);
+  RETURN to_jsonb(r);
+END $$;
+CREATE OR REPLACE FUNCTION public.qa_eff_settle(p_run uuid, p_owner text, p_effect uuid, p_attempt uuid, p_outcome text, p_provider text DEFAULT NULL, p_error text DEFAULT NULL) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE; r record;
+BEGIN
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO r FROM public.settle_versioned_effect(run.account_id, p_run, p_owner, run.versioned_lease, p_effect, p_attempt, p_outcome, p_provider, p_error);
+  RETURN to_jsonb(r);
+END $$;
+CREATE OR REPLACE FUNCTION public.qa_eff_step(p_run uuid, p_owner text, p_effect uuid, p_node text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE; r record;
+BEGIN
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO r FROM public.commit_versioned_effect_step(run.account_id, p_run, p_owner, run.versioned_lease, run.versioned_revision, p_effect,
+    jsonb_build_object('cursor', jsonb_build_object('flow_version_id', run.current_flow_version_id, 'node_key', p_node), 'step', (run.versioned_checkpoint->>'step')::int + 1));
+  RETURN to_jsonb(r);
+END $$;
+CREATE OR REPLACE FUNCTION public.qa_eff_recover(p_run uuid, p_owner text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE;
+BEGIN
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  RETURN COALESCE((SELECT jsonb_agg(to_jsonb(r)) FROM public.recover_versioned_run_effects(run.account_id, p_run, p_owner, run.versioned_lease) r), '[]'::jsonb);
+END $$;
+CREATE OR REPLACE FUNCTION public.qa_eff_resolve(p_run uuid, p_owner text, p_effect uuid, p_resolution text, p_evidence text, p_provider text DEFAULT NULL) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE; r record;
+BEGIN
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO r FROM public.resolve_versioned_effect(run.account_id, p_run, p_owner, run.versioned_lease, p_effect, p_resolution, p_evidence, p_provider);
+  RETURN to_jsonb(r);
+END $$;
+-- Whole happy path for the pending message node: register, claim, confirm, advance. Returns the effect id.
+CREATE OR REPLACE FUNCTION public.qa_eff_full(p_run uuid, p_owner text, p_next text, p_request jsonb DEFAULT '{"text":"hello"}') RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE reg jsonb; clm jsonb; st jsonb; eid uuid;
+BEGIN
+  reg := public.qa_eff_register(p_run, p_owner, 'send_message', p_request);
+  eid := (reg->>'effect_id')::uuid;
+  clm := public.qa_eff_claim(p_run, p_owner, eid);
+  st := public.qa_eff_settle(p_run, p_owner, eid, (clm->>'claimed_attempt_id')::uuid, 'confirmed', 'wamid.' || gen_random_uuid()::text);
+  IF NOT (public.qa_eff_step(p_run, p_owner, eid, p_next)->>'committed')::bool THEN RAISE EXCEPTION 'qa_eff_full: step refused'; END IF;
+  RETURN eid;
+END $$;
