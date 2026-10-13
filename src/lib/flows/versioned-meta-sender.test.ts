@@ -2,9 +2,9 @@ import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { sanitizePhoneForMeta } from '../whatsapp/phone-utils'
-import { sendMediaMessage, sendTextMessage } from '../whatsapp/meta-api'
+import { parseRetryAfterSeconds, sendMediaMessage, sendTextMessage } from '../whatsapp/meta-api'
 import { MockMetaTransport } from './test-support/mock-meta-transport'
-import { buildMetaRequestBody, createMetaEffectSender, HttpTransportError, META_GRAPH_BASE_URL, type MetaSenderEvent, type MetaSendContext } from './versioned-meta-sender'
+import { buildMetaRequestBody, createMetaEffectSender, HttpTransportError, isRateLimited, META_GRAPH_BASE_URL, parseRetryAfter, type MetaSenderEvent, type MetaSendContext } from './versioned-meta-sender'
 import type { OutboundPayload, OutboundRequest } from './versioned-messaging'
 
 const TOKEN = 'SYNTHETIC-TOKEN-NOT-REAL-9f3a'
@@ -61,7 +61,7 @@ describe('classification', () => {
     expect(t.requests).toHaveLength(1)
   })
   it.each([
-    ['invalid_param', 'meta_100'], ['undeliverable', 'undeliverable'], ['auth_error', 'auth_error'], ['rate_limited', 'rate_limited'],
+    ['invalid_param', 'meta_100'], ['undeliverable', 'undeliverable'], ['auth_error', 'auth_error'],
   ] as const)('definitive refusal %s -> rejected/%s with a single request', async (behavior, code) => {
     const t = new MockMetaTransport().script(behavior); const { sender } = make(t)
     expect(await sender.send(req(TEXT))).toEqual({ kind: 'rejected', errorCode: code })
@@ -103,6 +103,64 @@ describe('classification', () => {
     expect(await make(t, { context: { ok: false, kind: 'config_unavailable', code: 'whatsapp_not_configured' } }).sender.send(req(TEXT))).toEqual({ kind: 'not_dispatched', errorCode: 'whatsapp_not_configured' })
     expect(await make(t, { resolve: async () => { throw new Error('db down') } }).sender.send(req(TEXT))).toEqual({ kind: 'not_dispatched', errorCode: 'context_error' })
     expect(t.requests).toHaveLength(0)
+  })
+})
+
+describe('temporary rejections (HTTP 429 / Meta throttling)', () => {
+  it('HTTP 429 is a retryable rejection, not a definitive rejection and not not_dispatched', async () => {
+    const t = new MockMetaTransport().script('rate_limited'); const { sender, events } = make(t)
+    const out = await sender.send(req(TEXT))
+    expect(out).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited' })
+    expect(t.requests).toHaveLength(1); expect(t.delivered).toHaveLength(0)
+    expect(events.at(-1)).toMatchObject({ classification: 'retryable_rejection', httpStatus: 429, metaCode: 131056 })
+  })
+  it('carries a valid Retry-After and ignores a missing or unusable one', async () => {
+    const run = async (header: string | undefined) => {
+      const t = new MockMetaTransport().script('rate_limited'); t.retryAfterHeader = header
+      return make(t).sender.send(req(TEXT))
+    }
+    expect(await run('120')).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited', retryAfterSeconds: 120 })
+    expect(await run(undefined)).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited' })
+    for (const bad of ['', 'soon', '0', '-5', '1.5', '12abc']) expect(await run(bad), bad).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited' })
+    expect(await run('999999')).toEqual({ kind: 'retryable_rejection', errorCode: 'rate_limited', retryAfterSeconds: 86400 })
+  })
+  it('Meta throttling codes count even when the HTTP status is 400', async () => {
+    const t = new MockMetaTransport().script('throttled_400')
+    expect(await make(t).sender.send(req(TEXT))).toMatchObject({ kind: 'retryable_rejection', errorCode: 'rate_limited' })
+    expect(isRateLimited(429, {})).toBe(true); expect(isRateLimited(400, { code: 131056 })).toBe(true); expect(isRateLimited(400, { code: 130429 })).toBe(true)
+    expect(isRateLimited(400, { code: 80007 })).toBe(true); expect(isRateLimited(400, { code: 100 })).toBe(false); expect(isRateLimited(500, {})).toBe(false)
+  })
+  it('the other classes are unchanged: 400 definitive, 5xx and timeouts ambiguous, nothing before transmission', async () => {
+    expect(await make(new MockMetaTransport().script('invalid_param')).sender.send(req(TEXT))).toEqual({ kind: 'rejected', errorCode: 'meta_100' })
+    expect(await make(new MockMetaTransport().script('server_error')).sender.send(req(TEXT))).toEqual({ kind: 'ambiguous', errorCode: 'http_500' })
+    expect(await make(new MockMetaTransport().script('accept_then_timeout')).sender.send(req(TEXT))).toEqual({ kind: 'ambiguous', errorCode: 'transport_timeout' })
+    expect(await make(new MockMetaTransport().script('refused_before_send')).sender.send(req(TEXT))).toEqual({ kind: 'not_dispatched', errorCode: 'connect_refused' })
+  })
+  it('the rate limit is never retried inside the adapter', async () => {
+    const t = new MockMetaTransport().setDefault('rate_limited'); await make(t).sender.send(req(TEXT))
+    expect(t.requests).toHaveLength(1)
+  })
+})
+
+describe('parseRetryAfter', () => {
+  const NOW = Date.parse('2026-10-14T10:00:00Z')
+  it('reads delta-seconds and HTTP-dates, case-insensitively, and bounds the result to 1..86400', () => {
+    expect(parseRetryAfter({ 'Retry-After': '30' }, NOW)).toBe(30)
+    expect(parseRetryAfter({ 'retry-after': ' 45 ' }, NOW)).toBe(45)
+    expect(parseRetryAfter({ 'RETRY-AFTER': '1' }, NOW)).toBe(1)
+    expect(parseRetryAfter({ 'Retry-After': 'Wed, 14 Oct 2026 10:02:00 GMT' }, NOW)).toBe(120)
+    expect(parseRetryAfter({ 'Retry-After': 'Wed, 14 Oct 2026 10:00:01 GMT' }, NOW)).toBe(1)
+    expect(parseRetryAfter({ 'Retry-After': 'Wed, 14 Oct 2026 10:00:00 GMT' }, NOW)).toBeUndefined()      // not in the future: unusable
+    expect(parseRetryAfter({ 'Retry-After': 'Wed, 14 Oct 2026 09:00:00 GMT' }, NOW)).toBeUndefined()
+    expect(parseRetryAfter({ 'Retry-After': 'Fri, 16 Oct 2026 10:00:00 GMT' }, NOW)).toBe(86400)
+    for (const bad of ['', '0', '-1', 'abc', '1e3', '99999999999']) expect(parseRetryAfter({ 'Retry-After': bad }, NOW), bad).toBeUndefined()
+    expect(parseRetryAfter(undefined, NOW)).toBeUndefined(); expect(parseRetryAfter({}, NOW)).toBeUndefined()
+  })
+  it('agrees with the legacy parser on every value both consider valid and in range', () => {
+    for (const v of ['1', '30', '120', '3600', 'Wed, 14 Oct 2026 10:02:00 GMT']) {
+      expect(parseRetryAfter({ 'Retry-After': v }, NOW), v).toBe(parseRetryAfterSeconds(v, new Date(NOW)))
+    }
+    for (const v of [null, '', '0', '-3', 'garbage']) expect(parseRetryAfter({ 'Retry-After': v ?? '' }, NOW)).toBe(parseRetryAfterSeconds(v, new Date(NOW)) || undefined)
   })
 })
 

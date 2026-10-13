@@ -28,7 +28,7 @@ export interface RegisterEffectResult {
 }
 export interface ClaimEffectResult {
   claimed: boolean; state: EffectState | null; attempt: number | null; attemptId: string | null
-  reason: LeaseRefusal | 'effect_not_current' | 'effect_not_pending' | null
+  reason: LeaseRefusal | 'effect_not_current' | 'effect_not_pending' | 'retry_not_due' | null
 }
 export type SettleOutcome = 'confirmed' | 'failed' | 'ambiguous'
 export interface SettleEffectInput extends EffectCaller { effectId: string; attemptId: string; outcome: SettleOutcome; providerMessageId?: string; errorCode?: string }
@@ -53,12 +53,25 @@ export interface EffectRow {
   contact_id: string | null; conversation_id: string | null
   /** What the sender must send. Written once at registration and never rebuilt from run variables. */
   request: Record<string, unknown>; payload_hash: string; provider_message_id: string | null; error_code: string | null
+  /** Set while the effect waits after a temporary rejection; claim is refused until PostgreSQL's clock passes it. */
+  retry_not_before: string | null
 }
 
 /** One row of the Inbox repair report. `failed.reason` is the SQLSTATE; no message content is ever returned. */
 export interface InboxRepairRow { effectId: string; messageId: string | null; outcome: 'created' | 'already_persisted' | 'skipped' | 'failed'; reason: string | null }
 
+export interface DeferEffectInput extends EffectCaller { effectId: string; attemptId: string; retryAfterSeconds?: number; errorCode?: string }
+export interface DeferEffectResult {
+  deferred: boolean; state: EffectState | null; retryNotBefore: string | null; waitSeconds: number | null
+  reason: LeaseRefusal | 'effect_not_current' | 'effect_not_claimed' | 'attempt_mismatch' | null
+}
+
 export interface VersionedEffectStore {
+  /**
+   * Re-opens a claimed attempt that the provider refused for a provably temporary reason (rate limit): back to pending
+   * with a persisted retry time (Retry-After when valid, else backoff by attempt), attempt counter and budget untouched.
+   */
+  deferEffect(input: DeferEffectInput): Promise<DeferEffectResult>
   /**
    * Repairs the Inbox of a run in ANY state (also completed / failed): creates the message and link that a confirmed
    * effect is missing, nothing else. No lease, no run change, never contacts the provider; service_role only.
@@ -109,6 +122,12 @@ export function createSupabaseEffectStore(client: SupabaseClient): VersionedEffe
   }
   const who = (c: EffectCaller) => ({ p_account_id: c.accountId, p_run_id: c.runId, p_owner: c.owner, p_fencing_token: c.fencingToken })
   return {
+    async deferEffect(i) {
+      const row = firstRow(await rpc('defer_versioned_effect', { ...who(i), p_effect_id: i.effectId, p_attempt_id: i.attemptId,
+        p_retry_after_seconds: i.retryAfterSeconds ?? null, p_error_code: i.errorCode ?? null }), 'defer_versioned_effect')
+      return { deferred: toBool(row.deferred, 'deferred'), state: toStr(row.effect_state, 'effect_state') as EffectState | null, retryNotBefore: toStr(row.not_before, 'not_before'),
+        waitSeconds: toNullableInt(row.wait_seconds, 'wait_seconds'), reason: toStr(row.reason, 'reason') as DeferEffectResult['reason'] }
+    },
     async repairInbox(accountId, runId) {
       const data = await rpc('repair_versioned_run_inbox', { p_account_id: accountId, p_run_id: runId })
       const rows = Array.isArray(data) ? data : data ? [data] : []
@@ -119,7 +138,7 @@ export function createSupabaseEffectStore(client: SupabaseClient): VersionedEffe
     },
     async loadEffectAt(accountId, runId, occurrenceRevision) {
       const { data, error } = await client.from('flow_run_effects')
-        .select('id,account_id,flow_run_id,flow_version_id,node_key,occurrence_revision,effect_type,state,attempt,attempt_id,claimed_owner,claimed_fencing_token,contact_id,conversation_id,request,payload_hash,provider_message_id,error_code')
+        .select('id,account_id,flow_run_id,flow_version_id,node_key,occurrence_revision,effect_type,state,attempt,attempt_id,claimed_owner,claimed_fencing_token,contact_id,conversation_id,request,payload_hash,provider_message_id,error_code,retry_not_before')
         .eq('account_id', accountId).eq('flow_run_id', runId).eq('occurrence_revision', occurrenceRevision).maybeSingle()
       if (error) throw new VersionedStoreError(error.code || 'query_error', `flow_run_effects: ${error.message}`)
       if (!data) return null

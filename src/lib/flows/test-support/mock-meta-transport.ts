@@ -13,12 +13,13 @@ import { HttpTransportError, type HttpRequest, type HttpResponse, type HttpTrans
  *   invalid_param          400 / 100
  *   undeliverable          400 / 131026
  *   auth_error             401 / 190
- *   rate_limited           429 / 131056
+ *   rate_limited           429 / 131056 (+ Retry-After when `retryAfterHeader` is set)
+ *   throttled_400          400 / 130429 (Meta throttling that does not use HTTP 429)
  *   server_error           500 (not delivered, but the caller cannot know)
  *   accepted_no_id         200 with a body that has no message id (delivered)
  */
 export type MetaBehavior = 'accept' | 'accept_then_timeout' | 'lost_response' | 'reset_in_flight' | 'refused_before_send' | 'not_allowed'
-  | 'invalid_param' | 'undeliverable' | 'auth_error' | 'rate_limited' | 'server_error' | 'accepted_no_id'
+  | 'invalid_param' | 'undeliverable' | 'auth_error' | 'rate_limited' | 'throttled_400' | 'server_error' | 'accepted_no_id'
 
 export interface RecordedRequest { url: string; headers: Record<string, string>; body: Record<string, unknown>; to: string }
 
@@ -27,6 +28,8 @@ export class MockMetaTransport implements HttpTransport {
   readonly delivered: Array<{ wamid: string; to: string; body: Record<string, unknown> }> = []
   /** Runs before the behavior is applied (e.g. to take the lease away while a request is in flight). */
   onPost?: (request: RecordedRequest) => Promise<void> | void
+  /** Retry-After header sent with the next rate_limited answer (undefined = none). */
+  retryAfterHeader?: string
   /** Forces the next accepted request to answer with this exact wamid (to simulate a provider id that is already in use). */
   nextWamid?: string
   private queue: MetaBehavior[] = []
@@ -56,7 +59,8 @@ export class MockMetaTransport implements HttpTransport {
       case 'invalid_param': return err(400, 100, 'Invalid parameter')
       case 'undeliverable': return err(400, 131026, 'Message undeliverable')
       case 'auth_error': return err(401, 190, 'Invalid OAuth access token')
-      case 'rate_limited': return err(429, 131056, 'Pair rate limit hit')
+      case 'rate_limited': { const r = err(429, 131056, 'Pair rate limit hit'); return this.retryAfterHeader === undefined ? r : { ...r, headers: { 'Retry-After': this.retryAfterHeader } } }
+      case 'throttled_400': return err(400, 130429, 'Rate limit hit')
       case 'server_error': return { status: 500, body: JSON.stringify({ error: { message: 'Service temporarily unavailable', code: 2 } }) }
       case 'accepted_no_id': deliver(); return { status: 200, body: JSON.stringify({ messaging_product: 'whatsapp', messages: [] }) }
     }

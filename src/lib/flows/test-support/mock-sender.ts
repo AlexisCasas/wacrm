@@ -10,8 +10,9 @@ import type { EffectSender, OutboundRequest, SendOutcome } from '../versioned-me
  *   timeout_not_delivered      NOT delivered, answer = ambiguous (the interpreter cannot know)
  *   fail_before_send           NOT delivered, answer = not_dispatched (provably never handed over)
  *   permanent_failure          NOT delivered, answer = rejected
+ *   rate_limited               NOT delivered, answer = retryable_rejection (with `retryAfterSeconds` when set)
  */
-export type MockBehavior = 'accept' | 'accept_then_timeout' | 'accept_then_lose_response' | 'timeout_not_delivered' | 'fail_before_send' | 'permanent_failure'
+export type MockBehavior = 'accept' | 'accept_then_timeout' | 'accept_then_lose_response' | 'timeout_not_delivered' | 'fail_before_send' | 'permanent_failure' | 'rate_limited'
 
 export class MockEffectSender implements EffectSender {
   /** Every request handed to send(), in order (including those that were not delivered). */
@@ -20,6 +21,8 @@ export class MockEffectSender implements EffectSender {
   readonly delivered: Array<{ providerMessageId: string; request: OutboundRequest }> = []
   /** Runs before the behavior is applied (e.g. to steal the lease while a send is in flight). */
   onSend?: (request: OutboundRequest) => Promise<void> | void
+  /** Retry-After carried by the next `rate_limited` answer. */
+  retryAfterSeconds?: number
   private queue: MockBehavior[] = []
   private fallback: MockBehavior = 'accept'
   private counter = 0
@@ -42,6 +45,7 @@ export class MockEffectSender implements EffectSender {
       case 'timeout_not_delivered': return { kind: 'ambiguous', errorCode: 'timeout' }
       case 'fail_before_send': return { kind: 'not_dispatched', errorCode: 'connect_refused' }
       case 'permanent_failure': return { kind: 'rejected', errorCode: 'invalid_recipient' }
+      case 'rate_limited': return { kind: 'retryable_rejection', errorCode: 'rate_limited', ...(this.retryAfterSeconds ? { retryAfterSeconds: this.retryAfterSeconds } : {}) }
     }
   }
 

@@ -35,12 +35,16 @@ export interface OutboundRequest {
  * - accepted        the provider took the message (id recorded)
  * - rejected        the provider refused it with certainty
  * - ambiguous       outcome unknown (timeout, lost response...): the message may or may not have gone out
+ * - retryable_rejection  the provider received the request and refused it for a TEMPORARY reason (rate limit): proof that
+ *                   the message was not accepted, but not a business failure. The effect is re-opened with a persisted
+ *                   wait (`retryAfterSeconds` when the provider sent a valid Retry-After) instead of failing the run
  * - not_dispatched  failed with proof that the request never reached the provider; the ONLY outcome that can
- *                   justify an automatic retry
+ *                   justify an immediate automatic retry
  */
 export type SendOutcome =
   | { kind: 'accepted'; providerMessageId: string }
   | { kind: 'rejected'; errorCode: string }
+  | { kind: 'retryable_rejection'; errorCode: string; retryAfterSeconds?: number }
   | { kind: 'ambiguous'; errorCode?: string }
   | { kind: 'not_dispatched'; errorCode?: string }
 
@@ -51,6 +55,11 @@ export interface MessagingOptions {
   sender: EffectSender
   /** Automatic re-sends after `not_dispatched` within one invocation. Default 2. */
   maxNotDispatchedRetries?: number
+  /**
+   * Attempts after which a temporary rejection (rate limit) stops being deferred and fails the effect as
+   * `rate_limit_exhausted`. Default 6. Deferrals never retry within the invocation: the wait is persisted.
+   */
+  maxRetryableAttempts?: number
 }
 
 /** `{{vars.name}}` interpolation with the legacy runner's semantics (missing values render as empty). */

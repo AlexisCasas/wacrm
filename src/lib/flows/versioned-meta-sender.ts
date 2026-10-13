@@ -12,6 +12,9 @@ import type { EffectSender, OutboundPayload, OutboundRequest, SendOutcome } from
  * Classification (the rule the ledger depends on):
  *   accepted        2xx with a well-formed wamid
  *   rejected        Meta received the request and refused it (4xx with a verdict): definitive
+ *   retryable_rejection  Meta refused it because of a rate limit (HTTP 429, or code 131056 / 130429 / 80007): the message
+ *                   was not accepted, but this says nothing about the business outcome. `retryAfterSeconds` carries a
+ *                   valid Retry-After; the ledger persists the wait and the run keeps waiting instead of failing
  *   not_dispatched  PROVEN that no byte of any request left (the transport says so, or we never built a request)
  *   ambiguous       everything else once transmission may have started: timeouts, resets, aborts, lost or malformed
  *                   responses, 5xx, 408, a 2xx without a usable id. Never retried here.
@@ -74,6 +77,8 @@ export interface MetaSenderOptions {
    * sender until the field has been validated against the real API.
    */
   callbackData?: 'none' | 'attempt'
+  /** Clock used to read an HTTP-date Retry-After. Defaults to Date.now. */
+  now?: () => number
 }
 
 const WAMID = /^wamid\.[A-Za-z0-9+/=_-]{4,190}$/
@@ -101,9 +106,36 @@ function parseError(data: unknown): ParsedError {
 }
 const mask = (phone: string) => `***${phone.slice(-4)}`
 
+const RATE_LIMIT_CODES = new Set([131056, 130429, 80007])
+/** Meta's own rate-limit answers: HTTP 429, or one of its throttling error codes whatever the HTTP status. */
+export function isRateLimited(status: number, meta: { code?: number }): boolean {
+  return status === 429 || (meta.code !== undefined && RATE_LIMIT_CODES.has(meta.code))
+}
+
+const MAX_RETRY_AFTER_SECONDS = 86_400
+/**
+ * A usable Retry-After as whole seconds in 1..86400, else undefined. Accepts delta-seconds and an HTTP-date (compared with
+ * `nowMs`); zero, negative, past, empty or malformed values are NOT usable, so a bad header can never mean "retry right now";
+ * a value above a day is clamped to a day. The header name is matched case-insensitively.
+ */
+export function parseRetryAfter(headers: Record<string, string> | undefined, nowMs: number): number | undefined {
+  if (!headers) return undefined
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === 'retry-after')
+  const raw = key === undefined ? undefined : String(headers[key]).trim()
+  if (!raw) return undefined
+  let seconds: number
+  if (/^\d{1,9}$/.test(raw)) seconds = parseInt(raw, 10)
+  else {
+    const at = Date.parse(raw)
+    if (Number.isNaN(at)) return undefined
+    seconds = Math.ceil((at - nowMs) / 1000)
+  }
+  if (!Number.isFinite(seconds) || seconds < 1) return undefined
+  return Math.min(seconds, MAX_RETRY_AFTER_SECONDS)
+}
+
 /** Definitive refusal codes worth naming; anything else becomes `meta_<code>` / `http_<status>`. */
 function rejectionCode(status: number, meta: ParsedError): string {
-  if (status === 429 || meta.code === 131056 || meta.code === 130429 || meta.code === 80007) return 'rate_limited'
   if (status === 401 || meta.code === 190 || meta.code === 102) return 'auth_error'
   if (meta.code === 131047) return 'outside_window'
   if (meta.code === 131026) return 'undeliverable'
@@ -162,6 +194,11 @@ export function createMetaEffectSender(options: MetaSenderOptions): EffectSender
     }
 
     const meta = parseError(data)
+    if (isRateLimited(res.status, meta)) {
+      const retryAfterSeconds = parseRetryAfter(res.headers, (options.now ?? Date.now)())
+      emit({ type: 'result', ...base, httpStatus: res.status, metaCode: meta.code, classification: 'retryable_rejection', errorCode: 'rate_limited' })
+      return { kind: 'retryable_rejection', errorCode: 'rate_limited', ...(retryAfterSeconds ? { retryAfterSeconds } : {}) }
+    }
     const definitive = res.status >= 400 && res.status < 500 && res.status !== 408
     if (!definitive) {
       const code = `http_${res.status}`

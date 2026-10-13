@@ -53,6 +53,8 @@ export type VersionedRunOutcome = OutcomeBase & (
   | { kind: 'awaiting_effect_resolution'; effectId: string; occurrenceRevision: number }
   /** The sender proved `not_dispatched` more often than allowed in this invocation; the effect is pending again. */
   | { kind: 'send_deferred'; effectId: string; attempts: number }
+  /** The provider refused the message for a temporary reason (rate limit): the retry time is persisted in the ledger; nothing was sent. */
+  | { kind: 'effect_retry_scheduled'; effectId: string; retryNotBefore: string | null; attempts: number }
 )
 
 /** Messages raised by push_versioned_run_subflow for requests that can never succeed as configured. */
@@ -269,6 +271,10 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
           // 3. claim; the claim is committed before anything is handed to the sender
           try {
             const c = await m.effects.claimEffect(caller, effect.id)
+            if (!c.claimed && c.reason === 'retry_not_due') {
+              // a temporary rejection set a time that has not come yet (PostgreSQL clock, persisted): wait, do not send
+              return exit({ ...base, steps, kind: 'effect_retry_scheduled', effectId: effect.id, retryNotBefore: effect.retry_not_before, attempts: effect.attempt })
+            }
             if (!c.claimed && c.reason !== 'effect_not_pending') {
               if (c.reason === 'stale_lease' || c.reason === 'lease_expired') return { ...base, steps, kind: 'lease_lost', reason: c.reason }
               if (c.reason === 'run_not_active') return notActive()
@@ -306,6 +312,33 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
             outcome = { kind: 'ambiguous', errorCode: 'sender_error' }      // an exception says nothing about delivery
           }
           if (outcome.kind === 'accepted' && (typeof outcome.providerMessageId !== 'string' || !outcome.providerMessageId)) outcome = { kind: 'ambiguous', errorCode: 'accepted_without_id' }
+          if (outcome.kind === 'retryable_rejection') {
+            const cap = m.maxRetryableAttempts ?? 6
+            if (effect.attempt >= cap) {
+              outcome = { kind: 'rejected', errorCode: 'rate_limit_exhausted' }        // too many temporary refusals: stop waiting
+            } else {
+              // provably not accepted: re-open the effect with a persisted wait. Never retried inside this invocation.
+              for (let tries = 0; ; tries++) {
+                try {
+                  const r = await m.effects.deferEffect({ ...caller, effectId: effect.id, attemptId: effect.attempt_id!, retryAfterSeconds: outcome.retryAfterSeconds, errorCode: outcome.errorCode.slice(0, 64) })
+                  if (r.deferred) return exit({ ...base, steps, kind: 'effect_retry_scheduled', effectId: effect.id, retryNotBefore: r.retryNotBefore, attempts: effect.attempt })
+                  if (r.reason === 'stale_lease' || r.reason === 'lease_expired') return { ...base, steps, kind: 'lease_lost', reason: r.reason }
+                  if (r.reason === 'run_not_active') return notActive()
+                  const now = await m.effects.loadEffectAt(accountId, runId, run.versioned_revision)
+                  if (now?.state === 'claimed') return corrupt(`deferral refused: ${r.reason ?? 'unknown'}`)
+                  break
+                } catch (e) {
+                  const k = classify(e)
+                  if (k === 'corrupt' || k === 'controlled') return corrupt((e as Error).message)
+                  const now = await m.effects.loadEffectAt(accountId, runId, run.versioned_revision)
+                  if (now?.state === 'pending' && now.retry_not_before) return exit({ ...base, steps, kind: 'effect_retry_scheduled', effectId: effect.id, retryNotBefore: now.retry_not_before, attempts: effect.attempt })
+                  if (now && now.state !== 'claimed') break
+                  if (tries >= maxRetries) throw e
+                }
+              }
+              continue   // the row moved on (re-read it); the deferral itself was either recorded above or the state decides
+            }
+          }
           let settle = outcome.kind === 'accepted' ? { outcome: 'confirmed' as const, providerMessageId: outcome.providerMessageId }
             : outcome.kind === 'rejected' ? { outcome: 'failed' as const, errorCode: outcome.errorCode }
             : { outcome: 'ambiguous' as const, errorCode: outcome.errorCode }
