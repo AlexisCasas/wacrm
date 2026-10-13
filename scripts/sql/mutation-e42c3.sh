@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# E4.2C3.1 mutation check: the suite must notice (Y01) a timeout classified as not_dispatched, (Y02) another recipient
-# variant tried after an ambiguous result, (Y03) Inbox persistence switched off, (Y04) a non-idempotent persist, and
+# E4.2C3.1 mutation check: the suite must notice (Y01) a timeout classified as not_dispatched, (Y02) an altered recipient
+# number tried after a rejection, (Y03) Inbox persistence switched off, (Y04) a non-idempotent persist, and
 # (Y05) an accepted message shown as delivered. Each mutant must make the targeted tests FAIL; sources are restored.
 # Usage: scripts/sql/mutation-e42c3.sh   (starts its own throwaway container)
 set -euo pipefail
@@ -34,12 +34,12 @@ PGT() { QA_PG_CONTAINER="$NAME" npx vitest run src/lib/flows/versioned-meta-send
 SQLSUITE() { { echo 'BEGIN;'; cat scripts/sql/e42b11-fixtures.sql scripts/sql/e42c31-suite.sql; echo 'ROLLBACK;'; } | psql_ -o /dev/null; }
 
 # Y01: an in-flight transport failure (timeout, reset, lost response) is declared "never sent"
-mutate_sender "return { kind: 'ambiguous', errorCode: \`\${code}@v\${i}\`.slice(0, 60) }                           // never try another variant" "return { kind: 'not_dispatched', errorCode: \`\${code}@v\${i}\`.slice(0, 60) }"
+mutate_sender "      return { kind: 'ambiguous', errorCode: code.slice(0, 60) }" "      return { kind: 'not_dispatched', errorCode: code.slice(0, 60) }"
 expect_failure "timeout / lost response classified as not_dispatched" Y01 $UNIT
 
-# Y02: after an ambiguous variant the next number is tried anyway
-mutate_sender "return { kind: 'ambiguous', errorCode: \`\${code}@v\${i}\`.slice(0, 60) }                           // never try another variant" "if (i < variants.length - 1) continue; return { kind: 'ambiguous', errorCode: \`\${code}@v\${i}\`.slice(0, 60) }"
-expect_failure "another recipient variant tried after an ambiguous result" Y02 $UNIT
+# Y02: after a rejection of the original number an ALTERED number is tried (the unsafe legacy variant behaviour)
+mutate_sender "      return attemptOnce(http, base)" "      { const first = await attemptOnce(http, base); if (first.kind === 'rejected' && first.errorCode === 'recipient_not_allowed') return attemptOnce({ ...http, body: JSON.stringify({ ...JSON.parse(http.body), to: '0' + to }) }, base); return first }"
+expect_failure "an altered recipient number is tried after a rejection" Y02 $UNIT
 cp "$BACKUP" "$SENDER"
 
 # Y03: Inbox persistence switched off

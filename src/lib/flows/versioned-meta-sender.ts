@@ -1,4 +1,4 @@
-import { isRecipientNotAllowedError, isValidE164, phoneVariants, sanitizePhoneForMeta } from '../whatsapp/phone-utils'
+import { isRecipientNotAllowedError, isValidE164, sanitizePhoneForMeta } from '../whatsapp/phone-utils'
 import type { EffectSender, OutboundPayload, OutboundRequest, SendOutcome } from './versioned-messaging'
 
 /**
@@ -16,9 +16,12 @@ import type { EffectSender, OutboundPayload, OutboundRequest, SendOutcome } from
  *   ambiguous       everything else once transmission may have started: timeouts, resets, aborts, lost or malformed
  *                   responses, 5xx, 408, a 2xx without a usable id. Never retried here.
  *
- * Recipient variants (legacy parity): the next variant is tried ONLY after a definitive "recipient not allowed"
- * rejection of the previous one. An ambiguous result on any variant stops the attempt immediately (no other
- * number is tried) and the variant is recorded in the error code for reconciliation.
+ * One recipient, always: the number the contact already has, sanitised and validated as E.164. The legacy sender's
+ * `phoneVariants()` (it inserts or removes a 0 after guessed country-code lengths) is deliberately NOT used: nothing proves
+ * that an altered number belongs to the same person, and a message accepted for another number would reach a third party.
+ * After a rejection of the original number the effect simply fails; no second number is tried, whatever the options say.
+ * `maxVariants` is still accepted so old configuration compiles, but it has no effect. Alternates would need an explicit,
+ * verified per-contact policy that does not exist yet, so they are not offered at all.
  */
 
 export const META_GRAPH_BASE_URL = 'https://graph.facebook.com/v21.0'
@@ -48,8 +51,6 @@ export interface MetaSenderEvent {
   type: 'request' | 'result'
   occurrenceKey: string
   attempt: number
-  variantIndex: number
-  variantCount: number
   /** `***1234`: never the full number, the token or the message content. */
   recipient: string
   httpStatus?: number
@@ -62,7 +63,10 @@ export interface MetaSenderOptions {
   transport: HttpTransport
   resolveContext(request: OutboundRequest): Promise<MetaSendContext>
   onEvent?: (event: MetaSenderEvent) => void
-  /** Upper bound on recipient variants tried after "not allowed" rejections. Default: all of them (legacy parity). */
+  /**
+   * @deprecated No effect. The versioned sender never tries altered numbers (see the file header); the option is kept only
+   * so configuration written for the earlier variant-capable version cannot re-enable unsafe behaviour by accident.
+   */
   maxVariants?: number
   /**
    * `attempt` also sends the attempt id as `biz_opaque_callback_data`, which Meta echoes in status webhooks and which
@@ -117,58 +121,55 @@ export function createMetaEffectSender(options: MetaSenderOptions): EffectSender
       try { ctx = await resolveContext(request) } catch { return { kind: 'not_dispatched', errorCode: 'context_error' } }   // no request existed
       if (!ctx.ok) return ctx.kind === 'recipient_unavailable' ? { kind: 'rejected', errorCode: ctx.code } : { kind: 'not_dispatched', errorCode: ctx.code }
 
-      const sanitized = sanitizePhoneForMeta(ctx.recipientPhone)
-      if (!isValidE164(sanitized)) return { kind: 'rejected', errorCode: 'invalid_recipient' }            // nothing was built or sent
-      const all = phoneVariants(sanitized)
-      const variants = all.slice(0, Math.max(1, options.maxVariants ?? all.length))
+      const to = sanitizePhoneForMeta(ctx.recipientPhone)
+      if (!isValidE164(to)) return { kind: 'rejected', errorCode: 'invalid_recipient' }                    // nothing was built or sent
 
-      for (let i = 0; i < variants.length; i++) {
-        const to = variants[i]
-        const base = { occurrenceKey: request.occurrenceKey, attempt: request.attempt, variantIndex: i, variantCount: variants.length, recipient: mask(to) }
-        const http: HttpRequest = {
-          url: `${META_GRAPH_BASE_URL}/${ctx.phoneNumberId}/messages`, method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ctx.accessToken}` },
-          body: JSON.stringify(buildMetaRequestBody(request.payload, to, options.callbackData === 'attempt' ? request.attemptId : undefined)),
-        }
-        emit({ type: 'request', ...base })
-
-        let res: HttpResponse
-        try {
-          res = await transport.post(http)
-        } catch (e) {
-          if (e instanceof HttpTransportError && e.phase === 'before_transmission') {
-            emit({ type: 'result', ...base, classification: 'not_dispatched', errorCode: e.code })
-            return { kind: 'not_dispatched', errorCode: `${e.code}@v${i}`.slice(0, 60) }
-          }
-          const code = e instanceof HttpTransportError ? e.code : 'transport_unknown'
-          emit({ type: 'result', ...base, classification: 'ambiguous', errorCode: code })
-          return { kind: 'ambiguous', errorCode: `${code}@v${i}`.slice(0, 60) }                           // never try another variant
-        }
-
-        const data = parseBody(res.body)
-        if (res.status >= 200 && res.status < 300) {
-          const id = data && typeof data === 'object' ? (data as { messages?: Array<{ id?: unknown }> }).messages?.[0]?.id : undefined
-          if (typeof id === 'string' && WAMID.test(id)) {
-            emit({ type: 'result', ...base, httpStatus: res.status, classification: 'accepted' })
-            return { kind: 'accepted', providerMessageId: id }
-          }
-          emit({ type: 'result', ...base, httpStatus: res.status, classification: 'ambiguous', errorCode: 'accepted_without_wamid' })
-          return { kind: 'ambiguous', errorCode: `accepted_without_wamid@v${i}`.slice(0, 60) }
-        }
-
-        const meta = parseError(data)
-        const definitive = res.status >= 400 && res.status < 500 && res.status !== 408
-        if (!definitive) {
-          const code = `http_${res.status}`
-          emit({ type: 'result', ...base, httpStatus: res.status, metaCode: meta.code, classification: 'ambiguous', errorCode: code })
-          return { kind: 'ambiguous', errorCode: `${code}@v${i}` }                                         // 5xx / 408 / 3xx: Meta may have processed it
-        }
-        const code = rejectionCode(res.status, meta)
-        emit({ type: 'result', ...base, httpStatus: res.status, metaCode: meta.code, classification: 'rejected', errorCode: code })
-        if (code === 'recipient_not_allowed' && i < variants.length - 1) continue                          // the only reason to try another number
-        return { kind: 'rejected', errorCode: code }
+      const base = { occurrenceKey: request.occurrenceKey, attempt: request.attempt, recipient: mask(to) }
+      const http: HttpRequest = {
+        url: `${META_GRAPH_BASE_URL}/${ctx.phoneNumberId}/messages`, method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ctx.accessToken}` },
+        body: JSON.stringify(buildMetaRequestBody(request.payload, to, options.callbackData === 'attempt' ? request.attemptId : undefined)),
       }
-      return { kind: 'rejected', errorCode: 'invalid_recipient' }
+      return attemptOnce(http, base)
     },
+  }
+
+  /** Exactly one HTTP request for exactly one recipient. */
+  async function attemptOnce(http: HttpRequest, base: Omit<MetaSenderEvent, 'type'>): Promise<SendOutcome> {
+    emit({ type: 'request', ...base })
+    let res: HttpResponse
+    try {
+      res = await transport.post(http)
+    } catch (e) {
+      if (e instanceof HttpTransportError && e.phase === 'before_transmission') {
+        emit({ type: 'result', ...base, classification: 'not_dispatched', errorCode: e.code })
+        return { kind: 'not_dispatched', errorCode: e.code.slice(0, 60) }
+      }
+      const code = e instanceof HttpTransportError ? e.code : 'transport_unknown'
+      emit({ type: 'result', ...base, classification: 'ambiguous', errorCode: code })
+      return { kind: 'ambiguous', errorCode: code.slice(0, 60) }
+    }
+
+    const data = parseBody(res.body)
+    if (res.status >= 200 && res.status < 300) {
+      const id = data && typeof data === 'object' ? (data as { messages?: Array<{ id?: unknown }> }).messages?.[0]?.id : undefined
+      if (typeof id === 'string' && WAMID.test(id)) {
+        emit({ type: 'result', ...base, httpStatus: res.status, classification: 'accepted' })
+        return { kind: 'accepted', providerMessageId: id }
+      }
+      emit({ type: 'result', ...base, httpStatus: res.status, classification: 'ambiguous', errorCode: 'accepted_without_wamid' })
+      return { kind: 'ambiguous', errorCode: 'accepted_without_wamid' }
+    }
+
+    const meta = parseError(data)
+    const definitive = res.status >= 400 && res.status < 500 && res.status !== 408
+    if (!definitive) {
+      const code = `http_${res.status}`
+      emit({ type: 'result', ...base, httpStatus: res.status, metaCode: meta.code, classification: 'ambiguous', errorCode: code })
+      return { kind: 'ambiguous', errorCode: code }                                                     // 5xx / 408 / 3xx: Meta may have processed it
+    }
+    const code = rejectionCode(res.status, meta)
+    emit({ type: 'result', ...base, httpStatus: res.status, metaCode: meta.code, classification: 'rejected', errorCode: code })
+    return { kind: 'rejected', errorCode: code }
   }
 }

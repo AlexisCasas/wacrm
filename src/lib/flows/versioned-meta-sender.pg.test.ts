@@ -125,20 +125,26 @@ describe.skipIf(!container)('E4.2C3.1 Meta adapter offline through the interpret
     pass('N08', `disconnection in flight: ambiguous and not resent (${summary.join('; ')})`)
   })
 
-  it('N09/N10: recipient variants only after a safe rejection; an ambiguous variant stops the attempt', async () => {
-    const f = await flows(); const t = new MockMetaTransport().script('not_allowed', 'accept')
-    expect(await go(proc(t), f.runId, 'w1')).toMatchObject({ kind: 'completed' })
-    expect(t.requests).toHaveLength(2); expect(t.requests[0].to).not.toBe(t.requests[1].to)
-    expect(t.delivered).toHaveLength(1)
-    expect(await inbox(f.conversationId)).toHaveLength(1)
+  it('N09/N10: one recipient only: a rejected or silent recipient never leads to another number', async () => {
+    const f = await flows(); const t = new MockMetaTransport().setDefault('not_allowed')
+    expect(await go(proc(t), f.runId, 'w1')).toMatchObject({ kind: 'failed', reason: 'effect_failed' })
+    expect(t.requests).toHaveLength(1)                                      // no second number, whatever the rejection
+    expect(t.delivered).toHaveLength(0)
     expect((await effects(f.runId))).toHaveLength(1)
-    pass('N09', 'first variant refused with 131030, second accepted: 2 requests, 1 delivery, still ONE effect and ONE Inbox row')
-    const g = await flows(); const t2 = new MockMetaTransport().script('not_allowed', 'accept_then_timeout', 'accept')
-    expect(await go(proc(t2), g.runId, 'w1')).toMatchObject({ kind: 'awaiting_effect_resolution' })
-    expect(t2.requests).toHaveLength(2)
-    expect((await effects(g.runId))[0]).toMatchObject({ state: 'ambiguous', error_code: 'transport_timeout@v1' })
-    expect(await inbox(g.conversationId)).toHaveLength(0)
-    pass('N10', 'second variant ambiguous: the attempt stopped (no third request), the variant is kept in the error code (transport_timeout@v1) for reconciliation, nothing in the Inbox')
+    expect((await effects(f.runId))[0]).toMatchObject({ state: 'failed', error_code: 'recipient_not_allowed', attempt: 1 })
+    expect(await inbox(f.conversationId)).toHaveLength(0)
+    expect(await h.run(f.runId)).toMatchObject({ status: 'failed', versioned_messages_executed: 0 })
+    pass('N09', 'Meta rejects the original recipient (131030): exactly 1 HTTP request, effect failed/recipient_not_allowed, run failed, nothing in the Inbox - no other number is tried')
+    // an old configuration asking for variants changes nothing
+    const g = await flows(); const t2 = new MockMetaTransport().setDefault('not_allowed')
+    expect(await go(proc(t2, { maxVariants: 5 }), g.runId, 'w1')).toMatchObject({ kind: 'failed' })
+    expect(t2.requests).toHaveLength(1)
+    const k = await flows(); const t3 = new MockMetaTransport().script('accept_then_timeout', 'accept')
+    expect(await go(proc(t3, { maxVariants: 5 }), k.runId, 'w1')).toMatchObject({ kind: 'awaiting_effect_resolution' })
+    expect(t3.requests).toHaveLength(1)
+    expect((await effects(k.runId))[0]).toMatchObject({ state: 'ambiguous', error_code: 'transport_timeout' })
+    expect(await inbox(k.conversationId)).toHaveLength(0)
+    pass('N10', 'timeout after the request left: ambiguous, exactly 1 request, no other number tried; maxVariants: 5 from an old configuration changes nothing in either case')
   })
 
   it('N11/N12: confirming twice and resolving by evidence never duplicate the Inbox message', async () => {

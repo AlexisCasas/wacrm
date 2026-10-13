@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { phoneVariants, sanitizePhoneForMeta } from '../whatsapp/phone-utils'
+import { sanitizePhoneForMeta } from '../whatsapp/phone-utils'
 import { sendMediaMessage, sendTextMessage } from '../whatsapp/meta-api'
 import { MockMetaTransport } from './test-support/mock-meta-transport'
 import { buildMetaRequestBody, createMetaEffectSender, HttpTransportError, META_GRAPH_BASE_URL, type MetaSenderEvent, type MetaSendContext } from './versioned-meta-sender'
@@ -69,7 +69,7 @@ describe('classification', () => {
     expect(t.delivered).toHaveLength(0)
   })
   it.each([
-    ['accept_then_timeout', 'transport_timeout@v0'], ['lost_response', 'transport_unknown@v0'], ['reset_in_flight', 'transport_reset@v0'], ['server_error', 'http_500@v0'], ['accepted_no_id', 'accepted_without_wamid@v0'],
+    ['accept_then_timeout', 'transport_timeout'], ['lost_response', 'transport_unknown'], ['reset_in_flight', 'transport_reset'], ['server_error', 'http_500'], ['accepted_no_id', 'accepted_without_wamid'],
   ] as const)('%s is AMBIGUOUS (never not_dispatched) and is not retried here', async (behavior, code) => {
     const t = new MockMetaTransport().script(behavior); const { sender } = make(t)
     expect(await sender.send(req(TEXT))).toEqual({ kind: 'ambiguous', errorCode: code })
@@ -77,7 +77,7 @@ describe('classification', () => {
   })
   it('only a transport that PROVES nothing was transmitted yields not_dispatched', async () => {
     const t = new MockMetaTransport().script('refused_before_send'); const { sender } = make(t)
-    expect(await sender.send(req(TEXT))).toEqual({ kind: 'not_dispatched', errorCode: 'connect_refused@v0' })
+    expect(await sender.send(req(TEXT))).toEqual({ kind: 'not_dispatched', errorCode: 'connect_refused' })
     // a typed in-flight error, an untyped error and an abort are all ambiguous
     for (const thrown of [new HttpTransportError('x', 'in_flight'), new Error('boom'), Object.assign(new Error('The operation was aborted'), { name: 'AbortError' })]) {
       const bad = { post: async () => { throw thrown } }
@@ -89,7 +89,7 @@ describe('classification', () => {
     const run = async (status: number, body: string) => createMetaEffectSender({ transport: { post: async () => ({ status, body }) }, resolveContext: async () => ctx() }).send(req(TEXT))
     expect((await run(404, 'not json')).kind).toBe('rejected')
     expect((await run(400, '')).kind).toBe('rejected')
-    expect(await run(408, '{}')).toMatchObject({ kind: 'ambiguous', errorCode: 'http_408@v0' })
+    expect(await run(408, '{}')).toMatchObject({ kind: 'ambiguous', errorCode: 'http_408' })
     for (const s of [500, 502, 503, 504, 301]) expect((await run(s, '<html>')).kind, String(s)).toBe('ambiguous')
     expect((await run(200, 'not json')).kind).toBe('ambiguous')
     expect((await run(200, JSON.stringify({ messages: [{ id: 'not-a-wamid' }] }))).kind).toBe('ambiguous')
@@ -106,47 +106,65 @@ describe('classification', () => {
   })
 })
 
-describe('recipient variants', () => {
-  it('tries the next variant ONLY after a definitive "recipient not allowed" rejection', async () => {
-    const t = new MockMetaTransport().script('not_allowed', 'accept'); const { sender } = make(t)
-    const out = await sender.send(req(TEXT))
-    expect(out.kind).toBe('accepted')
-    const variants = phoneVariants(sanitizePhoneForMeta(PHONE))
-    expect(t.requests.map((r) => r.to)).toEqual(variants.slice(0, 2))
-    expect(t.delivered).toHaveLength(1)
-    expect(t.delivered[0].to).toBe(variants[1])
+describe('one recipient only (no altered numbers)', () => {
+  const sanitized = sanitizePhoneForMeta(PHONE)
+  it('a valid number gets exactly one request, to exactly that number', async () => {
+    const t = new MockMetaTransport(); const { sender } = make(t)
+    expect((await sender.send(req(TEXT))).kind).toBe('accepted')
+    expect(t.requests).toHaveLength(1)
+    expect(t.requests[0].to).toBe(sanitized)
   })
-  it('stops at the first ambiguous variant and never tries another number', async () => {
-    const t = new MockMetaTransport().script('not_allowed', 'accept_then_timeout', 'accept'); const { sender, events } = make(t)
-    const out = await sender.send(req(TEXT))
-    expect(out).toEqual({ kind: 'ambiguous', errorCode: 'transport_timeout@v1' })
-    expect(t.requests).toHaveLength(2)
-    expect(t.delivered).toHaveLength(1)                                   // exactly the one the provider may have accepted
-    expect(events.filter((e) => e.type === 'result').map((e) => [e.variantIndex, e.classification])).toEqual([[0, 'rejected'], [1, 'ambiguous']])
+  it('an invalid number gets zero requests', async () => {
+    for (const bad of ['abc', '', '123', '+0000', '12345678901234567']) {
+      const t = new MockMetaTransport()
+      expect(await make(t, { context: ctx({ recipientPhone: bad }) }).sender.send(req(TEXT)), bad).toEqual({ kind: 'rejected', errorCode: 'invalid_recipient' })
+      expect(t.requests, bad).toHaveLength(0)
+    }
   })
-  it('a different definitive rejection does not trigger another variant; exhausting them is rejected', async () => {
-    const t1 = new MockMetaTransport().script('invalid_param'); await make(t1).sender.send(req(TEXT)); expect(t1.requests).toHaveLength(1)
-    const all = phoneVariants(sanitizePhoneForMeta(PHONE))
-    const t2 = new MockMetaTransport().setDefault('not_allowed')
-    expect(await make(t2).sender.send(req(TEXT))).toEqual({ kind: 'rejected', errorCode: 'recipient_not_allowed' })
-    expect(t2.requests).toHaveLength(all.length)
-    const t3 = new MockMetaTransport().setDefault('not_allowed')
-    await make(t3, { maxVariants: 2 }).sender.send(req(TEXT)); expect(t3.requests).toHaveLength(2)
+  it('when Meta rejects the original recipient no other number is tried', async () => {
+    const t = new MockMetaTransport().setDefault('not_allowed'); const { sender } = make(t)
+    expect(await sender.send(req(TEXT))).toEqual({ kind: 'rejected', errorCode: 'recipient_not_allowed' })
+    expect(t.requests).toHaveLength(1)
+    expect(t.delivered).toHaveLength(0)
   })
-  it('a variant that was refused before transmission after a rejected one is still not_dispatched (nothing left the process)', async () => {
-    const t = new MockMetaTransport().script('not_allowed', 'refused_before_send'); const { sender } = make(t)
-    expect(await sender.send(req(TEXT))).toEqual({ kind: 'not_dispatched', errorCode: 'connect_refused@v1' })
+  it('after a timeout no other number is tried either', async () => {
+    const t = new MockMetaTransport().script('accept_then_timeout', 'accept', 'accept'); const { sender } = make(t)
+    expect(await sender.send(req(TEXT))).toEqual({ kind: 'ambiguous', errorCode: 'transport_timeout' })
+    expect(t.requests).toHaveLength(1)
+    expect(t.delivered).toHaveLength(1)                                     // only the original number can have received it
+  })
+  it('an old configuration with maxVariants > 1 does NOT bring variants back', async () => {
+    for (const maxVariants of [2, 3, 7, 99]) {
+      const t = new MockMetaTransport().setDefault('not_allowed')
+      const out = await make(t, { maxVariants }).sender.send(req(TEXT))
+      expect(out, String(maxVariants)).toEqual({ kind: 'rejected', errorCode: 'recipient_not_allowed' })
+      expect(t.requests, String(maxVariants)).toHaveLength(1)
+    }
+  })
+  it('every request ever sent carries the sanitised original number, never a derived one', async () => {
+    const t = new MockMetaTransport().script('not_allowed', 'invalid_param', 'undeliverable', 'accept')
+    const { sender } = make(t)
+    for (let i = 0; i < 4; i++) await sender.send(req(TEXT, { attempt: i + 1 }))
+    expect(new Set(t.requests.map((r) => r.to))).toEqual(new Set([sanitized]))
+  })
+  it('the adapter no longer depends on the legacy variant generator, which stays untouched in the legacy sender', () => {
+    const adapter = readFileSync(join(process.cwd(), 'src/lib/flows/versioned-meta-sender.ts'), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
+    expect(adapter).not.toMatch(/phoneVariants/)
+    const legacy = readFileSync(join(process.cwd(), 'src/lib/flows/meta-send.ts'), 'utf8')
+    expect(legacy).toMatch(/phoneVariants\(/)
+    expect(legacy).toMatch(/isRecipientNotAllowedError/)
   })
 })
 
 describe('secrets and content never leave through logs or outcomes', () => {
   it('events carry no token, no message text and only a masked recipient', async () => {
-    const t = new MockMetaTransport().script('not_allowed', 'accept_then_timeout'); const { sender, events } = make(t)
+    const t = new MockMetaTransport().script('accept_then_timeout'); const { sender, events } = make(t)
     const out = await sender.send(req(TEXT))
     const dump = JSON.stringify({ events, out })
     expect(dump).not.toContain(TOKEN)
     expect(dump).not.toContain('Hola Ana')
     expect(dump).not.toContain('3706394')
+    expect(events).toHaveLength(2)
     expect(events.every((e) => /^\*\*\*\d{4}$/.test(e.recipient))).toBe(true)
   })
   it('a throwing logger cannot change the outcome', async () => {
@@ -167,6 +185,7 @@ describe('the adapter itself has no network, environment or credential code', ()
     expect(code).not.toMatch(/\bfetch\s*\(|XMLHttpRequest|node:https?|node:net|axios|process\.env|SUPABASE|decrypt|encryption/i)
     const imports = [...code.matchAll(/from '([^']+)'/g)].map((m) => m[1]).sort()
     expect(imports).toEqual(['../whatsapp/phone-utils', './versioned-messaging'])
+    expect(code).not.toMatch(/phoneVariants/)
   })
 })
 

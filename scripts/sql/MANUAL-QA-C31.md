@@ -61,7 +61,7 @@ efecto queda `confirmed` conservando `error_code = wamid_conflict` como historia
 ```
 Tres casos: timeout tras aceptación, respuesta perdida y desconexión en vuelo.
 **Observa**: runs en `active`, `node = bmsg`, `depth = 1`, `messages = 0`; efectos `ambiguous`, `attempt = 1`, con `error_code` tipo
-`transport_timeout@v0` / `transport_unknown@v0` / `transport_reset@v0`; **ningún mensaje en el Inbox** para esos runs.
+`transport_timeout` / `transport_unknown` / `transport_reset`; **ningún mensaje en el Inbox** para esos runs.
 **PASS**: `SCENARIO ambiguous: PASS` y el test comprueba además que 3 invocaciones repetidas hacen **1 sola** petición HTTP.
 **FAIL**: un efecto ambiguo con `attempt > 1`, o un mensaje en el Inbox sin evidencia.
 
