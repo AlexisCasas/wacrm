@@ -1,6 +1,6 @@
 /** Read-only compatibility report to run before a downgrade to E1. */
 export type DowngradeCompatibility = {
-  result: "SAFE_TO_ROLLBACK" | "BLOCKED_BY_CUSTOM_CONDITIONS" | "BLOCKED_BY_SUBFLOW_NODES" | "BLOCKED_BY_DURABLE_WAITS";
+  result: "SAFE_TO_ROLLBACK" | "BLOCKED_BY_CUSTOM_CONDITIONS" | "BLOCKED_BY_SUBFLOW_NODES" | "BLOCKED_BY_DURABLE_WAITS" | "BLOCKED_BY_CUSTOMER_REPLY_CONDITIONS";
   custom_condition_flow_ids: string[];
   /** Flows holding a "run another flow" node (pilot). An app version without the node type cannot edit them. */
   execute_flow_flow_ids: string[];
@@ -8,6 +8,8 @@ export type DowngradeCompatibility = {
   durable_wait_flow_ids: string[];
   /** Runs parked on a durable wait right now: an older build cannot resume them. */
   waiting_run_ids: string[];
+  /** Flows holding a customer-activity condition (P7). A build without it fails closed at that node, so they must not be active. */
+  customer_reply_condition_flow_ids: string[];
   active_custom_condition_flow_ids: string[];
   active_run_flow_ids: string[];
 };
@@ -26,11 +28,13 @@ export function inspectDowngradeCompatibility(input: {
   const activeRuns = input.runs.filter((run) => run.status === "active" && customFlowIds.has(run.flow_id)).map((run) => run.flow_id);
   const subflowFlowIds = new Set(input.nodes.filter((node) => node.node_type === "execute_flow").map((node) => node.flow_id));
   const durableFlowIds = new Set(input.nodes.filter((node) => node.node_type === "delay" && typeof node.config.unit === "string").map((node) => node.flow_id));
+  const customerReplyFlowIds = new Set(input.nodes.filter((node) => node.node_type === "condition" && node.config.subject === "customer_activity").map((node) => node.flow_id));
   const waitingRunIds = input.runs.filter((run) => run.status === "active" && run.wait_until).map((run) => run.id ?? run.flow_id);
   return {
-    result: customFlowIds.size ? "BLOCKED_BY_CUSTOM_CONDITIONS" : subflowFlowIds.size ? "BLOCKED_BY_SUBFLOW_NODES" : durableFlowIds.size || waitingRunIds.length ? "BLOCKED_BY_DURABLE_WAITS" : "SAFE_TO_ROLLBACK",
+    result: customFlowIds.size ? "BLOCKED_BY_CUSTOM_CONDITIONS" : subflowFlowIds.size ? "BLOCKED_BY_SUBFLOW_NODES" : durableFlowIds.size || waitingRunIds.length ? "BLOCKED_BY_DURABLE_WAITS" : customerReplyFlowIds.size ? "BLOCKED_BY_CUSTOMER_REPLY_CONDITIONS" : "SAFE_TO_ROLLBACK",
     durable_wait_flow_ids: [...durableFlowIds].sort(),
     waiting_run_ids: [...new Set(waitingRunIds)].sort(),
+    customer_reply_condition_flow_ids: [...customerReplyFlowIds].sort(),
     custom_condition_flow_ids: [...customFlowIds].sort(),
     execute_flow_flow_ids: [...subflowFlowIds].sort(),
     active_custom_condition_flow_ids: [...new Set(activeCustom)].sort(),

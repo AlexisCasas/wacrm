@@ -6,9 +6,11 @@ import { validateFlowForActivation } from '@/lib/flows/validate'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
 import { isDurableWaitExecutionEnabledForAccount } from '@/lib/flows/durable-wait-capability'
 import { isDurableWaitConfig } from '@/lib/flows/durable-wait'
+import { isCustomerActivityConfig, isCustomerReplyConditionEnabledForAccount } from '@/lib/flows/customer-reply-condition'
 import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
 
 // Pilot: flows that run another flow can be authored as drafts but NOT activated until subflow execution exists.
+const CUSTOMER_REPLY_DISABLED = { error: 'This flow contains a customer-activity condition, which is not enabled for this account, so it can only be kept as a draft.', code: 'customer_reply_condition_disabled' }
 const DURABLE_WAIT_EXECUTION_DISABLED = { error: 'This flow contains a wait. Running waits is not enabled for this account yet, so it can only be kept as a draft.', code: 'durable_wait_execution_disabled' }
 const SUBFLOW_EXECUTION_DISABLED = { error: 'This flow runs another flow. Running connected flows is not enabled yet, so it can only be kept as a draft.', code: 'subflow_execution_disabled' }
 
@@ -62,6 +64,7 @@ export async function POST(
       if ((nodes ?? []).some((node) => node.node_type === 'execute_flow')) return NextResponse.json(SUBFLOW_EXECUTION_DISABLED, { status: 409 })
       const durableEnabled = isDurableWaitExecutionEnabledForAccount(account.accountId)
       if (!durableEnabled && (nodes ?? []).some((node) => node.node_type === 'delay' && isDurableWaitConfig(node.config))) return NextResponse.json(DURABLE_WAIT_EXECUTION_DISABLED, { status: 409 })
+      if ((nodes ?? []).some((node) => node.node_type === 'condition' && isCustomerActivityConfig(node.config)) && !isCustomerReplyConditionEnabledForAccount(account.accountId)) return NextResponse.json(CUSTOMER_REPLY_DISABLED, { status: 409 })
       const issues = validateFlowForActivation(flow as { name: string; trigger_type: 'keyword' | 'first_inbound_message' | 'manual'; trigger_config: Record<string, unknown>; entry_node_id: string | null }, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, { durableWaitExecution: durableEnabled })
       const referenceIssues = await validateConditionReferences(account.supabase, account.accountId, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, isCustomConditionEnabledForAccount(account.accountId))
       for (const issue of referenceIssues) issues.push({ severity: 'error', scope: 'node', node_key: issue.node_key, field: 'subject_key', message: issue.issue })

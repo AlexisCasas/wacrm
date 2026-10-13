@@ -6,6 +6,7 @@ import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition
 import { isSubflowAuthoringEnabledForAccount } from '@/lib/flows/subflow-authoring-capability'
 import { isDurableWaitAuthoringEnabledForAccount } from '@/lib/flows/durable-wait-capability'
 import { durableWaitSeconds, isDurableWaitConfig } from '@/lib/flows/durable-wait'
+import { isCustomerActivityConfig, isCustomerReplyConditionEnabledForAccount } from '@/lib/flows/customer-reply-condition'
 import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
 
 /**
@@ -216,6 +217,12 @@ export async function PUT(
       if (badWaits.length) {
         return NextResponse.json({ error: 'A wait is not valid (whole amount of at least 1 second, at most 30 days). Nothing was saved.', code: 'invalid_durable_wait', issues: badWaits }, { status: 422 })
       }
+    }
+
+    // Customer-activity conditions (P7): only accounts opted in on the server may write them. Drafts only: activation is
+    // blocked by the validator (and the engine fails closed at run time), so saving one never runs anything.
+    if ((body.nodes ?? []).some((n) => n.node_type === 'condition' && isCustomerActivityConfig(n.config)) && !isCustomerReplyConditionEnabledForAccount(account.accountId)) {
+      return NextResponse.json({ error: 'The customer-activity condition is not enabled for this account.', code: 'customer_reply_condition_disabled' }, { status: 403 })
     }
 
     // Only the fields the client sent are patched: a header-only save (no `nodes`) leaves the graph alone.

@@ -46,6 +46,15 @@ import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition
 import { isDurableWaitExecutionEnabledForAccount } from "@/lib/flows/durable-wait-capability";
 import { computeResumeAt, durableWaitSeconds, isDurableWaitConfig } from "@/lib/flows/durable-wait";
 import { NATIVE_CONTACT_CONDITION_FIELDS } from "@/lib/flows/condition-references";
+import {
+  CUSTOMER_ACTIVITY_SUBJECT,
+  REPLIED_AFTER_REFERENCE_OPERATOR,
+  REPLY_GUARD_VARS_KEY,
+  isCustomerReplyConditionEnabledForAccount,
+  parseSendReference,
+  referencedSendKeys,
+  withSendReference,
+} from "@/lib/flows/customer-reply-condition";
 import { ContactBlockedError } from "@/lib/contacts/blocking";
 import {
   type CollectInputNodeConfig,
@@ -194,6 +203,9 @@ export function evaluateConditionPredicate(args: {
     case "contains":
       if (args.subjectValue === undefined) return false;
       return args.subjectValue.includes(args.configValue ?? "");
+    default:
+      // `replied_after_reference` is decided by `customerRepliedAfterReference` (a DB question), never here. Fail closed.
+      return false;
   }
 }
 
@@ -498,6 +510,126 @@ async function executeHandoff(
 }
 
 /**
+ * P7: did the customer write after the reference send? One question, no text comparison.
+ *
+ * Fails CLOSED (throws, so the caller ends the run WITHOUT sending anything) when: the account is not enabled, the stored
+ * reference is missing / corrupt / not from this contact's conversations, or any query fails.
+ *
+ * Tenancy: the contact must belong to the run's account; the candidate conversations are the contact's conversations in
+ * that account (unique index idx_conversations_account_contact makes it one today; the query does not rely on that, so a
+ * reply in any of them would count); the reference message must live in one of them. Only `sender_type = 'customer'` rows count, whatever their content_type
+ * (text, image, audio, video, document, location, sticker, interactive button / list taps). Bot, agent and automation
+ * rows never count; reactions are not stored as messages, so they do not count either.
+ *
+ * Clock: the reference is the DB `created_at` of the outbound row. Inbound rows carry Meta's timestamp (whole seconds),
+ * so a message sent before the reference compares as older. The comparison is strictly "newer than the reference".
+ */
+async function customerRepliedAfterReference(
+  db: AdminClient,
+  run: FlowRunRow,
+  referenceNodeKey: string,
+): Promise<boolean> {
+  if (!isCustomerReplyConditionEnabledForAccount(run.account_id) || !isDurableWaitExecutionEnabledForAccount(run.account_id)) {
+    throw new Error("customer_reply_capability_disabled");
+  }
+  if (!run.contact_id) throw new Error("customer_reply_contact_missing");
+  const ref = typeof referenceNodeKey === "string" ? parseSendReference(run.vars, referenceNodeKey) : null;
+  if (!ref) throw new Error("customer_reply_reference_missing");
+
+  const { data: conversations, error: conversationsError } = await db
+    .from("conversations")
+    .select("id")
+    .eq("account_id", run.account_id)
+    .eq("contact_id", run.contact_id);
+  if (conversationsError) throw new Error("customer_reply_conversation_lookup_failed");
+  const conversationIds = ((conversations ?? []) as Array<{ id: string }>).map((row) => row.id);
+  if (!conversationIds.includes(ref.conversation_id)) throw new Error("customer_reply_reference_not_in_contact");
+
+  // The persisted outbound row is the source of truth for the timestamp; the copy in vars is only a pointer.
+  const { data: referenceRow, error: referenceError } = await db
+    .from("messages")
+    .select("id, created_at, sender_type")
+    .eq("id", ref.message_id)
+    .eq("conversation_id", ref.conversation_id)
+    .maybeSingle();
+  if (referenceError) throw new Error("customer_reply_reference_lookup_failed");
+  const row = referenceRow as { id: string; created_at: string | null; sender_type: string } | null;
+  if (!row || row.sender_type === "customer" || !row.created_at || Number.isNaN(Date.parse(row.created_at))) {
+    throw new Error("customer_reply_reference_invalid");
+  }
+
+  const { data: replies, error: repliesError } = await db
+    .from("messages")
+    .select("id")
+    .in("conversation_id", conversationIds)
+    .eq("sender_type", "customer")
+    .gt("created_at", row.created_at)
+    .limit(1);
+  if (repliesError) throw new Error("customer_reply_query_failed");
+  return (replies ?? []).length > 0;
+}
+
+/**
+ * Remember the FIRST successful send of a node that a customer-activity condition points at. Never throws: the message is
+ * already out, so a failure here only means the condition will fail closed later (no follow-up).
+ */
+async function recordSendReference(
+  db: AdminClient,
+  run: FlowRunRow,
+  nodeKey: string,
+  whatsappMessageId: string,
+): Promise<void> {
+  try {
+    if (parseSendReference(run.vars, nodeKey) || !run.conversation_id) return;
+    const { data, error } = await db
+      .from("messages")
+      .select("id, created_at")
+      .eq("conversation_id", run.conversation_id)
+      .eq("message_id", whatsappMessageId)
+      .maybeSingle();
+    const row = data as { id: string; created_at: string | null } | null;
+    if (error || !row?.created_at) throw new Error(error?.message ?? "reference_row_not_found");
+    const vars = withSendReference(run.vars, nodeKey, { message_id: row.id, conversation_id: run.conversation_id, sent_at: row.created_at });
+    const { error: updateError } = await db.from("flow_runs").update({ vars }).eq("id", run.id).eq("account_id", run.account_id);
+    if (updateError) throw new Error(updateError.message);
+    run.vars = vars;
+    await logEvent(db, run.id, "node_entered", nodeKey, { reason: "reply_reference_recorded", reference_message_id: row.id });
+  } catch (err) {
+    await logEvent(db, run.id, "error", nodeKey, { reason: "reply_reference_not_recorded", detail: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/** Persist (or clear) the "do not send if the customer wrote meanwhile" guard. Throws: a guard that cannot be saved must stop the run. */
+async function setReplyGuard(db: AdminClient, run: FlowRunRow, referenceNodeKey: string | null): Promise<void> {
+  const vars: Record<string, unknown> = { ...run.vars };
+  if (referenceNodeKey) vars[REPLY_GUARD_VARS_KEY] = { reference_node_key: referenceNodeKey };
+  else delete vars[REPLY_GUARD_VARS_KEY];
+  const { error } = await db.from("flow_runs").update({ vars }).eq("id", run.id).eq("account_id", run.account_id);
+  if (error) throw new Error("customer_reply_guard_not_saved");
+  run.vars = vars;
+}
+
+/**
+ * Right before any send: if the condition sent this run down the "did not reply" branch, look once more. A customer who
+ * wrote between the condition and this send cancels it. Closes the long part of the race (everything between the
+ * condition and the send); the few milliseconds of the Meta call itself cannot be closed and are documented.
+ * Returns true when the send must NOT happen (the run has been ended here).
+ */
+async function sendSuppressedByReplyGuard(db: AdminClient, run: FlowRunRow, nodeKey: string): Promise<boolean> {
+  const guard = run.vars[REPLY_GUARD_VARS_KEY] as { reference_node_key?: unknown } | undefined;
+  if (!guard || typeof guard.reference_node_key !== "string") return false;
+  try {
+    if (!(await customerRepliedAfterReference(db, run, guard.reference_node_key))) return false;
+    await logEvent(db, run.id, "node_entered", nodeKey, { reason: "send_suppressed_customer_replied" });
+    await endRun(db, run.id, "completed", "customer_replied_before_send");
+  } catch (err) {
+    await logEvent(db, run.id, "error", nodeKey, { reason: "reply_guard_failed", code: err instanceof Error ? err.message : "unknown" });
+    await endRun(db, run.id, "failed", "reply_guard_failed");
+  }
+  return true;
+}
+
+/**
  * Resolve a condition node's subject value from DB / run state, then
  * call the pure `evaluateConditionPredicate`. Splits out so the
  * predicate itself stays unit-testable without a Supabase mock.
@@ -514,6 +646,10 @@ export async function evaluateConditionNode(
   run: FlowRunRow,
   cfg: ConditionNodeConfig,
 ): Promise<boolean> {
+  if (cfg.subject === CUSTOMER_ACTIVITY_SUBJECT) {
+    if (cfg.operator !== REPLIED_AFTER_REFERENCE_OPERATOR) throw new Error("customer_reply_operator_invalid");
+    return customerRepliedAfterReference(db, run, cfg.subject_key);
+  }
   if (!run.contact_id && cfg.subject !== "var") {
     throw new Error("condition_contact_missing");
   }
@@ -735,6 +871,7 @@ async function advanceFromNodeKey(
   nodes: Map<string, FlowNodeRow>,
 ): Promise<{ outcome: "advanced" | "completed" | "handed_off" }> {
   let currentKey: string | null = startNodeKey;
+  const referenceKeys = referencedSendKeys(nodes.values());
   // Defensive cap — if a flow has a cycle (which the validator
   // SHOULD catch but doesn't yet in v1), we bail rather than loop.
   for (let safety = 0; safety < 64; safety += 1) {
@@ -761,6 +898,13 @@ async function advanceFromNodeKey(
       currentKey = (node.config as unknown as StartNodeConfig).next_node_key;
       continue;
     }
+    if (
+      (node.node_type === "send_message" || node.node_type === "send_media" || node.node_type === "collect_input" ||
+        node.node_type === "send_buttons" || node.node_type === "send_list") &&
+      (await sendSuppressedByReplyGuard(db, run, node.node_key))
+    ) {
+      return { outcome: "completed" };
+    }
     if (node.node_type === "send_message") {
       const cfg = node.config as unknown as SendMessageNodeConfig;
       try {
@@ -775,6 +919,7 @@ async function advanceFromNodeKey(
           node_type: "send_message",
           whatsapp_message_id,
         });
+        if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
         if (err instanceof ContactBlockedError) {
           await endRunForContactBlocked(db, run.id, node.node_key);
@@ -815,6 +960,7 @@ async function advanceFromNodeKey(
           media_type: cfg.media_type,
           whatsapp_message_id,
         });
+        if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
         if (err instanceof ContactBlockedError) {
           await endRunForContactBlocked(db, run.id, node.node_key);
@@ -898,6 +1044,16 @@ async function advanceFromNodeKey(
         });
         await endRun(db, run.id, "failed", "condition_evaluation_failed");
         return { outcome: "completed" };
+      }
+      if (cfg.subject === CUSTOMER_ACTIVITY_SUBJECT) {
+        // "Did not reply" arms the guard so every later send re-checks right before going out; "replied" disarms it.
+        try {
+          await setReplyGuard(db, run, branch === "false" ? cfg.subject_key : null);
+        } catch (err) {
+          await logEvent(db, run.id, "error", node.node_key, { reason: "reply_guard_failed", code: err instanceof Error ? err.message : "unknown" });
+          await endRun(db, run.id, "failed", "reply_guard_failed");
+          return { outcome: "completed" };
+        }
       }
       currentKey =
         branch === "true" ? cfg.true_next : cfg.false_next;

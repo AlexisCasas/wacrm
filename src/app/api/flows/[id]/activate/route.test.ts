@@ -75,4 +75,13 @@ describe("POST /api/flows/[id]/activate", () => {
     expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ code: "durable_wait_execution_disabled" }); expect(update).not.toHaveBeenCalled();
     expect(mocks.durableExec).toHaveBeenCalledWith(context.accountId);
   });
+
+  it("refuses to activate a flow with a customer-activity condition when the account does not have it, before any update", async () => {
+    const update = vi.fn();
+    const flowQuery = { select: () => ({ eq: () => ({ maybeSingle: vi.fn().mockResolvedValue({ data: { name: "Flow", trigger_type: "manual", trigger_config: {}, entry_node_id: "start" }, error: null }) }) }), update };
+    const nodesQuery = { select: () => ({ eq: () => Promise.resolve({ data: [{ node_key: "start", node_type: "start", config: { next_node_key: "c" } }, { node_key: "c", node_type: "condition", config: { subject: "customer_activity", subject_key: "info", operator: "replied_after_reference", true_next: "end", false_next: "end" } }], error: null }) }) };
+    mocks.admin.mockReturnValue({ from: vi.fn().mockImplementation((table: string) => table === "flows" ? flowQuery : nodesQuery) });
+    const response = await POST(new Request("http://localhost/api/flows/flow-1/activate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "active" }) }), params);
+    expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ code: "customer_reply_condition_disabled" }); expect(update).not.toHaveBeenCalled();
+  });
 });

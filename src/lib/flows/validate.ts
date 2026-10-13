@@ -127,7 +127,7 @@ export function validateFlowForActivation(
 
   // Per-node rules (Meta limits + dead-end + edge resolution).
   for (const n of nodes) {
-    issues.push(...validateNode(n, keys, options));
+    issues.push(...validateNode(n, keys, options, nodes));
   }
 
   // Reachability — every non-orphan node must be reachable from the
@@ -203,6 +203,7 @@ function validateNode(
   node: NodeInput,
   knownKeys: Set<string>,
   options: ValidateFlowOptions = {},
+  allNodes: NodeInput[] = [],
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
@@ -627,23 +628,40 @@ function validateNode(
 
     case "condition": {
       const cfg = node.config as {
-        subject?: "var" | "tag" | "contact_field";
+        subject?: "var" | "tag" | "contact_field" | "customer_activity";
         subject_key?: string;
-        operator?: "equals" | "contains" | "present" | "absent";
+        operator?: "equals" | "contains" | "present" | "absent" | "replied_after_reference";
         value?: string;
         true_next?: string;
         false_next?: string;
       };
-      if (!cfg.subject || !["var", "tag", "contact_field"].includes(cfg.subject)) {
+      if (!cfg.subject || !["var", "tag", "contact_field", "customer_activity"].includes(cfg.subject)) {
         issues.push({
           severity: "error",
           scope: "node",
           node_key: node.node_key,
           field: "subject",
-          message: "Condition needs a subject (var / tag / contact_field).",
+          message: "Condition needs a subject (var / tag / contact_field / customer_activity).",
         });
       }
-      if (!cfg.subject_key?.trim()) {
+      if (cfg.subject === "customer_activity") {
+        // P7: "the customer replied after the reference message". The reference is an explicit send node of THIS flow.
+        const referenceNode = allNodes.find((candidate) => candidate.node_key === cfg.subject_key);
+        if (cfg.operator !== "replied_after_reference") {
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "operator", message: "A customer-activity condition must use the operator replied_after_reference." });
+        }
+        if (!cfg.subject_key?.trim() || !referenceNode) {
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", message: "Pick the message that marks the start (the reference message) from this flow." });
+        } else if (referenceNode.node_type !== "send_message" && referenceNode.node_type !== "send_media") {
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", message: "The reference must be a Send message or Send media step." });
+        }
+        if (!options.durableWaitExecution) {
+          issues.push({
+            severity: "error", scope: "node", node_key: node.node_key, field: "subject",
+            message: "The customer-activity condition can be saved in a draft, but running it is not enabled for this account yet, so this flow cannot be activated.",
+          });
+        }
+      } else if (!cfg.subject_key?.trim()) {
         issues.push({
           severity: "error",
           scope: "node",
@@ -652,7 +670,9 @@ function validateNode(
           message: "Condition needs a subject_key (var name, tag id, or field name).",
         });
       }
-      if (
+      if (cfg.subject === "customer_activity") {
+        // operator already validated above
+      } else if (
         !cfg.operator ||
         !["equals", "contains", "present", "absent"].includes(cfg.operator)
       ) {

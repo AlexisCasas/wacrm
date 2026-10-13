@@ -159,9 +159,11 @@ export type ConditionOperator =
   | "equals"
   | "contains"
   | "present"
-  | "absent";
+  | "absent"
+  /** Only with subject `customer_activity` (P7): the customer wrote after the reference send. */
+  | "replied_after_reference";
 
-export type ConditionSubject = "var" | "tag" | "contact_field";
+export type ConditionSubject = "var" | "tag" | "contact_field" | "customer_activity";
 
 /**
  * Routes the run based on a predicate over the contact's tags,
@@ -174,6 +176,7 @@ export interface ConditionNodeConfig {
    * For `var`: the key in flow_runs.vars.
    * For `tag`: the tag UUID (matched against contact_tags).
    * For `contact_field`: one of 'name' | 'email' | 'phone' | 'company'.
+   * For `customer_activity`: the node_key of the send_message / send_media node whose first send is the reference.
    */
   subject_key: string;
   operator: ConditionOperator;

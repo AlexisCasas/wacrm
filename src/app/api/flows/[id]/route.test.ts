@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ requireRole: vi.fn(), createClient: vi.fn(), admin: vi.fn(), validateReferences: vi.fn(), enabled: vi.fn(), toErrorResponse: vi.fn(), subflow: vi.fn(), durableAuthoring: vi.fn() }));
+const mocks = vi.hoisted(() => ({ requireRole: vi.fn(), createClient: vi.fn(), admin: vi.fn(), validateReferences: vi.fn(), enabled: vi.fn(), toErrorResponse: vi.fn(), subflow: vi.fn(), durableAuthoring: vi.fn(), customerReply: vi.fn() }));
 vi.mock("@/lib/auth/account", () => ({ requireRole: mocks.requireRole, toErrorResponse: mocks.toErrorResponse }));
 vi.mock("@/lib/supabase/server", () => ({ createClient: mocks.createClient }));
 vi.mock("@/lib/flows/admin-client", () => ({ supabaseAdmin: mocks.admin }));
 vi.mock("@/lib/flows/condition-references", () => ({ ConditionReferenceInfrastructureError: class extends Error {}, validateConditionReferences: mocks.validateReferences }));
 vi.mock("@/lib/flows/custom-condition-capability", () => ({ isCustomConditionEnabledForAccount: mocks.enabled }));
 vi.mock("@/lib/flows/subflow-authoring-capability", () => ({ isSubflowAuthoringEnabledForAccount: mocks.subflow }));
+vi.mock("@/lib/flows/customer-reply-condition", async (orig) => ({ ...(await orig<typeof import("@/lib/flows/customer-reply-condition")>()), isCustomerReplyConditionEnabledForAccount: mocks.customerReply }));
 vi.mock("@/lib/flows/durable-wait-capability", () => ({ isDurableWaitAuthoringEnabledForAccount: mocks.durableAuthoring }));
 
 import { PUT } from "./route";
@@ -48,6 +49,7 @@ beforeEach(() => {
   mocks.enabled.mockReturnValue(true);
   mocks.subflow.mockReturnValue(false);
   mocks.durableAuthoring.mockReturnValue(false);
+  mocks.customerReply.mockReturnValue(false);
 });
 
 describe("PUT /api/flows/[id]", () => {
@@ -257,6 +259,26 @@ describe("PUT /api/flows/[id]", () => {
     it("maps the database guard for a wait in an active flow", async () => {
       mocks.durableAuthoring.mockReturnValue(true); adminDouble({ error: { code: "0A000", message: "durable waits cannot be added to an active flow: waiting is not enabled" } });
       const response = await put(wait({ amount: 5, unit: "minutes" })); expect(response.status).toBe(409); expect(await response.json()).toMatchObject({ code: "durable_wait_requires_draft" });
+    });
+  });
+
+  describe("customer-activity condition (P7)", () => {
+    const activity = { nodes: [{ node_key: "start", node_type: "start", config: { next_node_key: "info" } }, { node_key: "info", node_type: "send_message", config: { text: "hola", next_node_key: "c" } }, { node_key: "c", node_type: "condition", config: { subject: "customer_activity", subject_key: "info", operator: "replied_after_reference", true_next: "end", false_next: "end" } }, { node_key: "end", node_type: "end", config: {} }] };
+    it("an account without the flag cannot save one: 403, nothing written; the body cannot grant it", async () => {
+      const { rpc } = adminDouble();
+      const response = await put({ ...activity, customerReplyCondition: true });
+      expect(response.status).toBe(403); expect(await response.json()).toMatchObject({ code: "customer_reply_condition_disabled" });
+      expect(rpc).not.toHaveBeenCalled(); expect(mocks.customerReply).toHaveBeenCalledWith(ACCOUNT);
+    });
+    it("an authorised account saves it exactly as authored (draft only)", async () => {
+      mocks.customerReply.mockReturnValue(true); const { rpc } = adminDouble();
+      expect((await put(activity)).status).toBe(200);
+      expect(rpc.mock.calls[0][1].p_nodes.find((n: { node_key: string }) => n.node_key === "c").config).toEqual({ subject: "customer_activity", subject_key: "info", operator: "replied_after_reference", true_next: "end", false_next: "end" });
+    });
+    it("existing condition subjects never consult the flag", async () => {
+      const { rpc } = adminDouble();
+      expect((await put({ nodes: [{ node_key: "c", node_type: "condition", config: { subject: "var", subject_key: "x", operator: "present", true_next: "e", false_next: "e" } }] })).status).toBe(200);
+      expect(rpc).toHaveBeenCalledTimes(1); expect(mocks.customerReply).not.toHaveBeenCalled();
     });
   });
 });
