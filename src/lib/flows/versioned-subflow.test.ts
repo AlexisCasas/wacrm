@@ -20,7 +20,7 @@ const versions: Record<string, unknown> = {
 const run = (over: Partial<VersionedRunRow> = {}): VersionedRunRow => ({
   id: RUN, account_id: A, flow_id: 'flow-a', status: 'active', execution_mode: 'versioned', root_flow_version_id: VA, current_flow_version_id: VA, versioned_node_key: 'call',
   versioned_nodes_executed: 1, versioned_messages_executed: 0, versioned_depth: 0, versioned_checkpoint: { cursor: { flow_version_id: VA, node_key: 'call' }, step: 1 },
-  versioned_lease: 1, versioned_revision: 1, versioned_lease_owner: 'w1', versioned_lease_expires_at: 'x', ...over,
+  versioned_lease: 1, versioned_revision: 1, versioned_lease_owner: 'w1', versioned_lease_expires_at: 'x', vars: {}, ...over,
 })
 const pushed: SubflowResult = { committed: true, revision: 2, reason: null, newDepth: 1, cursorFlowVersionId: VB, cursorNodeKey: 'bstart', nodesExecuted: 2, messagesExecuted: 0 }
 const refusal = (reason: SubflowResult['reason']): SubflowResult => ({ ...pushed, committed: false, reason, revision: 1 })

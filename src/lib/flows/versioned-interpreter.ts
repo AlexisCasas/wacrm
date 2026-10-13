@@ -1,16 +1,24 @@
 import { SnapshotError, SnapshotLoader, type VersionSnapshot } from './versioned-snapshot'
 import { VERSIONED_LIMITS, parseExecuteFlowConfig, parseVersionedCheckpoint, type VersionedCheckpoint } from './versioned-runtime'
 import { VersionedStoreError, type CommitResult, type SubflowResult, type VersionedRunRow, type VersionedRunStore } from './versioned-store'
+import type { EffectRow } from './versioned-effects'
+import { parseMessageNode, parseOutboundPayload, effectOccurrenceKey, type MessagingOptions, type SendOutcome } from './versioned-messaging'
 
 /**
- * Interpreter for versioned runs (E4.2B1.3 + B2.2): START, END and execute_flow (subflows), from
+ * Interpreter for versioned runs (E4.2B1.3 + B2.2 + C2): START, END, execute_flow (subflows) and, only when
+ * `messaging` is injected, send_message / send_media through the effect ledger (C1) and an injected sender. From
  * immutable published snapshots. All state lives in PostgreSQL: lease + fencing + CAS (055/056) and
  * the call-frame RPCs (057/058). This module keeps only local variables, so a restarted process
  * resumes from the persisted cursor/frames; END decides root-vs-nested from the persisted depth.
  * PostgreSQL stays the only authority for atomicity and for changing flow version: calls and
  * returns go through push/pop_versioned_run_subflow, never through the generic commit.
  *
- * Not wired to production: no route, dispatcher or cron imports this file. It sends nothing.
+ * Not wired to production: no route, dispatcher or cron imports this file. It has no network code: whatever it
+ * "sends" goes to the injected EffectSender, which in this repository is a test double.
+ *
+ * Messaging rule of thumb (see versioned-messaging.ts): the ledger row, not the interpreter, is the source of
+ * truth. A message is handed to the sender only right after THIS invocation obtained a fresh claim; an effect
+ * found claimed by anyone else is never resent (it becomes ambiguous and waits for evidence).
  */
 
 export interface RunVersionedFlowOptions {
@@ -23,6 +31,8 @@ export interface RunVersionedFlowOptions {
   recoverExpiredLease?: boolean
   /** Re-attempts of a transition whose outcome was ambiguous AND verified as not committed. Default 2. */
   maxAmbiguousRetries?: number
+  /** Enables send_message / send_media. Without it those nodes still end the run as unsupported_node_type. */
+  messaging?: MessagingOptions
 }
 
 interface OutcomeBase { flowRunId: string; steps: number }
@@ -39,6 +49,10 @@ export type VersionedRunOutcome = OutcomeBase & (
   | { kind: 'revision_conflict'; revision: number }
   | { kind: 'snapshot_error'; code: string; message: string }
   | { kind: 'corrupt_checkpoint'; message: string }
+  /** The effect of the pending message node is ambiguous: nothing is resent or advanced until evidence is supplied. */
+  | { kind: 'awaiting_effect_resolution'; effectId: string; occurrenceRevision: number }
+  /** The sender proved `not_dispatched` more often than allowed in this invocation; the effect is pending again. */
+  | { kind: 'send_deferred'; effectId: string; attempts: number }
 )
 
 /** Messages raised by push_versioned_run_subflow for requests that can never succeed as configured. */
@@ -71,6 +85,13 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
   if (!first || first.execution_mode !== 'versioned') return { ...base, steps, kind: 'not_found' }
   if (first.status !== 'active') return { ...base, steps, kind: 'not_active', status: first.status }
 
+  const messaging = opts.messaging
+  if (messaging) {
+    // An ambiguous effect at the current revision blocks the run: answer without touching the lease.
+    const blocked = await messaging.effects.loadEffectAt(accountId, runId, first.versioned_revision)
+    if (blocked?.state === 'ambiguous') return { ...base, steps, kind: 'awaiting_effect_resolution', effectId: blocked.id, occurrenceRevision: blocked.occurrence_revision }
+  }
+
   let lease = await store.acquireLease(accountId, runId, owner, ttl)
   if (!lease.acquired && lease.reason === 'lease_expired' && opts.recoverExpiredLease) lease = await store.reclaimLease(accountId, runId, owner, ttl)
   if (!lease.acquired) {
@@ -79,6 +100,9 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
   }
   const token = lease.fencingToken
   const loader = new SnapshotLoader(store, accountId)
+  const caller = { accountId, runId, owner, fencingToken: token }
+  /** Attempts this invocation already handed to the sender; an attempt is never handed over twice. */
+  const sentAttempts = new Set<string>()
 
   /** Gives the lease back on controlled exits only. A crash (thrown error) intentionally leaves it to expire. */
   const exit = async (outcome: VersionedRunOutcome): Promise<VersionedRunOutcome> => {
@@ -86,6 +110,13 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
     return outcome
   }
   const notActive = async () => exit({ ...base, steps, kind: 'not_active', status: (await store.loadRun(accountId, runId))?.status ?? 'unknown' })
+
+  if (messaging) {
+    // Claims left by an older lease may or may not have reached the provider: they become ambiguous (never resent).
+    const rec = await messaging.effects.recoverEffects(caller)
+    if (rec.refusal === 'run_not_active') return notActive()
+    if (rec.refusal) return { ...base, steps, kind: 'lease_lost', reason: rec.refusal }
+  }
 
   /**
    * Runs one transition RPC. A definite answer is returned as-is. When the answer is ambiguous (transport
@@ -154,6 +185,175 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
     const failure = onRefusal(a.res)
     if (failure) return failRun(run, cp, failure)
     return refused(run, a.res)
+  }
+
+  const classify = (e: unknown): 'controlled' | 'corrupt' | 'transport' =>
+    e instanceof VersionedStoreError && (e.code === 'P0002' || e.code === '22023') ? 'controlled'
+      : e instanceof VersionedStoreError && e.code === '55000' ? 'corrupt' : 'transport'
+  const corrupt = (message: string) => exit({ ...base, steps, kind: 'corrupt_checkpoint', message })
+
+  /**
+   * One message node. Every decision is taken from the persisted ledger row; the only in-process memory is the set
+   * of attempts already handed to the sender (so a lost settle can be repeated with the outcome we really got,
+   * but a send is never repeated).
+   */
+  async function processMessage(run: VersionedRunRow, cp: VersionedCheckpoint, node: { node_key: string; node_type: string; config: unknown }, snapshot: VersionSnapshot): Promise<VersionedRunOutcome | 'advanced' | 'continue'> {
+    const m = messaging!
+    const spec = parseMessageNode(node as never)
+    if (!spec) return failRun(run, cp, `invalid_${node.node_type}_config`)
+    if (!snapshot.node(spec.nextNodeKey)) return failRun(run, cp, 'invalid_next_node')
+    const maxNotDispatched = m.maxNotDispatchedRetries ?? 2
+    let notDispatched = 0
+    let transportRetries = 0
+    const transient = (e: unknown) => { if (++transportRetries > maxRetries) throw e }
+    const moved = (r: VersionedRunRow) => r.versioned_lease_owner !== owner || r.versioned_lease !== token
+
+    for (let guard = 0; guard < 60; guard++) {
+      const effect: EffectRow | null = await m.effects.loadEffectAt(accountId, runId, run.versioned_revision)
+
+      // 1. register (idempotent per step; the payload is built from the variables only when no row exists yet)
+      if (!effect) {
+        try {
+          const reg = await m.effects.registerEffect({ ...caller, expectedRevision: run.versioned_revision, effectType: spec.effectType, request: spec.build(run.vars) })
+          if (!reg.registered && reg.reason !== 'already_registered' && reg.reason !== 'payload_mismatch') {
+            if (reg.reason === 'stale_lease' || reg.reason === 'lease_expired') return { ...base, steps, kind: 'lease_lost', reason: reg.reason }
+            if (reg.reason === 'run_not_active') return notActive()
+            if (reg.reason === 'budget_exceeded') return failRun(run, cp, 'message_budget_exceeded')
+            if (reg.reason === 'revision_conflict') return refused(run, { committed: false, revision: reg.occurrenceRevision, reason: 'revision_conflict' }).then((r) => (r === 'continue' ? 'continue' : r))
+            return corrupt(`unexpected registration refusal: ${reg.reason ?? 'unknown'}`)
+          }
+        } catch (e) {
+          const c = classify(e)
+          if (c === 'controlled') return failRun(run, cp, 'effect_rejected')
+          if (c === 'corrupt') return corrupt((e as Error).message)
+          transient(e)
+        }
+        continue   // always re-read the ledger: it decides
+      }
+      if (effect.effect_type !== spec.effectType || effect.node_key !== node.node_key || effect.flow_version_id !== cp.cursor.flow_version_id) {
+        return corrupt('ledger effect does not belong to the pending node')
+      }
+
+      switch (effect.state) {
+        case 'confirmed': {
+          // 2. advance: never sends; the ledger already holds the provider's acceptance
+          for (let tries = 0; ; tries++) {
+            try {
+              const res = await m.effects.commitEffectStep({ ...caller, expectedRevision: run.versioned_revision, effectId: effect.id, checkpoint: {
+                cursor: { flow_version_id: cp.cursor.flow_version_id, node_key: spec.nextNodeKey }, step: cp.step + 1, state: 'pending', failure: null,
+                confirmed: { flow_version_id: cp.cursor.flow_version_id, node_key: cp.cursor.node_key, step: cp.step } } })
+              if (res.committed) return 'advanced'
+              if (res.reason === 'stale_lease' || res.reason === 'lease_expired') return { ...base, steps, kind: 'lease_lost', reason: res.reason }
+              if (res.reason === 'run_not_active') return notActive()
+              if (res.reason === 'budget_exceeded') return failRun(run, cp, 'message_budget_exceeded')
+              if (res.reason === 'revision_conflict') return refused(run, { committed: false, revision: res.revision, reason: 'revision_conflict' })
+              return corrupt(`unexpected advance refusal: ${res.reason ?? 'unknown'}`)
+            } catch (e) {
+              const c = classify(e)
+              if (c === 'corrupt') return corrupt((e as Error).message)
+              if (c === 'controlled') return corrupt((e as Error).message)
+              const now = await store.loadRun(accountId, runId)
+              if (!now) return { ...base, steps, kind: 'not_found' }
+              if (moved(now)) return { ...base, steps, kind: 'lease_lost', reason: 'stale_lease' }
+              if (now.status !== 'active') return exit({ ...base, steps, kind: 'not_active', status: now.status })
+              if (now.versioned_revision !== run.versioned_revision) return 'advanced'   // the answer was lost, the advance landed
+              if (tries >= maxRetries) throw e
+            }
+          }
+        }
+        case 'failed':
+          return failRun(run, cp, 'effect_failed')
+        case 'ambiguous':
+          return exit({ ...base, steps, kind: 'awaiting_effect_resolution', effectId: effect.id, occurrenceRevision: effect.occurrence_revision })
+        case 'pending': {
+          // 3. claim; the claim is committed before anything is handed to the sender
+          try {
+            const c = await m.effects.claimEffect(caller, effect.id)
+            if (!c.claimed && c.reason !== 'effect_not_pending') {
+              if (c.reason === 'stale_lease' || c.reason === 'lease_expired') return { ...base, steps, kind: 'lease_lost', reason: c.reason }
+              if (c.reason === 'run_not_active') return notActive()
+              return corrupt(`unexpected claim refusal: ${c.reason ?? 'unknown'}`)
+            }
+          } catch (e) {
+            const k = classify(e)
+            if (k === 'corrupt' || k === 'controlled') return corrupt((e as Error).message)
+            transient(e)
+          }
+          continue   // re-read: the persisted state says whether we really hold the claim
+        }
+        case 'claimed': {
+          const mine = effect.claimed_owner === owner && effect.claimed_fencing_token === token && !!effect.attempt_id
+          if (!mine) {
+            // someone else's (older) claim: never resend; recovery turns it into ambiguous
+            const rec = await m.effects.recoverEffects(caller)
+            if (rec.refusal === 'run_not_active') return notActive()
+            if (rec.refusal) return { ...base, steps, kind: 'lease_lost', reason: rec.refusal }
+            const again = await m.effects.loadEffectAt(accountId, runId, run.versioned_revision)
+            if (again?.state === 'claimed') return corrupt('effect is claimed by a live foreign lease')
+            continue
+          }
+          if (sentAttempts.has(effect.attempt_id!)) return corrupt('attempt was already handed to the sender but its outcome is not recorded')
+          const payload = parseOutboundPayload(effect.request)
+          if (!payload) return corrupt('ledger payload is not sendable')
+
+          // 4. send: only here, with a fresh claim of this lease that this process has not used yet
+          sentAttempts.add(effect.attempt_id!)
+          let outcome: SendOutcome
+          try {
+            outcome = await m.sender.send({ effectId: effect.id, attemptId: effect.attempt_id!, attempt: effect.attempt, occurrenceKey: effectOccurrenceKey(runId, effect.occurrence_revision),
+              effectType: effect.effect_type, contactId: effect.contact_id, conversationId: effect.conversation_id, payload })
+          } catch {
+            outcome = { kind: 'ambiguous', errorCode: 'sender_error' }      // an exception says nothing about delivery
+          }
+          if (outcome.kind === 'accepted' && (typeof outcome.providerMessageId !== 'string' || !outcome.providerMessageId)) outcome = { kind: 'ambiguous', errorCode: 'accepted_without_id' }
+          const settle = outcome.kind === 'accepted' ? { outcome: 'confirmed' as const, providerMessageId: outcome.providerMessageId }
+            : outcome.kind === 'rejected' ? { outcome: 'failed' as const, errorCode: outcome.errorCode }
+            : { outcome: 'ambiguous' as const, errorCode: outcome.errorCode }
+
+          // 5. settle with the outcome we really got; a lost answer is repeated only while the row still says "claimed"
+          for (let tries = 0; ; tries++) {
+            try {
+              const r = await m.effects.settleEffect({ ...caller, effectId: effect.id, attemptId: effect.attempt_id!, ...settle })
+              if (r.settled) break
+              if (r.reason === 'stale_lease' || r.reason === 'lease_expired') return { ...base, steps, kind: 'lease_lost', reason: r.reason }
+              if (r.reason === 'run_not_active') return notActive()
+              const now = await m.effects.loadEffectAt(accountId, runId, run.versioned_revision)
+              if (now?.state === 'claimed') return corrupt(`settle refused: ${r.reason ?? 'unknown'}`)
+              break
+            } catch (e) {
+              const k = classify(e)
+              if (k === 'corrupt' || k === 'controlled') return corrupt((e as Error).message)
+              const now = await m.effects.loadEffectAt(accountId, runId, run.versioned_revision)
+              if (now && now.state !== 'claimed') break
+              if (tries >= maxRetries) throw e
+            }
+          }
+
+          if (outcome.kind === 'not_dispatched') {
+            // proven never delivered: the only automatic retry. Re-open with the sender's own evidence.
+            for (let tries = 0; ; tries++) {
+              try {
+                const r = await m.effects.resolveEffect({ ...caller, effectId: effect.id, resolution: 'not_sent',
+                  evidence: `sender reported not_dispatched${outcome.errorCode ? ` (${outcome.errorCode})` : ''}: the request never reached the provider (attempt ${effect.attempt})` })
+                if (r.resolved) break
+                if (r.reason === 'stale_lease' || r.reason === 'lease_expired') return { ...base, steps, kind: 'lease_lost', reason: r.reason }
+                if (r.reason === 'run_not_active') return notActive()
+                break
+              } catch (e) {
+                const k = classify(e)
+                if (k === 'corrupt' || k === 'controlled') return corrupt((e as Error).message)
+                const now = await m.effects.loadEffectAt(accountId, runId, run.versioned_revision)
+                if (now && now.state !== 'ambiguous') break
+                if (tries >= maxRetries) throw e
+              }
+            }
+            if (++notDispatched > maxNotDispatched) return exit({ ...base, steps, kind: 'send_deferred', effectId: effect.id, attempts: effect.attempt })
+          }
+          continue   // re-read: confirmed -> advance, failed -> fail the run, ambiguous -> wait, pending -> next attempt
+        }
+      }
+    }
+    return corrupt('message node made no progress')
   }
 
   while (true) {
@@ -225,6 +425,11 @@ export async function runVersionedFlow(store: VersionedRunStore, opts: RunVersio
         verdict = await settle(run, cp, a, budgetFailure)
         if (verdict === 'committed' && a.t === 'ok') { steps++; return { ...base, steps, kind: 'completed', revision: a.res.revision, nodesExecuted: a.res.nodesExecuted } }
       }
+    } else if (messaging && (node.node_type === 'send_message' || node.node_type === 'send_media')) {
+      const r = await processMessage(run, cp, node, snapshot)
+      if (r === 'advanced') { steps++; continue }
+      if (r === 'continue') continue
+      return r
     } else {
       const r = await failRun(run, cp, `unsupported_node_type:${node.node_type}`)
       if (r === 'continue') continue

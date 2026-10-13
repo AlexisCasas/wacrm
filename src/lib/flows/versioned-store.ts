@@ -14,6 +14,8 @@ export interface VersionedRunRow {
   versioned_nodes_executed: number; versioned_messages_executed: number; versioned_depth: number
   versioned_checkpoint: unknown; versioned_lease: number; versioned_revision: number
   versioned_lease_owner: string | null; versioned_lease_expires_at: string | null
+  /** Shared run variables (message templates are rendered from these once, when an effect is registered). */
+  vars: Record<string, unknown>
 }
 export interface FlowVersionRow { id: string; flow_id: string; account_id: string; definition: unknown }
 
@@ -55,7 +57,7 @@ export interface VersionedRunStore {
   popSubflow(input: PopSubflowInput): Promise<SubflowResult>
 }
 
-const RUN_COLUMNS = 'id,account_id,flow_id,status,execution_mode,root_flow_version_id,current_flow_version_id,versioned_node_key,versioned_nodes_executed,versioned_messages_executed,versioned_depth,versioned_checkpoint,versioned_lease,versioned_revision,versioned_lease_owner,versioned_lease_expires_at'
+const RUN_COLUMNS = 'id,account_id,flow_id,status,execution_mode,root_flow_version_id,current_flow_version_id,versioned_node_key,versioned_nodes_executed,versioned_messages_executed,versioned_depth,versioned_checkpoint,versioned_lease,versioned_revision,versioned_lease_owner,versioned_lease_expires_at,vars'
 
 function isRecord(v: unknown): v is Record<string, unknown> { return !!v && typeof v === 'object' && !Array.isArray(v) }
 /** bigint columns may arrive as JSON numbers or strings depending on the transport. */

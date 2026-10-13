@@ -14,7 +14,7 @@ const versionRow = (nodes: unknown[], over = {}) => ({ id: V, flow_id: 'flow-1',
 const runRow = (over: Partial<VersionedRunRow> = {}): VersionedRunRow => ({
   id: RUN, account_id: A, flow_id: 'flow-1', status: 'active', execution_mode: 'versioned', root_flow_version_id: V, current_flow_version_id: V, versioned_node_key: 'start',
   versioned_nodes_executed: 0, versioned_messages_executed: 0, versioned_depth: 0, versioned_checkpoint: { cursor: { flow_version_id: V, node_key: 'start' }, step: 0 },
-  versioned_lease: 1, versioned_revision: 0, versioned_lease_owner: 'w1', versioned_lease_expires_at: 'x', ...over,
+  versioned_lease: 1, versioned_revision: 0, versioned_lease_owner: 'w1', versioned_lease_expires_at: 'x', vars: {}, ...over,
 })
 
 function stubStore(over: Partial<VersionedRunStore> = {}): VersionedRunStore & { calls: string[] } {
