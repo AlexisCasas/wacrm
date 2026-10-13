@@ -202,3 +202,21 @@ BEGIN
   IF NOT (public.qa_eff_step(p_run, p_owner, eid, p_next)->>'committed')::bool THEN RAISE EXCEPTION 'qa_eff_full: step refused'; END IF;
   RETURN eid;
 END $$;
+
+-- C3.1 helper: a versioned run WITH a real conversation (needed for Inbox persistence). Returns the run id.
+CREATE OR REPLACE FUNCTION public.qa_flow_run_conv(p_flow uuid, n int) RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE r record; f public.flows%ROWTYPE; c uuid := public.qa_new_contact(n); v uuid;
+BEGIN
+  SELECT * INTO f FROM public.flows WHERE id = p_flow;
+  INSERT INTO public.conversations (user_id, account_id, contact_id) VALUES (f.user_id, f.account_id, c) RETURNING id INTO v;
+  SELECT * INTO r FROM public.create_versioned_flow_run(f.account_id, f.id, c, v);
+  IF NOT r.created THEN RAISE EXCEPTION 'qa_flow_run_conv % failed: %', n, r.reason; END IF;
+  RETURN r.flow_run_id;
+END $$;
+-- Claim + settle(confirmed) with a given wamid; returns the settle result row as jsonb.
+CREATE OR REPLACE FUNCTION public.qa_eff_accept(p_run uuid, p_owner text, p_effect uuid, p_wamid text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE clm jsonb;
+BEGIN
+  clm := public.qa_eff_claim(p_run, p_owner, p_effect);
+  RETURN public.qa_eff_settle(p_run, p_owner, p_effect, (clm->>'claimed_attempt_id')::uuid, 'confirmed', p_wamid);
+END $$;
