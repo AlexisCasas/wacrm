@@ -1221,6 +1221,17 @@
       "noNodeSelected": "선택된 노드가 없습니다",
       "noNodeDesc": "캔버스에서 노드를 선택해 설정을 편집하세요.",
       "form": {
+        "targetFlow": "실행할 플로우",
+        "pickTargetFlow": "이 계정의 플로우를 선택하세요",
+        "targetFlowUnavailable": "선택한 플로우를 사용할 수 없습니다",
+        "targetFlowMissing": "선택한 플로우가 더 이상 없거나 이 계정의 플로우가 아닙니다. 다른 플로우를 선택하세요. 이 상태로는 저장할 수 없습니다.",
+        "noOtherFlows": "이 계정에 다른 플로우가 아직 없습니다.",
+        "continuesAfterFlow": "해당 플로우가 끝나면 이어서 진행할 노드",
+        "subflowDraftOnly": "연결된 플로우는 이 초안과 함께 저장됩니다. 아직 실행은 지원되지 않으므로 이 플로우는 활성화할 수 없습니다.",
+        "subflowAuthoringDisabled": "이 계정에서는 플로우 연결이 활성화되어 있지 않습니다.",
+        "flowStatusActive": "활성",
+        "flowStatusDraft": "초안",
+        "flowStatusArchived": "보관됨",
         "advancesTo": "다음 진행",
         "textToCustomer": "고객에게 전송되는 텍스트",
         "promptToCustomer": "고객에게 전송되는 질문",
@@ -1301,6 +1312,7 @@
         "flow": "플로우 제어"
       },
       "nodes": {
+        "execute_flow": { "label": "다른 플로우 실행", "blurb": "이 계정의 다른 플로우를 실행한 뒤 여기서 계속합니다" },
         "start": {
           "label": "시작",
           "blurb": "플로우의 진입점"
@@ -1364,6 +1376,7 @@
       "statusDraft": "초안으로 저장되었습니다."
     },
     "summary": {
+      "runsFlow": "플로우 {id}… 실행",
       "options": "옵션 {count}개",
       "optionsAcrossSections": "{sectionCount}개 섹션에 걸쳐 옵션 {rowCount}개",
       "noFile": "{label} (업로드된 파일 없음)",

@@ -192,6 +192,8 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
       return { seconds: 5, next_node_key: "" };
     case "set_contact_field":
       return { field: "", value: "", next_node_key: "" };
+    case "execute_flow":
+      return { target_flow_id: "", next_node_key: "" };
     case "handoff":
       return { note: "" };
     case "end":

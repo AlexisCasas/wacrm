@@ -42,6 +42,8 @@ import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker";
 import { slugify, type BuilderNode } from "../shared";
+import { useFlowEditor } from "../flow-editor-state";
+import { useSubflowAuthoringCapability } from "../use-subflow-authoring";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
 
 interface NodeConfigFormProps {
@@ -205,6 +207,17 @@ export function NodeConfigForm({
       return (
         <SetContactFieldForm
           cfg={cfg as SetContactFieldCfg}
+          allNodes={allNodes}
+          currentKey={node.node_key}
+          onUpdateConfig={onUpdateConfig}
+          t={t}
+        />
+      );
+
+    case "execute_flow":
+      return (
+        <ExecuteFlowForm
+          cfg={cfg as ExecuteFlowCfg}
           allNodes={allNodes}
           currentKey={node.node_key}
           onUpdateConfig={onUpdateConfig}
@@ -1121,6 +1134,97 @@ function SendMediaForm({
         onChange={(v) => onUpdateConfig({ next_node_key: v })}
         label={t("advanceAfterSending")}
       />
+    </>
+  );
+}
+
+// ============================================================
+// execute_flow (pilot: authoring only, nothing runs)
+// ============================================================
+
+interface ExecuteFlowCfg {
+  target_flow_id?: string;
+  next_node_key?: string;
+}
+
+interface AccountFlowOption {
+  id: string;
+  name: string;
+  status: string;
+}
+
+/** The account's own flows, through the RLS-scoped client: another account's flows are never returned. */
+function useAccountFlows(): { flows: AccountFlowOption[]; loaded: boolean } {
+  const [state, setState] = useState<{ flows: AccountFlowOption[]; loaded: boolean }>({ flows: [], loaded: false });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data } = await supabase.from("flows").select("id, name, status").order("name").limit(1000);
+        if (!cancelled) setState({ flows: (data as AccountFlowOption[] | null) ?? [], loaded: data !== null });
+      } catch {
+        if (!cancelled) setState({ flows: [], loaded: false });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return state;
+}
+
+function ExecuteFlowForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: ExecuteFlowCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const { flow } = useFlowEditor();
+  const enabled = useSubflowAuthoringCapability();
+  const { flows, loaded } = useAccountFlows();
+  const options = flows.filter((f) => f.id !== flow.id);
+  const target = cfg.target_flow_id ?? "";
+  const selected = options.find((f) => f.id === target);
+  const statusLabel = (status: string) => (status === "active" ? t("flowStatusActive") : status === "archived" ? t("flowStatusArchived") : t("flowStatusDraft"));
+  return (
+    <>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("targetFlow")}</label>
+        <Select value={target} onValueChange={(v) => onUpdateConfig({ target_flow_id: v ?? "" })} disabled={!enabled}>
+          <SelectTrigger className="bg-muted" aria-label={t("targetFlow")}>
+            <span className={cn("truncate", !selected && "text-muted-foreground")}>
+              {selected ? `${selected.name} · ${statusLabel(selected.status)}` : target ? t("targetFlowUnavailable") : t("pickTargetFlow")}
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            {options.map((f) => (
+              <SelectItem key={f.id} value={f.id}>
+                {f.name} · {statusLabel(f.status)}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {loaded && target && !selected && (
+          <p role="alert" className="mt-1 text-xs text-destructive">{t("targetFlowMissing")}</p>
+        )}
+        {loaded && options.length === 0 && <p className="mt-1 text-xs text-muted-foreground">{t("noOtherFlows")}</p>}
+      </div>
+      <NextNodeRow
+        value={cfg.next_node_key ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ next_node_key: v })}
+        label={t("continuesAfterFlow")}
+      />
+      <p className="text-xs text-muted-foreground">{enabled ? t("subflowDraftOnly") : t("subflowAuthoringDisabled")}</p>
     </>
   );
 }

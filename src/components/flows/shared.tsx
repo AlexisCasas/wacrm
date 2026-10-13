@@ -53,6 +53,7 @@ export type NodeType =
   | 'set_tag'
   | 'delay'
   | 'set_contact_field'
+  | 'execute_flow'
   | 'handoff'
   | 'end';
 
@@ -170,6 +171,13 @@ export const NODE_META: Record<
     blurb: 'Sets a custom field on the contact',
     category: 'logic',
   },
+  execute_flow: {
+    label: 'Run another flow',
+    icon: Workflow,
+    color: 'text-violet-400',
+    blurb: 'Runs another flow of this account, then continues here',
+    category: 'flow',
+  },
   handoff: {
     label: 'Handoff to agent',
     icon: UserPlus,
@@ -225,6 +233,7 @@ const NODE_HUE: Record<NodeType, { l: number; c: number; h: number }> = {
   set_tag: { l: 0.65, c: 0.15, h: 350 }, // pink
   delay: { l: 0.68, c: 0.15, h: 45 }, // orange — pause / wait
   set_contact_field: { l: 0.68, c: 0.14, h: 130 }, // lime — data write
+  execute_flow: { l: 0.66, c: 0.16, h: 295 }, // violet — calls another flow
   handoff: { l: 0.65, c: 0.17, h: 16 }, // rose — hands off
   end: { l: 0.55, c: 0.01, h: 260 }, // neutral grey — terminal
 };
@@ -456,6 +465,11 @@ export function summarizeNode(
       return value
         ? `${fieldLabel} = ${truncate(value, 40)}`
         : `${fieldLabel} = (empty)`;
+    }
+    case 'execute_flow': {
+      const target = typeof cfg.target_flow_id === 'string' ? cfg.target_flow_id : '';
+      if (!target) return null;
+      return t ? t('runsFlow', { id: target.slice(0, 8) }) : `Runs flow ${target.slice(0, 8)}`;
     }
     case 'handoff': {
       const note = typeof cfg.note === 'string' ? cfg.note : '';

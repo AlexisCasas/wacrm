@@ -1377,6 +1377,17 @@
       "noNodeSelected": "Ningún nodo seleccionado",
       "noNodeDesc": "Selecciona un nodo en el lienzo para editar su configuración.",
       "form": {
+        "targetFlow": "Flujo a ejecutar",
+        "pickTargetFlow": "Elige un flujo de esta cuenta",
+        "targetFlowUnavailable": "El flujo seleccionado no está disponible",
+        "targetFlowMissing": "El flujo seleccionado ya no existe o no pertenece a esta cuenta. Elige otro: este flujo no se puede guardar con él.",
+        "noOtherFlows": "Todavía no hay otros flujos en esta cuenta.",
+        "continuesAfterFlow": "Cuando ese flujo termine, continuar en",
+        "subflowDraftOnly": "Los flujos conectados se guardan con este borrador. Su ejecución aún no está habilitada, por eso este flujo no se puede activar.",
+        "subflowAuthoringDisabled": "Conectar flujos no está habilitado para esta cuenta.",
+        "flowStatusActive": "activo",
+        "flowStatusDraft": "borrador",
+        "flowStatusArchived": "archivado",
         "advancesTo": "Avanza a",
         "textToCustomer": "Texto enviado al cliente",
         "promptToCustomer": "Pregunta enviada al cliente",
@@ -1461,6 +1472,7 @@
         "flow": "Control de flujo"
       },
       "nodes": {
+        "execute_flow": { "label": "Ejecutar otro flujo", "blurb": "Ejecuta otro flujo de esta cuenta y luego continúa aquí" },
         "start": {
           "label": "Inicio",
           "blurb": "Punto de entrada del flow"
@@ -1527,6 +1539,7 @@
       "deleteFailed": "No se pudo eliminar"
     },
     "summary": {
+      "runsFlow": "Ejecuta el flujo {id}…",
       "options": "{count} {count, plural, =1 {opción} other {opciones}}",
       "optionsAcrossSections": "{rowCount} {rowCount, plural, =1 {opción} other {opciones}} en {sectionCount} {sectionCount, plural, =1 {sección} other {secciones}}",
       "noFile": "{label} (sin archivo subido)",
