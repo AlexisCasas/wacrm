@@ -55,7 +55,15 @@ export interface EffectRow {
   request: Record<string, unknown>; payload_hash: string; provider_message_id: string | null; error_code: string | null
 }
 
+/** One row of the Inbox repair report. `failed.reason` is the SQLSTATE; no message content is ever returned. */
+export interface InboxRepairRow { effectId: string; messageId: string | null; outcome: 'created' | 'already_persisted' | 'skipped' | 'failed'; reason: string | null }
+
 export interface VersionedEffectStore {
+  /**
+   * Repairs the Inbox of a run in ANY state (also completed / failed): creates the message and link that a confirmed
+   * effect is missing, nothing else. No lease, no run change, never contacts the provider; service_role only.
+   */
+  repairInbox(accountId: string, runId: string): Promise<InboxRepairRow[]>
   /** Reads the effect of one occurrence (run + revision) straight from the ledger; null when none was registered. */
   loadEffectAt(accountId: string, runId: string, occurrenceRevision: number): Promise<EffectRow | null>
   registerEffect(input: RegisterEffectInput): Promise<RegisterEffectResult>
@@ -101,6 +109,14 @@ export function createSupabaseEffectStore(client: SupabaseClient): VersionedEffe
   }
   const who = (c: EffectCaller) => ({ p_account_id: c.accountId, p_run_id: c.runId, p_owner: c.owner, p_fencing_token: c.fencingToken })
   return {
+    async repairInbox(accountId, runId) {
+      const data = await rpc('repair_versioned_run_inbox', { p_account_id: accountId, p_run_id: runId })
+      const rows = Array.isArray(data) ? data : data ? [data] : []
+      return (rows as Array<Record<string, unknown>>).map((r) => ({
+        effectId: toStr(r.effect_id, 'effect_id') ?? '', messageId: toStr(r.message_id, 'message_id'),
+        outcome: toStr(r.outcome, 'outcome') as InboxRepairRow['outcome'], reason: toStr(r.reason, 'reason'),
+      }))
+    },
     async loadEffectAt(accountId, runId, occurrenceRevision) {
       const { data, error } = await client.from('flow_run_effects')
         .select('id,account_id,flow_run_id,flow_version_id,node_key,occurrence_revision,effect_type,state,attempt,attempt_id,claimed_owner,claimed_fencing_token,contact_id,conversation_id,request,payload_hash,provider_message_id,error_code')

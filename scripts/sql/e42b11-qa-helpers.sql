@@ -220,3 +220,23 @@ BEGIN
   clm := public.qa_eff_claim(p_run, p_owner, p_effect);
   RETURN public.qa_eff_settle(p_run, p_owner, p_effect, (clm->>'claimed_attempt_id')::uuid, 'confirmed', p_wamid);
 END $$;
+
+-- PR30 helper: confirms an effect (claim + settle) and returns its id; leaves the cursor where it is.
+CREATE OR REPLACE FUNCTION public.qa_eff_registered_accept(p_run uuid, p_owner text, p_request jsonb, p_wamid text) RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE eid uuid;
+BEGIN
+  eid := (public.qa_eff_register(p_run, p_owner, 'send_message', p_request)->>'effect_id')::uuid;
+  PERFORM public.qa_eff_accept(p_run, p_owner, eid, p_wamid);
+  RETURN eid;
+END $$;
+-- PR30 helper: advance past a confirmed effect to the END node and finish the run ('completed' or 'failed').
+CREATE OR REPLACE FUNCTION public.qa_finish_run(p_run uuid, p_owner text, p_effect uuid, p_status text DEFAULT 'completed') RETURNS void LANGUAGE plpgsql AS $$
+DECLARE run public.flow_runs%ROWTYPE; c record;
+BEGIN
+  IF NOT (public.qa_eff_step(p_run, p_owner, p_effect, 'x')->>'committed')::bool THEN RAISE EXCEPTION 'qa_finish_run: step refused'; END IF;
+  SELECT * INTO run FROM public.flow_runs WHERE id = p_run;
+  SELECT * INTO c FROM public.commit_versioned_run_transition(run.account_id, p_run, p_owner, run.versioned_lease, run.versioned_revision,
+    jsonb_build_object('cursor', jsonb_build_object('flow_version_id', run.current_flow_version_id, 'node_key', 'x'), 'step', (run.versioned_checkpoint->>'step')::int + 1, 'state', 'terminal'),
+    p_status, 'qa', 1);
+  IF NOT c.committed THEN RAISE EXCEPTION 'qa_finish_run: finish refused (%)', c.reason; END IF;
+END $$;
