@@ -1,0 +1,393 @@
+import { createHmac, randomUUID } from 'node:crypto'
+import { execFile } from 'node:child_process'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { createClient } from '@supabase/supabase-js'
+
+/**
+ * P8 subflow execution (A -> B -> A -> C -> A), engine integration: the REAL engine against a disposable PostgreSQL 17
+ * (every migration in supabase/migrations) behind a real PostgREST on an isolated Docker network. Sends are SIMULATED: the fake sender
+ * writes the same outbound `messages` row the real one writes (sender_type 'bot', DB clock) and nothing else; nothing reaches Meta or a
+ * real customer. Skipped unless QA_REST_URL is set (qa/subflow-exec/run-engine-qa.sh). Ids S01...
+ */
+const REST = process.env.QA_REST_URL ?? ''
+const CONTAINER = process.env.QA_PG_CONTAINER ?? ''
+vi.setConfig({ testTimeout: 180_000 })
+const pass = (id: string, detail: string) => console.log(`QA-RESULT ${id} PASS ${detail}`)
+
+const sent = vi.hoisted(() => ({
+  texts: [] as Array<{ conversationId: string; text: string }>,
+  psql: null as null | ((sql: string) => Promise<string>),
+  /** Runs right after the outbound row is stored (the customer can answer at any instant after that). */
+  afterStore: null as null | ((a: { conversationId: string; text: string }) => Promise<void>),
+  /** Runs BEFORE the outbound row is stored, i.e. while the (simulated) Meta call is in flight. */
+  duringCall: null as null | ((a: { conversationId: string; text: string }) => Promise<void>),
+  blockedFetches: 0,
+  /** The next send throws as if the contact had just been blocked. */
+  blockNext: false,
+  buttons: 0,
+}))
+vi.mock('./meta-send', () => ({
+  engineSendText: async (a: { conversationId: string; text: string }) => {
+    if (sent.blockNext) { sent.blockNext = false; const { ContactBlockedError } = await import('@/lib/contacts/blocking'); throw new ContactBlockedError() }
+    await sent.duringCall?.(a)
+    sent.texts.push({ conversationId: a.conversationId, text: a.text }); const wamid = `wamid.sim.${randomUUID()}`
+    await sent.psql!(`insert into public.messages (conversation_id, sender_type, content_type, content_text, message_id, status) values ('${a.conversationId}','bot','text','${a.text.replace(/'/g, "''")}','${wamid}','sent')`)
+    await sent.afterStore?.(a)
+    return { whatsapp_message_id: wamid }
+  },
+  engineSendMedia: async () => { throw new Error('media is not simulated in this suite') },
+  engineSendInteractiveButtons: async () => { sent.buttons += 1; return { whatsapp_message_id: `wamid.sim.btn.${sent.buttons}` } },
+  engineSendInteractiveList: async () => ({ whatsapp_message_id: 'wamid.sim.list' }),
+}))
+vi.mock('./admin-client', () => {
+  const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString('base64url')
+  const head = b64({ alg: 'HS256', typ: 'JWT' }); const body = b64({ role: 'service_role', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 })
+  const token = `${head}.${body}.${createHmac('sha256', process.env.QA_JWT_SECRET ?? '').update(`${head}.${body}`).digest('base64url')}`
+  const url = process.env.QA_REST_URL ?? ''
+  const client = createClient(url || 'http://invalid.local', token, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: (input, init) => { const u = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url; if (!u.startsWith(url)) { sent.blockedFetches += 1; throw new Error(`blocked: ${u}`) } return fetch(u.replace('/rest/v1', ''), init) } },
+  })
+  return { supabaseAdmin: () => client }
+})
+
+const psql = (sql: string) => new Promise<string>((resolve, reject) => execFile('docker', ['exec', '-i', CONTAINER, 'psql', '-U', 'supabase_admin', '-h', '/var/run/postgresql', '-d', 'postgres', '-X', '-A', '-t', '-q', '-v', 'ON_ERROR_STOP=1', '-c', sql], { maxBuffer: 8 << 20 }, (e, out, err) => (e ? reject(new Error(err || String(e))) : resolve(out.trim()))))
+sent.psql = psql
+const rows = async <T = Record<string, any>>(q: string) => JSON.parse(await psql(`select coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) from (${q}) t`)) as T[] // eslint-disable-line @typescript-eslint/no-explicit-any
+
+const UA = 'a1000000-0000-4000-8000-000000000001'; const UB = 'b2000000-0000-4000-8000-000000000002'
+let acctA = ''; let acctB = ''
+let seq = 700
+type World = { a: string; b: string; c: string; keyword: string; user: string; acct: string }
+type Contact = { contactId: string; conversationId: string }
+const j = (v: unknown) => JSON.stringify(v).replace(/'/g, "''")
+const node = (flow: string, k: string, t: string, c: Record<string, unknown>) => psql(`insert into public.flow_nodes (flow_id, node_key, node_type, config) values ('${flow}','${k}','${t}','${j(c)}')`)
+const newFlow = async (user: string, acct: string, name: string, trigger: 'keyword' | 'manual', keyword = '') =>
+  (await psql(`insert into public.flows (user_id, account_id, name, trigger_type, trigger_config, entry_node_id) values ('${user}','${acct}','${name}','${trigger}','${trigger === 'keyword' ? `{"keywords":["${keyword}"]}` : '{}'}','start') returning id`)).split('\n')[0]
+const activate = (...flows: string[]) => psql(`select set_config('app.allow_durable_wait_activation','on',true), set_config('app.flow_publication','on',true); update public.flows set status='active' where id in (${flows.map((f) => `'${f}'`).join(',')})`)
+const enable = (acct: string, sub = true, wait = true) => psql(`insert into public.flow_execution_enablement (account_id, subflow_execution, durable_wait_execution) values ('${acct}', ${sub}, ${wait}) on conflict (account_id) do update set subflow_execution=excluded.subflow_execution, durable_wait_execution=excluded.durable_wait_execution`)
+
+/**
+ * A (keyword) : start -> info (send) -> call1 (run B, reference = info) -> call2 (run C) -> close (send) -> end
+ * B           : start -> pause (13 min) -> check (customer activity, inherited reference) -> YES: endYes (whole execution)
+ *                                                                                         -> NO : follow (send) -> endNo (return)
+ *   kind 'plain'   : start -> pause -> follow -> endNo        (no condition: relies on the on_customer_reply policy)
+ *   kind 'buttons' : start -> ask (buttons) -> follow -> endNo (a legitimate interactive reply inside B)
+ * C           : start -> sendC -> endC (return)
+ */
+async function world(opts: { owner?: 'A' | 'B'; kind?: 'cond' | 'plain' | 'buttons'; policy?: 'stop' | 'continue'; yesScope?: 'run' | 'subflow' } = {}): Promise<World> {
+  const owner = opts.owner ?? 'A'; const user = owner === 'A' ? UA : UB; const acct = owner === 'A' ? acctA : acctB; const keyword = `hidro${++seq}${Math.floor(Math.random() * 1e6)}`
+  const kind = opts.kind ?? 'cond'
+  const b = await newFlow(user, acct, `B ${keyword}`, 'manual'); const c = await newFlow(user, acct, `C ${keyword}`, 'manual'); const a = await newFlow(user, acct, `A ${keyword}`, 'keyword', keyword)
+  await node(b, 'start', 'start', { next_node_key: kind === 'buttons' ? 'ask' : 'pause' })
+  if (kind === 'buttons') {
+    await node(b, 'ask', 'send_buttons', { text: '¿Te interesa?', buttons: [{ reply_id: 'yes', title: 'Sí', next_node_key: 'follow' }, { reply_id: 'no', title: 'No', next_node_key: 'endYes' }] })
+  } else {
+    await node(b, 'pause', 'delay', { amount: 13, unit: 'minutes', next_node_key: kind === 'cond' ? 'check' : 'follow' })
+  }
+  if (kind === 'cond') await node(b, 'check', 'condition', { subject: 'customer_activity', subject_key: '$inherited', operator: 'replied_after_reference', true_next: 'endYes', false_next: 'follow' })
+  await node(b, 'follow', 'send_message', { text: 'Seguimiento B', next_node_key: 'endNo' })
+  await node(b, 'endNo', 'end', { scope: 'subflow' }); await node(b, 'endYes', 'end', { scope: opts.yesScope ?? 'run' })
+  await node(c, 'start', 'start', { next_node_key: 'sendC' }); await node(c, 'sendC', 'send_message', { text: 'Mensaje de C', next_node_key: 'endC' }); await node(c, 'endC', 'end', { scope: 'subflow' })
+  await node(a, 'start', 'start', { next_node_key: 'info' }); await node(a, 'info', 'send_message', { text: 'Información de la hidrolavadora', next_node_key: 'call1' })
+  await node(a, 'call1', 'execute_flow', { target_flow_id: b, next_node_key: 'call2', reference_node_key: 'info', on_customer_reply: opts.policy ?? 'stop' })
+  await node(a, 'call2', 'execute_flow', { target_flow_id: c, next_node_key: 'close' })
+  await node(a, 'close', 'send_message', { text: 'Cierre de A', next_node_key: 'end' }); await node(a, 'end', 'end', {})
+  await activate(b, c, a)
+  return { a, b, c, keyword, user, acct }
+}
+async function contact(w: { user: string; acct: string }): Promise<Contact> {
+  const id = randomUUID(); const conv = randomUUID(); seq += 1
+  await psql(`insert into public.contacts (id,user_id,account_id,phone,name) values ('${id}','${w.user}','${w.acct}','+1562${String(seq).padStart(7, '0')}','sim ${seq}'); insert into public.conversations (id,user_id,account_id,contact_id) values ('${conv}','${w.user}','${w.acct}','${id}')`)
+  return { contactId: id, conversationId: conv }
+}
+let engine: typeof import('./engine')
+const send = (w: World, c: Contact, text?: string) =>
+  engine.dispatchInboundToFlows({ accountId: w.acct, userId: w.user, contactId: c.contactId, conversationId: c.conversationId, message: { kind: 'text', text: text ?? w.keyword, meta_message_id: `wamid.in.${randomUUID()}` }, isFirstInboundMessage: false })
+const tap = (w: World, c: Contact, replyId: string) =>
+  engine.dispatchInboundToFlows({ accountId: w.acct, userId: w.user, contactId: c.contactId, conversationId: c.conversationId, message: { kind: 'interactive_reply', reply_id: replyId, reply_title: replyId, meta_message_id: `wamid.in.${randomUUID()}` } as never, isFirstInboundMessage: false })
+const run = async (c: { contactId: string }) => (await rows(`select * from public.flow_runs where contact_id='${c.contactId}' order by started_at desc limit 1`))[0]
+const runCount = async (c: { contactId: string }) => Number(await psql(`select count(*) from public.flow_runs where contact_id='${c.contactId}'`))
+const frames = (runId: string) => rows(`select * from public.flow_run_subflow_frames where flow_run_id='${runId}' order by depth`)
+const events = (runId: string) => rows(`select event_type, node_key, payload from public.flow_run_events where flow_run_id='${runId}' order by created_at, id`)
+const reasons = async (runId: string) => (await events(runId)).map((e) => e.payload?.reason).filter(Boolean) as string[]
+const makeDue = (runId: string) => psql(`update public.flow_runs set wait_until = clock_timestamp() - interval '1 second' where id='${runId}'`)
+const textsFor = (c: { conversationId: string }) => sent.texts.filter((t) => t.conversationId === c.conversationId).map((t) => t.text)
+const resume = () => engine.resumeDueFlowWaits({ accountIds: [acctA] })
+/** A message stored the way the webhook stores it, `offsetSeconds` after the FIRST outbound message of the conversation. */
+async function msg(opts: { conv: string; offsetSeconds: number; sender?: 'customer' | 'agent' | 'bot'; contentType?: string; interactiveReplyId?: string }) {
+  const sender = opts.sender ?? 'customer'
+  await psql(`insert into public.messages (conversation_id, sender_type, content_type, content_text, message_id, status, created_at, interactive_reply_id)
+              select '${opts.conv}','${sender}','${opts.contentType ?? 'text'}','x','wamid.in.${randomUUID()}','delivered', created_at + interval '${opts.offsetSeconds} seconds', ${opts.interactiveReplyId ? `'${opts.interactiveReplyId}'` : 'null'}
+              from public.messages where conversation_id='${opts.conv}' and sender_type='bot' order by created_at limit 1`)
+}
+const INFO = 'Información de la hidrolavadora'; const FOLLOW = 'Seguimiento B'; const MSG_C = 'Mensaje de C'; const CLOSE = 'Cierre de A'
+
+describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposable database, simulated sends)', () => {
+  beforeAll(async () => {
+    acctA = await psql(`select account_id from public.profiles where user_id='${UA}'`); acctB = await psql(`select account_id from public.profiles where user_id='${UB}'`)
+    await enable(acctA)                                                                                                       // the backend-controlled table: account A only
+    process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS = acctA; process.env.FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS = acctA; process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS = acctA   // the environment flag: second, independent condition
+    engine = await import('./engine')
+  })
+  afterAll(() => { for (const k of ['FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS', 'FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS', 'FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS']) delete process.env[k]; sent.afterStore = null; sent.duringCall = null })
+
+  it('S01: A -> B -> A -> C -> A on ONE run: B waits 13 minutes, nobody replied, follow-up, return, C, return, close, end', async () => {
+    const w = await world(); const c = await contact(w); await send(w, c)
+    let r = await run(c)
+    expect(textsFor(c)).toEqual([INFO]); expect(r).toMatchObject({ status: 'active', current_flow_id: w.b, flow_id: w.a, current_node_key: 'pause' }); expect(r.wait_until).not.toBeNull()
+    expect(await frames(r.id)).toHaveLength(1); expect((await frames(r.id))[0]).toMatchObject({ caller_flow_id: w.a, callee_flow_id: w.b, return_node_key: 'call2', depth: 1, on_customer_reply: 'stop' })
+    expect(r.vars['$refs']['$inherited']).toBeTruthy(); expect(r.vars['$refs'][`${w.a}#info`]).toBeTruthy()                 // the reference travelled with the call (and is qualified by flow)
+    await makeDue(r.id); expect(await resume()).toMatchObject({ claimed: 1, resumed: 1, failed: 0 })
+    r = await run(c)
+    expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(r).toMatchObject({ status: 'completed', end_reason: 'end_node', current_flow_id: null }); expect(await frames(r.id)).toHaveLength(0)
+    expect(await runCount(c)).toBe(1)                                                                                           // one logical run for the contact, always
+    const rs = await reasons(r.id); expect(rs.filter((x) => x === 'subflow_called')).toHaveLength(2); expect(rs.filter((x) => x === 'subflow_returned')).toHaveLength(2)
+    expect((await events(r.id)).filter((e) => e.payload?.reason === 'subflow_called').map((e) => e.payload.depth)).toEqual([1, 1])   // sequential, never nested
+    expect(await resume()).toMatchObject({ claimed: 0 }); expect(textsFor(c)).toHaveLength(4)
+    pass('S01', 'A info -> B (13 min wait, condition NO, follow-up) -> back in A -> C -> back in A -> close -> end: 4 messages in order, ONE run, depth 1 each call, no frame left, no duplicate on a second pass')
+  })
+
+  it('S02/S05: the customer replied at minute 5: B ends the WHOLE execution; C and the close of A never run; the reply stays available to Inbox / automations', async () => {
+    const w = await world(); const c = await contact(w); await send(w, c)
+    await msg({ conv: c.conversationId, offsetSeconds: 300 })
+    const during = await send(w, c, 'me interesa el precio'); expect(during).toMatchObject({ consumed: false, outcome: 'waiting' })
+    await makeDue((await run(c)).id); await resume()
+    const r = await run(c); expect(textsFor(c)).toEqual([INFO]); expect(r).toMatchObject({ status: 'completed', end_reason: 'end_node', current_flow_id: w.b }); expect(await frames(r.id)).toHaveLength(1)
+    expect((await reasons(r.id)).filter((x) => x === 'subflow_called')).toHaveLength(1)                                         // C was never called
+    pass('S02', 'reply at +5 min: condition YES, B\'s End is "whole execution": no follow-up, C never called, A never resumes; the in-wait message returned consumed:false (Inbox / automations still see it)')
+  })
+
+  it('S03: the customer answered right after the first message and BEFORE the wait was scheduled: no follow-up', async () => {
+    const w = await world(); const c = await contact(w)
+    sent.afterStore = async (a) => { if (a.text === INFO) { sent.afterStore = null; await msg({ conv: a.conversationId, offsetSeconds: 1 }) } }
+    await send(w, c); sent.afterStore = null
+    await makeDue((await run(c)).id); await resume(); expect(textsFor(c)).toEqual([INFO])
+    pass('S03', 'a reply stored 1 s after the reference and before the call / wait existed is found: YES, nothing else is sent')
+  })
+
+  it.each([['text', 'text', undefined], ['button tap', 'interactive', 'btn_si'], ['list row', 'interactive', 'row_1'], ['image', 'image', undefined], ['audio', 'audio', undefined]])('S04: a %s from the customer counts as the reply', async (label, contentType, replyId) => {
+    const w = await world(); const c = await contact(w); await send(w, c)
+    await msg({ conv: c.conversationId, offsetSeconds: 60, contentType, interactiveReplyId: replyId }); await makeDue((await run(c)).id); await resume()
+    expect(textsFor(c)).toEqual([INFO])
+    if (label === 'audio') pass('S04', 'text, button tap, list row, image and audio from the customer all stop the follow-up (YES)')
+  })
+
+  it('S06: B ends normally ("return") and A continues to C: also when B\'s YES branch is configured to return', async () => {
+    const w = await world({ yesScope: 'subflow' }); const c = await contact(w); await send(w, c); await msg({ conv: c.conversationId, offsetSeconds: 30 })
+    await makeDue((await run(c)).id); await resume()
+    expect(textsFor(c)).toEqual([INFO, MSG_C, CLOSE])                                                                          // no follow-up (replied) but the flow went on: B returned normally
+    pass('S06', 'a "return" End on the YES branch hands control back: A goes on to C and to its close; only the follow-up was skipped')
+  })
+
+  it('S07: A is modified while B is suspended: the resume is refused BEFORE anything else is sent', async () => {
+    const w = await world(); const c = await contact(w); await send(w, c)
+    await psql(`update public.flow_nodes set config = jsonb_set(config,'{text}','"Cierre NUEVO"') where flow_id='${w.a}' and node_key='close'`)
+    await makeDue((await run(c)).id); const s = await resume()
+    expect(textsFor(c)).toEqual([INFO]); expect(await run(c)).toMatchObject({ status: 'failed', end_reason: 'subflow_stack_invalid' }); expect(s.skipped).toBe(1)
+    expect((await events((await run(c)).id)).find((e) => e.payload?.reason === 'subflow_stack_invalid')?.payload.code).toBe('caller_graph_changed')
+    // ... and when A changes in the middle of B's remaining steps, the RETURN is refused and A's new nodes never run
+    const w2 = await world(); const c2 = await contact(w2); await send(w2, c2); await makeDue((await run(c2)).id)
+    sent.duringCall = async (a) => { if (a.text === FOLLOW) { sent.duringCall = null; await psql(`update public.flow_nodes set config = jsonb_set(config,'{text}','"Cierre NUEVO"') where flow_id='${w2.a}' and node_key='close'`) } }
+    await resume(); sent.duringCall = null
+    expect(textsFor(c2)).toEqual([INFO, FOLLOW]); expect(await run(c2)).toMatchObject({ status: 'failed', end_reason: 'subflow_return_refused:caller_graph_changed' })
+    pass('S07', 'A edited while B waits: resume refused (caller_graph_changed), nothing sent; A edited while B is running its last steps: B\'s own message already left, the RETURN is refused and A\'s changed nodes never execute')
+  })
+
+  it('S08: B is modified while it is suspended (or deactivated): nothing continues', async () => {
+    const w = await world(); const c = await contact(w); await send(w, c)
+    await psql(`update public.flow_nodes set config = jsonb_set(config,'{text}','"Otro seguimiento"') where flow_id='${w.b}' and node_key='follow'`)
+    await makeDue((await run(c)).id); await resume(); expect(textsFor(c)).toEqual([INFO])
+    expect((await events((await run(c)).id)).find((e) => e.payload?.reason === 'subflow_stack_invalid')?.payload.code).toBe('callee_graph_changed')
+    const w2 = await world(); const c2 = await contact(w2); await send(w2, c2); await psql(`update public.flows set status='draft' where id='${w2.b}'`); await makeDue((await run(c2)).id); await resume()
+    expect(textsFor(c2)).toEqual([INFO]); expect(await run(c2)).toMatchObject({ status: 'failed', end_reason: 'subflow_stack_invalid' })
+    pass('S08', 'B edited (callee_graph_changed) or switched back to draft during the wait: the run ends failed and nothing is sent; no silent continuation with different logic')
+  })
+
+  it('S09: a legitimate answer to a button INSIDE B is processed normally and is not mistaken for a spontaneous reply', async () => {
+    const w = await world({ kind: 'buttons' }); const c = await contact(w); await send(w, c)
+    let r = await run(c); expect(r).toMatchObject({ current_flow_id: w.b, current_node_key: 'ask', wait_until: null }); expect(sent.buttons).toBeGreaterThan(0)
+    expect(await tap(w, c, 'yes')).toMatchObject({ consumed: true })
+    r = await run(c)
+    expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(r).toMatchObject({ status: 'completed', current_flow_id: null })
+    expect((await events(r.id)).some((e) => e.event_type === 'reply_received' && e.payload?.during_wait === true)).toBe(false)
+    pass('S09', 'button tap inside B (policy stop): handled by the node, B continues, returns to A, C runs, A closes; no during_wait event, no suppression')
+  })
+
+  it('S10: a spontaneous reply while B waits, B has NO condition: policy stop prevents the follow-up and the rest; policy continue does not', async () => {
+    const w = await world({ kind: 'plain', policy: 'stop' }); const c = await contact(w); await send(w, c)
+    expect(await send(w, c, 'hola, ¿tienen stock?')).toMatchObject({ consumed: false, outcome: 'waiting' })
+    await makeDue((await run(c)).id); await resume()
+    expect(textsFor(c)).toEqual([INFO]); expect(await run(c)).toMatchObject({ status: 'completed', end_reason: 'customer_replied_in_subflow' }); expect((await reasons((await run(c)).id))).toContain('send_suppressed_spontaneous_reply')
+    const w2 = await world({ kind: 'plain', policy: 'continue' }); const c2 = await contact(w2); await send(w2, c2); await send(w2, c2, 'hola'); await makeDue((await run(c2)).id); await resume()
+    expect(textsFor(c2)).toEqual([INFO, FOLLOW, MSG_C, CLOSE])
+    // a reply BEFORE the call (during A's own steps) does not stop the later subflow: only replies since the call count
+    pass('S10', 'spontaneous reply while parked: with stop the follow-up (and everything after) is suppressed right before the send, the run ends cleanly; with continue the flow goes on; the message itself was kept for Inbox either way')
+  })
+
+  it('S11: same-second timestamps: a reply inside the reference second COUNTS; a message already stored inside that second does NOT', async () => {
+    // (a) the message that started the flow is stored in the same second, BEFORE our send: it must never count as a reply
+    const w = await world(); const c = await contact(w)
+    sent.duringCall = async (a) => {
+      if (a.text !== INFO) return; sent.duringCall = null
+      await psql(`select pg_sleep(case when extract(milliseconds from clock_timestamp())::int % 1000 > 700 then 0.35 else 0 end)`)
+      await psql(`insert into public.messages (conversation_id, sender_type, content_type, content_text, message_id, status, created_at) values ('${a.conversationId}','customer','text','hola','wamid.in.${randomUUID()}','delivered', date_trunc('second', clock_timestamp()))`)
+    }
+    await send(w, c); sent.duringCall = null
+    const r1 = await run(c); expect(r1.vars['$refs']['$inherited'].pre_ids).toHaveLength(1)                                    // it was in the reference second and is excluded by identity
+    await makeDue(r1.id); await resume(); expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE])                              // NO reply -> follow-up
+    // (b) a REAL reply that Meta stamps with the whole second of our message (earlier than our DB timestamp) is a reply
+    const w2 = await world(); const c2 = await contact(w2); await send(w2, c2)
+    await psql(`insert into public.messages (conversation_id, sender_type, content_type, content_text, message_id, status, created_at) select '${c2.conversationId}','customer','text','si','wamid.in.${randomUUID()}','delivered', date_trunc('second', created_at) from public.messages where conversation_id='${c2.conversationId}' and sender_type='bot' order by created_at limit 1`)
+    const r2 = await run(c2); expect(r2.vars['$refs']['$inherited'].pre_ids).toHaveLength(0)
+    await makeDue(r2.id); await resume(); expect(textsFor(c2)).toEqual([INFO])
+    pass('S11', 'inside the reference second: an already-stored customer message is excluded by id (no false positive: the follow-up goes out); a reply that arrives after the reference is recorded counts even when Meta\'s whole-second stamp is earlier than our own timestamp (no false negative)')
+  })
+
+  it('S12: when "did they reply?" cannot be determined reliably, the follow-up is NOT sent (too many messages in the reference second; corrupt or foreign reference)', async () => {
+    const w = await world(); const c = await contact(w)
+    sent.duringCall = async (a) => { if (a.text !== INFO) return; sent.duringCall = null
+      await psql(`select pg_sleep(case when extract(milliseconds from clock_timestamp())::int % 1000 > 700 then 0.35 else 0 end)`)
+      await psql(`insert into public.messages (conversation_id, sender_type, content_type, content_text, message_id, status, created_at) select '${a.conversationId}','customer','text','m','wamid.in.' || gen_random_uuid()::text,'delivered', date_trunc('second', clock_timestamp()) from generate_series(1,25)`) }
+    await send(w, c); sent.duringCall = null
+    const r = await run(c); expect(r.vars['$refs']?.['$inherited']).toBeUndefined()                                              // could not be recorded: the call itself refuses
+    expect(r).toMatchObject({ status: 'failed', end_reason: 'subflow_reference_missing' }); expect(textsFor(c)).toEqual([INFO])
+    const w2 = await world(); const c2 = await contact(w2); await send(w2, c2); const r2 = await run(c2)
+    await psql(`update public.flow_runs set vars = jsonb_set(vars, '{$refs,$inherited,conversation_id}', to_jsonb('${randomUUID()}'::text)) where id='${r2.id}'`); await makeDue(r2.id); await resume()
+    expect(textsFor(c2)).toEqual([INFO]); expect(await run(c2)).toMatchObject({ status: 'failed', end_reason: 'condition_evaluation_failed' })
+    pass('S12', '25 customer messages inside the reference second: no reliable reference, the call is refused and nothing else is sent; a tampered inherited reference: the condition fails closed (no follow-up)')
+  })
+
+  it('S13: the whole thing survives an application restart during the wait', async () => {
+    const w = await world(); const c = await contact(w); await send(w, c)
+    vi.resetModules(); const restarted = await import('./engine'); expect(restarted).not.toBe(engine)
+    await makeDue((await run(c)).id); expect(await restarted.resumeDueFlowWaits({ accountIds: [acctA] })).toMatchObject({ resumed: 1 })
+    expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(await run(c)).toMatchObject({ status: 'completed' })
+    engine = restarted
+    pass('S13', 'modules discarded (restart) while B waits: a brand-new engine resumes from flow_runs + frames, B continues, returns to A, C runs, A closes; all state came from the database')
+  })
+
+  it('S14: two workers racing for the same due runs resume each exactly once (no duplicated follow-up, no double return)', async () => {
+    const w = await world(); const cs: Contact[] = []
+    for (let i = 0; i < 8; i++) { const c = await contact(w); await send(w, c); cs.push(c) }
+    await psql(`update public.flow_runs set wait_until = clock_timestamp() - interval '1 second' where flow_id='${w.a}' and wait_until is not null`)
+    const [x, y] = await Promise.all([engine.resumeDueFlowWaits({ accountIds: [acctA], limit: 50 }), engine.resumeDueFlowWaits({ accountIds: [acctA], limit: 50 })])
+    expect(x.resumed + y.resumed).toBe(8); expect(x.failed + y.failed).toBe(0)
+    for (const c of cs) { expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(await frames((await run(c)).id)).toHaveLength(0) }
+    pass('S14', `8 nested waits due at once, two concurrent workers (${x.resumed} + ${y.resumed}): every contact got each message exactly once, every frame popped exactly once`)
+  })
+
+  it('S15: recovery: a run stranded between "wait consumed" and the first send is resumed; an intent without confirmation is NEVER resent', async () => {
+    const admin = (await import('./admin-client')).supabaseAdmin()
+    const strand = async () => {   // crash right after CONSUME: the cursor moved to the next node, nothing else happened
+      const w = await world(); const c = await contact(w); await send(w, c); const r = await run(c); await makeDue(r.id)
+      const cl = await admin.rpc('claim_due_flow_waits', { p_account_ids: [acctA], p_limit: 50, p_lease_seconds: 300 }); const mine = (cl.data as { run_id: string; claim_token: string }[]).find((x) => x.run_id === r.id)!
+      expect((await admin.rpc('consume_flow_wait', { p_account_id: acctA, p_run_id: r.id, p_claim_token: mine.claim_token, p_next_node_key: 'check' })).data).toBe(true)
+      await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`); return { w, c, r }
+    }
+    // (a) nothing happened after the cursor: safe to resume, the follow-up goes out once
+    const a = await strand(); const sa = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }); expect(sa.resumed).toBeGreaterThanOrEqual(1)
+    expect(textsFor(a.c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(await run(a.c)).toMatchObject({ status: 'completed' })
+    expect((await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 })).resumed).toBe(0); expect(textsFor(a.c)).toHaveLength(4)
+    // (b) an intent was written, the process died, no confirmation: outcome UNKNOWN -> not resent, incident on record
+    const b = await strand(); await psql(`insert into public.flow_run_events (flow_run_id, event_type, node_key, payload) values ('${b.r.id}','node_entered','follow','{"reason":"send_intent","node_type":"send_message"}')`)
+    const sb = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }); expect(sb.ambiguous).toBeGreaterThanOrEqual(1)
+    expect(textsFor(b.c)).toEqual([INFO]); expect(await run(b.c)).toMatchObject({ status: 'failed', end_reason: 'send_outcome_unknown' }); expect((await reasons(b.r.id))).toContain('send_outcome_unknown')
+    // (c) a message left after the cursor and the process died later: progress in memory is unknown -> not replayed
+    const c3 = await strand(); await psql(`insert into public.flow_run_events (flow_run_id, event_type, node_key, payload) values ('${c3.r.id}','node_entered','follow','{"reason":"send_intent"}'), ('${c3.r.id}','message_sent','follow','{"node_type":"send_message"}')`)
+    expect((await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 })).unsafe).toBeGreaterThanOrEqual(1); expect(await run(c3.c)).toMatchObject({ status: 'failed', end_reason: 'recovery_not_safe' }); expect(textsFor(c3.c)).toEqual([INFO])
+    // (d) runs that legitimately wait for the customer (buttons) are never "recovered"; a recent cursor is left alone
+    const wb = await world({ kind: 'buttons' }); const cb = await contact(wb); await send(wb, cb); await psql(`update public.flow_runs set last_advanced_at = clock_timestamp() - interval '3 hours' where id='${(await run(cb)).id}'`)
+    await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }); expect(await run(cb)).toMatchObject({ status: 'active', current_node_key: 'ask' })
+    pass('S15', 'recovery: consume-then-crash with no evidence of a send is resumed and delivers once (a second pass does nothing); an intent without confirmation ends as send_outcome_unknown and is NOT resent; a confirmed send after the cursor is not replayed; a run waiting for a button tap is left alone')
+  })
+
+  it('S16: two recovery workers racing over the same stranded run resume it exactly once', async () => {
+    const admin = (await import('./admin-client')).supabaseAdmin(); const w = await world(); const c = await contact(w); await send(w, c); const r = await run(c); await makeDue(r.id)
+    const cl = await admin.rpc('claim_due_flow_waits', { p_account_ids: [acctA], p_limit: 50, p_lease_seconds: 300 }); const mine = (cl.data as { run_id: string; claim_token: string }[]).find((x) => x.run_id === r.id)!
+    await admin.rpc('consume_flow_wait', { p_account_id: acctA, p_run_id: r.id, p_claim_token: mine.claim_token, p_next_node_key: 'check' }); await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`)
+    const [p, q] = await Promise.all([engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }), engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 })])
+    expect(p.resumed + q.resumed).toBe(1); expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE])
+    pass('S16', 'two recovery passes at the same instant: one takes the run (compare-and-set on the cursor), the other skips it; each message delivered once')
+  })
+
+  it('S17: an agent takes over / the contact is blocked / the flow is switched off while B waits: no follow-up, no return, no C', async () => {
+    const w = await world(); const agent = await contact(w); const blocked = await contact(w); const midSend = await contact(w)
+    for (const c of [agent, blocked, midSend]) await send(w, c)
+    await psql(`update public.flow_runs set status='paused_by_agent', end_reason='agent_reply' where id='${(await run(agent)).id}'`)
+    await psql(`update public.flow_runs set status='paused_by_agent', end_reason='contact_blocked' where id='${(await run(blocked)).id}'`)
+    await psql(`update public.flow_runs set wait_until = clock_timestamp() - interval '1 second' where flow_id='${w.a}' and status='active'`)
+    sent.blockNext = true; await resume()                                                                                       // the only still-active run: the contact gets blocked right at the follow-up
+    for (const c of [agent, blocked, midSend]) expect(textsFor(c)).toEqual([INFO])
+    expect((await run(agent)).status).toBe('paused_by_agent'); expect((await run(blocked)).end_reason).toBe('contact_blocked'); expect(await run(midSend)).toMatchObject({ status: 'paused_by_agent', end_reason: 'contact_blocked' })
+    pass('S17', 'agent takeover and blocked contact while parked: never claimed; the contact blocked at the very send: run paused with contact_blocked; nothing else of B, C or A executes')
+  })
+
+  it('S18: tenancy and gates: no cross-company call, an account without BOTH switches never runs a subflow', async () => {
+    // (a) a call node forged to point at another company\'s flow (written with triggers off): the database refuses the call
+    const w = await world(); const foreign = await newFlow(UB, acctB, 'foreign', 'manual'); await node(foreign, 'start', 'start', { next_node_key: 'e' }); await node(foreign, 'e', 'end', {}); await activate(foreign)
+    await psql(`set session_replication_role = replica; update public.flow_nodes set config = jsonb_set(config,'{target_flow_id}','"${foreign}"') where flow_id='${w.a}' and node_key='call1'`)
+    const c = await contact(w); await send(w, c); expect(await run(c)).toMatchObject({ status: 'failed', end_reason: 'subflow_call_refused:callee_unavailable' }); expect(textsFor(c)).toEqual([INFO])
+    // (b) environment flag present, no row in the backend table: refused by the database
+    const w2 = await world(); const c2 = await contact(w2); await psql(`delete from public.flow_execution_enablement where account_id='${acctA}'`)
+    try { await send(w2, c2) } finally { await enable(acctA) }
+    expect(await run(c2)).toMatchObject({ status: 'failed', end_reason: 'subflow_call_refused:subflow_execution_not_enabled' })
+    // (c) row present, environment flag absent: refused by the engine before any RPC
+    const w3 = await world(); const c3 = await contact(w3); const saved = process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS; delete process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS
+    try { await send(w3, c3) } finally { process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS = saved }
+    expect(await run(c3)).toMatchObject({ status: 'failed', end_reason: 'subflow_execution_not_enabled' }); expect(textsFor(c3)).toEqual([INFO])
+    // (d) another company never gets into this machinery at all (its activation is blocked by the database)
+    await expect(enable(acctB, false, false).then(() => world({ owner: 'B' }))).rejects.toThrow(/execute_flow|durable|cannot be activated/i)
+    pass('S18', 'forged cross-company target refused by the database; table row without the env flag refused by the engine; env flag without the table row refused by the database; an account with both switches off cannot even activate such a flow')
+  })
+
+  it('S19: depth 4 and cycles are refused at run time; a looping caller is bounded by the call budget', async () => {
+    const mk = async (name: string, target?: string) => { const f = await newFlow(UA, acctA, name, 'manual'); await node(f, 'start', 'start', { next_node_key: target ? 'call' : 'e' }); if (target) { await node(f, 'call', 'execute_flow', { target_flow_id: target, next_node_key: 'e' }); } await node(f, 'e', 'end', { scope: 'subflow' }); return f }
+    const d4 = await mk('d4'); const d3 = await mk('d3', d4); const d2 = await mk('d2', d3); const d1 = await mk('d1', d2)
+    await activate(d4, d3, d2, d1)
+    const root = await newFlow(UA, acctA, 'root', 'keyword', `deep${++seq}`); await node(root, 'start', 'start', { next_node_key: 'call' }); await node(root, 'call', 'execute_flow', { target_flow_id: d1, next_node_key: 'e' }); await node(root, 'e', 'end', {}); await activate(root)
+    const kw = (await rows(`select trigger_config->'keywords'->>0 as k from public.flows where id='${root}'`))[0].k as string
+    const c = await contact({ user: UA, acct: acctA }); await engine.dispatchInboundToFlows({ accountId: acctA, userId: UA, contactId: c.contactId, conversationId: c.conversationId, message: { kind: 'text', text: kw, meta_message_id: `wamid.in.${randomUUID()}` }, isFirstInboundMessage: false })
+    const r = await run(c); expect(r).toMatchObject({ status: 'failed' }); expect(r.end_reason).toBe('subflow_call_refused:max_depth')
+    // cycle: X -> Y -> X
+    const y = await newFlow(UA, acctA, 'y', 'manual'); await node(y, 'start', 'start', { next_node_key: 'e' }); await node(y, 'e', 'end', { scope: 'subflow' })
+    const x = await newFlow(UA, acctA, 'x', 'keyword', `cyc${++seq}`); await node(x, 'start', 'start', { next_node_key: 'call' }); await node(x, 'call', 'execute_flow', { target_flow_id: y, next_node_key: 'e' }); await node(x, 'e', 'end', {})
+    await activate(y, x); await psql(`update public.flows set status='draft' where id='${y}'`); await node(y, 'call', 'execute_flow', { target_flow_id: x, next_node_key: 'e' }); await psql(`update public.flow_nodes set config='{"next_node_key":"call"}' where flow_id='${y}' and node_key='start'`); await activate(y)
+    const kx = (await rows(`select trigger_config->'keywords'->>0 as k from public.flows where id='${x}'`))[0].k as string; const c2 = await contact({ user: UA, acct: acctA })
+    await engine.dispatchInboundToFlows({ accountId: acctA, userId: UA, contactId: c2.contactId, conversationId: c2.conversationId, message: { kind: 'text', text: kx, meta_message_id: `wamid.in.${randomUUID()}` }, isFirstInboundMessage: false })
+    expect(await run(c2)).toMatchObject({ status: 'failed', end_reason: 'subflow_call_refused:cycle' })
+    pass('S19', 'a 4th nesting level and a cycle X -> Y -> X are refused by the database at run time and end the run failed without sending anything')
+  })
+
+  it('S20: no impact on existing flows: a plain flow, a P6 wait flow and a button flow behave exactly as before and leave no frames', async () => {
+    const plain = await newFlow(UA, acctA, 'plain', 'keyword', `plain${++seq}`); await node(plain, 'start', 'start', { next_node_key: 'm' }); await node(plain, 'm', 'send_message', { text: 'Hola plano', next_node_key: 'e' }); await node(plain, 'e', 'end', {})
+    const waitf = await newFlow(UA, acctA, 'waiter', 'keyword', `wait${++seq}`); await node(waitf, 'start', 'start', { next_node_key: 'm' }); await node(waitf, 'm', 'send_message', { text: 'Antes', next_node_key: 'p' }); await node(waitf, 'p', 'delay', { amount: 13, unit: 'minutes', next_node_key: 'f' }); await node(waitf, 'f', 'send_message', { text: 'Después', next_node_key: 'e' }); await node(waitf, 'e', 'end', {})
+    await activate(plain, waitf)
+    const kp = (await rows(`select trigger_config->'keywords'->>0 as k from public.flows where id='${plain}'`))[0].k as string; const kw = (await rows(`select trigger_config->'keywords'->>0 as k from public.flows where id='${waitf}'`))[0].k as string
+    const dispatch = (c: Contact, text: string) => engine.dispatchInboundToFlows({ accountId: acctA, userId: UA, contactId: c.contactId, conversationId: c.conversationId, message: { kind: 'text', text, meta_message_id: `wamid.in.${randomUUID()}` }, isFirstInboundMessage: false })
+    const cp = await contact({ user: UA, acct: acctA }); await dispatch(cp, kp); expect(textsFor(cp)).toEqual(['Hola plano']); const rp = await run(cp); expect(rp).toMatchObject({ status: 'completed', current_flow_id: null }); expect(Object.keys(rp.vars).filter((k) => k !== 'contact_name')).toEqual([])
+    const cw = await contact({ user: UA, acct: acctA }); await dispatch(cw, kw); await makeDue((await run(cw)).id); await resume(); expect(textsFor(cw)).toEqual(['Antes', 'Después']); expect(await run(cw)).toMatchObject({ status: 'completed', current_flow_id: null })
+    expect(Number(await psql(`select count(*) from public.flow_run_subflow_frames where flow_run_id in ('${rp.id}','${(await run(cw)).id}')`))).toBe(0)
+    pass('S20', 'flows without execute_flow: same messages, same end reasons, run vars untouched (only the usual contact_name seed), current_flow_id NULL, zero frames; the P6 durable wait is unchanged')
+  })
+
+  it('S21: the intent to send is written BEFORE every send, and when it cannot be written nothing is sent', async () => {
+    const w = await world(); const c = await contact(w); await send(w, c)
+    const ev = await events((await run(c)).id); const i = ev.findIndex((e) => e.payload?.reason === 'send_intent'); const m = ev.findIndex((e) => e.event_type === 'message_sent')
+    expect(i).toBeGreaterThanOrEqual(0); expect(i).toBeLessThan(m)
+    await makeDue((await run(c)).id); await resume(); const all = await events((await run(c)).id)
+    expect(all.filter((e) => e.payload?.reason === 'send_intent')).toHaveLength(all.filter((e) => e.event_type === 'message_sent').length)   // every send had its intent
+    const w2 = await world(); const c2 = await contact(w2); await psql(`revoke insert on public.flow_run_events from service_role`)
+    try { await send(w2, c2) } finally { await psql(`grant insert on public.flow_run_events to service_role`) }
+    expect(textsFor(c2)).toEqual([]); expect(await run(c2)).toMatchObject({ status: 'failed', end_reason: 'send_intent_not_recorded' })
+    pass('S21', 'every message_sent was preceded by its send_intent event; with the event log unwritable the very first send is not attempted (fail closed)')
+  })
+
+  it('S22: a spontaneous reply that cannot be recorded fails closed (no follow-up later) while the message stays available', async () => {
+    const w = await world(); const c = await contact(w); await send(w, c)
+    await psql(`revoke insert on public.flow_run_events from service_role`)
+    let res; try { res = await send(w, c, 'oye') } finally { await psql(`grant insert on public.flow_run_events to service_role`) }
+    expect(res).toMatchObject({ consumed: false }); expect(await run(c)).toMatchObject({ status: 'failed', end_reason: 'reply_not_recorded' }); await makeDue((await run(c)).id); await resume(); expect(textsFor(c)).toEqual([INFO])
+    pass('S22', 'reply received while parked but not recordable: the run is ended failed (no later follow-up), the dispatcher reports consumed:false so Inbox / automations still get the message')
+  })
+})

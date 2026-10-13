@@ -109,7 +109,7 @@ describe.skipIf(!REST || !CONTAINER)('customer-reply condition: engine integrati
   it('R01: the customer did not answer during the 13 minutes: NO branch, follow-up sent once, reference stored from the first send', async () => {
     const w = await world(); const c = await contact(w); await send(w, c)
     const r1 = await run(c); expect(textsFor(c)).toEqual(['Hidrolavadora: ficha y precio']); expect(r1.wait_until).not.toBeNull()
-    const ref = r1.vars['$refs'].info; expect(ref.conversation_id).toBe(c.conversationId)
+    const ref = r1.vars['$refs'][`${w.flow}#info`]; expect(ref.conversation_id).toBe(c.conversationId)
     const dbRow = (await rows(`select id, created_at from public.messages where id='${ref.message_id}'`))[0]; expect(dbRow).toBeTruthy()
     expect(new Date(ref.sent_at).getTime()).toBe(new Date(dbRow.created_at).getTime())                                       // reference = the stored outbound row, not "now"
     await makeDue(r1.id); expect(await resume()).toMatchObject({ resumed: 1, failed: 0 })
@@ -190,11 +190,11 @@ describe.skipIf(!REST || !CONTAINER)('customer-reply condition: engine integrati
       const w = await world(); const c = await contact(w); await send(w, c); const r = await run(c); await mutate(r, c); await makeDue(r.id); await resume(); return { c, w } }
     const setVars = (id: string, v: unknown) => psql(`update public.flow_runs set vars='${JSON.stringify(v).replace(/'/g, "''")}'::jsonb where id='${id}'`)
     outcomes.push(await failedAtCheck((await prepared(async (r) => { await setVars(r.id, {}) })).c))                                                           // reference never stored
-    outcomes.push(await failedAtCheck((await prepared(async (r) => { await setVars(r.id, { $refs: { info: { message_id: 'nope', conversation_id: 'x', sent_at: 'y' } } }) })).c))   // corrupt
-    outcomes.push(await failedAtCheck((await prepared(async (r) => { await setVars(r.id, { $refs: { info: { ...r.vars.$refs.info, conversation_id: randomUUID() } } }) })).c))     // not this contact's conversation
-    outcomes.push(await failedAtCheck((await prepared(async (r) => { await psql(`delete from public.messages where id='${r.vars.$refs.info.message_id}'`) })).c))      // reference row gone
-    outcomes.push(await failedAtCheck((await prepared(async (r, c) => { const stranger = await contact({ user: UB, acct: acctB }); await psql(`update public.messages set conversation_id='${stranger.conversationId}' where id='${r.vars.$refs.info.message_id}'`); void c })).c)) // row moved elsewhere
-    outcomes.push(await failedAtCheck((await prepared(async (r) => { await psql(`update public.messages set sender_type='customer' where id='${r.vars.$refs.info.message_id}'`) })).c))   // reference is not an outbound message
+    outcomes.push(await failedAtCheck((await prepared(async (r) => { await setVars(r.id, { $refs: { [`${r.flow_id}#info`]: { message_id: 'nope', conversation_id: 'x', sent_at: 'y' } } }) })).c))   // corrupt
+    outcomes.push(await failedAtCheck((await prepared(async (r) => { await setVars(r.id, { $refs: { [`${r.flow_id}#info`]: { ...r.vars.$refs[`${r.flow_id}#info`], conversation_id: randomUUID() } } }) })).c))     // not this contact's conversation
+    outcomes.push(await failedAtCheck((await prepared(async (r) => { await psql(`delete from public.messages where id='${r.vars.$refs[`${r.flow_id}#info`].message_id}'`) })).c))      // reference row gone
+    outcomes.push(await failedAtCheck((await prepared(async (r, c) => { const stranger = await contact({ user: UB, acct: acctB }); await psql(`update public.messages set conversation_id='${stranger.conversationId}' where id='${r.vars.$refs[`${r.flow_id}#info`].message_id}'`); void c })).c)) // row moved elsewhere
+    outcomes.push(await failedAtCheck((await prepared(async (r) => { await psql(`update public.messages set sender_type='customer' where id='${r.vars.$refs[`${r.flow_id}#info`].message_id}'`) })).c))   // reference is not an outbound message
     const noRef = await world({ refKey: 'ghost' }); const cg = await contact(noRef); await send(noRef, cg); await makeDue((await run(cg)).id); await resume(); outcomes.push(await failedAtCheck(cg))          // points at a node that never stored anything
     // the query itself fails: revoke read access on messages for the API role during the check
     const w = await world(); const cq = await contact(w); await send(w, cq); await makeDue((await run(cq)).id)
@@ -246,7 +246,7 @@ describe.skipIf(!REST || !CONTAINER)('customer-reply condition: engine integrati
 
   it('R13: several initial messages: the explicit reference decides which reply counts, and a loop does not move it', async () => {
     const w = await world({ two: true }); const c = await contact(w); await send(w, c)
-    const r = await run(c); expect(Object.keys(r.vars['$refs'])).toEqual(['info'])                                       // only the node a condition points at is recorded
+    const r = await run(c); expect(Object.keys(r.vars['$refs'])).toEqual([`${w.flow}#info`])                                       // only the node a condition points at is recorded
     await psql(`update public.flow_nodes set config = jsonb_set(config,'{subject_key}','"info2"') where flow_id='${w.flow}' and node_key='check'`)
     // reply between message 1 and message 2: with reference = info it counts; with reference = info2 it would not. Here: reference info2 was changed AFTER the run started, so no reference exists for it -> fail closed
     await makeDue(r.id); await resume(); expect(await run(c)).toMatchObject({ status: 'failed', end_reason: 'condition_evaluation_failed' }); expect(textsFor(c)).toHaveLength(2)

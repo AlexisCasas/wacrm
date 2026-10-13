@@ -603,11 +603,12 @@ async function recordSendReference(db: AdminClient, run: FlowRunRow, nodeKey: st
       .from("messages").select("id, created_at").eq("conversation_id", run.conversation_id).eq("message_id", whatsappMessageId).maybeSingle();
     const row = data as { id: string; created_at: string | null } | null;
     if (error || !row?.created_at) throw new Error(error?.message ?? "reference_row_not_found");
-    // customer messages already stored inside the reference second: they predate our message and must never count as a reply
+    // customer messages ALREADY stored whose stamp lies inside the reference second up to our own timestamp: they predate our message and
+    // must never count as a reply. A stamp AFTER our timestamp can only be an answer, so it is never excluded.
     const windowStart = floorToSecondIso(row.created_at);
     const conversationIds = await contactConversationIds(db, run);
     const { data: existing, error: existingError } = await db
-      .from("messages").select("id").in("conversation_id", conversationIds).eq("sender_type", "customer").gte("created_at", windowStart).limit(MAX_PRE_EXISTING_IDS + 1);
+      .from("messages").select("id").in("conversation_id", conversationIds).eq("sender_type", "customer").gte("created_at", windowStart).lte("created_at", row.created_at).limit(MAX_PRE_EXISTING_IDS + 1);
     if (existingError) throw new Error("pre_existing_lookup_failed");
     const preIds = ((existing ?? []) as Array<{ id: string }>).map((m) => m.id);
     if (preIds.length > MAX_PRE_EXISTING_IDS) throw new Error("too_many_messages_in_reference_second");   // cannot be told apart reliably: no reference, fail closed
