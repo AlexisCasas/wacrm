@@ -61,6 +61,8 @@ Entra como cuenta A. Idioma de la interfaz: inglés.
 
 ## 4. Automatización equivalente
 
+Una sola vez, para la versión automática (no para la manual): `mkdir -p qa/flows-safe-save/staging/pw && cd qa/flows-safe-save/staging/pw && npm init -y && npm i playwright-core@1.49.1` y `docker pull mcr.microsoft.com/playwright:v1.49.1-noble` (herramientas de QA; el navegador corre dentro del contenedor de la app).
+
 `qa/flows-safe-save/staging/run-f3.sh` ejecuta estos mismos casos en un Chromium real dentro de la red aislada y deja capturas en
 `qa/flows-safe-save/staging/shots/`. Resultado de la última ejecución: F3-01 a F3-10b en PASS. Los casos manuales anteriores siguen
 **pendientes de validación humana** hasta que alguien los marque.
