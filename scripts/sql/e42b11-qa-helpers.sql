@@ -213,6 +213,15 @@ BEGIN
   IF NOT r.created THEN RAISE EXCEPTION 'qa_flow_run_conv % failed: %', n, r.reason; END IF;
   RETURN r.flow_run_id;
 END $$;
+-- PR30 round 2 helper: a (second) versioned run on an EXISTING conversation of the same contact (the earlier run must have ended).
+CREATE OR REPLACE FUNCTION public.qa_flow_run_on(p_flow uuid, p_conv uuid) RETURNS uuid LANGUAGE plpgsql AS $$
+DECLARE r record; f public.flows%ROWTYPE; c public.conversations%ROWTYPE;
+BEGIN
+  SELECT * INTO f FROM public.flows WHERE id = p_flow; SELECT * INTO c FROM public.conversations WHERE id = p_conv;
+  SELECT * INTO r FROM public.create_versioned_flow_run(f.account_id, f.id, c.contact_id, c.id);
+  IF NOT r.created THEN RAISE EXCEPTION 'qa_flow_run_on failed: %', r.reason; END IF;
+  RETURN r.flow_run_id;
+END $$;
 -- Claim + settle(confirmed) with a given wamid; returns the settle result row as jsonb.
 CREATE OR REPLACE FUNCTION public.qa_eff_accept(p_run uuid, p_owner text, p_effect uuid, p_wamid text) RETURNS jsonb LANGUAGE plpgsql AS $$
 DECLARE clm jsonb;
