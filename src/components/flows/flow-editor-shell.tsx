@@ -30,6 +30,7 @@ import { GitFork, List } from "lucide-react";
 import { FlowBuilder } from "./flow-builder";
 import { FlowCanvas } from "./flow-canvas";
 import { FlowEditorProvider } from "./flow-editor-state";
+import { useSubflowAuthoringCapability } from "./use-subflow-authoring";
 import { EditorHeader } from "./header";
 import { ValidationPanel } from "./validation-panel";
 import { NODE_META, nodeColors, type NodeType } from "./shared";
@@ -61,6 +62,9 @@ interface Props {
 
 export function FlowEditorShell({ initialFlow, initialNodes }: Props) {
   const t = useTranslations("Flows.builder");
+  // pilot: the "run another flow" type is only shown to accounts the server opted in (or on a flow that already has one)
+  const subflowAuthoring = useSubflowAuthoringCapability();
+  const legendTypes = LEGEND_TYPES.filter((type) => type !== "execute_flow" || subflowAuthoring || initialNodes.some((n) => n.node_type === "execute_flow"));
 
   // Read the persisted choice in the useState initializer. Safe even
   // though this is a client component because the parent page only
@@ -123,7 +127,7 @@ export function FlowEditorShell({ initialFlow, initialNodes }: Props) {
               />
             </div>
             <div className="ml-auto hidden flex-wrap items-center gap-x-3.5 gap-y-1.5 lg:flex">
-              {LEGEND_TYPES.map((t_type) => (
+              {legendTypes.map((t_type) => (
                 <span
                   key={t_type}
                   className="inline-flex items-center gap-1.5 text-[11.5px] text-muted-foreground"
