@@ -43,6 +43,8 @@ import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition-capability";
+import { isDurableWaitExecutionEnabledForAccount } from "@/lib/flows/durable-wait-capability";
+import { computeResumeAt, durableWaitSeconds, isDurableWaitConfig } from "@/lib/flows/durable-wait";
 import { NATIVE_CONTACT_CONDITION_FIELDS } from "@/lib/flows/condition-references";
 import { ContactBlockedError } from "@/lib/contacts/blocking";
 import {
@@ -937,6 +939,47 @@ async function advanceFromNodeKey(
       currentKey = cfg.next_node_key;
       continue;
     }
+    if (node.node_type === "delay" && isDurableWaitConfig(node.config)) {
+      // Durable wait (migration 069): never sleep in-process. Park the run and let the scheduler resume it.
+      const cfg = node.config as unknown as DelayNodeConfig;
+      if (!isDurableWaitExecutionEnabledForAccount(run.account_id)) {
+        // Fail CLOSED: a build or a flag that cannot honour the wait must not run the steps after it early.
+        await logEvent(db, run.id, "error", node.node_key, { reason: "durable_wait_not_enabled" });
+        await endRun(db, run.id, "failed", "durable_wait_not_enabled");
+        return { outcome: "completed" };
+      }
+      const wait = durableWaitSeconds(cfg);
+      if (!wait.ok || !cfg.next_node_key || !nodes.has(cfg.next_node_key)) {
+        await logEvent(db, run.id, "error", node.node_key, { reason: "invalid_durable_wait", detail: wait.ok ? "next_node_missing" : wait.reason });
+        await endRun(db, run.id, "failed", "invalid_durable_wait");
+        return { outcome: "completed" };
+      }
+      const resumeAt = computeResumeAt(wait.seconds, new Date());
+      const { data: scheduled, error: scheduleError } = await db.rpc("schedule_flow_wait", {
+        p_account_id: run.account_id,
+        p_run_id: run.id,
+        p_node_key: node.node_key,
+        p_wait_until: resumeAt.toISOString(),
+      });
+      if (scheduleError) {
+        await logEvent(db, run.id, "error", node.node_key, { reason: "wait_schedule_failed", detail: scheduleError.message });
+        await endRun(db, run.id, "failed", "wait_schedule_failed");
+        return { outcome: "completed" };
+      }
+      if (scheduled !== true) {
+        // The run is no longer active (an agent took over, the contact was blocked...): do NOT touch its status.
+        await logEvent(db, run.id, "node_entered", node.node_key, { reason: "wait_not_scheduled_run_no_longer_active" });
+        return { outcome: "completed" };
+      }
+      await logEvent(db, run.id, "node_entered", node.node_key, {
+        node_type: "delay",
+        durable: true,
+        amount: cfg.amount,
+        unit: cfg.unit,
+        resume_at: resumeAt.toISOString(),
+      });
+      return { outcome: "advanced" };
+    }
     if (node.node_type === "delay") {
       const cfg = node.config as unknown as DelayNodeConfig;
       // V1 scope: bounded [1, 30]s, in-process sleep — no scheduler, no
@@ -1152,7 +1195,17 @@ async function handleReplyForActiveRun(
     reply_kind: message.kind,
     reply_id: message.kind === "interactive_reply" ? message.reply_id : null,
     text_length: message.kind === "text" ? message.text.length : null,
+    // Lets a future "customer replied" condition ask a cheap question: any reply event with during_wait for this run.
+    ...(run.wait_until ? { during_wait: true } : {}),
   });
+
+  // The run is parked on a durable wait. A reply is NOT an answer to anything: no reprompt, no handoff, no fallback
+  // (which could exhaust and end the run). The message itself is already stored for the Inbox and the agents by the
+  // webhook; here it is only recorded on the run. The flow does not claim the message (consumed: false), so other
+  // automations treat it like any inbound.
+  if (run.wait_until) {
+    return { consumed: false, flow_run_id: run.id, outcome: "waiting" };
+  }
 
   if (!run.current_node_key) {
     // Defensive — a run with status='active' but no current node is
@@ -1658,4 +1711,122 @@ export async function startFlowManually(
     flow_id: flow.id,
     flow_name: flow.name,
   };
+}
+
+// ============================================================
+// Durable waits: resumption (called by /api/flows/waits/cron).
+//
+// Four distinct steps, each with its own failure behaviour (see qa/durable-wait/DESIGN.md):
+//   1. CLAIM    claim_due_flow_waits: one worker gets the run (lease + token). A crash here leaves the wait intact: the
+//               lease expires and another worker claims it. Nothing is lost, nothing is duplicated.
+//   2. CONSUME  consume_flow_wait: the token holder ends the wait and moves the run to the next node in ONE statement.
+//               From here on the wait can never be resumed again.
+//   3. ADVANCE  advanceFromNodeKey: walks the following nodes in memory (the legacy engine only persists progress when
+//               it suspends). A crash between 2 and the first send LOSES the follow-up (the run is stranded at the next
+//               node until the stale-run sweep ends it); it can never duplicate it.
+//   4. EFFECTS  each send is a Meta call followed by an event row. A crash after Meta accepted a message but before the
+//               loop finished cannot be recovered without a duplicate, exactly as for any legacy multi-node advance.
+// Execution therefore stays disabled per account until these windows are accepted (FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS).
+// ============================================================
+
+export interface ResumeWaitsSummary {
+  claimed: number;
+  resumed: number;
+  /** Claimed but not resumed because the run was cancelled / the flow is no longer usable (the run was ended or left alone). */
+  skipped: number;
+  /** Lost the race at consume time (another worker or a cancellation got there first). */
+  lost: number;
+  failed: number;
+  /** True when the time budget ended the pass early; the rest is picked up by the next pass. */
+  budgetExhausted: boolean;
+}
+
+export async function resumeDueFlowWaits(options: {
+  accountIds: string[];
+  limit?: number;
+  leaseSeconds?: number;
+  /** Stop starting new resumptions after this many milliseconds (default 45 000). */
+  budgetMs?: number;
+  db?: AdminClient;
+}): Promise<ResumeWaitsSummary> {
+  const db = options.db ?? supabaseAdmin();
+  const summary: ResumeWaitsSummary = { claimed: 0, resumed: 0, skipped: 0, lost: 0, failed: 0, budgetExhausted: false };
+  if (options.accountIds.length === 0) return summary;
+  const started = Date.now();
+  const { data, error } = await db.rpc("claim_due_flow_waits", {
+    p_account_ids: options.accountIds,
+    p_limit: options.limit ?? 25,
+    p_lease_seconds: options.leaseSeconds ?? 300,
+  });
+  if (error) throw new Error(`claim_due_flow_waits failed: ${error.message}`);
+  const claims = (data ?? []) as Array<{ run_id: string; account_id: string; flow_id: string; node_key: string; claim_token: string; due_at: string }>;
+  summary.claimed = claims.length;
+  for (const claim of claims) {
+    if (Date.now() - started > (options.budgetMs ?? 45_000)) {
+      // Unprocessed claims simply keep their lease; they are re-claimed after it expires (<= leaseSeconds).
+      summary.budgetExhausted = true;
+      break;
+    }
+    try {
+      const outcome = await resumeOneWait(db, claim);
+      summary[outcome] += 1;
+    } catch (err) {
+      summary.failed += 1;
+      console.error("[flows] durable wait resume threw:", err instanceof Error ? err.message : err);
+    }
+  }
+  return summary;
+}
+
+async function resumeOneWait(
+  db: AdminClient,
+  claim: { run_id: string; account_id: string; flow_id: string; node_key: string; claim_token: string; due_at: string },
+): Promise<"resumed" | "skipped" | "lost" | "failed"> {
+  const { data: runRow } = await db.from("flow_runs").select("*").eq("id", claim.run_id).eq("account_id", claim.account_id).maybeSingle();
+  const run = runRow as FlowRunRow | null;
+  // Cancelled (agent, block, sweep, deleted flow) or taken over by another worker since the claim: leave it alone.
+  if (!run || run.status !== "active" || run.wait_claim_token !== claim.claim_token) return "lost";
+
+  const flow = await loadFlow(db, run.flow_id);
+  if (!flow || flow.status !== "active" || flow.account_id !== run.account_id) {
+    // The flow was paused / archived / deleted while the customer waited: do not send on its behalf.
+    await logEvent(db, run.id, "error", claim.node_key, { reason: "flow_not_active_at_resume" });
+    await endRun(db, run.id, "failed", "flow_not_active_at_resume");
+    return "skipped";
+  }
+  const nodes = await loadAllNodes(db, run.flow_id);
+  const waitNode = nodes.get(claim.node_key);
+  const cfg = waitNode?.config as unknown as DelayNodeConfig | undefined;
+  const next = cfg?.next_node_key;
+  if (!waitNode || waitNode.node_type !== "delay" || !isDurableWaitConfig(cfg) || !next || !nodes.has(next)) {
+    await logEvent(db, run.id, "error", claim.node_key, { reason: "wait_node_invalid_at_resume" });
+    await endRun(db, run.id, "failed", "wait_node_invalid_at_resume");
+    return "skipped";
+  }
+
+  // CONSUME: from this point the wait cannot be resumed again by anyone.
+  const { data: consumed, error: consumeError } = await db.rpc("consume_flow_wait", {
+    p_account_id: run.account_id,
+    p_run_id: run.id,
+    p_claim_token: claim.claim_token,
+    p_next_node_key: next,
+  });
+  if (consumeError) throw new Error(`consume_flow_wait failed: ${consumeError.message}`);
+  if (consumed !== true) return "lost";
+
+  await logEvent(db, run.id, "node_entered", claim.node_key, {
+    node_type: "delay",
+    reason: "wait_resumed",
+    due_at: claim.due_at,
+    late_ms: Math.max(0, Date.now() - new Date(claim.due_at).getTime()),
+  });
+  const advancing: FlowRunRow = { ...run, current_node_key: next, wait_until: null, wait_node_key: null, wait_claim_token: null, wait_claimed_at: null };
+  try {
+    await advanceFromNodeKey(db, advancing, next, nodes);
+  } catch (err) {
+    await logEvent(db, run.id, "error", next, { reason: "resume_advance_failed", detail: err instanceof Error ? err.message : String(err) });
+    await endRun(db, run.id, "failed", "resume_advance_failed");
+    return "failed";
+  }
+  return "resumed";
 }

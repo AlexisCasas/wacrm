@@ -4,6 +4,8 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
 import { isSubflowAuthoringEnabledForAccount } from '@/lib/flows/subflow-authoring-capability'
+import { isDurableWaitAuthoringEnabledForAccount } from '@/lib/flows/durable-wait-capability'
+import { durableWaitSeconds, isDurableWaitConfig } from '@/lib/flows/durable-wait'
 import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
 
 /**
@@ -56,7 +58,7 @@ async function requireOwnership(
  * Maps a failed atomic save to a response that explains what happened without echoing database text. In every case the
  * previous version of the flow is intact: the save is a single transaction.
  */
-function saveFailure(code: string | undefined) {
+function saveFailure(code: string | undefined, message?: string) {
   console.error('[flows PUT] atomic save failed', code ?? 'no-code')
   switch (code) {
     case 'P0002':
@@ -65,8 +67,8 @@ function saveFailure(code: string | undefined) {
       return NextResponse.json({ error: 'Invalid flow data. Nothing was saved.' }, { status: 400 })
     case '23503': // migration 068: execute_flow target is not a flow of this account
       return NextResponse.json({ error: 'A connected flow does not exist anymore or does not belong to this account. Nothing was saved.', code: 'invalid_subflow_target' }, { status: 422 })
-    case '0A000': // migration 068: execute_flow nodes cannot live in an active flow
-      return NextResponse.json({ error: 'Connected flows can only be edited while the flow is a draft. Nothing was saved.', code: 'subflow_requires_draft' }, { status: 409 })
+    case '0A000': // migrations 068 / 069: execute_flow nodes and durable waits cannot live in an active flow
+      return NextResponse.json({ error: /durable/i.test(message ?? '') ? 'Waits can only be added while the flow is a draft. Nothing was saved.' : 'Connected flows can only be edited while the flow is a draft. Nothing was saved.', code: /durable/i.test(message ?? '') ? 'durable_wait_requires_draft' : 'subflow_requires_draft' }, { status: 409 })
     case '23505': // duplicate node_key
     case '23514': // unknown node_type / bad trigger_type
     case '23502': // missing node_key / node_type
@@ -203,6 +205,19 @@ export async function PUT(
       }
     }
 
+    // Durable waits (delay nodes with a unit): only accounts opted in on the server may write them, and each one must be
+    // well formed. Legacy delays (seconds only) are untouched. Migration 069 enforces the same shape in SQL.
+    const durableNodes = (body.nodes ?? []).filter((n) => n.node_type === 'delay' && isDurableWaitConfig(n.config))
+    if (durableNodes.length) {
+      if (!isDurableWaitAuthoringEnabledForAccount(account.accountId)) {
+        return NextResponse.json({ error: 'Durable waits are not enabled for this account.', code: 'durable_wait_authoring_disabled' }, { status: 403 })
+      }
+      const badWaits = durableNodes.flatMap((n) => { const w = durableWaitSeconds(n.config); return w.ok ? [] : [{ node_key: n.node_key, issue: w.reason }] })
+      if (badWaits.length) {
+        return NextResponse.json({ error: 'A wait is not valid (whole amount of at least 1 second, at most 30 days). Nothing was saved.', code: 'invalid_durable_wait', issues: badWaits }, { status: 422 })
+      }
+    }
+
     // Only the fields the client sent are patched: a header-only save (no `nodes`) leaves the graph alone.
     const flowPatch: Record<string, unknown> = {}
     if (body.name !== undefined) flowPatch.name = body.name.trim()
@@ -220,7 +235,7 @@ export async function PUT(
       p_patch: flowPatch,
       p_nodes: body.nodes === undefined ? null : body.nodes.map((n) => ({ node_key: n.node_key, node_type: n.node_type, config: n.config, position_x: n.position_x ?? 0, position_y: n.position_y ?? 0 })),
     })
-    if (saveErr) return saveFailure(saveErr.code)
+    if (saveErr) return saveFailure(saveErr.code, saveErr.message)
     const [{ data: flow }, { data: nodes }] = await Promise.all([
       admin.from('flows').select('*').eq('id', id).maybeSingle(),
       admin.from('flow_nodes').select('*').eq('flow_id', id).order('created_at', { ascending: true }),

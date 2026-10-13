@@ -23,6 +23,7 @@
  * `node_key`; trigger-scoped use `scope: 'trigger'`.
  */
 
+import { durableWaitSeconds, isDurableWaitConfig } from "./durable-wait";
 import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/meta-api";
 
 export interface ValidationIssue {
@@ -54,6 +55,11 @@ export interface ValidateFlowOptions {
    * default validator keeps rejecting it and no existing activation path can publish such a flow.
    */
   versionedExecution?: boolean;
+  /**
+   * Durable waits (migration 069) may be ACTIVATED only for accounts whose execution is enabled. Off by default: a flow with
+   * a durable wait stays a draft, so nothing can run it (and the database refuses it too).
+   */
+  durableWaitExecution?: boolean;
 }
 
 export function validateFlowForActivation(
@@ -738,7 +744,21 @@ function validateNode(
 
     case "delay": {
       const cfg = node.config as { seconds?: number; next_node_key?: string };
-      if (
+      if (isDurableWaitConfig(node.config)) {
+        const wait = durableWaitSeconds(node.config as { amount?: unknown; unit?: unknown });
+        if (!wait.ok) {
+          issues.push({
+            severity: "error", scope: "node", node_key: node.node_key, field: "amount",
+            message: wait.reason === "too_long" ? "A wait can last at most 30 days." : wait.reason === "invalid_unit" ? "Wait unit must be seconds, minutes, hours or days." : "Wait amount must be a whole number of at least 1.",
+          });
+        }
+        if (!options.durableWaitExecution) {
+          issues.push({
+            severity: "error", scope: "node", node_key: node.node_key, field: "unit",
+            message: "Durable waits can be saved in a draft, but running them is not enabled for this account yet, so this flow cannot be activated.",
+          });
+        }
+      } else if (
         typeof cfg.seconds !== "number" ||
         !Number.isFinite(cfg.seconds) ||
         cfg.seconds < 1 ||

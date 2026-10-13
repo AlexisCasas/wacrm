@@ -456,6 +456,7 @@ export interface DispatchInboundResult {
     | "handed_off"
     | "fallback_fired"
     | "duplicate_inbound_ignored"
+    | "waiting"
     | "no_match";
 }
 

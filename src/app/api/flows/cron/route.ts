@@ -54,7 +54,7 @@ export async function GET(request: Request) {
   const { data: runs, error } = await admin
     .from('flow_runs')
     .select(
-      'id, flow_id, user_id, contact_id, last_advanced_at, flows ( fallback_policy )',
+      'id, flow_id, user_id, contact_id, last_advanced_at, wait_until, flows ( fallback_policy )',
     )
     .eq('status', 'active')
 
@@ -70,6 +70,7 @@ export async function GET(request: Request) {
     user_id: string
     contact_id: string | null
     last_advanced_at: string
+    wait_until: string | null
     flows: { fallback_policy: unknown } | { fallback_policy: unknown }[] | null
   }
 
@@ -77,7 +78,9 @@ export async function GET(request: Request) {
   for (const r of runs as Row[]) {
     const flowsField = Array.isArray(r.flows) ? r.flows[0] : r.flows
     const policy = resolveFallbackPolicy(flowsField?.fallback_policy ?? null)
-    const lastAdvanced = new Date(r.last_advanced_at)
+    // A run parked on a durable wait is not abandoned: measure staleness from the moment it was due to resume
+    // (a wait that is overdue by more than the timeout, e.g. because resumption is disabled, is still swept).
+    const lastAdvanced = new Date(Math.max(new Date(r.last_advanced_at).getTime(), r.wait_until ? new Date(r.wait_until).getTime() : 0))
     const ageHours = (now.getTime() - lastAdvanced.getTime()) / (1000 * 60 * 60)
     if (ageHours < policy.on_timeout_hours) continue
 
