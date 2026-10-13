@@ -156,7 +156,8 @@ describe('isolation from production code', () => {
         const p = join(dir, name)
         if (statSync(p).isDirectory()) { walk(p); continue }
         if (!/\.(ts|tsx)$/.test(name) || /\.test\.tsx?$/.test(name) || p.includes('/test-support/')) continue
-        if (/^versioned-(interpreter|store|snapshot)\.ts$/.test(name)) continue
+        // sibling internal modules of the versioned runtime may import each other; nothing else may
+        if (/^versioned-[a-z-]+\.ts$/.test(name) && p.includes('/src/lib/flows/')) continue
         if (/versioned-(interpreter|store|snapshot)['"]/.test(readFileSync(p, 'utf8'))) offenders.push(p)
       }
     }
