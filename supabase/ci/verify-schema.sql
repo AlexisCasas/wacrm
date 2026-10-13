@@ -282,6 +282,14 @@ BEGIN
     RAISE EXCEPTION 'replace_flow_draft_atomic must be executable by service_role only';
   END IF;
 
+  -- 068: execute_flow can be authored, but guarded (never in or into an active flow, references stay in the account).
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'flow_nodes_node_type_check' AND pg_get_constraintdef(oid) LIKE '%execute_flow%') THEN
+    RAISE EXCEPTION 'flow_nodes_node_type_check does not accept execute_flow — migration 068 did not apply';
+  END IF;
+  IF (SELECT count(*) FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('flow_nodes_guard_execute_flow', 'flows_guard_execute_flow_activation')) <> 2 THEN
+    RAISE EXCEPTION 'execute_flow guard triggers are missing — migration 068 did not apply';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;
