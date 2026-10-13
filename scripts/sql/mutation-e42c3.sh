@@ -62,9 +62,9 @@ printf '%s' "$DEF" | psql_ -q >/dev/null
 # Y05: an accepted message is shown as delivered
 printf '%s' "$DEF" | python3 -c "
 import sys
-s = sys.stdin.read(); a = \"e.provider_message_id, 'sent')\"
+s = sys.stdin.read(); a = \"e.provider_message_id, 'sent', e.finished_at)\"
 assert a in s
-open('/tmp/mut_persist.sql', 'w').write(s.replace(a, \"e.provider_message_id, 'delivered')\", 1))"
+open('/tmp/mut_persist.sql', 'w').write(s.replace(a, \"e.provider_message_id, 'delivered', e.finished_at)\", 1))"
 psql_ -q < /tmp/mut_persist.sql >/dev/null
 expect_failure "accepted message shown as delivered" Y05 SQLSUITE
 printf '%s' "$DEF" | psql_ -q >/dev/null
