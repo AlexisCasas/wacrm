@@ -15,11 +15,13 @@ import { HttpTransportError, type HttpRequest, type HttpResponse, type HttpTrans
  *   auth_error             401 / 190
  *   rate_limited           429 / 131056 (+ Retry-After when `retryAfterHeader` is set)
  *   throttled_400          400 / 130429 (Meta throttling that does not use HTTP 429)
+ *   throttle_code_500/503/408  a throttle code on a 5xx / 408: NOT trusted, stays ambiguous
+ *   throttle_code_403      a throttle code on a definitive 4xx: a temporary rejection
  *   server_error           500 (not delivered, but the caller cannot know)
  *   accepted_no_id         200 with a body that has no message id (delivered)
  */
 export type MetaBehavior = 'accept' | 'accept_then_timeout' | 'lost_response' | 'reset_in_flight' | 'refused_before_send' | 'not_allowed'
-  | 'invalid_param' | 'undeliverable' | 'auth_error' | 'rate_limited' | 'throttled_400' | 'server_error' | 'accepted_no_id'
+  | 'invalid_param' | 'undeliverable' | 'auth_error' | 'rate_limited' | 'throttled_400' | 'throttle_code_500' | 'throttle_code_503' | 'throttle_code_408' | 'throttle_code_403' | 'server_error' | 'accepted_no_id'
 
 export interface RecordedRequest { url: string; headers: Record<string, string>; body: Record<string, unknown>; to: string }
 
@@ -61,6 +63,10 @@ export class MockMetaTransport implements HttpTransport {
       case 'auth_error': return err(401, 190, 'Invalid OAuth access token')
       case 'rate_limited': { const r = err(429, 131056, 'Pair rate limit hit'); return this.retryAfterHeader === undefined ? r : { ...r, headers: { 'Retry-After': this.retryAfterHeader } } }
       case 'throttled_400': return err(400, 130429, 'Rate limit hit')
+      case 'throttle_code_500': return err(500, 131056, 'Rate limit code on a server error')
+      case 'throttle_code_503': return err(503, 80007, 'Rate limit code on an unavailable service')
+      case 'throttle_code_408': return err(408, 130429, 'Rate limit code on a request timeout')
+      case 'throttle_code_403': return err(403, 80007, 'Rate limit code on a definitive 4xx')
       case 'server_error': return { status: 500, body: JSON.stringify({ error: { message: 'Service temporarily unavailable', code: 2 } }) }
       case 'accepted_no_id': deliver(); return { status: 200, body: JSON.stringify({ messaging_product: 'whatsapp', messages: [] }) }
     }

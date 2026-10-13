@@ -12,7 +12,8 @@ import type { EffectSender, OutboundPayload, OutboundRequest, SendOutcome } from
  * Classification (the rule the ledger depends on):
  *   accepted        2xx with a well-formed wamid
  *   rejected        Meta received the request and refused it (4xx with a verdict): definitive
- *   retryable_rejection  Meta refused it because of a rate limit (HTTP 429, or code 131056 / 130429 / 80007): the message
+ *   retryable_rejection  Meta refused it because of a rate limit (HTTP 429, or code 131056 / 130429 / 80007 on a definitive
+ *                   4xx; the same codes on a 5xx or 408 stay ambiguous): the message
  *                   was not accepted, but this says nothing about the business outcome. `retryAfterSeconds` carries a
  *                   valid Retry-After; the ledger persists the wait and the run keeps waiting instead of failing
  *   not_dispatched  PROVEN that no byte of any request left (the transport says so, or we never built a request)
@@ -107,9 +108,15 @@ function parseError(data: unknown): ParsedError {
 const mask = (phone: string) => `***${phone.slice(-4)}`
 
 const RATE_LIMIT_CODES = new Set([131056, 130429, 80007])
-/** Meta's own rate-limit answers: HTTP 429, or one of its throttling error codes whatever the HTTP status. */
+/**
+ * Meta's own rate-limit answers: HTTP 429, or a throttling error code carried by a DEFINITIVE 4xx verdict (not 408).
+ * The same code on a 5xx or a 408 is not trusted: those statuses mean the request may have been processed, so the
+ * answer stays ambiguous and is never retried automatically.
+ */
 export function isRateLimited(status: number, meta: { code?: number }): boolean {
-  return status === 429 || (meta.code !== undefined && RATE_LIMIT_CODES.has(meta.code))
+  if (status === 429) return true
+  const definitiveVerdict = status >= 400 && status < 500 && status !== 408
+  return definitiveVerdict && meta.code !== undefined && RATE_LIMIT_CODES.has(meta.code)
 }
 
 const MAX_RETRY_AFTER_SECONDS = 86_400

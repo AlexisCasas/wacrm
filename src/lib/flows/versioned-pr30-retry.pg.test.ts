@@ -143,4 +143,32 @@ describe.skipIf(!container)('PR #30: P2 temporary rejections (HTTP 429)', () => 
     expect(await inbox(g.conversationId)).toHaveLength(0)
     pass('R20', 'with a cap of 2 attempts the second 429 fails the effect as rate_limit_exhausted (run failed, no Inbox row, no budget) instead of waiting forever')
   })
+
+  // -------------------------------------------- audit round 2, case 1: throttle codes on 5xx / 408 stay ambiguous
+  it('R21/R22: a throttle code on HTTP 500 / 503 / 408 is ambiguous and never resent; on a definitive 4xx it is temporary', async () => {
+    const summary: string[] = []
+    for (const behavior of ['throttle_code_500', 'throttle_code_503', 'throttle_code_408'] as const) {
+      const f = await flows(); const t = new MockMetaTransport().script(behavior); t.retryAfterHeader = '45'
+      expect(await go(proc(t), f.runId, 'w1'), behavior).toMatchObject({ kind: 'awaiting_effect_resolution' })
+      for (let i = 0; i < 3; i++) expect(await go(proc(t), f.runId, `again-${i}`), behavior).toMatchObject({ kind: 'awaiting_effect_resolution' })
+      expect(t.requests, behavior).toHaveLength(1)                                     // never resent
+      const [eff] = await effects(f.runId)
+      expect(eff, behavior).toMatchObject({ state: 'ambiguous', attempt: 1, retry_not_before: null, provider_message_id: null })
+      expect((await h.events(f.runId)).filter((e) => e.event_type === 'effect_deferred'), behavior).toHaveLength(0)
+      expect(await inbox(f.conversationId), behavior).toHaveLength(0)
+      expect(await h.run(f.runId), behavior).toMatchObject({ status: 'active', versioned_messages_executed: 0, versioned_node_key: 'bmsg' })
+      summary.push(`${behavior}: ${eff.error_code}`)
+    }
+    pass('R21', `throttle codes (131056 / 80007 / 130429) on HTTP 500, 503 and 408 stay ambiguous even with a Retry-After header: 1 request each across 4 invocations, no retry time, no deferral event, no Inbox row, run blocked (${summary.join('; ')})`)
+    // on a definitive 4xx verdict the same codes are a temporary rejection, and other 4xx remain definitive
+    const g = await flows(); const t2 = new MockMetaTransport().script('throttle_code_403')
+    expect(await go(proc(t2), g.runId, 'w1')).toMatchObject({ kind: 'effect_retry_scheduled' })
+    expect((await effects(g.runId))[0]).toMatchObject({ state: 'pending', attempt: 1 })
+    expect(await kit.secondsUntilRetry(g.runId)).toBeGreaterThan(25)
+    const k = await flows(); const t3 = new MockMetaTransport().script('throttled_400')
+    expect(await go(proc(t3), k.runId, 'w1')).toMatchObject({ kind: 'effect_retry_scheduled' })
+    const m = await flows(); const t4 = new MockMetaTransport().script('invalid_param')
+    expect(await go(proc(t4), m.runId, 'w1')).toMatchObject({ kind: 'failed', reason: 'effect_failed' })
+    pass('R22', 'a throttle code on 403 / 400 and plain HTTP 429 remain temporary rejections (deferred with a persisted time); an unrelated 400 stays definitive')
+  })
 })

@@ -127,14 +127,32 @@ describe('temporary rejections (HTTP 429 / Meta throttling)', () => {
   it('Meta throttling codes count even when the HTTP status is 400', async () => {
     const t = new MockMetaTransport().script('throttled_400')
     expect(await make(t).sender.send(req(TEXT))).toMatchObject({ kind: 'retryable_rejection', errorCode: 'rate_limited' })
-    expect(isRateLimited(429, {})).toBe(true); expect(isRateLimited(400, { code: 131056 })).toBe(true); expect(isRateLimited(400, { code: 130429 })).toBe(true)
-    expect(isRateLimited(400, { code: 80007 })).toBe(true); expect(isRateLimited(400, { code: 100 })).toBe(false); expect(isRateLimited(500, {})).toBe(false)
+    expect(isRateLimited(429, {})).toBe(true); expect(isRateLimited(429, { code: 100 })).toBe(true)
+    for (const code of [131056, 130429, 80007]) { expect(isRateLimited(400, { code })).toBe(true); expect(isRateLimited(403, { code })).toBe(true); expect(isRateLimited(404, { code })).toBe(true) }
+    expect(isRateLimited(400, { code: 100 })).toBe(false); expect(isRateLimited(500, {})).toBe(false)
+    // a throttle code on a server error or a request timeout is NOT trusted
+    for (const status of [500, 502, 503, 504, 408, 301]) for (const code of [131056, 130429, 80007]) expect(isRateLimited(status, { code }), `${status}/${code}`).toBe(false)
   })
   it('the other classes are unchanged: 400 definitive, 5xx and timeouts ambiguous, nothing before transmission', async () => {
     expect(await make(new MockMetaTransport().script('invalid_param')).sender.send(req(TEXT))).toEqual({ kind: 'rejected', errorCode: 'meta_100' })
     expect(await make(new MockMetaTransport().script('server_error')).sender.send(req(TEXT))).toEqual({ kind: 'ambiguous', errorCode: 'http_500' })
     expect(await make(new MockMetaTransport().script('accept_then_timeout')).sender.send(req(TEXT))).toEqual({ kind: 'ambiguous', errorCode: 'transport_timeout' })
     expect(await make(new MockMetaTransport().script('refused_before_send')).sender.send(req(TEXT))).toEqual({ kind: 'not_dispatched', errorCode: 'connect_refused' })
+  })
+  it('a throttle code on HTTP 500 / 503 / 408 stays AMBIGUOUS and is never retried; on a definitive 4xx it is temporary', async () => {
+    for (const [behavior, code] of [['throttle_code_500', 'http_500'], ['throttle_code_503', 'http_503'], ['throttle_code_408', 'http_408']] as const) {
+      const t = new MockMetaTransport().script(behavior); const { sender, events } = make(t)
+      expect(await sender.send(req(TEXT)), behavior).toEqual({ kind: 'ambiguous', errorCode: code })
+      expect(t.requests, behavior).toHaveLength(1)
+      expect(events.at(-1), behavior).toMatchObject({ classification: 'ambiguous' })
+    }
+    const t = new MockMetaTransport().script('throttle_code_403')
+    expect(await make(t).sender.send(req(TEXT))).toMatchObject({ kind: 'retryable_rejection', errorCode: 'rate_limited' })
+  })
+  it('a Retry-After header on a 5xx / 408 is ignored: nothing is scheduled', async () => {
+    const t = { post: async () => ({ status: 503, headers: { 'Retry-After': '30' }, body: JSON.stringify({ error: { code: 131056, message: 'x' } }) }) }
+    const out = await createMetaEffectSender({ transport: t, resolveContext: async () => ctx() }).send(req(TEXT))
+    expect(out).toEqual({ kind: 'ambiguous', errorCode: 'http_503' })
   })
   it('the rate limit is never retried inside the adapter', async () => {
     const t = new MockMetaTransport().setDefault('rate_limited'); await make(t).sender.send(req(TEXT))
