@@ -43,7 +43,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker";
 import { slugify, type BuilderNode } from "../shared";
 import { useFlowEditor } from "../flow-editor-state";
-import { useDurableWaitAuthoringCapability, useSubflowAuthoringCapability } from "../use-subflow-authoring";
+import { useCustomerReplyConditionCapability, useDurableWaitAuthoringCapability, useSubflowAuthoringCapability } from "../use-subflow-authoring";
 import { WAIT_UNITS, isDurableWaitConfig, maxAmountFor, type WaitUnit } from "@/lib/flows/durable-wait";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
 import { FlowPicker } from "./flow-picker";
@@ -621,9 +621,9 @@ function SendListForm({
 // ============================================================
 
 interface ConditionCfg {
-  subject?: "var" | "tag" | "contact_field";
+  subject?: "var" | "tag" | "contact_field" | "customer_activity";
   subject_key?: string;
-  operator?: "equals" | "contains" | "present" | "absent";
+  operator?: "equals" | "contains" | "present" | "absent" | "replied_after_reference";
   value?: string;
   true_next?: string;
   false_next?: string;
@@ -695,8 +695,11 @@ function ConditionForm({
   const tagCatalog = useAccountTags();
   const fields = useAccountCustomFields();
   const customConditionsEnabled = useCustomConditionCapability();
+  const customerReplyEnabled = useCustomerReplyConditionCapability();
 
   const subject = cfg.subject ?? "var";
+  const isActivity = subject === "customer_activity";
+  const referenceCandidates = allNodes.filter((n) => n.node_type === "send_message" || n.node_type === "send_media");
   const operator = cfg.operator ?? "equals";
   const showValue = operator === "equals" || operator === "contains";
 
@@ -708,7 +711,13 @@ function ConditionForm({
           <Select
             value={subject}
             onValueChange={(v) =>
-              onUpdateConfig({ subject: v as ConditionCfg["subject"] })
+              onUpdateConfig(
+                v === "customer_activity"
+                  ? { subject: v, operator: "replied_after_reference", subject_key: "", value: undefined }
+                  : subject === "customer_activity"
+                    ? { subject: v as ConditionCfg["subject"], operator: "present", subject_key: "" }
+                    : { subject: v as ConditionCfg["subject"] },
+              )
             }
           >
             <SelectTrigger className="bg-muted">
@@ -718,6 +727,7 @@ function ConditionForm({
               <SelectItem value="var">{t("capturedVariable")}</SelectItem>
               <SelectItem value="tag">{t("contactHasTag")}</SelectItem>
               <SelectItem value="contact_field">{t("contactField")}</SelectItem>
+              {(customerReplyEnabled || isActivity) && <SelectItem value="customer_activity">{t("customerActivity")}</SelectItem>}
             </SelectContent>
           </Select>
         </div>
@@ -727,9 +737,27 @@ function ConditionForm({
               ? t("varName")
               : subject === "tag"
                 ? t("tagLabel")
-                : t("fieldLabel")}
+                : isActivity
+                  ? t("referenceMessageLabel")
+                  : t("fieldLabel")}
           </label>
-          {subject === "tag" ? (
+          {isActivity ? (
+            <div className="space-y-1">
+              {!customerReplyEnabled && <p className="text-xs text-amber-600 dark:text-amber-400">{t("customerReplyDisabled")}</p>}
+              {referenceCandidates.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t("noReferenceCandidates")}</p>
+              ) : (
+                <NodeKeySelect
+                  value={cfg.subject_key || null}
+                  nodes={referenceCandidates}
+                  excludeKey={currentKey}
+                  onChange={(v) => onUpdateConfig({ subject_key: v ?? "", operator: "replied_after_reference" })}
+                  placeholder={t("pickReference")}
+                />
+              )}
+              <p className="text-xs text-muted-foreground">{t("referenceHelp")}</p>
+            </div>
+          ) : subject === "tag" ? (
             <TagSelect value={cfg.subject_key ?? ""} catalog={tagCatalog} onChange={(v) => onUpdateConfig({ subject_key: v })} t={t} />
           ) : subject === "contact_field" ? (
             <>
@@ -764,7 +792,7 @@ function ConditionForm({
         </div>
       </div>
 
-      <div
+      {!isActivity && <div
         className={cn(
           "grid grid-cols-1 gap-3",
           showValue ? "md:grid-cols-2" : "",
@@ -799,7 +827,8 @@ function ConditionForm({
             />
           </div>
         )}
-      </div>
+      </div>}
+      {isActivity && <p className="text-sm">{t("repliedAfterReference")}</p>}
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <NextNodeRow
@@ -807,14 +836,14 @@ function ConditionForm({
           allNodes={allNodes}
           currentKey={currentKey}
           onChange={(v) => onUpdateConfig({ true_next: v })}
-          label={t("ifTrueAdvance")}
+          label={isActivity ? t("ifRepliedAdvance") : t("ifTrueAdvance")}
         />
         <NextNodeRow
           value={cfg.false_next ?? ""}
           allNodes={allNodes}
           currentKey={currentKey}
           onChange={(v) => onUpdateConfig({ false_next: v })}
-          label={t("ifFalseAdvance")}
+          label={isActivity ? t("ifNotRepliedAdvance") : t("ifFalseAdvance")}
         />
       </div>
     </>

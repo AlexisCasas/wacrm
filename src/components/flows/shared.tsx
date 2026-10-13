@@ -413,6 +413,9 @@ export function summarizeNode(
       const subjectKey =
         typeof cfg.subject_key === 'string' ? cfg.subject_key : '';
       if (!subjectKey) return null;
+      if (cfg.subject === 'customer_activity') {
+        return t ? t('repliedAfter', { node: truncate(subjectKey, 24) }) : `customer replied after ${truncate(subjectKey, 24)}`;
+      }
       const subject =
         cfg.subject === 'tag'
           ? 'tag'
