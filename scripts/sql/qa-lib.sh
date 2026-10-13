@@ -41,10 +41,10 @@ qa_txn_phase() {
 qa_commit_fixtures() { QA_MIN_MSG=warning psql_ -o /dev/null < "$SQL/e42b11-fixtures.sql"; }
 qa_conc() { "$SQL/$1" "$NAME" 2>&1 | tee -a "$LOG"; }
 
-# qa_vitest <test file>: Node tests that talk to the container through docker exec (no ports, no network).
+# qa_vitest <test files...>: (files run one after another: several assert global row counts) Node tests that talk to the container through docker exec (no ports, no network).
 qa_vitest() {
-  QA_PG_CONTAINER="$NAME" npx vitest run "$1" --reporter=verbose 2>&1 | tee -a "$LOG"
-  [ "${PIPESTATUS[0]}" = 0 ] || { echo "ERROR: vitest failed for $1" | tee -a "$LOG"; }
+  QA_PG_CONTAINER="$NAME" npx vitest run "$@" --reporter=verbose --no-file-parallelism 2>&1 | tee -a "$LOG"
+  [ "${PIPESTATUS[0]}" = 0 ] || { echo "ERROR: vitest failed for $*" | tee -a "$LOG"; }
 }
 
 # qa_verdict <label> <test ids...>: every id needs a PASS line and nothing may FAIL.

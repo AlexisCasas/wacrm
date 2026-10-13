@@ -3,6 +3,7 @@ import { runVersionedFlow } from './versioned-interpreter'
 import { SnapshotError, SnapshotLoader } from './versioned-snapshot'
 import { createSupabaseRunStore, type CommitInput, type VersionedRunStore } from './versioned-store'
 import { createPsql, createPsqlSupabaseClient, lit } from './test-support/psql-client'
+import { createHarness } from './test-support/versioned-pg'
 
 /**
  * E4.2B1.3 integration: the real store + interpreter against the isolated PostgreSQL 17 container
@@ -164,9 +165,8 @@ describe.skipIf(!container)('E4.2B1.3 versioned interpreter on PostgreSQL', () =
   it('I10: simulated process death, then a new instance resumes from END', async () => {
     const f = await makeFlow(startEnd)
     const runId = await createRun(f.id)
-    const real = newStore()
-    const dying: VersionedRunStore = { ...real, commitTransition: async (i) => { await real.commitTransition(i); throw new Error('simulated crash after confirmed commit') } }
-    await expect(runVersionedFlow(dying, opts(runId, 'proc-1', { ttlSeconds: 4 }))).rejects.toThrow('simulated crash')
+    const dying = createHarness(container ?? '').dyingStore(newStore(), { method: 'commitTransition', when: 'after' })
+    await expect(runVersionedFlow(dying, opts(runId, 'proc-1', { ttlSeconds: 4 }))).rejects.toThrow('process is gone')
     let r = await row(runId)
     expect(r).toMatchObject({ status: 'active', versioned_node_key: 'end', versioned_revision: 1, versioned_lease_owner: 'proc-1', versioned_lease: 1 })
 
