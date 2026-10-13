@@ -9,7 +9,7 @@ A=52000000-0000-4000-8000-0000000000a1
 B=52000000-0000-4000-8000-0000000000b1
 ACC=$(pq -c "select account_id from public.flows where id='50000000-0000-4000-8000-000000000001'")
 # Committed synthetic flows: A (call -> x -> end, entry call), B (x -> bcall -> bend, entry x)
-pq -c "select public.qa_synth_flow('$A','[{\"node_key\":\"call\",\"node_type\":\"execute_flow\"},{\"node_key\":\"x\",\"node_type\":\"send_message\"},{\"node_key\":\"end\",\"node_type\":\"end\"}]','call')" >/dev/null
+pq -c "select public.qa_synth_flow('$A','[{\"node_key\":\"call\",\"node_type\":\"execute_flow\",\"config\":{\"target_flow_id\":\"$B\",\"next_node_key\":\"x\"}},{\"node_key\":\"x\",\"node_type\":\"send_message\"},{\"node_key\":\"end\",\"node_type\":\"end\"}]','call')" >/dev/null
 pq -c "select public.qa_synth_flow('$B','[{\"node_key\":\"x\",\"node_type\":\"start\"},{\"node_key\":\"bcall\",\"node_type\":\"execute_flow\"},{\"node_key\":\"bend\",\"node_type\":\"end\"}]','x')" >/dev/null
 VB1=$(pq -c "select active_version_id from public.flows where id='$B'")
 

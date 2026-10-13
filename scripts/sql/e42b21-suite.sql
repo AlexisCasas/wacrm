@@ -9,8 +9,8 @@ GRANT SELECT ON qa_s TO PUBLIC;
 DO $$
 DECLARE va uuid; vb uuid; vc uuid;
 BEGIN
-  va := public.qa_synth_flow('52000000-0000-4000-8000-0000000000a1', '[{"node_key":"call","node_type":"execute_flow"},{"node_key":"x","node_type":"send_message"},{"node_key":"end","node_type":"end"}]', 'call');
-  vb := public.qa_synth_flow('52000000-0000-4000-8000-0000000000b1', '[{"node_key":"x","node_type":"start"},{"node_key":"bcall","node_type":"execute_flow"},{"node_key":"bend","node_type":"end"}]', 'x');
+  va := public.qa_synth_flow('52000000-0000-4000-8000-0000000000a1', '[{"node_key":"call","node_type":"execute_flow","config":{"target_flow_id":"52000000-0000-4000-8000-0000000000b1","next_node_key":"x"}},{"node_key":"callg","node_type":"execute_flow","config":{"target_flow_id":"52000000-0000-4000-8000-0000000000d1","next_node_key":"x"}},{"node_key":"x","node_type":"send_message"},{"node_key":"end","node_type":"end"}]', 'call');
+  vb := public.qa_synth_flow('52000000-0000-4000-8000-0000000000b1', '[{"node_key":"x","node_type":"start"},{"node_key":"bcall","node_type":"execute_flow","config":{"target_flow_id":"52000000-0000-4000-8000-0000000000c1","next_node_key":"bend"}},{"node_key":"bend","node_type":"end"}]', 'x');
   vc := public.qa_synth_flow('52000000-0000-4000-8000-0000000000c1', '[{"node_key":"cx","node_type":"start"},{"node_key":"cend","node_type":"end"}]', 'cx');
   INSERT INTO qa_s VALUES ('va', va), ('vb', vb), ('vc', vc);
 END $$;
@@ -101,7 +101,8 @@ BEGIN
   vg1 := public.qa_synth_flow('52000000-0000-4000-8000-0000000000d1', '[{"node_key":"x","node_type":"start"},{"node_key":"gcall","node_type":"execute_flow"},{"node_key":"gend","node_type":"end"}]', 'x');
   rid := public.qa_flow_run('52000000-0000-4000-8000-0000000000a1', 504);
   PERFORM public.qa_lease(rid);
-  PERFORM public.qa_push(rid, 'w1', 'call', 'x', '52000000-0000-4000-8000-0000000000d1');
+  PERFORM public.qa_goto(rid, 'w1', 'callg');
+  PERFORM public.qa_push(rid, 'w1', 'callg', 'x', '52000000-0000-4000-8000-0000000000d1');
   -- republish B with a different graph (v2: entry 'x' now is followed by 'newend'; 'gend' is gone)
   vg2 := public.qa_synth_flow('52000000-0000-4000-8000-0000000000d1', '[{"node_key":"x","node_type":"start"},{"node_key":"newend","node_type":"end"}]', 'x');
   PERFORM public.qa_result('S06a-precondition', vg2 <> vg1 AND (SELECT active_version_id FROM public.flows WHERE id = '52000000-0000-4000-8000-0000000000d1') = vg2, 'G republished: v2 is active');
@@ -115,7 +116,8 @@ BEGIN
   -- a NEW run entering B after the republication gets v2
   rid2 := public.qa_flow_run('52000000-0000-4000-8000-0000000000a1', 505);
   PERFORM public.qa_lease(rid2);
-  r := public.qa_push(rid2, 'w1', 'call', 'x', '52000000-0000-4000-8000-0000000000d1');
+  PERFORM public.qa_goto(rid2, 'w1', 'callg');
+  r := public.qa_push(rid2, 'w1', 'callg', 'x', '52000000-0000-4000-8000-0000000000d1');
   PERFORM public.qa_result('S06b', (r->>'committed')::bool AND r->>'cursor_flow_version_id' = vg2::text
     AND (SELECT callee_flow_version_id FROM public.flow_run_call_frames WHERE flow_run_id = rid2) = vg2,
     'a later run entering G pins the new version v2');
@@ -179,8 +181,8 @@ END $$;
 DO $$
 DECLARE a uuid; rid uuid; r jsonb; ok boolean := true; detail text := ''; before_row jsonb;
 BEGIN
-  PERFORM public.qa_synth_flow('54000000-0000-4000-8000-0000000000e1', '[{"node_key":"ecall","node_type":"execute_flow"},{"node_key":"eend","node_type":"end"}]', 'ecall');
-  PERFORM public.qa_synth_flow('54000000-0000-4000-8000-0000000000f1', '[{"node_key":"fcall","node_type":"execute_flow"},{"node_key":"fend","node_type":"end"}]', 'fcall');
+  PERFORM public.qa_synth_flow('54000000-0000-4000-8000-0000000000e1', '[{"node_key":"ecall","node_type":"execute_flow","config":{"target_flow_id":"54000000-0000-4000-8000-0000000000f1","next_node_key":"eend"}},{"node_key":"eend","node_type":"end"}]', 'ecall');
+  PERFORM public.qa_synth_flow('54000000-0000-4000-8000-0000000000f1', '[{"node_key":"fcall","node_type":"execute_flow","config":{"target_flow_id":"54000000-0000-4000-8000-0000000000e1","next_node_key":"fend"}},{"node_key":"fend","node_type":"end"}]', 'fcall');
   -- direct self-call: E -> E
   rid := public.qa_flow_run('54000000-0000-4000-8000-0000000000e1', 508);
   PERFORM public.qa_lease(rid);
@@ -197,7 +199,7 @@ BEGIN
   r := public.qa_push(rid, 'w1', 'fcall', 'fend', '54000000-0000-4000-8000-0000000000f1');
   IF r->>'reason' <> 'recursion_detected' THEN ok := false; detail := detail || ' [F->F]'; END IF;
   -- recursion judged by flow id, not version: republish E (new version) and try F -> E again
-  PERFORM public.qa_synth_flow('54000000-0000-4000-8000-0000000000e1', '[{"node_key":"ecall","node_type":"execute_flow"},{"node_key":"eend","node_type":"end"},{"node_key":"extra","node_type":"end"}]', 'ecall');
+  PERFORM public.qa_synth_flow('54000000-0000-4000-8000-0000000000e1', '[{"node_key":"ecall","node_type":"execute_flow","config":{"target_flow_id":"54000000-0000-4000-8000-0000000000f1","next_node_key":"eend"}},{"node_key":"eend","node_type":"end"},{"node_key":"extra","node_type":"end"}]', 'ecall');
   r := public.qa_push(rid, 'w1', 'fcall', 'fend', '54000000-0000-4000-8000-0000000000e1');
   IF r->>'reason' <> 'recursion_detected' THEN ok := false; detail := detail || ' [E v2 via F]'; END IF;
   PERFORM public.qa_result('S10', ok AND (SELECT versioned_depth FROM public.flow_runs WHERE id = rid) = 1, 'E->E, E->F->E, F->F and F->E(E republished: new version) all -> recursion_detected with no write; stack stays at depth 1' || detail);
@@ -210,7 +212,9 @@ BEGIN
   SELECT account_id INTO a FROM public.flows WHERE id = '52000000-0000-4000-8000-0000000000a1';
   -- chain D0..D9; every flow's entry node is its call node 'dcall'
   FOR i IN 0..9 LOOP
-    PERFORM public.qa_synth_flow(('53000000-0000-4000-8000-00000000000' || i)::uuid, '[{"node_key":"dcall","node_type":"execute_flow"},{"node_key":"dret","node_type":"end"}]', 'dcall');
+    PERFORM public.qa_synth_flow(('53000000-0000-4000-8000-00000000000' || i)::uuid, jsonb_build_array(
+      jsonb_build_object('node_key', 'dcall', 'node_type', 'execute_flow', 'config', jsonb_build_object('target_flow_id', '53000000-0000-4000-8000-00000000000' || (i + 1), 'next_node_key', 'dret')),
+      jsonb_build_object('node_key', 'dret', 'node_type', 'end')), 'dcall');
   END LOOP;
   rid := public.qa_flow_run('53000000-0000-4000-8000-000000000000', 510);
   PERFORM public.qa_lease(rid);
@@ -412,4 +416,58 @@ BEGIN
   EXCEPTION WHEN OTHERS THEN ok := false; out := out || ('service_role pop error ' || SQLSTATE || ' ' || SQLERRM); END;
   RESET ROLE;
   PERFORM public.qa_result('S17', ok, 'push/pop x (PUBLIC-probe, anon, authenticated) -> 42501 and no change; no PUBLIC grant in ACL; service_role pushed and popped' || coalesce(' | ' || nullif(array_to_string(out, '; '), ''), ''));
+END $$;
+
+-- S24: defence in depth in push (migration 058): the call must come from a published execute_flow node
+-- whose config names this exact target and continuation.
+DO $$
+DECLARE rid uuid; before_row jsonb; ok boolean := true; detail text := ''; t record; got text;
+BEGIN
+  rid := public.qa_flow_run('52000000-0000-4000-8000-0000000000a1', 524);
+  PERFORM public.qa_lease(rid);
+  before_row := to_jsonb((SELECT x FROM public.flow_runs x WHERE id = rid));
+  FOR t IN SELECT * FROM (VALUES
+    ('target differs from node config', 'call', 'x', '52000000-0000-4000-8000-0000000000c1'),
+    ('continuation differs from node config', 'call', 'end', '52000000-0000-4000-8000-0000000000b1'),
+    ('target of the other call node', 'call', 'x', '52000000-0000-4000-8000-0000000000d1')
+  ) AS x(label, call_node, ret, target) LOOP
+    got := NULL;
+    BEGIN PERFORM public.qa_push(rid, 'w1', t.call_node, t.ret, t.target::uuid); EXCEPTION WHEN OTHERS THEN got := SQLSTATE || ' ' || SQLERRM; END;
+    IF got IS DISTINCT FROM '22023 call node is not an execute_flow node matching the requested call' THEN ok := false; detail := detail || ' [' || t.label || ': ' || coalesce(got, 'accepted') || ']'; END IF;
+  END LOOP;
+  -- a cursor on a node that is not execute_flow (A.x is send_message) cannot be used as a call node
+  PERFORM public.qa_goto(rid, 'w1', 'x');
+  before_row := to_jsonb((SELECT x FROM public.flow_runs x WHERE id = rid));
+  got := NULL;
+  BEGIN PERFORM public.qa_push(rid, 'w1', 'x', 'end', '52000000-0000-4000-8000-0000000000b1'); EXCEPTION WHEN OTHERS THEN got := SQLSTATE || ' ' || SQLERRM; END;
+  IF got IS DISTINCT FROM '22023 call node is not an execute_flow node matching the requested call' THEN ok := false; detail := detail || ' [non-call node: ' || coalesce(got, 'accepted') || ']'; END IF;
+  PERFORM public.qa_result('S24', ok AND to_jsonb((SELECT x FROM public.flow_runs x WHERE id = rid)) = before_row AND NOT EXISTS (SELECT 1 FROM public.flow_run_call_frames WHERE flow_run_id = rid),
+    'push refused (22023) when target or continuation differ from the published execute_flow config, or when the cursor node is not execute_flow; no frame, no event' || detail);
+END $$;
+
+-- S25: traceability that outlives the frame; ids and keys only.
+DO $$
+DECLARE rid uuid; va uuid; vb uuid; ev public.flow_run_events%ROWTYPE; n int; txt text; ok boolean := true; detail text := '';
+BEGIN
+  SELECT id INTO va FROM qa_s WHERE name = 'va'; SELECT id INTO vb FROM qa_s WHERE name = 'vb';
+  rid := public.qa_flow_run('52000000-0000-4000-8000-0000000000a1', 525);
+  UPDATE public.flow_runs SET vars = '{"secret":"s3cr3t-value","email":"a@b.test"}' WHERE id = rid;
+  PERFORM public.qa_lease(rid);
+  PERFORM public.qa_push(rid, 'w1', 'call', 'x', '52000000-0000-4000-8000-0000000000b1');
+  SELECT * INTO ev FROM public.flow_run_events WHERE flow_run_id = rid AND event_type = 'subflow_called';
+  IF NOT (ev.node_key = 'call' AND ev.payload->>'caller_flow_id' = '52000000-0000-4000-8000-0000000000a1' AND ev.payload->>'caller_flow_version_id' = va::text
+      AND ev.payload->>'callee_flow_id' = '52000000-0000-4000-8000-0000000000b1' AND ev.payload->>'callee_flow_version_id' = vb::text
+      AND ev.payload->>'call_node_key' = 'call' AND ev.payload->>'return_node_key' = 'x' AND (ev.payload->>'depth')::int = 1 AND (ev.payload->>'revision')::int = 1) THEN
+    ok := false; detail := detail || ' [subflow_called ' || ev.payload::text || ']'; END IF;
+  PERFORM public.qa_goto(rid, 'w1', 'bend');
+  PERFORM public.qa_pop(rid, 'w1');
+  SELECT * INTO ev FROM public.flow_run_events WHERE flow_run_id = rid AND event_type = 'subflow_returned';
+  IF NOT (ev.node_key = 'x' AND ev.payload->>'callee_flow_version_id' = vb::text AND ev.payload->>'caller_flow_version_id' = va::text
+      AND (ev.payload->>'depth')::int = 1 AND ev.payload->>'call_node_key' = 'call' AND ev.payload->>'return_node_key' = 'x') THEN
+    ok := false; detail := detail || ' [subflow_returned ' || ev.payload::text || ']'; END IF;
+  SELECT count(*) INTO n FROM public.flow_run_call_frames WHERE flow_run_id = rid;
+  IF n <> 0 THEN ok := false; detail := detail || ' [frame still there]'; END IF;
+  SELECT string_agg(payload::text, ' ') INTO txt FROM public.flow_run_events WHERE flow_run_id = rid;
+  IF txt LIKE '%s3cr3t%' OR txt LIKE '%a@b.test%' OR txt LIKE '%secret%' THEN ok := false; detail := detail || ' [payload leaks variables]'; END IF;
+  PERFORM public.qa_result('S25', ok, 'subflow_called and subflow_returned events carry run, caller/callee flow+version, call/return nodes, depth and revision; they remain after the frame is deleted; no variables in the payload' || detail);
 END $$;
