@@ -177,7 +177,7 @@ describe('parseRetryAfter', () => {
     for (const v of ['86400', '86401', '90000', '604800', '604801', '999999999']) expect(parseRetryAfter({ 'Retry-After': v }, NOW), v).toBe(Number(v))
     // a date so far away that it would overflow a PostgreSQL integer is held at 2^31-1 (far above the 7-day limit, so it still fails)
     expect(parseRetryAfter({ 'Retry-After': 'Fri, 31 Dec 9999 23:59:59 GMT' }, NOW)).toBe(2_147_483_647)
-    for (const bad of ['', '0', '-1', 'abc', '1e3', '99999999999']) expect(parseRetryAfter({ 'Retry-After': bad }, NOW), bad).toBeUndefined()
+    for (const bad of ['', '0', '-1', 'abc', '1e3', '1.5', '+5', '12abc', '0x10', '1 000', '00000000000']) expect(parseRetryAfter({ 'Retry-After': bad }, NOW), bad).toBeUndefined()
     expect(parseRetryAfter(undefined, NOW)).toBeUndefined(); expect(parseRetryAfter({}, NOW)).toBeUndefined()
   })
   it('agrees with the legacy parser on every value both consider valid and in range', () => {
@@ -284,6 +284,30 @@ describe('the adapter is not wired to anything', () => {
     }
     walk(join(process.cwd(), 'src'))
     expect(offenders).toEqual([])
+  })
+})
+
+describe('parseRetryAfter with 10 or more digits', () => {
+  const NOW = Date.parse('2026-10-14T10:00:00Z')
+  it('never turns a long numeric Retry-After into undefined (which would mean a 30 s backoff)', () => {
+    const p = (v: string) => parseRetryAfter({ 'Retry-After': v }, NOW)
+    expect(p('1000000000')).toBe(1_000_000_000)
+    expect(p('2147483647')).toBe(2_147_483_647)
+    expect(p('2147483648')).toBe(2_147_483_647)                    // above a PostgreSQL integer: held at 2^31-1
+    expect(p('99999999999')).toBe(2_147_483_647)
+    expect(p('9'.repeat(400))).toBe(2_147_483_647)                 // would be Infinity as a Number
+    expect(p('0000000000120')).toBe(120)                           // leading zeros are still delta-seconds
+    for (const v of ['1000000000', '2147483647', '2147483648', '99999999999']) expect(p(v)!, v).toBeGreaterThan(604_800)
+  })
+  it('a 10+ digit Retry-After on HTTP 429 reaches the interpreter as a value above the 7-day limit', async () => {
+    for (const v of ['1000000000', '2147483648', '99999999999']) {
+      const t = new MockMetaTransport().script('rate_limited'); t.retryAfterHeader = v
+      const out = await createMetaEffectSender({ transport: t, resolveContext: async () => ({ ok: true, phoneNumberId: '1', accessToken: 'SYNTHETIC', recipientPhone: '+37063949836' }) })
+        .send({ effectId: 'e', idempotencyKey: 'k', payload: { kind: 'text', text: 'hi' } } as unknown as OutboundRequest)
+      expect(out, v).toMatchObject({ kind: 'retryable_rejection', errorCode: 'rate_limited' })
+      expect((out as { retryAfterSeconds?: number }).retryAfterSeconds, v).toBeGreaterThan(604_800)
+      expect(t.requests, v).toHaveLength(1)
+    }
   })
 })
 

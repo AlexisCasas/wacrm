@@ -114,4 +114,19 @@ describe.skipIf(!container)('PR #30 audit round 2', () => {
     expect(await inbox(f.conversationId)).toHaveLength(1)
     pass('R26', 'a 100000 s wait: three fresh processes before the time all report effect_retry_scheduled with the same persisted time and send nothing; once due, one new process sends exactly once (attempt 2) and the message reaches the Inbox once')
   })
+
+  it('R27: HTTP 429 with a 10+ digit Retry-After: one request, no resend, no short deferral, a safe definitive outcome', async () => {
+    for (const header of ['1000000000', '2147483647', '2147483648', '99999999999']) {
+      const f = await kit.flows(); const t = new MockMetaTransport().script('rate_limited'); t.retryAfterHeader = header
+      expect(await go(proc(t), f.runId, 'w1'), header).toMatchObject({ kind: 'failed', reason: 'effect_failed' })
+      const [eff] = await effects(f.runId)
+      expect(eff, header).toMatchObject({ state: 'failed', error_code: 'retry_after_exceeds_limit', retry_not_before: null, provider_message_id: null })
+      expect((await h.events(f.runId)).filter((e) => e.event_type === 'effect_deferred'), header).toHaveLength(0)   // no 30 s backoff
+      for (let i = 0; i < 2; i++) expect(await go(proc(t), f.runId, `again-${i}`), header).toMatchObject({ kind: 'not_active' })
+      expect(t.requests, header).toHaveLength(1)                                                                   // never resent
+      expect(await inbox(f.conversationId), header).toHaveLength(0)
+      expect(await h.run(f.runId), header).toMatchObject({ status: 'failed', versioned_messages_executed: 0 })
+    }
+    pass('R27', 'HTTP 429 with Retry-After 1000000000, 2147483647, 2147483648 and 99999999999 s: exactly 1 request each, no deferral event and no retry time (no 30 s backoff), the effect fails definitively as retry_after_exceeds_limit, later invocations send nothing')
+  })
 })

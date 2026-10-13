@@ -5,6 +5,7 @@
 #   Z11 the late repair replaces the preview unconditionally   Z12 an equal timestamp replaces the preview
 #   Z13 Retry-After is clamped to a day again (adapter)        Z14 the database honours only up to a day again
 #   Z15 an over-long Retry-After falls back to the backoff     Z16 the interpreter no longer fails an over-long Retry-After
+#   Z17 a 10+ digit Retry-After is unusable again (9-digit parser) Z18 an int-overflowing Retry-After becomes undefined
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/sql/qa-lib.sh
@@ -82,4 +83,12 @@ restore_sql   # (no Node-level mutant: the interpreter's own pre-check (Z16) mas
 mutate_ts "$INTERP" "$B_INTERP" "else if (outcome.retryAfterSeconds !== undefined && outcome.retryAfterSeconds > MAX_DEFER_SECONDS) {" "else if (false) {"
 expect_failure "the interpreter no longer fails an over-long Retry-After" Z16 PGT "$A2" "R24/R25"
 cp "$B_INTERP" "$INTERP"
+# Z17 / Z18: long numeric Retry-After values
+mutate_ts "$SENDER" "$B_SENDER" "if (/^\\d+$/.test(raw)) {" "if (/^\\d{1,9}$/.test(raw)) {"
+expect_failure "a 10+ digit Retry-After is unusable again (unit)" Z17 $UNIT
+expect_failure "a 10+ digit Retry-After is unusable again (database)" Z17b PGT "$A2" "R27"
+mutate_ts "$SENDER" "$B_SENDER" "seconds = digits.length > 10 ? MAX_INT32_SECONDS : Number(digits || '0')" "seconds = digits.length > 10 ? NaN : Number(digits || '0')"
+expect_failure "a Retry-After beyond a PostgreSQL integer becomes undefined (unit)" Z18 $UNIT
+expect_failure "a Retry-After beyond a PostgreSQL integer becomes undefined (database)" Z18b PGT "$A2" "R27"
+cp "$B_SENDER" "$SENDER"
 echo "mutation check complete: every mutant was detected and the sources and functions were restored"

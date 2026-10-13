@@ -122,7 +122,7 @@ export function isRateLimited(status: number, meta: { code?: number }): boolean 
 /** Largest value a PostgreSQL INTEGER (the RPC argument) holds; far above any deferral limit, so it never shortens a decision. */
 const MAX_INT32_SECONDS = 2_147_483_647
 /**
- * A usable Retry-After as whole seconds (>= 1), else undefined. Accepts delta-seconds and an HTTP-date (compared with
+ * A usable Retry-After as whole seconds (>= 1), else undefined. Accepts delta-seconds (any number of digits) and an HTTP-date (compared with
  * `nowMs`); zero, negative, past, empty or malformed values are NOT usable, so a bad header can never mean "retry right now".
  * The provider's value is returned exactly: it is NOT shortened here (the interpreter and the database decide what is too
  * long to wait for); only a value that would not fit a PostgreSQL integer is held at 2^31-1, which is far above any limit.
@@ -134,8 +134,12 @@ export function parseRetryAfter(headers: Record<string, string> | undefined, now
   const raw = key === undefined ? undefined : String(headers[key]).trim()
   if (!raw) return undefined
   let seconds: number
-  if (/^\d{1,9}$/.test(raw)) seconds = parseInt(raw, 10)
-  else {
+  if (/^\d+$/.test(raw)) {
+    // delta-seconds of ANY length: a value too large for a PostgreSQL integer is held at 2^31-1 (still above every limit,
+    // so it can only ever mean "too long"), never dropped to undefined, which would mean a short backoff
+    const digits = raw.replace(/^0+/, '')
+    seconds = digits.length > 10 ? MAX_INT32_SECONDS : Number(digits || '0')
+  } else {
     const at = Date.parse(raw)
     if (Number.isNaN(at)) return undefined
     seconds = Math.ceil((at - nowMs) / 1000)
