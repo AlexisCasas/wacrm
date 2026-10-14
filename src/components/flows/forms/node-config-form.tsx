@@ -238,22 +238,7 @@ export function NodeConfigForm({
       );
 
     case "end":
-      return (
-        <>
-          <p className="text-xs text-muted-foreground">{t("endNodeHelp")}</p>
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">{t("endScopeLabel")}</label>
-            <Select value={(cfg as { scope?: string }).scope ?? "run"} onValueChange={(v) => { if (v) onUpdateConfig({ scope: v === "run" ? undefined : v }); }}>
-              <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="run">{t("endScopeRun")}</SelectItem>
-                <SelectItem value="subflow">{t("endScopeSubflow")}</SelectItem>
-              </SelectContent>
-            </Select>
-            <p className="mt-1 text-xs text-muted-foreground">{t("endScopeHelp")}</p>
-          </div>
-        </>
-      );
+      return <EndForm scope={(cfg as { scope?: string }).scope} onUpdateConfig={onUpdateConfig} t={t} />;
   }
 }
 
@@ -1395,6 +1380,33 @@ function ExecuteFlowForm({
         <p className="mt-1 text-xs text-muted-foreground">{t("onCustomerReplyHelp")}</p>
       </div>
       <p className="text-xs text-muted-foreground">{enabled ? t("subflowDraftOnly") : t("subflowAuthoringDisabled")}</p>
+    </>
+  );
+}
+
+// ============================================================
+// end (P8: scope). The choice is only offered where subflows can be authored; everyone else sees the historic form, and a saved
+// "return" choice is always shown so it can never be silently hidden or changed.
+// ============================================================
+
+function EndForm({ scope, onUpdateConfig, t }: { scope?: string; onUpdateConfig: (patch: Record<string, unknown>) => void; t: ReturnType<typeof useTranslations> }) {
+  const subflowAuthoring = useSubflowAuthoringCapability();
+  return (
+    <>
+      <p className="text-xs text-muted-foreground">{t("endNodeHelp")}</p>
+      {(subflowAuthoring || scope === "subflow") && (
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">{t("endScopeLabel")}</label>
+          <Select value={scope ?? "run"} disabled={!subflowAuthoring} onValueChange={(v) => { if (v) onUpdateConfig({ scope: v === "run" ? undefined : v }); }}>
+            <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="run">{t("endScopeRun")}</SelectItem>
+              <SelectItem value="subflow">{t("endScopeSubflow")}</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="mt-1 text-xs text-muted-foreground">{t("endScopeHelp")}</p>
+        </div>
+      )}
     </>
   );
 }

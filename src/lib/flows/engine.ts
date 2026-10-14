@@ -694,6 +694,9 @@ async function sendSuppressedByReplyGuard(db: AdminClient, run: FlowRunRow, node
  * message_sent: the outcome is UNKNOWN and recovery must not resend it. If the intent cannot be written, nothing is sent.
  */
 async function recordSendIntent(db: AdminClient, run: FlowRunRow, nodeKey: string, nodeType: string): Promise<boolean> {
+  // Only accounts that run the P6 / P8 machinery (durable waits or subflows) pay for, and depend on, the intent record:
+  // every other account keeps the exact historic send path, with no extra write and no new way to fail.
+  if (!isDurableWaitExecutionEnabledForAccount(run.account_id) && !isSubflowExecutionEnabledForAccount(run.account_id)) return true;
   const ok = await logEventStrict(db, run.id, "node_entered", nodeKey, { reason: "send_intent", node_type: nodeType, flow_id: currentFlowIdOf(run), attempt: randomUUID() });
   if (!ok) {
     await logEvent(db, run.id, "error", nodeKey, { reason: "send_intent_not_recorded" });

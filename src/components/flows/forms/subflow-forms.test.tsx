@@ -50,6 +50,14 @@ describe("end form (P8)", () => {
     mount({ node_key: "fin", node_type: "end", config: {} });
     await waitFor(() => expect(screen.getByText("endScopeLabel")).toBeTruthy()); expect(shown()).toContain("run"); expect(shown()).not.toContain("subflow");
   });
+  it("an account that cannot author subflows keeps the historic End form (no scope choice), unless one was already saved", async () => {
+    mount({ node_key: "fin", node_type: "end", config: {} }, { subflowAuthoring: false });
+    await waitFor(() => expect(screen.getByText("endNodeHelp")).toBeTruthy()); await new Promise((r) => setTimeout(r, 50));
+    expect(screen.queryByText("endScopeLabel")).toBeNull();
+    cleanup(); resetSubflowAuthoringCache();
+    mount({ node_key: "fin", node_type: "end", config: { scope: "subflow" } }, { subflowAuthoring: false });
+    await waitFor(() => expect(screen.getByText("endScopeLabel")).toBeTruthy());
+  });
   it("shows the saved 'return to the calling flow' choice after a reload", async () => {
     mount({ node_key: "fin", node_type: "end", config: { scope: "subflow" } });
     await waitFor(() => expect(shown()).toContain("subflow")); expect(screen.getByText("endScopeHelp")).toBeTruthy();

@@ -368,7 +368,13 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     const cp = await contact({ user: UA, acct: acctA }); await dispatch(cp, kp); expect(textsFor(cp)).toEqual(['Hola plano']); const rp = await run(cp); expect(rp).toMatchObject({ status: 'completed', current_flow_id: null }); expect(Object.keys(rp.vars).filter((k) => k !== 'contact_name')).toEqual([])
     const cw = await contact({ user: UA, acct: acctA }); await dispatch(cw, kw); await makeDue((await run(cw)).id); await resume(); expect(textsFor(cw)).toEqual(['Antes', 'Después']); expect(await run(cw)).toMatchObject({ status: 'completed', current_flow_id: null })
     expect(Number(await psql(`select count(*) from public.flow_run_subflow_frames where flow_run_id in ('${rp.id}','${(await run(cw)).id}')`))).toBe(0)
-    pass('S20', 'flows without execute_flow: same messages, same end reasons, run vars untouched (only the usual contact_name seed), current_flow_id NULL, zero frames; the P6 durable wait is unchanged')
+    // an account WITHOUT the execution switches keeps the exact historic send path: no intent record, no extra event, same result
+    const other = await newFlow(UB, acctB, 'plain-b', 'keyword', `plainb${++seq}`); await node(other, 'start', 'start', { next_node_key: 'm' }); await node(other, 'm', 'send_message', { text: 'Hola B', next_node_key: 'e' }); await node(other, 'e', 'end', {}); await activate(other)
+    const kb = (await rows(`select trigger_config->'keywords'->>0 as k from public.flows where id='${other}'`))[0].k as string; const cb2 = await contact({ user: UB, acct: acctB })
+    await engine.dispatchInboundToFlows({ accountId: acctB, userId: UB, contactId: cb2.contactId, conversationId: cb2.conversationId, message: { kind: 'text', text: kb, meta_message_id: `wamid.in.${randomUUID()}` }, isFirstInboundMessage: false })
+    expect(textsFor(cb2)).toEqual(['Hola B']); const rb2 = await run(cb2); expect(rb2).toMatchObject({ status: 'completed', end_reason: 'end_node', current_flow_id: null })
+    expect((await events(rb2.id)).filter((e) => e.payload?.reason === 'send_intent')).toHaveLength(0)
+    pass('S20', 'flows without execute_flow: same messages, same end reasons, run vars untouched (only the usual contact_name seed), current_flow_id NULL, zero frames; the P6 durable wait is unchanged; an account without the switches gets the historic path (no send_intent event)')
   })
 
   it('S21: the intent to send is written BEFORE every send, and when it cannot be written nothing is sent', async () => {
