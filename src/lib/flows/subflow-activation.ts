@@ -1,4 +1,5 @@
-import { SUBFLOW_MAX_DEPTH, isSubflowExecutionEnabledForAccount } from "./subflow-execution-capability";
+import { SUBFLOW_MAX_DEPTH } from "./subflow-execution-capability";
+import { executionAllowedForAccount } from "./execution-gates";
 
 /** What the activation check needs to know about every flow of the account (not just the one being activated). */
 export interface AccountFlowInfo {
@@ -9,7 +10,7 @@ export interface AccountFlowInfo {
   endScopes: Array<string | undefined>;
 }
 
-export interface CallGraphIssue { node_key: string; severity: "error" | "warning"; code: "target_not_found" | "target_not_active" | "cycle" | "too_deep" | "callee_never_returns"; message: string }
+export interface CallGraphIssue { node_key: string; severity: "error" | "warning"; params?: Record<string, number>; code: "target_not_found" | "target_not_active" | "cycle" | "too_deep" | "callee_never_returns"; message: string }
 
 /**
  * Static checks for a flow that runs other flows, before it can be activated. The database re-checks everything at run time
@@ -38,7 +39,7 @@ export function analyzeCallGraph(flowId: string, thisFlow: AccountFlowInfo & { c
     if (target.status !== "active") { issues.push({ node_key: call.node_key, severity: "error", code: "target_not_active", message: "The flow to run must be active (published) first." }); continue; }
     const depth = 1 + depthOf(call.target, [flowId, call.target]);
     if (!Number.isFinite(depth)) issues.push({ node_key: call.node_key, severity: "error", code: "cycle", message: "These flows call each other in a loop." });
-    else if (depth > SUBFLOW_MAX_DEPTH) issues.push({ node_key: call.node_key, severity: "error", code: "too_deep", message: `Flows can be nested at most ${SUBFLOW_MAX_DEPTH} calls deep.` });
+    else if (depth > SUBFLOW_MAX_DEPTH) issues.push({ node_key: call.node_key, severity: "error", code: "too_deep", params: { max: SUBFLOW_MAX_DEPTH }, message: `Flows can be nested at most ${SUBFLOW_MAX_DEPTH} calls deep.` });
     if (target.endScopes.length > 0 && !target.endScopes.includes("subflow")) {
       issues.push({ node_key: call.node_key, severity: "warning", code: "callee_never_returns", message: "The flow you call ends the whole execution at every End step, so this flow will not continue after it. Set its End to \"return to the caller\" if it should." });
     }
@@ -46,12 +47,10 @@ export function analyzeCallGraph(flowId: string, thisFlow: AccountFlowInfo & { c
   return issues;
 }
 
-/** Both conditions are mandatory: the server environment flag AND the backend-controlled table (migration 070). Fails closed. */
+/** Both keys are mandatory: the environment scope AND the database (per-account row or global default). Fails closed. */
 export async function isSubflowExecutionAllowed(
-  db: { from: (table: string) => any }, // eslint-disable-line @typescript-eslint/no-explicit-any
+  db: { from: (table: string) => any; rpc?: (fn: string, args: Record<string, unknown>) => any }, // eslint-disable-line @typescript-eslint/no-explicit-any
   accountId: string,
 ): Promise<boolean> {
-  if (!isSubflowExecutionEnabledForAccount(accountId)) return false;
-  const { data, error } = await db.from("flow_execution_enablement").select("subflow_execution").eq("account_id", accountId).maybeSingle();
-  return !error && (data as { subflow_execution?: boolean } | null)?.subflow_execution === true;
+  return executionAllowedForAccount(db, accountId, "subflow");
 }

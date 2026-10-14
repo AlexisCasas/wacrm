@@ -1567,7 +1567,26 @@
     "validation": {
       "noIssues": "No issues. Ready to activate.",
       "summary": "{errorCount} {errorCount, plural, =1 {error} other {errors}}, {warningCount} {warningCount, plural, =1 {warning} other {warnings}}",
-      "jumpToNode": "Jump to node {key}"
+      "jumpToNode": "Jump to node {key}",
+      "issues": {
+        "execute_flow_target_missing": "Choose the flow to run.",
+        "execute_flow_return_missing": "Choose the step this flow continues at when the called flow ends.",
+        "execute_flow_return_unknown": "The step this flow continues at (\"{key}\") does not exist.",
+        "execute_flow_reference_invalid": "The reference message must be a Send message or Send media step of this flow.",
+        "execute_flow_policy_invalid": "Choose what happens when the customer writes on their own: stop or continue.",
+        "execute_flow_not_enabled": "Running connected flows is not enabled for this account yet. You can keep building and saving this flow, but it cannot be activated until it is.",
+        "execute_flow_target_not_found": "The flow to run does not exist in this account. Flows can only run other flows of the same account.",
+        "execute_flow_target_not_active": "The flow to run must be active (published) before this flow can be activated.",
+        "execute_flow_cycle": "These flows call each other in a loop (a flow cannot run itself, directly or through the flows it runs).",
+        "execute_flow_too_deep": "Flows can be nested at most {max} calls deep.",
+        "execute_flow_callee_never_returns": "The flow you run ends the whole execution at every End step, so this flow will not continue after it. Set its End to \"return to the flow that called it\" if it should.",
+        "durable_wait_not_enabled": "Waits of minutes, hours or days are not enabled to run for this account yet. You can keep building and saving this flow, but it cannot be activated until they are.",
+        "customer_activity_not_enabled": "The \"customer replied\" condition is not enabled to run for this account yet. You can keep building and saving this flow, but it cannot be activated until it is.",
+        "customer_activity_operator": "The customer-activity condition must check whether the customer replied after the reference message.",
+        "customer_activity_reference_missing": "Pick the message that marks the start (the reference message), or use the one inherited from the calling flow.",
+        "customer_activity_reference_type": "The reference must be a Send message or Send media step.",
+        "end_scope_invalid": "The End scope must be \"end the whole execution\" or \"return to the calling flow\"."
+      }
     },
     "editorState": {
       "saved": "Saved.",
@@ -1577,7 +1596,12 @@
       "statusDraft": "Saved as draft.",
       "deleteConfirm": "Delete \"{name}\"? Any active runs end immediately. This can't be undone.",
       "statusUpdateFailed": "Status update failed",
-      "deleteFailed": "Delete failed"
+      "deleteFailed": "Delete failed",
+      "activationRefused": {
+        "subflow_execution_disabled": "Running connected flows is not enabled for this account yet, so this flow can only be kept as a draft.",
+        "durable_wait_execution_disabled": "Waits are not enabled to run for this account yet, so this flow can only be kept as a draft.",
+        "customer_reply_condition_disabled": "The \"customer replied\" condition is not enabled for this account, so this flow can only be kept as a draft."
+      }
     },
     "summary": {
       "runsFlow": "Runs flow {id}…",

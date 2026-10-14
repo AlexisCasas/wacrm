@@ -199,7 +199,7 @@ describe.skipIf(!REST || !CONTAINER)('durable waits: engine integration (disposa
     const saved = process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS; delete process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS
     try {
       const { durableWaitExecutionAccountIds } = await import('./durable-wait-capability'); expect(durableWaitExecutionAccountIds()).toEqual([])
-      expect(await engine.resumeDueFlowWaits({ accountIds: durableWaitExecutionAccountIds() })).toMatchObject({ claimed: 0, resumed: 0 })
+      expect(await engine.resumeDueFlowWaits({ accountIds: durableWaitExecutionAccountIds() ?? [] })).toMatchObject({ claimed: 0, resumed: 0 })
       const w2 = await world('A', { amount: 13, unit: 'minutes' }); const c2 = await contact(w2); await send(w2, c2)
       expect(await run(c2)).toMatchObject({ status: 'failed', end_reason: 'durable_wait_not_enabled' })
     } finally { process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS = saved }

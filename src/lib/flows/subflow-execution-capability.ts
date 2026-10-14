@@ -4,14 +4,21 @@
  * Both conditions are mandatory; the environment value is never read from the browser. Authoring is a separate, older flag
  * (FLOW_SUBFLOW_AUTHORING_ACCOUNT_IDS, P4).
  */
+import { FLOW_EXECUTION_SCOPE_ENV, executionAllowed, listedAccountIds, readScope } from "./flow-scope";
+
 export const SUBFLOW_EXECUTION_ACCOUNT_IDS_ENV = "FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
+/** Environment half of the two execution keys: FLOW_EXECUTION_SCOPE ("allowlist" mode reads the list above). The database half is flow_execution_enablement. */
 export function isSubflowExecutionEnabledForAccount(accountId: string): boolean {
-  return (process.env[SUBFLOW_EXECUTION_ACCOUNT_IDS_ENV] ?? "")
-    .split(",").map((id) => id.trim()).filter((id) => UUID.test(id)).map((id) => id.toLowerCase())
-    .includes(accountId.toLowerCase());
+  return executionAllowed(SUBFLOW_EXECUTION_ACCOUNT_IDS_ENV, accountId);
+}
+
+/** Accounts the subflow environment gate lists; null = every account (the database then decides). */
+export function subflowExecutionAccountIds(): string[] | null {
+  const scope = readScope(FLOW_EXECUTION_SCOPE_ENV);
+  if (scope === "all") return null;
+  if (scope === "off") return [];
+  return listedAccountIds(SUBFLOW_EXECUTION_ACCOUNT_IDS_ENV);
 }
 
 /** Limits shared by the engine, the validator and the editor. The database enforces the same numbers. */

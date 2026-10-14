@@ -34,6 +34,10 @@ export interface ValidationIssue {
   /** Dotted path to the bad field, e.g. 'buttons.0.title'. */
   field?: string;
   message: string;
+  /** Stable code the editor translates (es / en / ko); `message` is the English fallback. */
+  code?: string;
+  /** Values for the translated text. */
+  params?: Record<string, string | number>;
 }
 
 interface FlowInput {
@@ -65,6 +69,8 @@ export interface ValidateFlowOptions {
    * the legacy runner then keeps refusing execute_flow exactly as before.
    */
   subflowExecution?: boolean;
+  /** The editor has not heard from the server yet: do not claim that running is (not) enabled. */
+  executionStatusUnknown?: boolean;
 }
 
 export function validateFlowForActivation(
@@ -654,18 +660,18 @@ function validateNode(
         const inherited = cfg.subject_key === "$inherited";
         const referenceNode = allNodes.find((candidate) => candidate.node_key === cfg.subject_key);
         if (cfg.operator !== "replied_after_reference") {
-          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "operator", message: "A customer-activity condition must use the operator replied_after_reference." });
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "operator", code: "customer_activity_operator", message: "A customer-activity condition must use the operator replied_after_reference." });
         }
         if (inherited) {
           // Handed down by the calling flow (execute_flow.reference_node_key). Nothing to check here: without a caller it fails closed.
         } else if (!cfg.subject_key?.trim() || !referenceNode) {
-          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", message: "Pick the message that marks the start (the reference message) from this flow." });
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", code: "customer_activity_reference_missing", message: "Pick the message that marks the start (the reference message) from this flow." });
         } else if (referenceNode.node_type !== "send_message" && referenceNode.node_type !== "send_media") {
-          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", message: "The reference must be a Send message or Send media step." });
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", code: "customer_activity_reference_type", message: "The reference must be a Send message or Send media step." });
         }
-        if (!options.durableWaitExecution) {
+        if (!options.durableWaitExecution && !options.executionStatusUnknown) {
           issues.push({
-            severity: "error", scope: "node", node_key: node.node_key, field: "subject",
+            severity: "error", scope: "node", node_key: node.node_key, field: "subject", code: "customer_activity_not_enabled",
             message: "The customer-activity condition can be saved in a draft, but running it is not enabled for this account yet, so this flow cannot be activated.",
           });
         }
@@ -780,9 +786,9 @@ function validateNode(
             message: wait.reason === "too_long" ? "A wait can last at most 30 days." : wait.reason === "invalid_unit" ? "Wait unit must be seconds, minutes, hours or days." : "Wait amount must be a whole number of at least 1.",
           });
         }
-        if (!options.durableWaitExecution) {
+        if (!options.durableWaitExecution && !options.executionStatusUnknown) {
           issues.push({
-            severity: "error", scope: "node", node_key: node.node_key, field: "unit",
+            severity: "error", scope: "node", node_key: node.node_key, field: "unit", code: "durable_wait_not_enabled",
             message: "Durable waits can be saved in a draft, but running them is not enabled for this account yet, so this flow cannot be activated.",
           });
         }
@@ -871,56 +877,37 @@ function validateNode(
       // Terminal nodes have no outgoing edges. The only setting is P8's scope: end the whole execution (default) or return to the caller.
       const scope = (node.config as { scope?: unknown }).scope;
       if (scope !== undefined && scope !== "run" && scope !== "subflow") {
-        issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "scope", message: "End scope must be \"run\" or \"subflow\"." });
+        issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "scope", code: "end_scope_invalid", message: "End scope must be \"run\" or \"subflow\"." });
       }
       break;
     }
 
     case "execute_flow": {
-      if (!options.versionedExecution && !options.subflowExecution) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          message: "execute_flow nodes require versioned execution and are not supported by this runner.",
-        });
-        break;
-      }
       const cfg = node.config as { target_flow_id?: unknown; next_node_key?: unknown; reference_node_key?: unknown; on_customer_reply?: unknown };
+      const err = (field: string, code: string, message: string, params?: Record<string, string | number>) =>
+        issues.push({ severity: "error", scope: "node", node_key: node.node_key, field, code, message, ...(params ? { params } : {}) });
+      // What the author controls is checked first and ALWAYS, so a missing destination is reported whether or not running connected
+      // flows is enabled for the account.
+      if (typeof cfg.target_flow_id !== "string" || !UUID_RE.test(cfg.target_flow_id)) {
+        err("target_flow_id", "execute_flow_target_missing", "Choose the flow to run.");
+      }
+      if (typeof cfg.next_node_key !== "string" || !cfg.next_node_key) {
+        err("next_node_key", "execute_flow_return_missing", "Choose the step this flow continues at when the called flow ends.");
+      } else if (!knownKeys.has(cfg.next_node_key)) {
+        err("next_node_key", "execute_flow_return_unknown", `The step this flow continues at ("${cfg.next_node_key}") does not exist.`, { key: cfg.next_node_key });
+      }
       if (cfg.reference_node_key !== undefined) {
         const refNode = typeof cfg.reference_node_key === "string" ? allNodes.find((candidate) => candidate.node_key === cfg.reference_node_key) : undefined;
         if (!refNode || (refNode.node_type !== "send_message" && refNode.node_type !== "send_media")) {
-          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "reference_node_key", message: "The reference message must be a Send message or Send media step of this flow." });
+          err("reference_node_key", "execute_flow_reference_invalid", "The reference message must be a Send message or Send media step of this flow.");
         }
       }
       if (cfg.on_customer_reply !== undefined && cfg.on_customer_reply !== "stop" && cfg.on_customer_reply !== "continue") {
-        issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "on_customer_reply", message: "On customer reply must be \"stop\" or \"continue\"." });
+        err("on_customer_reply", "execute_flow_policy_invalid", "On customer reply must be \"stop\" or \"continue\".");
       }
-      if (typeof cfg.target_flow_id !== "string" || !UUID_RE.test(cfg.target_flow_id)) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "target_flow_id",
-          message: "Execute-flow node needs the id (uuid) of the flow to call.",
-        });
-      }
-      if (typeof cfg.next_node_key !== "string" || !cfg.next_node_key) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "next_node_key",
-          message: "Execute-flow node must name the node to continue at after the called flow ends.",
-        });
-      } else if (!knownKeys.has(cfg.next_node_key)) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "next_node_key",
-          message: `Execute-flow continues at non-existent node "${cfg.next_node_key}".`,
-        });
+      // The real state of things, without blaming F06: running connected flows is a per-account capability.
+      if (!options.versionedExecution && !options.subflowExecution && !options.executionStatusUnknown) {
+        err("target_flow_id", "execute_flow_not_enabled", "Running connected flows is not enabled for this account yet. You can keep building and saving this flow, but it cannot be activated until it is.");
       }
       break;
     }

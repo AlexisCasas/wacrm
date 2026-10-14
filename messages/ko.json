@@ -1407,14 +1407,38 @@
     "validation": {
       "noIssues": "문제가 없습니다. 활성화할 준비가 되었습니다.",
       "summary": "오류 {errorCount}건, 경고 {warningCount}건",
-      "jumpToNode": "{key} 노드로 이동"
+      "jumpToNode": "{key} 노드로 이동",
+      "issues": {
+        "execute_flow_target_missing": "실행할 플로우를 선택하세요.",
+        "execute_flow_return_missing": "호출된 플로우가 끝나면 이 플로우가 이어갈 단계를 선택하세요.",
+        "execute_flow_return_unknown": "이 플로우가 이어갈 단계(\"{key}\")가 존재하지 않습니다.",
+        "execute_flow_reference_invalid": "기준 메시지는 이 플로우의 메시지 보내기 또는 미디어 보내기 단계여야 합니다.",
+        "execute_flow_policy_invalid": "고객이 먼저 메시지를 보낼 때의 동작(중지 또는 계속)을 선택하세요.",
+        "execute_flow_not_enabled": "연결된 플로우 실행은 아직 이 계정에서 활성화되지 않았습니다. 이 플로우를 계속 만들고 저장할 수 있지만, 활성화되기 전에는 활성화할 수 없습니다.",
+        "execute_flow_target_not_found": "실행할 플로우가 이 계정에 없습니다. 플로우는 같은 계정의 다른 플로우만 실행할 수 있습니다.",
+        "execute_flow_target_not_active": "이 플로우를 활성화하려면 실행할 플로우가 먼저 활성(게시) 상태여야 합니다.",
+        "execute_flow_cycle": "이 플로우들이 서로를 순환 호출합니다(플로우는 직접 또는 실행하는 플로우를 통해 자기 자신을 실행할 수 없습니다).",
+        "execute_flow_too_deep": "플로우는 최대 {max}단계까지만 중첩 호출할 수 있습니다.",
+        "execute_flow_callee_never_returns": "실행하려는 플로우는 모든 종료 단계에서 전체 실행을 종료하므로 이 플로우는 이후 계속되지 않습니다. 계속되어야 한다면 해당 플로우의 종료를 «호출한 플로우로 돌아가기»로 설정하세요.",
+        "durable_wait_not_enabled": "분·시간·일 단위 대기는 아직 이 계정에서 실행되도록 활성화되지 않았습니다. 이 플로우를 계속 만들고 저장할 수 있지만, 활성화되기 전에는 활성화할 수 없습니다.",
+        "customer_activity_not_enabled": "«고객이 답장함» 조건은 아직 이 계정에서 실행되도록 활성화되지 않았습니다. 이 플로우를 계속 만들고 저장할 수 있지만, 활성화되기 전에는 활성화할 수 없습니다.",
+        "customer_activity_operator": "고객 활동 조건은 고객이 기준 메시지 이후에 답장했는지 확인해야 합니다.",
+        "customer_activity_reference_missing": "시작을 나타내는 메시지(기준 메시지)를 선택하거나 호출한 플로우에서 상속된 기준을 사용하세요.",
+        "customer_activity_reference_type": "기준은 메시지 보내기 또는 미디어 보내기 단계여야 합니다.",
+        "end_scope_invalid": "종료 범위는 «전체 실행 종료» 또는 «호출한 플로우로 돌아가기»여야 합니다."
+      }
     },
     "editorState": {
       "saved": "저장되었습니다.",
       "fixIssues": "활성화하기 전에 아래 문제를 해결하세요.",
       "statusActivated": "플로우가 활성화되었습니다.",
       "statusArchived": "보관되었습니다.",
-      "statusDraft": "초안으로 저장되었습니다."
+      "statusDraft": "초안으로 저장되었습니다.",
+      "activationRefused": {
+        "subflow_execution_disabled": "연결된 플로우 실행은 아직 이 계정에서 활성화되지 않아 이 플로우는 초안으로만 보관할 수 있습니다.",
+        "durable_wait_execution_disabled": "대기는 아직 이 계정에서 실행되도록 활성화되지 않아 이 플로우는 초안으로만 보관할 수 있습니다.",
+        "customer_reply_condition_disabled": "«고객이 답장함» 조건이 이 계정에서 활성화되지 않아 이 플로우는 초안으로만 보관할 수 있습니다."
+      }
     },
     "summary": {
       "runsFlow": "플로우 {id}… 실행",

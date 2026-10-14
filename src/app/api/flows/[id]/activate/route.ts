@@ -4,7 +4,7 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateFlowForActivation } from '@/lib/flows/validate'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
-import { isDurableWaitExecutionEnabledForAccount } from '@/lib/flows/durable-wait-capability'
+import { executionAllowedForAccount } from '@/lib/flows/execution-gates'
 import { isDurableWaitConfig } from '@/lib/flows/durable-wait'
 import { isCustomerActivityConfig, isCustomerReplyConditionEnabledForAccount } from '@/lib/flows/customer-reply-condition'
 import { analyzeCallGraph, isSubflowExecutionAllowed, type AccountFlowInfo } from '@/lib/flows/subflow-activation'
@@ -69,13 +69,13 @@ export async function POST(
         subflowAllowed = await isSubflowExecutionAllowed(admin, account.accountId)
         if (!subflowAllowed) return NextResponse.json(SUBFLOW_EXECUTION_DISABLED, { status: 409 })
       }
-      const durableEnabled = isDurableWaitExecutionEnabledForAccount(account.accountId)
+      const durableEnabled = await executionAllowedForAccount(admin, account.accountId, 'durable_wait')
       if (!durableEnabled && (nodes ?? []).some((node) => node.node_type === 'delay' && isDurableWaitConfig(node.config))) return NextResponse.json(DURABLE_WAIT_EXECUTION_DISABLED, { status: 409 })
       if ((nodes ?? []).some((node) => node.node_type === 'condition' && isCustomerActivityConfig(node.config)) && !isCustomerReplyConditionEnabledForAccount(account.accountId)) return NextResponse.json(CUSTOMER_REPLY_DISABLED, { status: 409 })
       const callGraphIssues = callNodes.length ? await callGraphIssuesFor(admin, account.accountId, id, callNodes as Array<{ node_key: string; config: Record<string, unknown> }>) : []
       if (callGraphIssues === null) return NextResponse.json({ error: 'Could not validate the connected flows' }, { status: 503 })
       const issues = validateFlowForActivation(flow as { name: string; trigger_type: 'keyword' | 'first_inbound_message' | 'manual'; trigger_config: Record<string, unknown>; entry_node_id: string | null }, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, { durableWaitExecution: durableEnabled, subflowExecution: subflowAllowed })
-      for (const issue of callGraphIssues) issues.push({ severity: issue.severity, scope: 'node', node_key: issue.node_key, field: 'target_flow_id', message: issue.message })
+      for (const issue of callGraphIssues) issues.push({ severity: issue.severity, scope: 'node', node_key: issue.node_key, field: 'target_flow_id', code: `execute_flow_${issue.code}`, ...(issue.params ? { params: issue.params } : {}), message: issue.message })
       const referenceIssues = await validateConditionReferences(account.supabase, account.accountId, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, isCustomConditionEnabledForAccount(account.accountId))
       for (const issue of referenceIssues) issues.push({ severity: 'error', scope: 'node', node_key: issue.node_key, field: 'subject_key', message: issue.issue })
       if (issues.some((issue) => issue.severity === 'error')) return NextResponse.json({ error: 'Cannot activate flow — fix the issues below first.', issues }, { status: 422 })

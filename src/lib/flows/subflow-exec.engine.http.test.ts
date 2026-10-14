@@ -75,8 +75,8 @@ const enable = (acct: string, sub = true, wait = true) => psql(`insert into publ
  *   kind 'buttons' : start -> ask (buttons) -> follow -> endNo (a legitimate interactive reply inside B)
  * C           : start -> sendC -> endC (return)
  */
-async function world(opts: { owner?: 'A' | 'B'; kind?: 'cond' | 'plain' | 'buttons'; policy?: 'stop' | 'continue'; yesScope?: 'run' | 'subflow' } = {}): Promise<World> {
-  const owner = opts.owner ?? 'A'; const user = owner === 'A' ? UA : UB; const acct = owner === 'A' ? acctA : acctB; const keyword = `hidro${++seq}${Math.floor(Math.random() * 1e6)}`
+async function world(opts: { owner?: 'A' | 'B'; tenant?: { user: string; acct: string }; kind?: 'cond' | 'plain' | 'buttons'; policy?: 'stop' | 'continue'; yesScope?: 'run' | 'subflow' } = {}): Promise<World> {
+  const owner = opts.owner ?? 'A'; const user = opts.tenant?.user ?? (owner === 'A' ? UA : UB); const acct = opts.tenant?.acct ?? (owner === 'A' ? acctA : acctB); const keyword = `hidro${++seq}${Math.floor(Math.random() * 1e6)}`
   const kind = opts.kind ?? 'cond'
   const b = await newFlow(user, acct, `B ${keyword}`, 'manual'); const c = await newFlow(user, acct, `C ${keyword}`, 'manual'); const a = await newFlow(user, acct, `A ${keyword}`, 'keyword', keyword)
   await node(b, 'start', 'start', { next_node_key: kind === 'buttons' ? 'ask' : 'pause' })
@@ -409,5 +409,77 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     expect(response.status).toBe(200); expect(await response.json()).toMatchObject({ swept: 0 })                           // nothing is stale, but the scan itself ran (a 500 here was the incident)
     expect(await run(c)).toMatchObject({ status: 'active' })
     pass('S23', 'the shared stale-run sweep (/api/flows/cron) reads active runs with their flow policy and answers 200 on a database with 070; the unqualified embed is PGRST201, so it names flows!flow_id')
+  })
+
+  // ---------------- global enablement (migration 071 + FLOW_AUTHORING_SCOPE / FLOW_EXECUTION_SCOPE) ----------------
+  const setDefaults = (sub: boolean, wait: boolean) => psql(`update public.flow_execution_defaults set subflow_execution=${sub}, durable_wait_execution=${wait}`)
+  const newCompany = async (n: string) => {                                    // a company that registers LATER: the signup trigger provisions its account
+    const user = randomUUID(); await psql(`insert into auth.users (id, instance_id, aud, role, email, raw_user_meta_data, created_at, updated_at) values ('${user}','00000000-0000-0000-0000-000000000000','authenticated','authenticated','new-${n}-${seq}@example.test','{"full_name":"New ${n}"}'::jsonb, now(), now())`)
+    return { user, acct: await psql(`select account_id from public.profiles where user_id='${user}'`) }
+  }
+  const globalOn = async () => { process.env.FLOW_AUTHORING_SCOPE = 'all'; process.env.FLOW_EXECUTION_SCOPE = 'all'; delete process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS; delete process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS; delete process.env.FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS; await psql(`delete from public.flow_execution_enablement`); await setDefaults(true, true) }
+  const globalOff = async () => { delete process.env.FLOW_AUTHORING_SCOPE; delete process.env.FLOW_EXECUTION_SCOPE; process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS = acctA; process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS = acctA; process.env.FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS = acctA; await setDefaults(false, false); await enable(acctA) }
+  const resumeEnabled = async () => { const admin = (await import('./admin-client')).supabaseAdmin(); const { schedulerAccountIds } = await import('./execution-gates'); return engine.resumeDueFlowWaits({ accountIds: await schedulerAccountIds(() => admin, ['durable_wait']) }) }
+
+  it('S24: with the global switches ON, a third company and a company that registers LATER run A -> B -> A -> C -> A with no per-account row and no UUID list', async () => {
+    const third = await newCompany('third'); const later = await newCompany('later'); await globalOn()
+    try {
+      const worlds = [await world({ tenant: { user: UA, acct: acctA } }), await world({ tenant: { user: UB, acct: acctB } }), await world({ tenant: third }), await world({ tenant: later })]
+      const cs: Contact[] = []
+      for (const w of worlds) { const c = await contact(w); await send(w, c); cs.push(c) }
+      await psql(`update public.flow_runs set wait_until = clock_timestamp() - interval '1 second' where wait_until is not null`)
+      const s = await resumeEnabled(); expect(s.resumed).toBeGreaterThanOrEqual(4)             // (other runs left parked by earlier tests may be served too)
+      for (const c of cs) { expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(await run(c)).toMatchObject({ status: 'completed', current_flow_id: null }) }
+      expect(Number(await psql(`select count(*) from public.flow_execution_enablement`))).toBe(0)                        // nothing was written per account
+      pass('S24', 'FLOW_AUTHORING_SCOPE=all + FLOW_EXECUTION_SCOPE=all + the database default ON: accounts A, B, a third one and one created afterwards each completed A -> B -> A -> C -> A (4 messages, ONE run each); flow_execution_enablement stayed empty, no UUID list was set')
+    } finally { await globalOff() }
+  })
+
+  it('S25: the two keys still both count under the global mode, and an account can be switched off individually', async () => {
+    const co = await newCompany('keys')
+    try {
+      await globalOn(); await psql(`insert into public.flow_execution_enablement (account_id, subflow_execution, durable_wait_execution) values ('${co.acct}', false, false)`)   // this company opts OUT
+      await expect(world({ tenant: co })).rejects.toThrow(/cannot be activated/i)                                         // the database refuses to activate for it
+      const w = await world({ tenant: { user: UA, acct: acctA } }); const c = await contact(w)                           // everybody else is on
+      process.env.FLOW_EXECUTION_SCOPE = 'off'; await send(w, c); expect(await run(c)).toMatchObject({ status: 'failed', end_reason: 'subflow_execution_not_enabled' }); expect(textsFor(c)).toEqual([INFO])   // environment says no: the call is refused although the database says yes
+      process.env.FLOW_EXECUTION_SCOPE = 'all'; await setDefaults(false, false)
+      const w2 = await world({ tenant: { user: UA, acct: acctA } }).catch((e: Error) => e)
+      expect(w2 instanceof Error && /cannot be activated/i.test(w2.message)).toBe(true)                                  // the database says no: not even activation
+      for (const bad of ['true', '*', 'ALL!', 'yes']) { process.env.FLOW_EXECUTION_SCOPE = bad; expect((await import('./flow-scope')).readScope('FLOW_EXECUTION_SCOPE')).toBe('off') }
+      pass('S25', 'environment off + database on: the call fails closed; environment on + database off: activation refused; a company row set to false overrides the global default; junk values of the scope switch mean OFF')
+    } finally { await globalOff() }
+  })
+
+  it('S26: the scheduler resolves its accounts from the database under "all", and from nothing under the default (no database call)', async () => {
+    const admin = (await import('./admin-client')).supabaseAdmin(); const { schedulerAccountIds } = await import('./execution-gates'); const co = await newCompany('sched')
+    const calls: string[] = []; const spy = { from: admin.from.bind(admin), rpc: (fn: string, args: Record<string, unknown>) => { calls.push(fn); return admin.rpc(fn, args) } }
+    delete process.env.FLOW_EXECUTION_SCOPE; delete process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS; delete process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS
+    try {
+      expect(await schedulerAccountIds(() => spy as never, ['durable_wait', 'subflow'])).toEqual([]); expect(calls).toEqual([])            // production today: nothing, and no database call
+      process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS = acctB; expect(await schedulerAccountIds(() => spy as never, ['durable_wait'])).toEqual([acctB]); expect(calls).toEqual([]); delete process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS
+      process.env.FLOW_EXECUTION_SCOPE = 'all'; await psql(`delete from public.flow_execution_enablement`)
+      expect(await schedulerAccountIds(() => spy as never, ['durable_wait'])).toEqual([]); expect(calls).toEqual(['enabled_execution_account_ids'])   // database default OFF: nobody
+      await setDefaults(true, true); await psql(`insert into public.flow_execution_enablement (account_id, subflow_execution, durable_wait_execution) values ('${co.acct}', false, false)`)
+      const ids = await schedulerAccountIds(() => spy as never, ['durable_wait']); expect(ids).toContain(acctA); expect(ids).toContain(acctB); expect(ids).not.toContain(co.acct)
+      process.env.FLOW_EXECUTION_SCOPE = 'off'; expect(await schedulerAccountIds(() => spy as never, ['durable_wait', 'subflow'])).toEqual([])
+      pass('S26', 'scheduler account list: default / off = [] with ZERO database calls; allowlist = the listed ids; all = what the database has enabled (default ON minus accounts switched off)')
+    } finally { await globalOff() }
+  })
+
+  it('S27: under the global switches the legacy flows of every company behave exactly as before (no intent record, no frames, same messages)', async () => {
+    await globalOn()
+    try {
+      for (const tenant of [{ user: UA, acct: acctA }, { user: UB, acct: acctB }]) {
+        const plain = await newFlow(tenant.user, tenant.acct, 'legacy', 'keyword', `legacy${++seq}`); await node(plain, 'start', 'start', { next_node_key: 'm' }); await node(plain, 'm', 'send_message', { text: 'Hola legacy', next_node_key: 'b' })
+        await node(plain, 'b', 'send_buttons', { text: '¿Seguimos?', buttons: [{ reply_id: 'si', title: 'Sí', next_node_key: 'e' }] }); await node(plain, 'e', 'end', {}); await activate(plain)
+        const kw = (await rows(`select trigger_config->'keywords'->>0 as k from public.flows where id='${plain}'`))[0].k as string; const c = await contact(tenant)
+        const d = (text: string) => engine.dispatchInboundToFlows({ accountId: tenant.acct, userId: tenant.user, contactId: c.contactId, conversationId: c.conversationId, message: { kind: 'text', text, meta_message_id: `wamid.in.${randomUUID()}` }, isFirstInboundMessage: false })
+        await d(kw); expect(textsFor(c)).toEqual(['Hola legacy']); const r = await run(c); expect(r).toMatchObject({ status: 'active', current_node_key: 'b', current_flow_id: null })
+        expect((await events(r.id)).filter((e) => e.payload?.reason === 'send_intent')).toHaveLength(0)
+        await engine.dispatchInboundToFlows({ accountId: tenant.acct, userId: tenant.user, contactId: c.contactId, conversationId: c.conversationId, message: { kind: 'interactive_reply', reply_id: 'si', reply_title: 'Sí', meta_message_id: `wamid.in.${randomUUID()}` } as never, isFirstInboundMessage: false })
+        expect(await run(c)).toMatchObject({ status: 'completed', end_reason: 'end_node' }); expect(Number(await psql(`select count(*) from public.flow_run_subflow_frames where flow_run_id='${r.id}'`))).toBe(0)
+      }
+      pass('S27', 'with everything global ON, a plain message + buttons flow of two different companies runs exactly as before: same messages, same end reason, zero send_intent events, zero frames')
+    } finally { await globalOff() }
   })
 })

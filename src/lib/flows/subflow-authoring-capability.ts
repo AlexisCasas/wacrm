@@ -1,20 +1,15 @@
 /**
- * Server-only pilot gate for AUTHORING "run another flow" (execute_flow) nodes in draft flows.
+ * Server-only gate for AUTHORING "run another flow" (execute_flow) nodes in draft flows.
  *
- * Empty by default: no account can add, change or keep such a node until an operator lists its account id here.
- * The value is never taken from the browser. It only governs authoring: execution of subflows is not enabled by
+ * Governed by FLOW_AUTHORING_SCOPE (default "allowlist": only the ids listed here). The value is never taken from the browser. It only governs authoring: execution of subflows is not enabled by
  * this flag (the legacy runner cannot run the node, the API refuses to activate such a flow and migration 068
  * refuses it in the database).
  */
 export const SUBFLOW_AUTHORING_ACCOUNT_IDS_ENV = "FLOW_SUBFLOW_AUTHORING_ACCOUNT_IDS";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+import { authoringAllowed } from "./flow-scope";
 
+/** "allowlist" mode reads FLOW_SUBFLOW_AUTHORING_ACCOUNT_IDS; "all" opens it for every account; "off" closes it (see flow-scope.ts). */
 export function isSubflowAuthoringEnabledForAccount(accountId: string): boolean {
-  const configured = process.env[SUBFLOW_AUTHORING_ACCOUNT_IDS_ENV] ?? "";
-  return configured
-    .split(",")
-    .map((id) => id.trim())
-    .filter((id) => UUID.test(id))
-    .includes(accountId);
+  return authoringAllowed(SUBFLOW_AUTHORING_ACCOUNT_IDS_ENV, accountId);
 }

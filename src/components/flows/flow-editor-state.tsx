@@ -53,6 +53,7 @@ import { useTranslations } from "next-intl";
 import { unlinkNodeReferences } from "@/lib/flows/edges";
 import type { FlowNodeRow, FlowRow } from "@/lib/flows/types";
 import { NODE_META, slugify, type BuilderNode, type NodeType } from "./shared";
+import { useExecutionStatus } from "./use-subflow-authoring";
 
 // ============================================================
 // State shape
@@ -321,7 +322,12 @@ export function FlowEditorProvider({
   }, [dirty]);
 
   // ---- Validation ----
-  const issues = useMemo<ValidationIssue[]>(
+  // The editor tells the truth about running: whether this account can run connected flows / waits comes from the server
+  // (environment AND database); until it answers nothing is claimed either way.
+  const execution = useExecutionStatus();
+  // Remembered together with the nodes they were produced for: any edit makes them stale and they disappear by themselves.
+  const [serverResult, setServerResult] = useState<{ forNodes: unknown; issues: ValidationIssue[] }>({ forNodes: null, issues: [] });
+  const clientIssues = useMemo<ValidationIssue[]>(
     () =>
       validateFlowForActivation(
         {
@@ -331,12 +337,21 @@ export function FlowEditorProvider({
           entry_node_id: state.entry_node_id,
         },
         state.nodes,
+        { subflowExecution: execution.subflowExecution, durableWaitExecution: execution.durableWaitExecution, executionStatusUnknown: !execution.loaded },
       ),
-    [state],
+    [state, execution],
+  );
+  // Checks only the server can make (destination active, same account, loops, depth) show next to the editor's own, after a refused activation.
+  const issues = useMemo<ValidationIssue[]>(
+    () => {
+      const fromServer = serverResult.forNodes === state.nodes ? serverResult.issues : [];
+      return [...clientIssues, ...fromServer.filter((s) => !clientIssues.some((c) => c.node_key === s.node_key && c.code === s.code))];
+    },
+    [clientIssues, serverResult, state.nodes],
   );
   const canActivate = useMemo(
-    () => issues.every((i) => i.severity !== "error"),
-    [issues],
+    () => clientIssues.every((i) => i.severity !== "error"),
+    [clientIssues],
   );
 
   // ---- Save (PUT) ----
@@ -397,8 +412,12 @@ export function FlowEditorProvider({
         });
         if (!res.ok) {
           const json = await res.json().catch(() => ({}));
-          throw new Error(json.error ?? `${t("statusUpdateFailed")}: ${res.status}`);
+          if (Array.isArray(json.issues)) setServerResult({ forNodes: state.nodes, issues: json.issues as ValidationIssue[] });
+          // Known refusals get a translated sentence; anything else keeps the server's own text.
+          const known = typeof json.code === "string" && t.has(`activationRefused.${json.code}` as never);
+          throw new Error(known ? t(`activationRefused.${json.code}` as never) : (json.error ?? `${t("statusUpdateFailed")}: ${res.status}`));
         }
+        setServerResult({ forNodes: null, issues: [] });
         setStateRaw((s) => ({ ...s, status: next }));
         toast.success(
           next === "active"
@@ -414,7 +433,7 @@ export function FlowEditorProvider({
         setActivating(false);
       }
     },
-    [canActivate, save, initialFlow.id, t],
+    [canActivate, save, initialFlow.id, t, state.nodes],
   );
 
   // ---- Delete ----

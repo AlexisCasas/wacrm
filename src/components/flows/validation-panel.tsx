@@ -79,6 +79,10 @@ export function IssueLine({
   onJump?: (key: string) => void;
   t?: ReturnType<typeof useTranslations>;
 }) {
+  const tv = useTranslations("Flows.validation");
+  // Translated text for coded issues (es / en / ko); the English message stays the fallback for anything without a translation.
+  const key = issue.code ? `issues.${issue.code}` : null;
+  const text = key && typeof tv.has === "function" && tv.has(key as never) ? tv(key as never, (issue.params ?? {}) as never) : issue.message;
   const tone =
     issue.severity === "error" ? "text-red-300" : "text-amber-300";
   const iconTone =
@@ -92,7 +96,7 @@ export function IssueLine({
             {issue.node_key}
           </code>
         )}
-        {issue.message}
+        {text}
       </span>
     </>
   );

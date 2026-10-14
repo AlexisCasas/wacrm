@@ -1567,7 +1567,26 @@
     "validation": {
       "noIssues": "Sin problemas. Listo para activar.",
       "summary": "{errorCount} {errorCount, plural, =1 {error} other {errores}}, {warningCount} {warningCount, plural, =1 {advertencia} other {advertencias}}",
-      "jumpToNode": "Ir al nodo {key}"
+      "jumpToNode": "Ir al nodo {key}",
+      "issues": {
+        "execute_flow_target_missing": "Elige el flujo que se va a ejecutar.",
+        "execute_flow_return_missing": "Elige el paso en el que continúa este flujo cuando termine el flujo llamado.",
+        "execute_flow_return_unknown": "El paso en el que continúa este flujo (\"{key}\") no existe.",
+        "execute_flow_reference_invalid": "El mensaje de referencia debe ser un paso «Enviar mensaje» o «Enviar archivo» de este flujo.",
+        "execute_flow_policy_invalid": "Elige qué pasa cuando el cliente escribe por su cuenta: detener o continuar.",
+        "execute_flow_not_enabled": "Ejecutar flujos conectados todavía no está habilitado para esta cuenta. Puedes seguir armando y guardando este flujo, pero no se podrá activar hasta que lo esté.",
+        "execute_flow_target_not_found": "El flujo a ejecutar no existe en esta cuenta. Un flujo solo puede ejecutar otros flujos de la misma cuenta.",
+        "execute_flow_target_not_active": "El flujo a ejecutar debe estar activo (publicado) antes de poder activar este flujo.",
+        "execute_flow_cycle": "Estos flujos se llaman entre sí en un ciclo (un flujo no puede ejecutarse a sí mismo, ni directamente ni a través de los flujos que ejecuta).",
+        "execute_flow_too_deep": "Los flujos pueden anidarse como máximo {max} llamadas de profundidad.",
+        "execute_flow_callee_never_returns": "El flujo que ejecutas termina toda la ejecución en cada paso Fin, así que este flujo no continuará después. Configura su Fin como «regresar al flujo que lo llamó» si debe continuar.",
+        "durable_wait_not_enabled": "Las esperas de minutos, horas o días todavía no están habilitadas para ejecutarse en esta cuenta. Puedes seguir armando y guardando este flujo, pero no se podrá activar hasta que lo estén.",
+        "customer_activity_not_enabled": "La condición «el cliente respondió» todavía no está habilitada para ejecutarse en esta cuenta. Puedes seguir armando y guardando este flujo, pero no se podrá activar hasta que lo esté.",
+        "customer_activity_operator": "La condición de actividad del cliente debe comprobar si el cliente respondió después del mensaje de referencia.",
+        "customer_activity_reference_missing": "Elige el mensaje que marca el inicio (el mensaje de referencia) o usa el heredado del flujo llamador.",
+        "customer_activity_reference_type": "La referencia debe ser un paso «Enviar mensaje» o «Enviar archivo».",
+        "end_scope_invalid": "El alcance del Fin debe ser «terminar toda la ejecución» o «regresar al flujo llamador»."
+      }
     },
     "editorState": {
       "saved": "Guardado.",
@@ -1577,7 +1596,12 @@
       "statusDraft": "Guardado como borrador.",
       "deleteConfirm": "¿Eliminar \"{name}\"? Las ejecuciones activas terminarán de inmediato. Esto no se puede deshacer.",
       "statusUpdateFailed": "No se pudo actualizar el estado",
-      "deleteFailed": "No se pudo eliminar"
+      "deleteFailed": "No se pudo eliminar",
+      "activationRefused": {
+        "subflow_execution_disabled": "Ejecutar flujos conectados todavía no está habilitado para esta cuenta, por lo que este flujo solo puede quedar como borrador.",
+        "durable_wait_execution_disabled": "Las esperas todavía no están habilitadas para ejecutarse en esta cuenta, por lo que este flujo solo puede quedar como borrador.",
+        "customer_reply_condition_disabled": "La condición «el cliente respondió» no está habilitada para esta cuenta, por lo que este flujo solo puede quedar como borrador."
+      }
     },
     "summary": {
       "runsFlow": "Ejecuta el flujo {id}…",

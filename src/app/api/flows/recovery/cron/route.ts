@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
-import { durableWaitExecutionAccountIds } from '@/lib/flows/durable-wait-capability'
-import { SUBFLOW_EXECUTION_ACCOUNT_IDS_ENV } from '@/lib/flows/subflow-execution-capability'
+import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { schedulerAccountIds } from '@/lib/flows/execution-gates'
 import { recoverStrandedRuns } from '@/lib/flows/engine'
 
 /**
@@ -12,13 +12,6 @@ import { recoverStrandedRuns } from '@/lib/flows/engine'
  * a send with an intent but no confirmation is NEVER repeated (the run ends as send_outcome_unknown and the incident is
  * recorded). Same shared secret header as the other cron endpoints.
  */
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-
-function recoveryAccountIds(): string[] {
-  const subflow = (process.env[SUBFLOW_EXECUTION_ACCOUNT_IDS_ENV] ?? '').split(',').map((id) => id.trim()).filter((id) => UUID.test(id)).map((id) => id.toLowerCase())
-  return [...new Set([...durableWaitExecutionAccountIds(), ...subflow])]
-}
-
 export async function GET(request: Request) {
   const expected = process.env.AUTOMATION_CRON_SECRET
   if (!expected) return NextResponse.json({ error: 'cron not configured' }, { status: 503 })
@@ -28,9 +21,9 @@ export async function GET(request: Request) {
   if (suppliedBuf.length !== expectedBuf.length || !timingSafeEqual(suppliedBuf, expectedBuf)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
-  const accountIds = recoveryAccountIds()
-  if (accountIds.length === 0) return NextResponse.json({ enabled: false, examined: 0 })
   try {
+    const accountIds = await schedulerAccountIds(() => supabaseAdmin(), ['durable_wait', 'subflow'])
+    if (accountIds.length === 0) return NextResponse.json({ enabled: false, examined: 0 })
     const summary = await recoverStrandedRuns({ accountIds, limit: 25 })
     return NextResponse.json({ enabled: true, ...summary })
   } catch (err) {

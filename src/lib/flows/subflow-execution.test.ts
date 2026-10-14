@@ -84,3 +84,31 @@ describe("validator", () => {
     expect(errors(n as ReturnType<typeof nodes>, { durableWaitExecution: true })).toEqual([]);
   });
 });
+
+describe("validator wording and codes (no F06 claim, specific messages)", () => {
+  const flow = { name: "F", trigger_type: "manual" as const, trigger_config: {}, entry_node_id: "start" };
+  const call = (config: Record<string, unknown>) => [
+    { node_key: "start", node_type: "start", config: { next_node_key: "call" } },
+    { node_key: "call", node_type: "execute_flow", config }, { node_key: "back", node_type: "end", config: {} }];
+  const codes = (n: ReturnType<typeof call>, options = {}) => validateFlowForActivation(flow, n, options).filter((i) => i.severity === "error").map((i) => i.code);
+  it("a missing destination is reported specifically, whether or not running is enabled", () => {
+    expect(codes(call({ next_node_key: "back" }))).toContain("execute_flow_target_missing");
+    expect(codes(call({ next_node_key: "back" }), { subflowExecution: true })).toEqual(["execute_flow_target_missing"]);
+  });
+  it("when running is not enabled the message says so plainly and does not mention F06 or versioned execution", () => {
+    const issues = validateFlowForActivation(flow, call({ target_flow_id: B, next_node_key: "back" })).filter((i) => i.code === "execute_flow_not_enabled");
+    expect(issues).toHaveLength(1); expect(issues[0].message).toMatch(/not enabled for this account/i); expect(issues[0].message).not.toMatch(/F06|versioned|runner/i);
+  });
+  it("a valid call raises no error when running is enabled; unknown status (server not heard yet) claims nothing", () => {
+    expect(codes(call({ target_flow_id: B, next_node_key: "back" }), { subflowExecution: true })).toEqual([]);
+    expect(codes(call({ target_flow_id: B, next_node_key: "back" }), { executionStatusUnknown: true })).toEqual([]);
+  });
+  it("a return step that does not exist is reported with its key", () => {
+    const issue = validateFlowForActivation(flow, call({ target_flow_id: B, next_node_key: "ghost" }), { subflowExecution: true }).find((i) => i.code === "execute_flow_return_unknown");
+    expect(issue?.params).toEqual({ key: "ghost" });
+  });
+  it("durable waits and the customer-activity condition use their own codes and respect the unknown status", () => {
+    const wait = [{ node_key: "start", node_type: "start", config: { next_node_key: "w" } }, { node_key: "w", node_type: "delay", config: { amount: 13, unit: "minutes", next_node_key: "end" } }, { node_key: "end", node_type: "end", config: {} }];
+    expect(codes(wait as never)).toContain("durable_wait_not_enabled"); expect(codes(wait as never, { durableWaitExecution: true })).toEqual([]); expect(codes(wait as never, { executionStatusUnknown: true })).toEqual([]);
+  });
+});

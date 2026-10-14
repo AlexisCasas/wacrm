@@ -519,6 +519,16 @@ async function executeHandoff(
   await endRun(db, run.id, "handed_off", "handoff_node");
 }
 
+/** Does this graph use something whose recovery needs the send-intent record? Plain legacy flows never do. */
+function graphNeedsSendTracking(nodes: Map<string, FlowNodeRow>): boolean {
+  for (const n of nodes.values()) {
+    if (n.node_type === "execute_flow") return true;
+    if (n.node_type === "delay" && isDurableWaitConfig(n.config)) return true;
+    if (n.node_type === "condition" && (n.config as { subject?: unknown }).subject === CUSTOMER_ACTIVITY_SUBJECT) return true;
+  }
+  return false;
+}
+
 /** The flow the run is inside right now: the callee while a subflow is running, the root flow otherwise. */
 function currentFlowIdOf(run: FlowRunRow): string {
   return run.current_flow_id ?? run.flow_id;
@@ -693,10 +703,11 @@ async function sendSuppressedByReplyGuard(db: AdminClient, run: FlowRunRow, node
  * Write the intent to send BEFORE calling Meta. If the process dies afterwards, the run shows an intent without a matching
  * message_sent: the outcome is UNKNOWN and recovery must not resend it. If the intent cannot be written, nothing is sent.
  */
-async function recordSendIntent(db: AdminClient, run: FlowRunRow, nodeKey: string, nodeType: string): Promise<boolean> {
-  // Only accounts that run the P6 / P8 machinery (durable waits or subflows) pay for, and depend on, the intent record:
-  // every other account keeps the exact historic send path, with no extra write and no new way to fail.
-  if (!isDurableWaitExecutionEnabledForAccount(run.account_id) && !isSubflowExecutionEnabledForAccount(run.account_id)) return true;
+async function recordSendIntent(db: AdminClient, run: FlowRunRow, nodeKey: string, nodeType: string, track: boolean): Promise<boolean> {
+  // Only runs of flows that use the P6 / P8 machinery (a durable wait, a call to another flow, the customer-activity condition, or a
+  // run that is inside a called flow) pay for, and depend on, the intent record: every other flow keeps the exact historic send
+  // path, with no extra write and no new way to fail, whatever the account-level switches say.
+  if (!track) return true;
   const ok = await logEventStrict(db, run.id, "node_entered", nodeKey, { reason: "send_intent", node_type: nodeType, flow_id: currentFlowIdOf(run), attempt: randomUUID() });
   if (!ok) {
     await logEvent(db, run.id, "error", nodeKey, { reason: "send_intent_not_recorded" });
@@ -1041,6 +1052,7 @@ async function advanceFromNodeKey(
   // The graph the run is walking. It changes when the run enters a subflow or returns from one (execute_flow / end).
   let nodes = initialNodes;
   let referenceKeys = referencedSendKeys(nodes.values());
+  let trackSends = !!run.current_flow_id || graphNeedsSendTracking(nodes);
   // Defensive cap — if a flow has a cycle (which the validator
   // SHOULD catch but doesn't yet in v1), we bail rather than loop.
   for (let safety = 0; safety < 64; safety += 1) {
@@ -1073,7 +1085,7 @@ async function advanceFromNodeKey(
     ) {
       // Re-validate everything that says "do not send this follow-up", then write the intent BEFORE the Meta call.
       if (await sendSuppressedByReplyGuard(db, run, node.node_key)) return { outcome: "completed" };
-      if (!(await recordSendIntent(db, run, node.node_key, node.node_type))) return { outcome: "completed" };
+      if (!(await recordSendIntent(db, run, node.node_key, node.node_type, trackSends))) return { outcome: "completed" };
     }
     if (node.node_type === "send_message") {
       const cfg = node.config as unknown as SendMessageNodeConfig;
@@ -1392,7 +1404,7 @@ async function advanceFromNodeKey(
     if (node.node_type === "execute_flow") {
       const call = await enterSubflow(db, run, node);
       if (call.kind === "ended") return { outcome: "completed" };
-      nodes = call.nodes; referenceKeys = referencedSendKeys(nodes.values()); currentKey = call.entryNodeKey;
+      nodes = call.nodes; referenceKeys = referencedSendKeys(nodes.values()); trackSends = true; currentKey = call.entryNodeKey;
       continue;
     }
     if (node.node_type === "end") {
@@ -1400,7 +1412,7 @@ async function advanceFromNodeKey(
         // "End this subflow and return": the caller resumes at its return node, unless the stack or the customer says otherwise.
         const back = await leaveSubflow(db, run, node);
         if (back.kind === "ended") return { outcome: "completed" };
-        nodes = back.nodes; referenceKeys = referencedSendKeys(nodes.values()); currentKey = back.returnNodeKey;
+        nodes = back.nodes; referenceKeys = referencedSendKeys(nodes.values()); trackSends = !!run.current_flow_id || graphNeedsSendTracking(nodes); currentKey = back.returnNodeKey;
         continue;
       }
       // Default (historic behaviour): the whole execution ends, wherever the run is.

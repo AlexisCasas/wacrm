@@ -15,12 +15,12 @@ start() { NAME="sf-qa-$$-$RANDOM"; docker run -d --name "$NAME" --network none -
 apply() { local f; for f in "$@"; do QA_MIN_MSG=warning psql_ < "$f" >/dev/null || { echo "migration failed: $f" >&2; return 1; }; done; }
 stop() { docker rm -f "$NAME" >/dev/null 2>&1 || true; NAME=""; }
 mig_le() { ls supabase/migrations/*.sql | awk -F/ -v max="$1" '{ n=substr($NF,1,3); if (n+0 <= max+0) print $0 }'; }
-M067=supabase/migrations/067_replace_flow_draft_atomic.sql; M068=supabase/migrations/068_execute_flow_authoring_guards.sql; M069=supabase/migrations/069_flow_durable_waits.sql; M070=supabase/migrations/070_flow_subflow_execution.sql
+M067=supabase/migrations/067_replace_flow_draft_atomic.sql; M068=supabase/migrations/068_execute_flow_authoring_guards.sql; M069=supabase/migrations/069_flow_durable_waits.sql; M070=supabase/migrations/070_flow_subflow_execution.sql; M071=supabase/migrations/071_flow_execution_defaults.sql
 
 
 suite() { # <label>
   QA_MIN_MSG=warning psql_ < "$FS/fixtures.sql" >/dev/null 2>&1 || true
-  { echo 'BEGIN;'; echo "SELECT set_config('app.flow_publication', 'on', false);"; cat "$HERE/helpers.sql" "$HERE/db-subflow.sql"; echo 'ROLLBACK;'; } | psql_ -o /dev/null 2>&1 | sed "s/^NOTICE:  QA-RESULT \([A-Z0-9]*\)/QA-RESULT [$1] \1/" | tee -a "$LOG" | grep -E 'QA-RESULT|ERROR' || true
+  { echo 'BEGIN;'; echo "SELECT set_config('app.flow_publication', 'on', false);"; cat "$HERE/helpers.sql" "$HERE/db-subflow.sql" "$HERE/db-global.sql"; echo 'ROLLBACK;'; } | psql_ -o /dev/null 2>&1 | sed "s/^NOTICE:  QA-RESULT \([A-Z0-9]*\)/QA-RESULT [$1] \1/" | tee -a "$LOG" | grep -E 'QA-RESULT|ERROR' || true
 }
 races() { # <label> real concurrent sessions
   local ua=a1000000-0000-4000-8000-000000000001 acct r fa fb fc res1 res2 at
@@ -69,13 +69,13 @@ races() { # <label> real concurrent sessions
 }
 run_scenario() { local label="$1"; shift; [ -n "${QA_ONLY:-}" ] && [[ "$label" != *"$QA_ONLY"* ]] && return 0; start; apply "$@"; echo "== $label: $# migrations applied"; suite "$label"; races "$label" | tee -a "$LOG"; stop; }
 
-run_scenario "main:001-070" $(mig_le 70)
+run_scenario "main:001-071" $(mig_le 71)
 if [ -n "$E4" ]; then
-  run_scenario "e4-first:001-051,052-066,067-070" $(mig_le 51) $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql) $M067 $M068 $M069 $M070
-  run_scenario "070-first:001-051,067-070,052-066" $(mig_le 51) $M067 $M068 $M069 $M070 $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql)
+  run_scenario "e4-first:001-051,052-066,067-071" $(mig_le 51) $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql) $M067 $M068 $M069 $M070 $M071
+  run_scenario "071-first:001-051,067-071,052-066" $(mig_le 51) $M067 $M068 $M069 $M070 $M071 $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql)
 fi
 echo "---- matrix"
-for t in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14; do
+for t in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14 T15 T16 T17 T18 T19; do
   n=$(grep -c "QA-RESULT .*] $t PASS" "$LOG" || true); want=1; [ -n "$E4" ] && want=3; [ -n "${QA_ONLY:-}" ] && want=1
   [ "$n" -ge "$want" ] && echo "$t PASS ($n scenario(s))" || { echo "$t MISSING/FAIL ($n of $want)"; FAILED=1; }
 done

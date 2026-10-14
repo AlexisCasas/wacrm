@@ -36,6 +36,7 @@ function stubFetch(rules: Record<string, () => Response | Promise<Response>>) {
   calls = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
+    if (url.endsWith("/api/flows/capabilities")) return Response.json({});           // the editor asks what the account can run; not part of the save / activate contract
     calls.push({ url, method });
     const key = Object.keys(rules).find((k) => `${method} ${url}`.endsWith(k));
     if (!key) throw new Error(`unexpected request ${method} ${url}`);

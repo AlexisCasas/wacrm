@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
-import { durableWaitExecutionAccountIds } from '@/lib/flows/durable-wait-capability'
+import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { schedulerAccountIds } from '@/lib/flows/execution-gates'
 import { resumeDueFlowWaits } from '@/lib/flows/engine'
 
 /**
@@ -25,7 +26,13 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
   }
 
-  const accountIds = durableWaitExecutionAccountIds()
+  let accountIds: string[]
+  try {
+    accountIds = await schedulerAccountIds(() => supabaseAdmin(), ['durable_wait'])
+  } catch (err) {
+    console.error('[flows-waits-cron] could not read the enabled accounts:', err instanceof Error ? err.message : err)
+    return NextResponse.json({ enabled: true, error: 'pass failed' }, { status: 500 })
+  }
   if (accountIds.length === 0) return NextResponse.json({ enabled: false, claimed: 0 })
 
   const limitParam = Number(new URL(request.url).searchParams.get('limit'))

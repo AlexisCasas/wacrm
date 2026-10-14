@@ -7,6 +7,8 @@
  * and the condition asks one cheap question: is there any message from the customer, in this contact's conversations,
  * newer than the reference? No text is compared. The reference is never "now" and never the flow's creation time.
  */
+import { authoringAllowed } from "./flow-scope";
+
 export const CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS_ENV = "FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS";
 
 export const CUSTOMER_ACTIVITY_SUBJECT = "customer_activity";
@@ -18,11 +20,9 @@ export const REPLY_GUARD_VARS_KEY = "$reply_guard";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-/** Server-only per-account gate for AUTHORING and evaluating the condition. Empty by default; never read from the browser. */
+/** Server-only gate for AUTHORING (and evaluating) the condition: FLOW_AUTHORING_SCOPE, whose "allowlist" mode reads the list above. Never read from the browser. */
 export function isCustomerReplyConditionEnabledForAccount(accountId: string): boolean {
-  return (process.env[CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS_ENV] ?? "")
-    .split(",").map((id) => id.trim()).filter((id) => UUID.test(id)).map((id) => id.toLowerCase())
-    .includes(accountId.toLowerCase());
+  return authoringAllowed(CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS_ENV, accountId);
 }
 
 export function isCustomerActivityConfig(config: unknown): config is { subject: "customer_activity"; subject_key?: unknown; operator?: unknown } {
