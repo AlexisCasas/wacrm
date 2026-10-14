@@ -281,4 +281,29 @@ describe("PUT /api/flows/[id]", () => {
       expect(rpc).toHaveBeenCalledTimes(1); expect(mocks.customerReply).not.toHaveBeenCalled();
     });
   });
+
+  describe("call and End settings (P8)", () => {
+    const B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const graph = (call: Record<string, unknown>, end: Record<string, unknown> = {}) => ({ nodes: [
+      { node_key: "start", node_type: "start", config: { next_node_key: "info" } }, { node_key: "info", node_type: "send_message", config: { text: "hola", next_node_key: "call" } },
+      { node_key: "call", node_type: "execute_flow", config: { target_flow_id: B, next_node_key: "end", ...call } }, { node_key: "end", node_type: "end", config: end }] });
+    it("rejects a reference that is not a send step of the payload, or a bad reply policy, before writing anything", async () => {
+      mocks.subflow.mockReturnValue(true); const { rpc } = adminDouble("a" as never as { error: null }, [B]);
+      for (const bad of [{ reference_node_key: "ghost" }, { reference_node_key: "end" }, { on_customer_reply: "maybe" }]) {
+        const response = await put(graph(bad)); expect(response.status).toBe(422); expect(await response.json()).toMatchObject({ code: "invalid_subflow_settings" });
+      }
+      expect(rpc).not.toHaveBeenCalled();
+    });
+    it("accepts a valid reference and policy exactly as authored", async () => {
+      mocks.subflow.mockReturnValue(true); const { rpc } = adminDouble({ error: null }, [B]);
+      expect((await put(graph({ reference_node_key: "info", on_customer_reply: "continue" }))).status).toBe(200);
+      expect(rpc.mock.calls[0][1].p_nodes.find((n: { node_key: string }) => n.node_key === "call").config).toEqual({ target_flow_id: B, next_node_key: "end", reference_node_key: "info", on_customer_reply: "continue" });
+    });
+    it("validates the End scope; the default (no scope) is accepted untouched", async () => {
+      const { rpc } = adminDouble({ error: null });
+      expect((await put({ nodes: [{ node_key: "end", node_type: "end", config: { scope: "everything" } }] })).status).toBe(422); expect(rpc).not.toHaveBeenCalled();
+      expect((await put({ nodes: [{ node_key: "end", node_type: "end", config: { scope: "subflow" } }] })).status).toBe(200);
+      expect((await put({ nodes: [{ node_key: "end", node_type: "end", config: {} }] })).status).toBe(200);
+    });
+  });
 });

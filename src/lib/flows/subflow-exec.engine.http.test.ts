@@ -294,7 +294,7 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     const sb = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }); expect(sb.ambiguous).toBeGreaterThanOrEqual(1)
     expect(textsFor(b.c)).toEqual([INFO]); expect(await run(b.c)).toMatchObject({ status: 'failed', end_reason: 'send_outcome_unknown' }); expect((await reasons(b.r.id))).toContain('send_outcome_unknown')
     // (c) a message left after the cursor and the process died later: progress in memory is unknown -> not replayed
-    const c3 = await strand(); await psql(`insert into public.flow_run_events (flow_run_id, event_type, node_key, payload) values ('${c3.r.id}','node_entered','follow','{"reason":"send_intent"}'), ('${c3.r.id}','message_sent','follow','{"node_type":"send_message"}')`)
+    const c3 = await strand(); await psql(`insert into public.flow_run_events (flow_run_id, event_type, node_key, payload, created_at) values ('${c3.r.id}','node_entered','follow','{"reason":"send_intent"}', clock_timestamp()), ('${c3.r.id}','message_sent','follow','{"node_type":"send_message"}', clock_timestamp() + interval '1 millisecond')`)
     expect((await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 })).unsafe).toBeGreaterThanOrEqual(1); expect(await run(c3.c)).toMatchObject({ status: 'failed', end_reason: 'recovery_not_safe' }); expect(textsFor(c3.c)).toEqual([INFO])
     // (d) runs that legitimately wait for the customer (buttons) are never "recovered"; a recent cursor is left alone
     const wb = await world({ kind: 'buttons' }); const cb = await contact(wb); await send(wb, cb); await psql(`update public.flow_runs set last_advanced_at = clock_timestamp() - interval '3 hours' where id='${(await run(cb)).id}'`)
