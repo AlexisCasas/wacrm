@@ -1,3 +1,4 @@
-# PREPARED, NOT INSTALLED. Would live in its OWN file (/etc/cron.d/wacrm-flows) so /etc/cron.d/wacrm is never edited.
+# PREPARED, NOT INSTALLED. Would live in its OWN file (/etc/cron.d/wacrm-flows, owner root, mode 0644) so /etc/cron.d/wacrm is never edited.
+# flock -n: if a pass is still running when the next minute starts, that minute is skipped (the claims are safe either way; this just avoids piling up).
 # Install only with an explicit order, after presenting the impact on the shared scheduler.
-* * * * * root /usr/local/bin/wacrm-flows-1min-cron.sh >> /var/log/wacrm-flows-cron.log 2>&1
+* * * * * root flock -n /var/lock/wacrm-flows-1min.lock /usr/local/bin/wacrm-flows-1min-cron.sh >> /var/log/wacrm-flows-cron.log 2>&1

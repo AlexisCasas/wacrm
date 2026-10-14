@@ -1,0 +1,9 @@
+# PREPARED, NOT INSTALLED (/etc/logrotate.d/wacrm-flows). The existing /var/log/wacrm-cron.log is not rotated today (about 2 MB); the new log would be ~1.4k lines/day.
+/var/log/wacrm-flows-cron.log {
+  weekly
+  rotate 8
+  compress
+  missingok
+  notifempty
+  copytruncate
+}

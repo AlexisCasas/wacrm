@@ -482,4 +482,38 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
       pass('S27', 'with everything global ON, a plain message + buttons flow of two different companies runs exactly as before: same messages, same end reason, zero send_intent events, zero frames')
     } finally { await globalOff() }
   })
+
+  it('S28: the pilot-only procedure (authoring global as in production; execution = ONE company by the two keys; the global default stays OFF)', async () => {
+    const admin = (await import('./admin-client')).supabaseAdmin(); const { schedulerAccountIds } = await import('./execution-gates'); const later = await newCompany('pilot-only')
+    const callerDraft = async (tenant: { user: string; acct: string }) => {                                              // a draft that runs another flow (authoring is global, so this must be possible for everybody)
+      const target = await newFlow(tenant.user, tenant.acct, 'target', 'manual'); await node(target, 'start', 'start', { next_node_key: 'e' }); await node(target, 'e', 'end', { scope: 'subflow' }); await activate(target)
+      const caller = await newFlow(tenant.user, tenant.acct, 'caller', 'manual'); await node(caller, 'start', 'start', { next_node_key: 'c' }); await node(caller, 'c', 'execute_flow', { target_flow_id: target, next_node_key: 'e' }); await node(caller, 'e', 'end', {}); return caller
+    }
+    const waitDraft = async (tenant: { user: string; acct: string }) => { const f = await newFlow(tenant.user, tenant.acct, 'waiter', 'manual'); await node(f, 'start', 'start', { next_node_key: 'w' }); await node(f, 'w', 'delay', { amount: 13, unit: 'minutes', next_node_key: 'e' }); await node(f, 'e', 'end', {}); return f }
+    // activation exactly as the API does it: no operator switch (the harness `activate` sets app.allow_durable_wait_activation, which is NOT available to the API)
+    const strict = (flow: string) => psql(`select set_config('app.flow_publication','on',true); update public.flows set status='active' where id='${flow}'`)
+    const refused = (flow: string) => expect(strict(flow)).rejects.toThrow(/cannot be activated/i)
+    try {
+      process.env.FLOW_AUTHORING_SCOPE = 'all'; delete process.env.FLOW_EXECUTION_SCOPE                                  // production as of P9
+      process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS = acctA; process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS = acctA; process.env.FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS = acctA
+      await setDefaults(false, false); await psql(`delete from public.flow_execution_enablement`)
+      // 1. nobody is enabled yet: even the pilot cannot activate (the database says no), everybody can still author drafts
+      const pilotCaller = await callerDraft({ user: UA, acct: acctA }); await refused(pilotCaller); await refused(await waitDraft({ user: UA, acct: acctA }))
+      // 2. enable ONE company with the existing controls: its row in flow_execution_enablement (+ the environment lists above)
+      await enable(acctA); await strict(pilotCaller); const pilotWait = await waitDraft({ user: UA, acct: acctA }); await strict(pilotWait)
+      const w = await world({ tenant: { user: UA, acct: acctA } }); const c = await contact(w); await send(w, c); await makeDue((await run(c)).id); await resume()
+      expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(await run(c)).toMatchObject({ status: 'completed' })           // A -> B -> A -> C -> A for the pilot
+      // 3. nobody else can activate subflows or durable waits: company B, a company that registers later, a company listed in the environment but without its row
+      for (const t of [{ user: UB, acct: acctB }, later]) { await refused(await callerDraft(t)); await refused(await waitDraft(t)) }
+      process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS = `${acctA},${acctB}`; process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS = `${acctA},${acctB}`
+      await refused(await callerDraft({ user: UB, acct: acctB })); await refused(await waitDraft({ user: UB, acct: acctB }))              // environment alone is not enough: the database has the last word
+      process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS = acctA; process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS = acctA
+      // 4. the schedulers serve only the pilot
+      expect(await schedulerAccountIds(() => admin as never, ['durable_wait', 'subflow'])).toEqual([acctA])
+      // 5. rollback of the pilot: remove its row and calls stop at once (the database refuses a new call)
+      const w2 = await world({ tenant: { user: UA, acct: acctA } }); const c2 = await contact(w2); await psql(`delete from public.flow_execution_enablement where account_id='${acctA}'`); await send(w2, c2)
+      expect(await run(c2)).toMatchObject({ status: 'failed', end_reason: 'subflow_call_refused:subflow_execution_not_enabled' }); expect(textsFor(c2)).toEqual([INFO])
+      pass('S28', 'with the global default OFF and ONE company enabled (row + environment list): the pilot runs A -> B -> A -> C -> A and can activate; company B, a later company, and a company listed only in the environment cannot activate subflows or durable waits (the database refuses); the schedulers serve only the pilot; deleting its row stops new calls at once')
+    } finally { await globalOff() }
+  })
 })

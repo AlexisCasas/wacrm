@@ -101,3 +101,31 @@ BEGIN
   RESET ROLE;
   PERFORM public.qa_result('T19', ok, 'a user of company B sees none of company A''s flows, nodes, runs or frames, cannot read either enablement table, cannot call push / the account list, and cannot change the global default' || detail);
 END $$;
+
+-- T20 a user of a NON-enabled company cannot activate a flow that runs another flow or waits, not even by updating the row directly through the API role
+DO $$
+DECLARE ok boolean := true; detail text := ''; ub uuid := 'b2000000-0000-4000-8000-000000000002'; b uuid := public.qa_acct('b2000000-0000-4000-8000-000000000002'::uuid); a uuid := public.qa_acct('a1000000-0000-4000-8000-000000000001'::uuid);
+  target uuid; caller uuid; waiter uuid; st text; own text;
+BEGIN
+  DELETE FROM public.flow_execution_enablement; UPDATE public.flow_execution_defaults SET subflow_execution = false, durable_wait_execution = false;
+  PERFORM public.qa_enable(a);                                                      -- ONLY company A is enabled
+  target := public.qa_simple(b, ub, 'target');
+  caller := public.qa_caller(a, 'a1000000-0000-4000-8000-000000000001'::uuid, 'A-caller', public.qa_simple(a, 'a1000000-0000-4000-8000-000000000001'::uuid, 'x'), public.qa_simple(a, 'a1000000-0000-4000-8000-000000000001'::uuid, 'y'));   -- enabled company: works
+  IF (SELECT status FROM public.flows WHERE id = caller) <> 'active' THEN ok := false; detail := detail || ' [pilot could not activate]'; END IF;
+  -- company B authors drafts freely (authoring is global) ...
+  caller := public.qa_caller(b, ub, 'B-caller', target, target, 'draft'); waiter := public.qa_mkflow(b, ub, 'B-waiter', jsonb_build_array(jsonb_build_object('k','start','t','start','c',jsonb_build_object('next_node_key','w')), jsonb_build_object('k','w','t','delay','c',jsonb_build_object('amount',13,'unit','minutes','next_node_key','end')), jsonb_build_object('k','end','t','end','c','{}'::jsonb)), 'draft');
+  -- ... but cannot activate them, acting as the API role with its own session
+  PERFORM set_config('request.jwt.claim.sub', ub::text, true); PERFORM set_config('request.jwt.claims', '{"sub":"b2000000-0000-4000-8000-000000000002","role":"authenticated"}', true);
+  SET LOCAL ROLE authenticated;
+  st := NULL; BEGIN UPDATE public.flows SET status = 'active' WHERE id = caller; EXCEPTION WHEN OTHERS THEN st := SQLSTATE; END;
+  IF st IS DISTINCT FROM '0A000' THEN ok := false; detail := detail || ' [B activated a subflow flow: ' || coalesce(st, 'accepted') || ']'; END IF;
+  st := NULL; BEGIN UPDATE public.flows SET status = 'active' WHERE id = waiter; EXCEPTION WHEN OTHERS THEN st := SQLSTATE; END;
+  IF st IS DISTINCT FROM '0A000' THEN ok := false; detail := detail || ' [B activated a durable-wait flow: ' || coalesce(st, 'accepted') || ']'; END IF;
+  st := NULL; BEGIN INSERT INTO public.flow_execution_enablement (account_id, subflow_execution, durable_wait_execution) VALUES (b, true, true); EXCEPTION WHEN OTHERS THEN st := SQLSTATE; END;
+  IF st IS DISTINCT FROM '42501' THEN ok := false; detail := detail || ' [B enabled itself: ' || coalesce(st, 'accepted') || ']'; END IF;
+  st := NULL; BEGIN UPDATE public.flow_execution_enablement SET subflow_execution = true; EXCEPTION WHEN OTHERS THEN st := SQLSTATE; END;
+  IF st IS DISTINCT FROM '42501' THEN ok := false; detail := detail || ' [B edited the switches]'; END IF;
+  RESET ROLE;
+  IF (SELECT count(*) FROM public.flow_execution_enablement WHERE account_id = b) <> 0 OR (SELECT status FROM public.flows WHERE id = caller) <> 'draft' THEN ok := false; detail := detail || ' [state changed]'; END IF;
+  PERFORM public.qa_result('T20', ok, 'with ONE company enabled, a user of another company can author drafts but cannot activate a flow that runs another flow or waits (0A000), and cannot enable itself or edit the switches (42501)' || detail);
+END $$;

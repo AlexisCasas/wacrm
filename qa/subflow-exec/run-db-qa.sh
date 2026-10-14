@@ -75,7 +75,7 @@ if [ -n "$E4" ]; then
   run_scenario "071-first:001-051,067-071,052-066" $(mig_le 51) $M067 $M068 $M069 $M070 $M071 $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql)
 fi
 echo "---- matrix"
-for t in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14 T15 T16 T17 T18 T19; do
+for t in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14 T15 T16 T17 T18 T19 T20; do
   n=$(grep -c "QA-RESULT .*] $t PASS" "$LOG" || true); want=1; [ -n "$E4" ] && want=3; [ -n "${QA_ONLY:-}" ] && want=1
   [ "$n" -ge "$want" ] && echo "$t PASS ($n scenario(s))" || { echo "$t MISSING/FAIL ($n of $want)"; FAILED=1; }
 done
