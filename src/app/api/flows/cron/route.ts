@@ -54,7 +54,8 @@ export async function GET(request: Request) {
   const { data: runs, error } = await admin
     .from('flow_runs')
     .select(
-      'id, flow_id, user_id, contact_id, last_advanced_at, wait_until, flows ( fallback_policy )',
+      // `flows!flow_id`: since migration 070 flow_runs has TWO foreign keys to flows (flow_id and current_flow_id), so the embed must name its key.
+      'id, flow_id, user_id, contact_id, last_advanced_at, wait_until, flows!flow_id ( fallback_policy )',
     )
     .eq('status', 'active')
 

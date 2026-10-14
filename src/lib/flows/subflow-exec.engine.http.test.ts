@@ -396,4 +396,18 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     expect(res).toMatchObject({ consumed: false }); expect(await run(c)).toMatchObject({ status: 'failed', end_reason: 'reply_not_recorded' }); await makeDue((await run(c)).id); await resume(); expect(textsFor(c)).toEqual([INFO])
     pass('S22', 'reply received while parked but not recordable: the run is ended failed (no later follow-up), the dispatcher reports consumed:false so Inbox / automations still get the message')
   })
+
+  it('S23: the shared 5-minute stale-run sweep still works with migration 070 applied (flow_runs has two foreign keys to flows now)', async () => {
+    const admin = (await import('./admin-client')).supabaseAdmin()
+    const ambiguous = await admin.from('flow_runs').select('id, flows ( fallback_policy )').limit(1)
+    expect(ambiguous.error?.code).toBe('PGRST201')                                                                          // the plain embed is ambiguous: this is why the sweep names its key
+    const w = await world(); const c = await contact(w); await send(w, c)                                                 // an ACTIVE run exists, so the sweep must read it
+    process.env.AUTOMATION_CRON_SECRET = 'sweep-secret-for-tests'
+    const { GET } = await import('@/app/api/flows/cron/route')
+    const response = await GET(new Request('http://localhost/api/flows/cron', { headers: { 'x-cron-secret': 'sweep-secret-for-tests' } }))
+    delete process.env.AUTOMATION_CRON_SECRET
+    expect(response.status).toBe(200); expect(await response.json()).toMatchObject({ swept: 0 })                           // nothing is stale, but the scan itself ran (a 500 here was the incident)
+    expect(await run(c)).toMatchObject({ status: 'active' })
+    pass('S23', 'the shared stale-run sweep (/api/flows/cron) reads active runs with their flow policy and answers 200 on a database with 070; the unqualified embed is PGRST201, so it names flows!flow_id')
+  })
 })
