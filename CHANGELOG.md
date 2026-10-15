@@ -9,6 +9,34 @@ Versions follow [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Pre-1.0, `MINOR` bumps cover new modules; `PATCH` bumps cover bug fixes
 and polish.
 
+## [Unreleased]
+
+Flows engine, stages P4 – P12 (see `docs/ROADMAP.md` for status and backlog).
+
+> **Migrations required:** `067` – `072` in `supabase/migrations/` (atomic draft save, authoring
+> guards, durable waits, sub-flow execution with return, execution defaults, call-stack cleanup).
+> Execution of the new features stays **off** until a company is enabled; authoring is available to everyone.
+
+### Added
+
+- **Sub-flow authoring with a searchable picker** ("Run another flow"), with cycle, depth and
+  call-count validation.
+- **Durable waits.** A Delay survives restarts and is resumed by a one-minute scheduler.
+- **Customer-reply condition.** Branch on whether the customer wrote since a reference message,
+  including while a wait was running.
+- **Call and return between flows** (A → B → A → C → A) with a persistent call stack, an End-node
+  scope (end the whole execution, or return to the caller) and a policy for customer replies.
+- **Send-intent journal and conservative recovery.** After a crash the engine never re-sends a
+  message whose outcome is unknown.
+- **Per-company execution gate** (environment list + database row, global default off) and a
+  read-only alert monitor for the new machinery.
+
+### Fixed
+
+- Shared stale-run sweep failed with an ambiguous embed after migration 070 (explicit foreign key).
+- A run that ended inside a called flow left its call frame behind (migration 072 archives and
+  removes it).
+
 ## [0.8.1] — 2026-07-10
 
 Fixes inbound chats fragmenting into multiple threads for the same
