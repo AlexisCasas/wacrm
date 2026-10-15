@@ -4,21 +4,23 @@
 # Rate limits: a lock (one run at a time), a minimum interval between runs, and the same set of alerts is logged in full at most once per
 # $REPEAT_SECS (a "still firing" one-liner otherwise), so a stuck alert cannot fill the disk.
 # Exit: 0 clean (or only known historic frames), 1 alert firing, 2 monitor problem.
+umask 027
 DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG="${ALERT_LOG:-/var/log/wacrm-alerts-p8.log}"
 STATE="${ALERT_STATE:-/var/lib/wacrm-alerts-p8.state}"
 HOURS="${ALERT_HOURS:-24}"; MIN_INTERVAL="${ALERT_MIN_INTERVAL_SECS:-540}"; REPEAT_SECS="${ALERT_REPEAT_SECS:-3600}"
 KNOWN="${ALERT_KNOWN_FILE:-$DIR/known-frames.txt}"
-LOCK="${ALERT_LOCK:-/tmp/wacrm-alerts-p8.lock}"
+LOCK="${ALERT_LOCK:-/run/lock/wacrm-alerts-p8.lock}"
 exec 9>"$LOCK" || exit 2
 flock -n 9 || exit 0
 now=$(date +%s)
 last=$(sed -n 1p "$STATE" 2>/dev/null); last=${last:-0}
 [ $((now - last)) -lt "$MIN_INTERVAL" ] && exit 0
-ids=$(grep -Eo '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' "$KNOWN" 2>/dev/null | tr '\n' ' ')
+# known file: a line is accepted ONLY if it is exactly one run id (optionally followed by spaces); comments and anything else are ignored
+ids=$(grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[[:space:]]*$' "$KNOWN" 2>/dev/null | tr -d ' \t' | tr '\n' ' ')
 out=$("$DIR/alerts-p8.sh" "$HOURS" $ids 2>&1); rc=$?
 ts=$(date -u +%FT%TZ)
-if [ "$rc" -gt 1 ]; then echo "$ts MONITOR_ERROR $(echo "$out" | head -1 | cut -c1-200)" >> "$LOG"; exit 2; fi
+if [ "$rc" -gt 1 ]; then echo "$ts MONITOR_ERROR rc=$rc $(echo "$out" | head -1 | tr -cd '[:print:]' | cut -c1-160)" >> "$LOG"; exit 2; fi
 if [ "$rc" -eq 0 ]; then
   sig=ok
   echo "$ts OK $(echo "$out" | awk '{printf "%s=%s ", substr($1,1,2), $2}')" >> "$LOG"
