@@ -15,7 +15,7 @@ Flows engine, stages P4 – P12 (see `docs/ROADMAP.md` for status and backlog).
 
 > **Migrations required:** `067` – `072` in `supabase/migrations/` (atomic draft save, authoring
 > guards, durable waits, sub-flow execution with return, execution defaults, call-stack cleanup).
-> Execution of the new features stays **off** until a company is enabled; authoring is available to everyone.
+> Authoring **and execution** are available to every company (P14). A company can still be switched off individually.
 
 ### Added
 
@@ -30,6 +30,12 @@ Flows engine, stages P4 – P12 (see `docs/ROADMAP.md` for status and backlog).
   message whose outcome is unknown.
 - **Per-company execution gate** (environment list + database row, global default off) and a
   read-only alert monitor for the new machinery.
+
+### Changed
+
+- **General availability of connected-flow execution (P14).** Sub-flows, call/return, durable waits and the customer-activity
+  condition now run for all companies, current and future. Existing flows and drafts are untouched; see `docs/CONNECTED-FLOWS.md`.
+- The recovery job now also resumes legacy runs left on an automatic node by a crashed process after 5 minutes (it used to wait for the 24 h timeout).
 
 ### Fixed
 

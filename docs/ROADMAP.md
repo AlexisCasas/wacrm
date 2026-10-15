@@ -3,18 +3,18 @@
 Single source of truth for what has been built on the flows engine, what runs in production, and what is next.
 Keep it short: details live in the design documents under `qa/` (see the last section). Nothing here names a customer.
 
-_Last update: 2026-10-15 (closure of P12)._
+_Last update: 2026-10-15 (P14: general availability)._
 
 ## 1. Where production stands
 
 | Item | State |
 |---|---|
-| Application image | P9 build (includes everything up to the P9 stage-B preparation). P10–P12 added only SQL, scripts and docs. |
+| Application image | P9 build (includes everything up to the P9 stage-B preparation). P10–P14 added only SQL, scripts, configuration and docs. |
 | Database migrations | Applied up to **072**. |
-| Flow authoring | **Global** (`FLOW_AUTHORING_SCOPE=all`): every current and future company can author the P4–P8 nodes. |
-| Flow execution of P6–P8 features | **Off globally.** Two keys are required per company (environment list + database row in `flow_execution_enablement`). **No company is enabled.** |
-| Cron | 5-minute legacy sweep (untouched), plus two 1-minute jobs (durable waits, recovery), idle while nobody is enabled. |
-| Monitoring | Read-only monitor of alerts A1–A6 every 10 minutes (local log, rotation, lock, rate limit). Nothing is sent outside the server. |
+| Flow authoring | **Global** (`FLOW_AUTHORING_SCOPE=all`). |
+| Flow execution of P6–P8 features | **Generally available (P14)** for every current and future company: `FLOW_EXECUTION_SCOPE=all` and `flow_execution_defaults` = on/on. A company row in `flow_execution_enablement` still overrides the default in both directions (explicit exceptions). |
+| Cron | 5-minute legacy sweep (untouched), plus two 1-minute jobs (durable waits, recovery) that now serve every company. |
+| Monitoring | Read-only monitor of alerts A1–A6 every 10 minutes (local log, rotation, lock, rate limit). Nothing is sent outside the server; review it by hand (`qa/subflow-exec/ops/REVISION-MANUAL-ALERTAS.md`). |
 
 ## 2. What is done
 
@@ -31,6 +31,11 @@ _Last update: 2026-10-15 (closure of P12)._
 - Authoring of all of the above is available to every company (no per-company allow-list for the editor); execution stays gated.
 - Per-company/global execution defaults and gate functions (migration 071), activation guards in the database, capability endpoint, validation messages in es/en/ko.
 
+### P14 – general availability (2026-10-15)
+- Execution of sub-flows, call/return, durable waits, the customer-activity condition, inherited references and End scopes enabled for **all companies**, with no company list to maintain. No flow was activated, edited or run by the change; existing drafts stay drafts.
+- Enabled in two steps (environment first with the database still off, then the database default), rehearsed rollback on a restored copy of production data: `qa/subflow-exec/p14/` (enable and rollback scripts, runbook).
+- User guide: `docs/CONNECTED-FLOWS.md`.
+
 ### P10 – P12 – pilot close and operations
 - Migration **071** (execution defaults, all off) and **072** (call stack is archived into the run's own event log and removed when a run leaves `active`; fixes the leftover frame found in the pilot). Rollback scripts exist for both.
 - Pilot closed: its three flows were returned to draft, its enablement row removed, zero companies enabled.
@@ -45,31 +50,33 @@ _Last update: 2026-10-15 (closure of P12)._
 
 ## 4. Backlog (prioritised)
 
+Items P13 (second-company pilot) and P14 (general execution) were merged: P14 shipped directly after two real WhatsApp scenarios passed.
+
 **High priority**
 
-| # | Item | Depends on | Done when |
-|---|---|---|---|
-| 1 | **P13 – controlled execution for a second company** | #4, #7, #8 | One further company enabled (both keys), own line and consenting contact, two supervised real runs pass, alerts A1–A6 stay at 0, one-line rollback (delete its row) tested. |
-| 2 | **P14 – general execution with multitenant isolation** | #1, #9 | Global default on + `FLOW_EXECUTION_SCOPE=all` after an impact review; cross-company isolation tests pass; one to two weeks of observation with clean alerts. |
-| 3 | **"Test flow" simulator (no WhatsApp)** | – | A flow can be dry-run from the editor with simulated sends and waits, with no real messages, no side effects on conversations. |
-| 4 | **WhatsApp channel integrity check after the accidental ~21 s PostgreSQL stop** | – | Webhooks rejected in that window are reconciled (Meta retry or manual check of the delivery log); no inbound message lost; result recorded. |
-| 5 | **Sanitised publication of the pending code** | – | P7 – P12 branches published as fast-forward descendants of the already public P6 branch, with the sanitisation checks of section 5. |
+| # | Item | Done when |
+|---|---|---|
+| 1 | **Visual check of the editor as a normal company** (the capability banner shows execution as available) | One look in the flow editor of a company that never had a list entry. |
+| 2 | **Legacy runs under the recovery job**: a legacy run stranded on an automatic node is now resumed after 5 minutes instead of waiting for the 24 h timeout | Decide to keep, or restrict recovery to graphs that use the new features (small engine change). |
+| 3 | **Scheduler throughput**: 25 due waits per minute per pass | Raise the pass limit (cron parameter, max 200) when the volume of waits needs it; alert A3 shows when it is behind. |
+| 4 | **`messages_status_check` violations** (code 23514) logged when a delivery status is stored; present before P14 (about a dozen per day) | Find which provider status violates the constraint and accept it or extend the constraint. |
+| 5 | Follow-up of ambiguous send outcomes and recovery | Runbook for `send_outcome_unknown` / `recovery_not_safe` and a periodic review (see the manual alert review). |
 
 **Security and operations**
 
 | # | Item | Done when |
 |---|---|---|
 | 6 | Controlled rotation of the previously exposed third-party (ManyChat) credentials | New credentials in place, old ones revoked, integrations re-verified. |
-| 7 | Follow-up of ambiguous send outcomes and recovery | Runbook for `send_outcome_unknown` / `recovery_not_safe` (how to verify with the provider, how to close the run) and a periodic review. |
-| 8 | Document End-node scope and return behaviour for customers | The default End ("end the whole execution") and the "return to caller" option are explained in the editor help and user docs; the "no exactly-once guarantee" caveat is stated. |
-| 9 | Load and behaviour measurement with several companies running flows | Measured throughput of the 1-minute scheduler and recovery with N companies; limits and alert thresholds adjusted. |
+| 7 | Load measurement with several companies running connected flows | Measured throughput and thresholds adjusted. |
+| 8 | Remove the stale per-feature authoring lists from the environment (`FLOW_*_AUTHORING_ACCOUNT_IDS`, ignored under `all`) | Next planned app recreation. |
 
 **Deferred**
 
 | # | Item | Done when |
 |---|---|---|
-| 10 | **P12.2** connect an SMTP/API provider, install the notifier, test a real send | Provider chosen and verified (SPF/DKIM), installer reviewed, first real incident mail received, silence confirmed with zero incidents. |
-| 11 | External heartbeat to detect that the monitor itself stopped | Each good monitor run pings an external service; a missed ping alerts through a channel independent of the server. |
+| 9 | **"Test flow" simulator (no WhatsApp)** | A flow can be dry-run from the editor with simulated sends and waits. |
+| 10 | **P12.2** connect an SMTP/API provider, install the notifier, test a real send | Provider verified (SPF/DKIM), first real incident mail received, silence confirmed with zero incidents. |
+| 11 | External heartbeat to detect that the monitor itself stopped | Each good monitor run pings an external service that alerts when pings stop. |
 
 ## 5. Publication rules (public repository)
 
@@ -79,6 +86,8 @@ _Last update: 2026-10-15 (closure of P12)._
 
 ## 6. Where the details are
 
+- `docs/CONNECTED-FLOWS.md` – user guide (sub-flows, End scopes, durable waits, limits).
+- `qa/subflow-exec/p14/` – P14 enable / rollback scripts and runbook.
 - `qa/subflow-exec/DESIGN-P8.md`, `DESIGN-GLOBAL.md` – design of call/return and of global enablement.
 - `qa/subflow-exec/ops/` – monitor, alerts, cron/logrotate examples and the (deferred) notification layer.
 - `qa/customer-reply/`, `qa/durable-wait/`, `qa/flows-safe-save/` – earlier stages.
