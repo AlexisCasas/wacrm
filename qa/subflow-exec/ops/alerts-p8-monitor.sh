@@ -20,6 +20,8 @@ last=$(sed -n 1p "$STATE" 2>/dev/null); last=${last:-0}
 ids=$(grep -E '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}[[:space:]]*$' "$KNOWN" 2>/dev/null | tr -d ' \t' | tr '\n' ' ')
 out=$("$DIR/alerts-p8.sh" "$HOURS" $ids 2>&1); rc=$?
 ts=$(date -u +%FT%TZ)
+# P12.2: record the result in the incident journal (a failed check is journaled as an incident, never as "zero alerts"). Never blocks the monitor.
+if [ -x "$DIR/wacrm_alerts.py" ]; then printf '%s\n' "$out" | "$DIR/wacrm_alerts.py" journal --rc "$rc" 2>>"$LOG" || echo "$ts JOURNAL_ERROR" >> "$LOG"; fi
 if [ "$rc" -gt 1 ]; then echo "$ts MONITOR_ERROR rc=$rc $(echo "$out" | head -1 | tr -cd '[:print:]' | cut -c1-160)" >> "$LOG"; exit 2; fi
 if [ "$rc" -eq 0 ]; then
   sig=ok

@@ -1,0 +1,5 @@
+# /etc/wacrm-alerts/notify.conf  (mode 0600, root). Example only, NOT installed.
+RECIPIENTS=pilot.owner@example.test,ops@example.test
+FROM=wacrm-alertas@<dominio-verificado-del-proveedor>
+# Command that reads one RFC 822 message on stdin and exits 0 only if it was accepted for delivery.
+TRANSPORT=/usr/local/lib/wacrm-alerts/send-smtp.py

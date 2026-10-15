@@ -1,0 +1,6 @@
+# /etc/wacrm-alerts/smtp.conf  (mode 0600, root). Example only, NOT installed. Real values come from the chosen provider.
+HOST=smtp.example.com
+PORT=587
+SECURITY=starttls
+USER=
+PASS=

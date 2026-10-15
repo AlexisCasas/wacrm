@@ -15,5 +15,5 @@ OUT=$(docker exec -i -e PGOPTIONS='-c default_transaction_read_only=on -c statem
   psql -X -U postgres -d postgres -At -F '|' -v ON_ERROR_STOP=1 -v hours="$HOURS" -v known_frame_runs="$IGN" < "${ALERT_SQL_FILE:-$(dirname "$0")/alerts-p8.sql}" 2>&1)
 RC=$?
 [ "$RC" -eq 0 ] || { echo "CHECK_FAILED psql_rc=$RC $(printf '%s' "$OUT" | head -1 | cut -c1-120)" >&2; exit 2; }
-[ "$(printf '%s\n' "$OUT" | grep -Ec '^A[1-6]_[a-z_]+\|[0-9]+\|')" -eq 6 ] || { echo "CHECK_FAILED unexpected output ($(printf '%s\n' "$OUT" | wc -l) lines)" >&2; exit 2; }
-printf '%s\n' "$OUT" | awk -F'|' '{ printf "%-40s %s %s\n", $1, $2, $3; if ($2+0 > 0) bad=1 } END { exit bad }'
+[ "$(printf '%s\n' "$OUT" | grep -Ec '^A[1-6]_[a-z_]+\|[0-9]+\|[^|]*\|[^|]*$')" -eq 6 ] || { echo "CHECK_FAILED unexpected output ($(printf '%s\n' "$OUT" | wc -l) lines)" >&2; exit 2; }
+printf '%s\n' "$OUT" | awk -F'|' '{ printf "%-40s %s %s %s\n", $1, $2, $3, $4; if ($2+0 > 0) bad=1 } END { exit bad }'

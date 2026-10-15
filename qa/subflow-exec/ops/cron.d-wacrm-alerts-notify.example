@@ -1,0 +1,6 @@
+# /etc/cron.d/wacrm-alerts-notify : e-mail review of the A1-A6 incidents. Example only, NOT installed.
+# The VPS and cron run in UTC (Etc/UTC). Peru is UTC-5 all year (no daylight saving), so 12:00 Lima = 17:00 UTC and 18:00 Lima = 23:00 UTC.
+# The script also checks the Lima clock itself and ignores any run that is not within 15 minutes after 12:00 or 18:00 Lima.
+# It sends NOTHING when there are no incidents. Stop it with:  rm /etc/cron.d/wacrm-alerts-notify
+0 17 * * * root /usr/local/lib/wacrm-alerts/wacrm_alerts.py notify
+0 23 * * * root /usr/local/lib/wacrm-alerts/wacrm_alerts.py notify

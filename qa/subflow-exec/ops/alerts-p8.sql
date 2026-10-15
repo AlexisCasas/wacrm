@@ -1,27 +1,27 @@
--- READ-ONLY alerts for the P6-P8 machinery. Writes nothing. Not scheduled; run by hand or from a monitor.
---   psql -At -F '|' -v hours=24 -v known_frame_runs="''" -f alerts-p8.sql        (known_frame_runs: SQL list of run ids whose leftover frame is documented; it applies to A4 ONLY, e.g. "'d3408025-…'")
--- Output: one line per alert: CODE|count|sample ids. Every count should be 0.
+-- READ-ONLY alerts for the P6-P8 machinery. Writes nothing. Run by alerts-p8.sh from the monitor; also usable by hand:
+--   psql -At -F '|' -v hours=24 -v known_frame_runs="''" -f alerts-p8.sql   (known_frame_runs: SQL list of run ids whose leftover frame is documented; it applies to A4 ONLY)
+-- Output: one line per alert: CODE|count|short sample (8 chars, for humans)|full run ids (identity for the incident journal). Every count should be 0.
 WITH p AS (SELECT now() - make_interval(hours => :hours) AS since)
-SELECT 'A1_send_outcome_unknown' AS alert, count(*)::int AS n, coalesce(string_agg(left(r.id::text, 8), ',' ORDER BY r.ended_at DESC) FILTER (WHERE true), '') AS sample
-  FROM public.flow_runs r, p WHERE r.end_reason = 'send_outcome_unknown' AND r.ended_at > p.since 
+SELECT 'A1_send_outcome_unknown' AS alert, count(*)::int AS n, coalesce(string_agg(left(r.id::text, 8), ',' ORDER BY r.ended_at DESC), '') AS sample, coalesce(string_agg(r.id::text, ',' ORDER BY r.ended_at DESC), '') AS ids
+  FROM public.flow_runs r, p WHERE r.end_reason = 'send_outcome_unknown' AND r.ended_at > p.since
 UNION ALL
-SELECT 'A2_recovery_not_safe', count(*)::int, coalesce(string_agg(left(r.id::text, 8), ','), '')
+SELECT 'A2_recovery_not_safe', count(*)::int, coalesce(string_agg(left(r.id::text, 8), ','), ''), coalesce(string_agg(r.id::text, ','), '')
   FROM public.flow_runs r, p WHERE r.end_reason = 'recovery_not_safe' AND r.ended_at > p.since
 UNION ALL
 -- a wait is overdue when it has been due for more than 5 minutes and nobody holds a live claim on it (the scheduler runs every minute, lease 300 s)
-SELECT 'A3_overdue_wait_not_resumed', count(*)::int, coalesce(string_agg(left(r.id::text, 8), ','), '')
+SELECT 'A3_overdue_wait_not_resumed', count(*)::int, coalesce(string_agg(left(r.id::text, 8), ','), ''), coalesce(string_agg(r.id::text, ','), '')
   FROM public.flow_runs r WHERE r.status = 'active' AND r.wait_until IS NOT NULL AND r.wait_until < now() - interval '5 minutes'
-   AND (r.wait_claim_token IS NULL OR r.wait_claimed_at < now() - interval '10 minutes') 
+   AND (r.wait_claim_token IS NULL OR r.wait_claimed_at < now() - interval '10 minutes')
 UNION ALL
-SELECT 'A4_frames_on_ended_runs', count(*)::int, coalesce(string_agg(DISTINCT left(f.flow_run_id::text, 8), ','), '')
+SELECT 'A4_frames_on_ended_runs', count(*)::int, coalesce(string_agg(DISTINCT left(f.flow_run_id::text, 8), ','), ''), coalesce(string_agg(DISTINCT f.flow_run_id::text, ','), '')
   FROM public.flow_run_subflow_frames f JOIN public.flow_runs r ON r.id = f.flow_run_id WHERE r.status <> 'active' AND r.id::text NOT IN (:known_frame_runs)
 UNION ALL
 -- active, not waiting, quiet for 30 minutes, standing on a node that advances by itself: a run a dead process left behind that recovery did not take
-SELECT 'A5_stranded_run_not_recovered', count(*)::int, coalesce(string_agg(left(r.id::text, 8), ','), '')
+SELECT 'A5_stranded_run_not_recovered', count(*)::int, coalesce(string_agg(left(r.id::text, 8), ','), ''), coalesce(string_agg(r.id::text, ','), '')
   FROM public.flow_runs r JOIN public.flow_nodes n ON n.flow_id = coalesce(r.current_flow_id, r.flow_id) AND n.node_key = r.current_node_key
  WHERE r.status = 'active' AND r.wait_until IS NULL AND r.last_advanced_at < now() - interval '30 minutes'
    AND n.node_type IN ('start', 'send_message', 'send_media', 'condition', 'set_tag', 'set_contact_field', 'execute_flow')
 UNION ALL
-SELECT 'A6_run_inside_flow_that_is_not_active', count(*)::int, coalesce(string_agg(left(r.id::text, 8), ','), '')
+SELECT 'A6_run_inside_flow_that_is_not_active', count(*)::int, coalesce(string_agg(left(r.id::text, 8), ','), ''), coalesce(string_agg(r.id::text, ','), '')
   FROM public.flow_runs r JOIN public.flows f ON f.id = r.current_flow_id WHERE r.status = 'active' AND f.status <> 'active'
 ORDER BY 1;
