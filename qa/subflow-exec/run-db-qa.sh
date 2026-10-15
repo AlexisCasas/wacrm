@@ -15,12 +15,12 @@ start() { NAME="sf-qa-$$-$RANDOM"; docker run -d --name "$NAME" --network none -
 apply() { local f; for f in "$@"; do QA_MIN_MSG=warning psql_ < "$f" >/dev/null || { echo "migration failed: $f" >&2; return 1; }; done; }
 stop() { docker rm -f "$NAME" >/dev/null 2>&1 || true; NAME=""; }
 mig_le() { ls supabase/migrations/*.sql | awk -F/ -v max="$1" '{ n=substr($NF,1,3); if (n+0 <= max+0) print $0 }'; }
-M067=supabase/migrations/067_replace_flow_draft_atomic.sql; M068=supabase/migrations/068_execute_flow_authoring_guards.sql; M069=supabase/migrations/069_flow_durable_waits.sql; M070=supabase/migrations/070_flow_subflow_execution.sql; M071=supabase/migrations/071_flow_execution_defaults.sql
+M067=supabase/migrations/067_replace_flow_draft_atomic.sql; M068=supabase/migrations/068_execute_flow_authoring_guards.sql; M069=supabase/migrations/069_flow_durable_waits.sql; M070=supabase/migrations/070_flow_subflow_execution.sql; M071=supabase/migrations/071_flow_execution_defaults.sql; M072=supabase/migrations/072_close_flow_run_stack.sql
 
 
 suite() { # <label>
   QA_MIN_MSG=warning psql_ < "$FS/fixtures.sql" >/dev/null 2>&1 || true
-  { echo 'BEGIN;'; echo "SELECT set_config('app.flow_publication', 'on', false);"; cat "$HERE/helpers.sql" "$HERE/db-subflow.sql" "$HERE/db-global.sql"; echo 'ROLLBACK;'; } | psql_ -o /dev/null 2>&1 | sed "s/^NOTICE:  QA-RESULT \([A-Z0-9]*\)/QA-RESULT [$1] \1/" | tee -a "$LOG" | grep -E 'QA-RESULT|ERROR' || true
+  { echo 'BEGIN;'; echo "SELECT set_config('app.flow_publication', 'on', false);"; cat "$HERE/helpers.sql" "$HERE/db-subflow.sql" "$HERE/db-global.sql" "$HERE/db-closestack.sql"; echo 'ROLLBACK;'; } | psql_ -o /dev/null 2>&1 | sed "s/^NOTICE:  QA-RESULT \([A-Z0-9]*\)/QA-RESULT [$1] \1/" | tee -a "$LOG" | grep -E 'QA-RESULT|ERROR' || true
 }
 races() { # <label> real concurrent sessions
   local ua=a1000000-0000-4000-8000-000000000001 acct r fa fb fc res1 res2 at
@@ -67,15 +67,30 @@ races() { # <label> real concurrent sessions
   done
   [ "$ok14" = 1 ] && echo "QA-RESULT [$1] T14 PASS 3 rounds: a call racing with an edit of the callee either pins the new graph or is caught at the return (callee_graph_changed): never a silent mismatch"
 }
-run_scenario() { local label="$1"; shift; [ -n "${QA_ONLY:-}" ] && [[ "$label" != *"$QA_ONLY"* ]] && return 0; start; apply "$@"; echo "== $label: $# migrations applied"; suite "$label"; races "$label" | tee -a "$LOG"; stop; }
 
-run_scenario "main:001-071" $(mig_le 71)
+# T25: the database restarts while a run sits inside a called flow; afterwards the run ends and its frame is closed and archived (the trigger survives restarts)
+restart_close() { # <label>
+  local ua=a1000000-0000-4000-8000-000000000001 acct fa fb fc r
+  psql_ < "$HERE/helpers.sql" >/dev/null
+  acct=$(pq -c "select public.qa_acct('$ua')"); pq -c "select public.qa_enable('$acct', true, true)" >/dev/null
+  fb=$(pq -c "select public.qa_simple('$acct','$ua','XB')"); fc=$(pq -c "select public.qa_simple('$acct','$ua','XC')"); fa=$(pq -c "select public.qa_caller('$acct','$ua','XA','$fb','$fc')"); r=$(pq -c "select public.qa_run('$fa','call1')")
+  pq -c "select public.qa_push('$r','call1','$fb','mid')" >/dev/null
+  docker restart "$NAME" >/dev/null; wait_ready 3
+  local before after ev
+  before=$(pq -c "select count(*) from public.flow_run_subflow_frames where flow_run_id='$r'")
+  pq -c "update public.flow_runs set status='completed', ended_at=now(), end_reason='end_node' where id='$r'" >/dev/null
+  after=$(pq -c "select count(*) from public.flow_run_subflow_frames where flow_run_id='$r'"); ev=$(pq -c "select count(*) from public.flow_run_events where flow_run_id='$r' and payload->>'reason'='stack_closed_on_end'")
+  [ "$before" = 1 ] && [ "$after" = 0 ] && [ "$ev" = 1 ] && echo "QA-RESULT [$1] T25 PASS the database restarted while the run was inside a called flow: the frame survived the restart, and when the run ended it was closed and archived exactly once" || echo "QA-RESULT [$1] T25 FAIL before=$before after=$after archived=$ev"
+}
+run_scenario() { local label="$1"; shift; [ -n "${QA_ONLY:-}" ] && [[ "$label" != *"$QA_ONLY"* ]] && return 0; start; apply "$@"; echo "== $label: $# migrations applied"; suite "$label"; races "$label" | tee -a "$LOG"; restart_close "$label" | tee -a "$LOG"; stop; }
+
+run_scenario "main:001-072" $(mig_le 72)
 if [ -n "$E4" ]; then
-  run_scenario "e4-first:001-051,052-066,067-071" $(mig_le 51) $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql) $M067 $M068 $M069 $M070 $M071
-  run_scenario "071-first:001-051,067-071,052-066" $(mig_le 51) $M067 $M068 $M069 $M070 $M071 $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql)
+  run_scenario "e4-first:001-051,052-066,067-072" $(mig_le 51) $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql) $M067 $M068 $M069 $M070 $M071 $M072
+  run_scenario "072-first:001-051,067-072,052-066" $(mig_le 51) $M067 $M068 $M069 $M070 $M071 $M072 $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql)
 fi
 echo "---- matrix"
-for t in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14 T15 T16 T17 T18 T19 T20; do
+for t in T01 T02 T03 T04 T05 T06 T07 T08 T09 T10 T11 T12 T13 T14 T15 T16 T17 T18 T19 T20 T21 T22 T23 T24 T25; do
   n=$(grep -c "QA-RESULT .*] $t PASS" "$LOG" || true); want=1; [ -n "$E4" ] && want=3; [ -n "${QA_ONLY:-}" ] && want=1
   [ "$n" -ge "$want" ] && echo "$t PASS ($n scenario(s))" || { echo "$t MISSING/FAIL ($n of $want)"; FAILED=1; }
 done

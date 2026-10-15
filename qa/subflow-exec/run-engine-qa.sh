@@ -17,7 +17,7 @@ for _ in $(seq 1 120); do sleep 1; log="$(docker logs "$DB" 2>&1 || true)"
   if grep -q 'PostgreSQL init process complete' <<<"$log" && [ "$(grep -c 'ready to accept connections' <<<"$log")" -ge 2 ] && psql_ -Atc 'select 1' >/dev/null 2>&1; then break; fi; done
 QA_MIN=warning; export PGOPTIONS="-c client_min_messages=warning"
 psql_ < qa/flows-safe-save/bootstrap.sql >/dev/null; MIGS=$(ls supabase/migrations/*.sql)
-if [ -n "$E4" ]; then MIGS="$(ls supabase/migrations/*.sql | awk -F/ '$3 < "052"') $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql) $(ls supabase/migrations/067_*.sql supabase/migrations/068_*.sql supabase/migrations/069_*.sql supabase/migrations/070_*.sql supabase/migrations/071_*.sql)"; fi
+if [ -n "$E4" ]; then MIGS="$(ls supabase/migrations/*.sql | awk -F/ '$3 < "052"') $(ls "$E4"/05[2-9]_*.sql "$E4"/06[0-6]_*.sql) $(ls supabase/migrations/067_*.sql supabase/migrations/068_*.sql supabase/migrations/069_*.sql supabase/migrations/070_*.sql supabase/migrations/071_*.sql supabase/migrations/072_*.sql)"; fi
 for f in $MIGS; do psql_ < "$f" >/dev/null 2>&1 || { echo "migration failed: $f" >&2; exit 1; }; done
 psql_ -c "ALTER ROLE authenticator WITH LOGIN PASSWORD 'qa'" >/dev/null
 psql_ -c "CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS \$\$ select coalesce(nullif(current_setting('request.jwt.claim.sub', true), ''), (nullif(current_setting('request.jwt.claims', true), '')::jsonb ->> 'sub'))::uuid \$\$" >/dev/null

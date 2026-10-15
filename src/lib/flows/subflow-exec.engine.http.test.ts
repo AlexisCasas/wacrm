@@ -153,7 +153,8 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     await msg({ conv: c.conversationId, offsetSeconds: 300 })
     const during = await send(w, c, 'me interesa el precio'); expect(during).toMatchObject({ consumed: false, outcome: 'waiting' })
     await makeDue((await run(c)).id); await resume()
-    const r = await run(c); expect(textsFor(c)).toEqual([INFO]); expect(r).toMatchObject({ status: 'completed', end_reason: 'end_node', current_flow_id: w.b }); expect(await frames(r.id)).toHaveLength(1)
+    const r = await run(c); expect(textsFor(c)).toEqual([INFO]); expect(r).toMatchObject({ status: 'completed', end_reason: 'end_node', current_flow_id: w.b }); expect(await frames(r.id)).toHaveLength(0)                                                                                // migration 072 closes the frame of a run that ended inside B (before it stayed as a residue: pilot incident)
+    expect((await reasons(r.id)).filter((x) => x === 'stack_closed_on_end')).toHaveLength(1)
     expect((await reasons(r.id)).filter((x) => x === 'subflow_called')).toHaveLength(1)                                         // C was never called
     pass('S02', 'reply at +5 min: condition YES, B\'s End is "whole execution": no follow-up, C never called, A never resumes; the in-wait message returned consumed:false (Inbox / automations still see it)')
   })
@@ -515,5 +516,29 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
       expect(await run(c2)).toMatchObject({ status: 'failed', end_reason: 'subflow_call_refused:subflow_execution_not_enabled' }); expect(textsFor(c2)).toEqual([INFO])
       pass('S28', 'with the global default OFF and ONE company enabled (row + environment list): the pilot runs A -> B -> A -> C -> A and can activate; company B, a later company, and a company listed only in the environment cannot activate subflows or durable waits (the database refuses); the schedulers serve only the pilot; deleting its row stops new calls at once')
     } finally { await globalOff() }
+  })
+
+  it('S29: (migration 072) a run that ends inside a called flow, by the engine, an agent or a blocked contact, leaves no frame and keeps the evidence', async () => {
+    const framesLeft = async (runId: string) => Number(await psql(`select count(*) from public.flow_run_subflow_frames where flow_run_id='${runId}'`))
+    const archived = async (runId: string) => (await rows(`select payload from public.flow_run_events where flow_run_id='${runId}' and payload->>'reason'='stack_closed_on_end'`))
+    // (a) the pilot's second scenario: the customer answers during B's wait, B ends the WHOLE execution
+    const w = await world(); const c = await contact(w); await send(w, c); await msg({ conv: c.conversationId, offsetSeconds: 120 }); await send(w, c, 'respuesta-p8-control')
+    const r = await run(c); expect(await framesLeft(r.id)).toBe(1); await makeDue(r.id); await resume()
+    expect(await run(c)).toMatchObject({ status: 'completed', end_reason: 'end_node' }); expect(await framesLeft(r.id)).toBe(0); const a = await archived(r.id)
+    expect(a).toHaveLength(1); expect(a[0].payload.frames[0]).toMatchObject({ depth: 1, return_node_key: 'call2', on_customer_reply: 'stop' }); expect(a[0].payload.end_reason).toBe('end_node')
+    // (b) an agent takes over while the run waits inside B (the real path updates the row directly)
+    const w2 = await world(); const c2 = await contact(w2); await send(w2, c2); const r2 = await run(c2)
+    await psql(`update public.flow_runs set status='paused_by_agent', ended_at=now(), end_reason='agent_replied' where id='${r2.id}'`); expect(await framesLeft(r2.id)).toBe(0); expect(await archived(r2.id)).toHaveLength(1)
+    // (c) the contact is blocked right at the follow-up send (B sends inside the called flow)
+    const w3 = await world(); const c3 = await contact(w3); await send(w3, c3); const r3 = await run(c3); await makeDue(r3.id); sent.blockNext = true; await resume()
+    expect(await run(c3)).toMatchObject({ status: 'paused_by_agent', end_reason: 'contact_blocked' }); expect(await framesLeft(r3.id)).toBe(0); expect(await archived(r3.id)).toHaveLength(1)
+    // (d) a normal A -> B -> A -> C -> A needs no archive at all, and nothing else changed
+    const w4 = await world(); const c4 = await contact(w4); await send(w4, c4); const r4 = await run(c4); await makeDue(r4.id); await resume()
+    expect(textsFor(c4)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(await framesLeft(r4.id)).toBe(0); expect(await archived(r4.id)).toHaveLength(0)
+    // (e) an engine failure inside the called flow (the send is refused) also closes the stack
+    const w5 = await world(); const c5 = await contact(w5); await send(w5, c5); const r5 = await run(c5); await makeDue(r5.id)
+    sent.duringCall = async (x) => { if (x.text === FOLLOW) { sent.duringCall = null; throw new Error('simulated Meta outage') } }; await resume(); sent.duringCall = null
+    expect(await run(c5)).toMatchObject({ status: 'failed', end_reason: 'send_text_failed' }); expect(await framesLeft(r5.id)).toBe(0); expect(await archived(r5.id)).toHaveLength(1)
+    pass('S29', 'engine end inside B (the real pilot case), agent takeover, blocked contact and an engine failure each leave 0 frames and one archive event with depth / return node / policy / end reason; a normal return writes no archive')
   })
 })
