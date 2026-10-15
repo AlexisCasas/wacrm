@@ -1,0 +1,4 @@
+# Run ids whose leftover call frame is HISTORIC, documented and intentionally preserved (one per line, '#' comments allowed).
+# A4 ignores these ids only; any other run with a frame after it ended raises A4.
+# d3408025: real P8 pilot, scenario 2 (2026-10-15), ended inside subflow B before migration 072. See CIERRE-PILOTO-P8.md.
+d3408025-6191-4a6d-95c4-574bfe71e0e7

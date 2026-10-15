@@ -1,0 +1,3 @@
+# Example only, NOT installed. Read-only alert check every 10 minutes (the script itself enforces a 9 min minimum interval and a lock).
+# Do not merge into /etc/cron.d/wacrm or /etc/cron.d/wacrm-flows.
+*/10 * * * * root <repo>/qa/subflow-exec/ops/alerts-p8-monitor.sh

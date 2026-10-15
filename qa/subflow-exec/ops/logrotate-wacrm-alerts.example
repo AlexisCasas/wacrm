@@ -1,0 +1,11 @@
+# Example only (not installed). Weekly, 8 rotations, compressed; the log holds one short line per run.
+/var/log/wacrm-alerts-p8.log {
+    su root adm
+    weekly
+    rotate 8
+    missingok
+    notifempty
+    compress
+    delaycompress
+    create 0640 root adm
+}
