@@ -94,6 +94,7 @@ export interface UploadAccountMediaResult {
 export async function uploadAccountMedia(
   bucket: string,
   file: File,
+  options: { subfolder?: string } = {},
 ): Promise<UploadAccountMediaResult> {
   const supabase = createClient();
 
@@ -117,7 +118,7 @@ export async function uploadAccountMedia(
     throw new Error("Could not resolve your account.");
   }
 
-  const path = buildMediaPath(profile.account_id as string, file.name);
+  const path = buildMediaPath(profile.account_id as string, file.name, Date.now(), options.subfolder);
   const { error: upErr } = await supabase.storage.from(bucket).upload(path, file, {
     cacheControl: "3600",
     upsert: false,

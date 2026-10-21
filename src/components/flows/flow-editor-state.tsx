@@ -53,6 +53,7 @@ import { useTranslations } from "next-intl";
 import { unlinkNodeReferences } from "@/lib/flows/edges";
 import type { FlowNodeRow, FlowRow } from "@/lib/flows/types";
 import { NODE_META, slugify, type BuilderNode, type NodeType } from "./shared";
+import { useExecutionStatus } from "./use-subflow-authoring";
 
 // ============================================================
 // State shape
@@ -104,7 +105,8 @@ export interface FlowEditorContextValue {
   removeNode: (key: string) => void;
 
   // Actions
-  save: () => Promise<void>;
+  /** Resolves true only when the server confirmed the save; false on ANY failure (the error is already shown). */
+  save: () => Promise<boolean>;
   setStatus: (status: BuilderState["status"]) => Promise<void>;
   deleteFlow: () => Promise<void>;
 
@@ -170,6 +172,9 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
         manychat_bridge_flow_ns: "",
         next_node_key: "",
       };
+    case "send_product_audios":
+      // The gate has NO default: until a tag is chosen the node cannot be activated and, if it ever ran, would send nothing.
+      return { gate_tag_id: "", product_field_id: "", next_node_key: "", unknown_node_key: "", no_audios_node_key: "", gate_closed_node_key: "" };
     case "collect_input":
       return {
         prompt_text: "",
@@ -191,6 +196,8 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
       return { seconds: 5, next_node_key: "" };
     case "set_contact_field":
       return { field: "", value: "", next_node_key: "" };
+    case "execute_flow":
+      return { target_flow_id: "", next_node_key: "" };
     case "handoff":
       return { note: "" };
     case "end":
@@ -318,7 +325,12 @@ export function FlowEditorProvider({
   }, [dirty]);
 
   // ---- Validation ----
-  const issues = useMemo<ValidationIssue[]>(
+  // The editor tells the truth about running: whether this account can run connected flows / waits comes from the server
+  // (environment AND database); until it answers nothing is claimed either way.
+  const execution = useExecutionStatus();
+  // Remembered together with the nodes they were produced for: any edit makes them stale and they disappear by themselves.
+  const [serverResult, setServerResult] = useState<{ forNodes: unknown; issues: ValidationIssue[] }>({ forNodes: null, issues: [] });
+  const clientIssues = useMemo<ValidationIssue[]>(
     () =>
       validateFlowForActivation(
         {
@@ -328,12 +340,21 @@ export function FlowEditorProvider({
           entry_node_id: state.entry_node_id,
         },
         state.nodes,
+        { subflowExecution: execution.subflowExecution, durableWaitExecution: execution.durableWaitExecution, executionStatusUnknown: !execution.loaded },
       ),
-    [state],
+    [state, execution],
+  );
+  // Checks only the server can make (destination active, same account, loops, depth) show next to the editor's own, after a refused activation.
+  const issues = useMemo<ValidationIssue[]>(
+    () => {
+      const fromServer = serverResult.forNodes === state.nodes ? serverResult.issues : [];
+      return [...clientIssues, ...fromServer.filter((s) => !clientIssues.some((c) => c.node_key === s.node_key && c.code === s.code))];
+    },
+    [clientIssues, serverResult, state.nodes],
   );
   const canActivate = useMemo(
-    () => issues.every((i) => i.severity !== "error"),
-    [issues],
+    () => clientIssues.every((i) => i.severity !== "error"),
+    [clientIssues],
   );
 
   // ---- Save (PUT) ----
@@ -358,13 +379,16 @@ export function FlowEditorProvider({
       }
       setDirty(false);
       toast.success(t("saved"));
+      return true;
     } catch (err) {
+      // `dirty` stays as it was: the edits are still unsaved and the user can retry.
       const msg = err instanceof Error ? err.message : "Save failed";
       toast.error(msg);
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [initialFlow.id, state]);
+  }, [initialFlow.id, state, t]);
 
   // ---- Activate / Pause / Archive ----
   const setStatus = useCallback(
@@ -379,7 +403,10 @@ export function FlowEditorProvider({
         // latest state — the user shouldn't have to remember "save
         // then activate".
         if (next === "active") {
-          await save();
+          // A failed save must stop the activation: /activate would publish the
+          // PREVIOUS server version while the editor still shows unsaved edits.
+          const saved = await save();
+          if (!saved) return;
         }
         const res = await fetch(`/api/flows/${initialFlow.id}/activate`, {
           method: "POST",
@@ -388,8 +415,12 @@ export function FlowEditorProvider({
         });
         if (!res.ok) {
           const json = await res.json().catch(() => ({}));
-          throw new Error(json.error ?? `${t("statusUpdateFailed")}: ${res.status}`);
+          if (Array.isArray(json.issues)) setServerResult({ forNodes: state.nodes, issues: json.issues as ValidationIssue[] });
+          // Known refusals get a translated sentence; anything else keeps the server's own text.
+          const known = typeof json.code === "string" && t.has(`activationRefused.${json.code}` as never);
+          throw new Error(known ? t(`activationRefused.${json.code}` as never) : (json.error ?? `${t("statusUpdateFailed")}: ${res.status}`));
         }
+        setServerResult({ forNodes: null, issues: [] });
         setStateRaw((s) => ({ ...s, status: next }));
         toast.success(
           next === "active"
@@ -405,7 +436,7 @@ export function FlowEditorProvider({
         setActivating(false);
       }
     },
-    [canActivate, save, initialFlow.id, t],
+    [canActivate, save, initialFlow.id, t, state.nodes],
   );
 
   // ---- Delete ----

@@ -17,6 +17,7 @@
  */
 
 import {
+  Mic,
   Clock,
   Flag,
   GitFork,
@@ -53,6 +54,8 @@ export type NodeType =
   | 'set_tag'
   | 'delay'
   | 'set_contact_field'
+  | 'execute_flow'
+  | 'send_product_audios'
   | 'handoff'
   | 'end';
 
@@ -135,6 +138,13 @@ export const NODE_META: Record<
     blurb: 'Sends an image, video, or document',
     category: 'messaging',
   },
+  send_product_audios: {
+    label: 'Product audios',
+    icon: Mic,
+    color: 'text-sky-400',
+    blurb: 'Sends the voice notes of the contact’s product',
+    category: 'messaging',
+  },
   collect_input: {
     label: 'Collect input',
     icon: Inbox,
@@ -169,6 +179,13 @@ export const NODE_META: Record<
     color: 'text-lime-400',
     blurb: 'Sets a custom field on the contact',
     category: 'logic',
+  },
+  execute_flow: {
+    label: 'Run another flow',
+    icon: Workflow,
+    color: 'text-violet-400',
+    blurb: 'Runs another flow of this account, then continues here',
+    category: 'flow',
   },
   handoff: {
     label: 'Handoff to agent',
@@ -225,6 +242,8 @@ const NODE_HUE: Record<NodeType, { l: number; c: number; h: number }> = {
   set_tag: { l: 0.65, c: 0.15, h: 350 }, // pink
   delay: { l: 0.68, c: 0.15, h: 45 }, // orange — pause / wait
   set_contact_field: { l: 0.68, c: 0.14, h: 130 }, // lime — data write
+  execute_flow: { l: 0.66, c: 0.16, h: 295 }, // violet — calls another flow
+  send_product_audios: { l: 0.64, c: 0.13, h: 225 }, // blue-cyan — voice notes from the catalog
   handoff: { l: 0.65, c: 0.17, h: 16 }, // rose — hands off
   end: { l: 0.55, c: 0.01, h: 260 }, // neutral grey — terminal
 };
@@ -390,6 +409,10 @@ export function summarizeNode(
         ? `${label}: ${truncate(name, 30)} · ${truncate(caption, 40)}`
         : `${label}: ${truncate(name, 60)}`;
     }
+    case 'send_product_audios':
+      return typeof cfg.gate_tag_id === 'string' && cfg.gate_tag_id
+        ? (t ? t('productAudiosGated') : 'Sends the product voice notes (gate set)')
+        : (t ? t('productAudiosNoGate') : 'Choose the gate tag');
     case 'collect_input': {
       const prompt = typeof cfg.prompt_text === 'string' ? cfg.prompt_text : '';
       const varKey = typeof cfg.var_key === 'string' ? cfg.var_key : '';
@@ -404,6 +427,9 @@ export function summarizeNode(
       const subjectKey =
         typeof cfg.subject_key === 'string' ? cfg.subject_key : '';
       if (!subjectKey) return null;
+      if (cfg.subject === 'customer_activity') {
+        return t ? t('repliedAfter', { node: truncate(subjectKey, 24) }) : `customer replied after ${truncate(subjectKey, 24)}`;
+      }
       const subject =
         cfg.subject === 'tag'
           ? 'tag'
@@ -439,6 +465,11 @@ export function summarizeNode(
         : t ? t('tagNone', { mode }) : `${mode} tag (none picked)`;
     }
     case 'delay': {
+      if (typeof cfg.unit === 'string' && typeof cfg.amount === 'number') {
+        return t
+          ? t(`waitDuration_${cfg.unit}`, { amount: cfg.amount })
+          : `Wait ${cfg.amount} ${cfg.unit}`;
+      }
       const seconds = typeof cfg.seconds === 'number' ? cfg.seconds : null;
       return seconds
         ? t
@@ -456,6 +487,11 @@ export function summarizeNode(
       return value
         ? `${fieldLabel} = ${truncate(value, 40)}`
         : `${fieldLabel} = (empty)`;
+    }
+    case 'execute_flow': {
+      const target = typeof cfg.target_flow_id === 'string' ? cfg.target_flow_id : '';
+      if (!target) return null;
+      return t ? t('runsFlow', { id: target.slice(0, 8) }) : `Runs flow ${target.slice(0, 8)}`;
     }
     case 'handoff': {
       const note = typeof cfg.note === 'string' ? cfg.note : '';

@@ -23,7 +23,9 @@
  * `node_key`; trigger-scoped use `scope: 'trigger'`.
  */
 
+import { durableWaitSeconds, isDurableWaitConfig } from "./durable-wait";
 import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/meta-api";
+import { parseVoiceNoteUrl } from "@/lib/media/voice-note-path";
 
 export interface ValidationIssue {
   severity: "error" | "warning";
@@ -33,6 +35,10 @@ export interface ValidationIssue {
   /** Dotted path to the bad field, e.g. 'buttons.0.title'. */
   field?: string;
   message: string;
+  /** Stable code the editor translates (es / en / ko); `message` is the English fallback. */
+  code?: string;
+  /** Values for the translated text. */
+  params?: Record<string, string | number>;
 }
 
 interface FlowInput {
@@ -48,9 +54,45 @@ interface NodeInput {
   config: Record<string, unknown>;
 }
 
+export interface ValidateFlowOptions {
+  /**
+   * The account that owns the flow. When given (server side), a voice-note node must reference a file stored under THIS
+   * account; the browser does not know it and only checks the shape.
+   */
+  accountId?: string;
+  /**
+   * Voice notes (send_media audio) are enabled for the account. The server passes the real answer; `false` makes every audio
+   * node an error. Left undefined (the browser, which asks the server separately) it is not checked here.
+   */
+  voiceNoteEnabled?: boolean;
+  /**
+   * Multimedia (`send_media`) audio is enabled for the account. When given it decides the Multimedia audio check; when left
+   * undefined that check falls back to `voiceNoteEnabled`. "Audios por producto" always uses `voiceNoteEnabled`.
+   */
+  mediaAudioEnabled?: boolean;
+  /**
+   * F06 versioned execution. Off by default: the legacy runner cannot execute `execute_flow`, so the
+   * default validator keeps rejecting it and no existing activation path can publish such a flow.
+   */
+  versionedExecution?: boolean;
+  /**
+   * Durable waits (migration 069) may be ACTIVATED only for accounts whose execution is enabled. Off by default: a flow with
+   * a durable wait stays a draft, so nothing can run it (and the database refuses it too).
+   */
+  durableWaitExecution?: boolean;
+  /**
+   * P8: the account may activate flows that RUN other flows (migration 070 + FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS). Off by default:
+   * the legacy runner then keeps refusing execute_flow exactly as before.
+   */
+  subflowExecution?: boolean;
+  /** The editor has not heard from the server yet: do not claim that running is (not) enabled. */
+  executionStatusUnknown?: boolean;
+}
+
 export function validateFlowForActivation(
   flow: FlowInput,
   nodes: NodeInput[],
+  options: ValidateFlowOptions = {},
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
@@ -112,7 +154,7 @@ export function validateFlowForActivation(
 
   // Per-node rules (Meta limits + dead-end + edge resolution).
   for (const n of nodes) {
-    issues.push(...validateNode(n, keys));
+    issues.push(...validateNode(n, keys, options, nodes));
   }
 
   // Reachability — every non-orphan node must be reachable from the
@@ -182,9 +224,13 @@ function validateTrigger(
 // Per-node
 // ============================================================
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 function validateNode(
   node: NodeInput,
   knownKeys: Set<string>,
+  options: ValidateFlowOptions = {},
+  allNodes: NodeInput[] = [],
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
 
@@ -244,23 +290,62 @@ function validateNode(
 
     case "send_media": {
       const cfg = node.config as {
-        media_type?: "image" | "video" | "document";
+        media_type?: "image" | "video" | "document" | "audio";
         media_url?: string;
+        media_sha256?: string;
+        filename?: string;
         caption?: string;
         manychat_bridge_flow_ns?: string;
         next_node_key?: string;
       };
       if (
         !cfg.media_type ||
-        !["image", "video", "document"].includes(cfg.media_type)
+        !["image", "video", "document", "audio"].includes(cfg.media_type)
       ) {
         issues.push({
           severity: "error",
           scope: "node",
           node_key: node.node_key,
           field: "media_type",
-          message: "Send-media node needs a media type (image, video, or document).",
+          message: "Send-media node needs a media type (image, video, document, or audio).",
         });
+      }
+      if (cfg.media_type === "audio") {
+        if ((options.mediaAudioEnabled ?? options.voiceNoteEnabled) === false) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: "media_type",
+            message: "Voice notes are not enabled for this account.",
+          });
+        }
+        // A voice note is only ever a verified, hash-addressed file of THIS
+        // account (POST /api/flows/voice-notes); see media/voice-note-path.ts.
+        if (cfg.media_url?.trim()) {
+          const parsed = parseVoiceNoteUrl(cfg.media_url);
+          const ownedHere =
+            !options.accountId || parsed?.accountId === options.accountId.toLowerCase();
+          if (!parsed || cfg.media_sha256 !== parsed.sha256 || !ownedHere) {
+            issues.push({
+              severity: "error",
+              scope: "node",
+              node_key: node.node_key,
+              field: "media_url",
+              message:
+                "Audio must be a verified voice note (OGG/Opus, mono) uploaded from this account's editor; upload it again.",
+            });
+          }
+        }
+        if (cfg.caption?.trim() || cfg.filename?.trim() || cfg.manychat_bridge_flow_ns?.trim()) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: "caption",
+            message: "A voice note takes no caption, filename or ManyChat bridge; clear them.",
+          });
+        }
       }
       if (!cfg.media_url?.trim()) {
         issues.push({
@@ -609,23 +694,43 @@ function validateNode(
 
     case "condition": {
       const cfg = node.config as {
-        subject?: "var" | "tag" | "contact_field";
+        subject?: "var" | "tag" | "contact_field" | "customer_activity";
         subject_key?: string;
-        operator?: "equals" | "contains" | "present" | "absent";
+        operator?: "equals" | "contains" | "present" | "absent" | "replied_after_reference";
         value?: string;
         true_next?: string;
         false_next?: string;
       };
-      if (!cfg.subject || !["var", "tag", "contact_field"].includes(cfg.subject)) {
+      if (!cfg.subject || !["var", "tag", "contact_field", "customer_activity"].includes(cfg.subject)) {
         issues.push({
           severity: "error",
           scope: "node",
           node_key: node.node_key,
           field: "subject",
-          message: "Condition needs a subject (var / tag / contact_field).",
+          message: "Condition needs a subject (var / tag / contact_field / customer_activity).",
         });
       }
-      if (!cfg.subject_key?.trim()) {
+      if (cfg.subject === "customer_activity") {
+        // P7: "the customer replied after the reference message". The reference is an explicit send node of THIS flow.
+        const inherited = cfg.subject_key === "$inherited";
+        const referenceNode = allNodes.find((candidate) => candidate.node_key === cfg.subject_key);
+        if (cfg.operator !== "replied_after_reference") {
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "operator", code: "customer_activity_operator", message: "A customer-activity condition must use the operator replied_after_reference." });
+        }
+        if (inherited) {
+          // Handed down by the calling flow (execute_flow.reference_node_key). Nothing to check here: without a caller it fails closed.
+        } else if (!cfg.subject_key?.trim() || !referenceNode) {
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", code: "customer_activity_reference_missing", message: "Pick the message that marks the start (the reference message) from this flow." });
+        } else if (referenceNode.node_type !== "send_message" && referenceNode.node_type !== "send_media") {
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", code: "customer_activity_reference_type", message: "The reference must be a Send message or Send media step." });
+        }
+        if (!options.durableWaitExecution && !options.executionStatusUnknown) {
+          issues.push({
+            severity: "error", scope: "node", node_key: node.node_key, field: "subject", code: "customer_activity_not_enabled",
+            message: "The customer-activity condition can be saved in a draft, but running it is not enabled for this account yet, so this flow cannot be activated.",
+          });
+        }
+      } else if (!cfg.subject_key?.trim()) {
         issues.push({
           severity: "error",
           scope: "node",
@@ -634,7 +739,9 @@ function validateNode(
           message: "Condition needs a subject_key (var name, tag id, or field name).",
         });
       }
-      if (
+      if (cfg.subject === "customer_activity") {
+        // operator already validated above
+      } else if (
         !cfg.operator ||
         !["equals", "contains", "present", "absent"].includes(cfg.operator)
       ) {
@@ -726,7 +833,21 @@ function validateNode(
 
     case "delay": {
       const cfg = node.config as { seconds?: number; next_node_key?: string };
-      if (
+      if (isDurableWaitConfig(node.config)) {
+        const wait = durableWaitSeconds(node.config as { amount?: unknown; unit?: unknown });
+        if (!wait.ok) {
+          issues.push({
+            severity: "error", scope: "node", node_key: node.node_key, field: "amount",
+            message: wait.reason === "too_long" ? "A wait can last at most 30 days." : wait.reason === "invalid_unit" ? "Wait unit must be seconds, minutes, hours or days." : "Wait amount must be a whole number of at least 1.",
+          });
+        }
+        if (!options.durableWaitExecution && !options.executionStatusUnknown) {
+          issues.push({
+            severity: "error", scope: "node", node_key: node.node_key, field: "unit", code: "durable_wait_not_enabled",
+            message: "Durable waits can be saved in a draft, but running them is not enabled for this account yet, so this flow cannot be activated.",
+          });
+        }
+      } else if (
         typeof cfg.seconds !== "number" ||
         !Number.isFinite(cfg.seconds) ||
         cfg.seconds < 1 ||
@@ -807,10 +928,66 @@ function validateNode(
     }
 
     case "handoff":
-    case "end":
-      // Terminal nodes have no outgoing edges; nothing to validate
-      // beyond their existence.
+    case "end": {
+      // Terminal nodes have no outgoing edges. The only setting is P8's scope: end the whole execution (default) or return to the caller.
+      const scope = (node.config as { scope?: unknown }).scope;
+      if (scope !== undefined && scope !== "run" && scope !== "subflow") {
+        issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "scope", code: "end_scope_invalid", message: "End scope must be \"run\" or \"subflow\"." });
+      }
       break;
+    }
+
+    case "execute_flow": {
+      const cfg = node.config as { target_flow_id?: unknown; next_node_key?: unknown; reference_node_key?: unknown; on_customer_reply?: unknown };
+      const err = (field: string, code: string, message: string, params?: Record<string, string | number>) =>
+        issues.push({ severity: "error", scope: "node", node_key: node.node_key, field, code, message, ...(params ? { params } : {}) });
+      // What the author controls is checked first and ALWAYS, so a missing destination is reported whether or not running connected
+      // flows is enabled for the account.
+      if (typeof cfg.target_flow_id !== "string" || !UUID_RE.test(cfg.target_flow_id)) {
+        err("target_flow_id", "execute_flow_target_missing", "Choose the flow to run.");
+      }
+      if (typeof cfg.next_node_key !== "string" || !cfg.next_node_key) {
+        err("next_node_key", "execute_flow_return_missing", "Choose the step this flow continues at when the called flow ends.");
+      } else if (!knownKeys.has(cfg.next_node_key)) {
+        err("next_node_key", "execute_flow_return_unknown", `The step this flow continues at ("${cfg.next_node_key}") does not exist.`, { key: cfg.next_node_key });
+      }
+      if (cfg.reference_node_key !== undefined) {
+        const refNode = typeof cfg.reference_node_key === "string" ? allNodes.find((candidate) => candidate.node_key === cfg.reference_node_key) : undefined;
+        if (!refNode || (refNode.node_type !== "send_message" && refNode.node_type !== "send_media")) {
+          err("reference_node_key", "execute_flow_reference_invalid", "The reference message must be a Send message or Send media step of this flow.");
+        }
+      }
+      if (cfg.on_customer_reply !== undefined && cfg.on_customer_reply !== "stop" && cfg.on_customer_reply !== "continue") {
+        err("on_customer_reply", "execute_flow_policy_invalid", "On customer reply must be \"stop\" or \"continue\".");
+      }
+      // The real state of things, without blaming F06: running connected flows is a per-account capability.
+      if (!options.versionedExecution && !options.subflowExecution && !options.executionStatusUnknown) {
+        err("target_flow_id", "execute_flow_not_enabled", "Running connected flows is not enabled for this account yet. You can keep building and saving this flow, but it cannot be activated until it is.");
+      }
+      break;
+    }
+
+    case "send_product_audios": {
+      const cfg = node.config as { gate_tag_id?: unknown; product_field_id?: unknown; next_node_key?: unknown; unknown_node_key?: unknown; no_audios_node_key?: unknown; gate_closed_node_key?: unknown };
+      const err = (field: string, code: string, message: string) =>
+        issues.push({ severity: "error", scope: "node", node_key: node.node_key, field, code, message });
+      if (options.voiceNoteEnabled === false) {
+        err("media_type", "product_audios_not_enabled", "Voice notes are not enabled for this account.");
+      }
+      // The gate has no default: an unconfigured node must never be able to send.
+      if (typeof cfg.gate_tag_id !== "string" || !UUID_RE.test(cfg.gate_tag_id)) {
+        err("gate_tag_id", "product_audios_gate_missing", "Choose the tag a contact must have for the audios to be sent (the gate). Without it the node cannot be activated.");
+      }
+      if (cfg.product_field_id !== undefined && cfg.product_field_id !== "" && (typeof cfg.product_field_id !== "string" || !UUID_RE.test(cfg.product_field_id))) {
+        err("product_field_id", "product_audios_field_invalid", "The Producto field must be left empty or be a valid custom field.");
+      }
+      for (const [field, label] of [["next_node_key", "when every audio was sent"], ["unknown_node_key", "when the product is missing, unknown or inactive"], ["no_audios_node_key", "when the product has no active audio"], ["gate_closed_node_key", "when the gate is closed"]] as const) {
+        const target = cfg[field];
+        if (typeof target !== "string" || !target) err(field, "product_audios_route_missing", `Choose the step to continue at ${label}.`);
+        else if (!knownKeys.has(target)) err(field, "product_audios_route_unknown", `The step chosen ${label} ("${target}") does not exist.`);
+      }
+      break;
+    }
 
     default:
       issues.push({
@@ -858,9 +1035,14 @@ function outgoingEdges(node: NodeInput): string[] {
     case "collect_input":
     case "set_tag":
     case "delay":
-    case "set_contact_field": {
+    case "set_contact_field":
+    case "execute_flow": {
       const cfg = node.config as { next_node_key?: string };
       return cfg.next_node_key ? [cfg.next_node_key] : [];
+    }
+    case "send_product_audios": {
+      const cfg = node.config as { next_node_key?: string; unknown_node_key?: string; no_audios_node_key?: string; gate_closed_node_key?: string };
+      return [cfg.next_node_key, cfg.unknown_node_key, cfg.no_audios_node_key, cfg.gate_closed_node_key].filter((k): k is string => !!k);
     }
     case "condition": {
       const cfg = node.config as {

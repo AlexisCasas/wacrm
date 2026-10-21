@@ -96,6 +96,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { useFlowEditor } from './flow-editor-state';
+import { useSubflowAuthoringCapability } from './use-subflow-authoring';
 import { NodeConfigForm, useAccountTags } from './forms/node-config-form';
 
 // React-Flow node `data` payload — the bits our custom renderer needs.
@@ -711,6 +712,11 @@ const ADD_NODE_TYPES: NodeType[] = [
 ];
 
 function CanvasAddNodeButton({ t }: { t: ReturnType<typeof useTranslations> }) {
+  const subflowAuthoring = useSubflowAuthoringCapability();
+  // pilot: "Run another flow" only for accounts the server opted in, placed with the other flow-control types
+  const addTypes: NodeType[] = subflowAuthoring
+    ? ADD_NODE_TYPES.flatMap((type) => (type === 'handoff' ? (['execute_flow', 'handoff'] as NodeType[]) : [type]))
+    : ADD_NODE_TYPES;
   const reactFlow = useReactFlow();
   const { addNode, updateNodePosition } = useFlowEditor();
 
@@ -751,7 +757,7 @@ function CanvasAddNodeButton({ t }: { t: ReturnType<typeof useTranslations> }) {
         align="start"
         className="border-border bg-popover w-[268px] p-1.5"
       >
-        {groupNodeTypesByCategory(ADD_NODE_TYPES).map((group, i) => (
+        {groupNodeTypesByCategory(addTypes).map((group, i) => (
           // DropdownMenuGroup (base-ui Menu.Group) is REQUIRED: the
           // DropdownMenuLabel below is base-ui's Menu.GroupLabel, which
           // throws at render without a Menu.Group ancestor. A plain <div>

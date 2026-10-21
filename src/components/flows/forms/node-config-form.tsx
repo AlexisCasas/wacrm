@@ -42,7 +42,11 @@ import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker";
 import { slugify, type BuilderNode } from "../shared";
+import { useFlowEditor } from "../flow-editor-state";
+import { useCustomerReplyConditionCapability, useDurableWaitAuthoringCapability, useSubflowAuthoringCapability } from "../use-subflow-authoring";
+import { WAIT_UNITS, isDurableWaitConfig, maxAmountFor, type WaitUnit } from "@/lib/flows/durable-wait";
 import { NextNodeRow, NodeKeySelect, TextRow } from "./fields";
+import { FlowPicker } from "./flow-picker";
 
 interface NodeConfigFormProps {
   node: BuilderNode;
@@ -118,6 +122,17 @@ export function NodeConfigForm({
       return (
         <SendMediaForm
           cfg={cfg as SendMediaCfg}
+          allNodes={allNodes}
+          currentKey={node.node_key}
+          onUpdateConfig={onUpdateConfig}
+          t={t}
+        />
+      );
+
+    case "send_product_audios":
+      return (
+        <SendProductAudiosForm
+          cfg={cfg as unknown as ProductAudiosCfg}
           allNodes={allNodes}
           currentKey={node.node_key}
           onUpdateConfig={onUpdateConfig}
@@ -212,6 +227,17 @@ export function NodeConfigForm({
         />
       );
 
+    case "execute_flow":
+      return (
+        <ExecuteFlowForm
+          cfg={cfg as ExecuteFlowCfg}
+          allNodes={allNodes}
+          currentKey={node.node_key}
+          onUpdateConfig={onUpdateConfig}
+          t={t}
+        />
+      );
+
     case "handoff":
       return (
         <TextRow
@@ -223,11 +249,7 @@ export function NodeConfigForm({
       );
 
     case "end":
-      return (
-        <p className="text-xs text-muted-foreground">
-          {t("endNodeHelp")}
-        </p>
-      );
+      return <EndForm scope={(cfg as { scope?: string }).scope} onUpdateConfig={onUpdateConfig} t={t} />;
   }
 }
 
@@ -606,9 +628,9 @@ function SendListForm({
 // ============================================================
 
 interface ConditionCfg {
-  subject?: "var" | "tag" | "contact_field";
+  subject?: "var" | "tag" | "contact_field" | "customer_activity";
   subject_key?: string;
-  operator?: "equals" | "contains" | "present" | "absent";
+  operator?: "equals" | "contains" | "present" | "absent" | "replied_after_reference";
   value?: string;
   true_next?: string;
   false_next?: string;
@@ -680,8 +702,11 @@ function ConditionForm({
   const tagCatalog = useAccountTags();
   const fields = useAccountCustomFields();
   const customConditionsEnabled = useCustomConditionCapability();
+  const customerReplyEnabled = useCustomerReplyConditionCapability();
 
   const subject = cfg.subject ?? "var";
+  const isActivity = subject === "customer_activity";
+  const referenceCandidates = allNodes.filter((n) => n.node_type === "send_message" || n.node_type === "send_media");
   const operator = cfg.operator ?? "equals";
   const showValue = operator === "equals" || operator === "contains";
 
@@ -693,7 +718,13 @@ function ConditionForm({
           <Select
             value={subject}
             onValueChange={(v) =>
-              onUpdateConfig({ subject: v as ConditionCfg["subject"] })
+              onUpdateConfig(
+                v === "customer_activity"
+                  ? { subject: v, operator: "replied_after_reference", subject_key: "", value: undefined }
+                  : subject === "customer_activity"
+                    ? { subject: v as ConditionCfg["subject"], operator: "present", subject_key: "" }
+                    : { subject: v as ConditionCfg["subject"] },
+              )
             }
           >
             <SelectTrigger className="bg-muted">
@@ -703,6 +734,7 @@ function ConditionForm({
               <SelectItem value="var">{t("capturedVariable")}</SelectItem>
               <SelectItem value="tag">{t("contactHasTag")}</SelectItem>
               <SelectItem value="contact_field">{t("contactField")}</SelectItem>
+              {(customerReplyEnabled || isActivity) && <SelectItem value="customer_activity">{t("customerActivity")}</SelectItem>}
             </SelectContent>
           </Select>
         </div>
@@ -712,9 +744,36 @@ function ConditionForm({
               ? t("varName")
               : subject === "tag"
                 ? t("tagLabel")
-                : t("fieldLabel")}
+                : isActivity
+                  ? t("referenceMessageLabel")
+                  : t("fieldLabel")}
           </label>
-          {subject === "tag" ? (
+          {isActivity ? (
+            <div className="space-y-1">
+              {!customerReplyEnabled && <p className="text-xs text-amber-600 dark:text-amber-400">{t("customerReplyDisabled")}</p>}
+              <Select value={cfg.subject_key === "$inherited" ? "inherited" : "own"} onValueChange={(v) => { if (v) onUpdateConfig({ subject_key: v === "inherited" ? "$inherited" : "", operator: "replied_after_reference" }); }}>
+                <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="own">{t("referenceSourceOwn")}</SelectItem>
+                  <SelectItem value="inherited">{t("referenceSourceInherited")}</SelectItem>
+                </SelectContent>
+              </Select>
+              {cfg.subject_key === "$inherited" ? (
+                <p className="text-xs text-muted-foreground">{t("referenceInheritedHelp")}</p>
+              ) : referenceCandidates.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t("noReferenceCandidates")}</p>
+              ) : (
+                <NodeKeySelect
+                  value={cfg.subject_key || null}
+                  nodes={referenceCandidates}
+                  excludeKey={currentKey}
+                  onChange={(v) => onUpdateConfig({ subject_key: v ?? "", operator: "replied_after_reference" })}
+                  placeholder={t("pickReference")}
+                />
+              )}
+              <p className="text-xs text-muted-foreground">{t("referenceHelp")}</p>
+            </div>
+          ) : subject === "tag" ? (
             <TagSelect value={cfg.subject_key ?? ""} catalog={tagCatalog} onChange={(v) => onUpdateConfig({ subject_key: v })} t={t} />
           ) : subject === "contact_field" ? (
             <>
@@ -749,7 +808,7 @@ function ConditionForm({
         </div>
       </div>
 
-      <div
+      {!isActivity && <div
         className={cn(
           "grid grid-cols-1 gap-3",
           showValue ? "md:grid-cols-2" : "",
@@ -784,7 +843,8 @@ function ConditionForm({
             />
           </div>
         )}
-      </div>
+      </div>}
+      {isActivity && <p className="text-sm">{t("repliedAfterReference")}</p>}
 
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <NextNodeRow
@@ -792,14 +852,14 @@ function ConditionForm({
           allNodes={allNodes}
           currentKey={currentKey}
           onChange={(v) => onUpdateConfig({ true_next: v })}
-          label={t("ifTrueAdvance")}
+          label={isActivity ? t("ifRepliedAdvance") : t("ifTrueAdvance")}
         />
         <NextNodeRow
           value={cfg.false_next ?? ""}
           allNodes={allNodes}
           currentKey={currentKey}
           onChange={(v) => onUpdateConfig({ false_next: v })}
-          label={t("ifFalseAdvance")}
+          label={isActivity ? t("ifNotRepliedAdvance") : t("ifFalseAdvance")}
         />
       </div>
     </>
@@ -867,6 +927,28 @@ function SetTagForm({
   );
 }
 
+/** Whether the server enabled voice notes for this account (GET /api/flows/voice-notes). Fail-closed. */
+function useVoiceNoteCapability(): boolean {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch("/api/flows/voice-notes");
+        if (!response.ok) return;
+        const data = (await response.json()) as { enabled?: boolean };
+        if (!cancelled) setEnabled(data.enabled === true);
+      } catch {
+        // Remain fail-closed; every write path checks again on the server.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return enabled;
+}
+
 function useCustomConditionCapability(): boolean {
   const [enabled, setEnabled] = useState(false);
   useEffect(() => {
@@ -889,12 +971,70 @@ function useCustomConditionCapability(): boolean {
 }
 
 // ============================================================
+// send_product_audios ("Audios por producto")
+// ============================================================
+
+interface ProductAudiosCfg {
+  gate_tag_id?: string;
+  product_field_id?: string;
+  next_node_key?: string;
+  unknown_node_key?: string;
+  no_audios_node_key?: string;
+  gate_closed_node_key?: string;
+}
+
+const AUTO_FIELD = "__auto__";
+
+function SendProductAudiosForm({ cfg, allNodes, currentKey, onUpdateConfig, t }: {
+  cfg: ProductAudiosCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const tagCatalog = useAccountTags();
+  const fields = useAccountCustomFields();
+  return (
+    <>
+      <p className="text-xs text-muted-foreground">{t("productAudiosHelp")}</p>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("productAudiosGateLabel")}</label>
+        <TagSelect value={cfg.gate_tag_id ?? ""} catalog={tagCatalog} onChange={(v) => onUpdateConfig({ gate_tag_id: v })} t={t} />
+        {cfg.gate_tag_id && tagCatalog.tags.find((tag) => tag.id === cfg.gate_tag_id) && (
+          <p className="mt-1 text-xs text-foreground" data-testid="gate-tag-name">{tagCatalog.tags.find((tag) => tag.id === cfg.gate_tag_id)?.name}</p>
+        )}
+        <p className="mt-1 text-[10px] text-muted-foreground">{t("productAudiosGateHelp")}</p>
+        {!cfg.gate_tag_id && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t("productAudiosGateMissing")}</p>}
+      </div>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("productAudiosFieldLabel")}</label>
+        <Select value={cfg.product_field_id ? cfg.product_field_id : AUTO_FIELD} onValueChange={(v) => { if (v !== null) onUpdateConfig({ product_field_id: v === AUTO_FIELD ? "" : v }); }}>
+          <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value={AUTO_FIELD}>{t("productAudiosFieldAuto")}</SelectItem>
+            {fields.map((field) => <SelectItem key={field.id} value={field.id}>{field.field_name}</SelectItem>)}
+          </SelectContent>
+        </Select>
+        <p className="mt-1 text-xs text-muted-foreground">{cfg.product_field_id ? (fields.find((field) => field.id === cfg.product_field_id)?.field_name ?? "") : t("productAudiosFieldAuto")}</p>
+      </div>
+      <NextNodeRow value={cfg.next_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ next_node_key: v })} label={t("productAudiosRouteNext")} />
+      <NextNodeRow value={cfg.unknown_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ unknown_node_key: v })} label={t("productAudiosRouteUnknown")} />
+      <NextNodeRow value={cfg.no_audios_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ no_audios_node_key: v })} label={t("productAudiosRouteNoAudios")} />
+      <NextNodeRow value={cfg.gate_closed_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ gate_closed_node_key: v })} label={t("productAudiosRouteGateClosed")} />
+    </>
+  );
+}
+
+// ============================================================
 // delay
 // ============================================================
 
 interface DelayCfg {
   seconds?: number;
   next_node_key?: string;
+  /** Durable wait (migration 069): present only when the node is a durable wait. */
+  amount?: number;
+  unit?: WaitUnit;
 }
 
 const DELAY_MIN_SECONDS = 1;
@@ -913,6 +1053,92 @@ function DelayForm({
   onUpdateConfig: (patch: Record<string, unknown>) => void;
   t: ReturnType<typeof useTranslations>;
 }) {
+  const durableEnabled = useDurableWaitAuthoringCapability();
+  const durable = isDurableWaitConfig(cfg);
+  const unitLabel = (unit: WaitUnit) => t(`delayUnit_${unit}`);
+  // Accounts without the pilot (and flows that never used it) keep exactly the original short-delay form.
+  if (durableEnabled || durable) {
+    const unit: WaitUnit = (WAIT_UNITS as readonly string[]).includes(cfg.unit ?? "") ? (cfg.unit as WaitUnit) : "minutes";
+    const amount = typeof cfg.amount === "number" ? cfg.amount : 13;
+    return (
+      <>
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">{t("delayKind")}</label>
+          <Select
+            value={durable ? "durable" : "short"}
+            disabled={!durableEnabled}
+            onValueChange={(v) => v === "durable"
+              ? onUpdateConfig({ amount: 13, unit: "minutes", seconds: undefined })
+              : onUpdateConfig({ seconds: 5, amount: undefined, unit: undefined })}
+          >
+            <SelectTrigger className="bg-muted" aria-label={t("delayKind")}>
+              <span>{durable ? t("delayKindDurable") : t("delayKindShort")}</span>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="short">{t("delayKindShort")}</SelectItem>
+              <SelectItem value="durable">{t("delayKindDurable")}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {durable ? (
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">{t("delayAmountLabel")}</label>
+            <div className="flex gap-2">
+              <Input
+                type="number"
+                min={1}
+                max={maxAmountFor(unit)}
+                value={amount}
+                disabled={!durableEnabled}
+                aria-label={t("delayAmountLabel")}
+                onChange={(e) => {
+                  const raw = Math.round(Number(e.target.value));
+                  onUpdateConfig({ amount: Number.isFinite(raw) ? Math.min(maxAmountFor(unit), Math.max(1, raw)) : 1 });
+                }}
+                className="bg-muted"
+              />
+              <Select
+                value={unit}
+                disabled={!durableEnabled}
+                onValueChange={(v) => { const next = v as WaitUnit; onUpdateConfig({ unit: next, amount: Math.min(amount, maxAmountFor(next)) }); }}
+              >
+                <SelectTrigger className="bg-muted" aria-label={t("delayUnitLabel")}>
+                  <span>{unitLabel(unit)}</span>
+                </SelectTrigger>
+                <SelectContent>
+                  {WAIT_UNITS.map((u) => <SelectItem key={u} value={u}>{unitLabel(u)}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <p className="mt-1 text-[10px] text-muted-foreground">{durableEnabled ? t("delayDurableHelp") : t("delayDurableDisabled")}</p>
+          </div>
+        ) : (
+          <div>
+            <label className="mb-1 block text-xs text-muted-foreground">{t("delaySecondsLabel")}</label>
+            <Input
+              type="number"
+              min={DELAY_MIN_SECONDS}
+              max={DELAY_MAX_SECONDS}
+              value={cfg.seconds ?? 5}
+              onChange={(e) => {
+                const raw = Math.round(Number(e.target.value));
+                onUpdateConfig({ seconds: Number.isFinite(raw) ? Math.min(DELAY_MAX_SECONDS, Math.max(DELAY_MIN_SECONDS, raw)) : DELAY_MIN_SECONDS });
+              }}
+              className="bg-muted"
+            />
+            <p className="mt-1 text-[10px] text-muted-foreground">{t("delayHelp", { min: DELAY_MIN_SECONDS, max: DELAY_MAX_SECONDS })}</p>
+          </div>
+        )}
+        <NextNodeRow
+          value={cfg.next_node_key ?? ""}
+          allNodes={allNodes}
+          currentKey={currentKey}
+          onChange={(v) => onUpdateConfig({ next_node_key: v })}
+          label={t("advancesTo")}
+        />
+      </>
+    );
+  }
   return (
     <>
       <div>
@@ -1089,9 +1315,11 @@ function SendMediaForm({
   onUpdateConfig: (patch: Record<string, unknown>) => void;
   t: ReturnType<typeof useTranslations>;
 }) {
+  const voiceNotesEnabled = useVoiceNoteCapability();
   return (
     <>
       <MediaPicker
+        kinds={voiceNotesEnabled || cfg.media_type === "audio" ? ["image", "video", "document", "audio"] : ["image", "video", "document"]}
         value={cfg}
         onChange={onUpdateConfig}
         labels={{
@@ -1111,6 +1339,15 @@ function SendMediaForm({
           filenamePlaceholder: t("filenamePlaceholder"),
           manychatBridgeFlowNsLabel: t("manychatBridgeFlowNsLabel"),
           manychatBridgeFlowNsHelp: t("manychatBridgeFlowNsHelp"),
+          audioLabel: t("audioLabel"),
+          voiceNoteHelp: t("voiceNoteHelp"),
+          voiceNoteVerifying: t("voiceNoteVerifying"),
+          voiceNoteNeedsOgg: t("voiceNoteNeedsOgg"),
+          voiceNoteNotOgg: t("voiceNoteNotOgg"),
+          voiceNoteNotMono: t("voiceNoteNotMono"),
+          voiceNoteCorrupt: t("voiceNoteCorrupt"),
+          voiceNoteRepaired: t("voiceNoteRepaired"),
+          voiceNoteRejectedByServer: t("voiceNoteRejectedByServer"),
         }}
       />
 
@@ -1121,6 +1358,154 @@ function SendMediaForm({
         onChange={(v) => onUpdateConfig({ next_node_key: v })}
         label={t("advanceAfterSending")}
       />
+    </>
+  );
+}
+
+// ============================================================
+// execute_flow (pilot: authoring only, nothing runs)
+// ============================================================
+
+interface ExecuteFlowCfg {
+  target_flow_id?: string;
+  next_node_key?: string;
+  reference_node_key?: string;
+  on_customer_reply?: "stop" | "continue";
+}
+
+interface AccountFlowOption {
+  id: string;
+  name: string;
+  status: string;
+}
+
+/** The account's own flows, through the RLS-scoped client: another account's flows are never returned. */
+function useAccountFlows(): { flows: AccountFlowOption[]; loaded: boolean } {
+  const [state, setState] = useState<{ flows: AccountFlowOption[]; loaded: boolean }>({ flows: [], loaded: false });
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const supabase = createClient();
+        const { data } = await supabase.from("flows").select("id, name, status").order("name").limit(1000);
+        if (!cancelled) setState({ flows: (data as AccountFlowOption[] | null) ?? [], loaded: data !== null });
+      } catch {
+        if (!cancelled) setState({ flows: [], loaded: false });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return state;
+}
+
+function ExecuteFlowForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: ExecuteFlowCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const { flow } = useFlowEditor();
+  const enabled = useSubflowAuthoringCapability();
+  const { flows, loaded } = useAccountFlows();
+  const options = flows.filter((f) => f.id !== flow.id);
+  const target = cfg.target_flow_id ?? "";
+  const selected = options.find((f) => f.id === target);
+  const statusLabel = (status: string) => (status === "active" ? t("flowStatusActive") : status === "archived" ? t("flowStatusArchived") : t("flowStatusDraft"));
+  return (
+    <>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("targetFlow")}</label>
+        <FlowPicker
+          options={options}
+          value={target}
+          onChange={(id) => onUpdateConfig({ target_flow_id: id })}
+          disabled={!enabled}
+          ariaLabel={t("targetFlow")}
+          placeholder={t("pickTargetFlow")}
+          unavailableLabel={t("targetFlowUnavailable")}
+          searchPlaceholder={t("searchFlows")}
+          emptyLabel={t("noFlowsMatch")}
+          cappedLabel={(shown, total) => t("flowSearchCapped", { shown, total })}
+          statusLabel={statusLabel}
+        />
+        {loaded && target && !selected && (
+          <p role="alert" className="mt-1 text-xs text-destructive">{t("targetFlowMissing")}</p>
+        )}
+        {loaded && options.length === 0 && <p className="mt-1 text-xs text-muted-foreground">{t("noOtherFlows")}</p>}
+      </div>
+      <NextNodeRow
+        value={cfg.next_node_key ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ next_node_key: v })}
+        label={t("continuesAfterFlow")}
+      />
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("callReferenceLabel")}</label>
+        <div className="flex items-center gap-2">
+          <div className="flex-1">
+            <NodeKeySelect
+              value={cfg.reference_node_key || null}
+              nodes={allNodes.filter((n) => n.node_type === "send_message" || n.node_type === "send_media")}
+              excludeKey={currentKey}
+              onChange={(v) => onUpdateConfig({ reference_node_key: v ?? undefined })}
+              placeholder={t("callReferenceNone")}
+            />
+          </div>
+          {cfg.reference_node_key && (
+            <Button type="button" variant="ghost" size="sm" onClick={() => onUpdateConfig({ reference_node_key: undefined })}>{t("callReferenceClear")}</Button>
+          )}
+        </div>
+        <p className="mt-1 text-xs text-muted-foreground">{t("callReferenceHelp")}</p>
+      </div>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("onCustomerReplyLabel")}</label>
+        <Select value={cfg.on_customer_reply ?? "stop"} onValueChange={(v) => { if (v) onUpdateConfig({ on_customer_reply: v }); }}>
+          <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="stop">{t("onCustomerReplyStop")}</SelectItem>
+            <SelectItem value="continue">{t("onCustomerReplyContinue")}</SelectItem>
+          </SelectContent>
+        </Select>
+        <p className="mt-1 text-xs text-muted-foreground">{t("onCustomerReplyHelp")}</p>
+      </div>
+      <p className="text-xs text-muted-foreground">{enabled ? t("subflowDraftOnly") : t("subflowAuthoringDisabled")}</p>
+    </>
+  );
+}
+
+// ============================================================
+// end (P8: scope). The choice is only offered where subflows can be authored; everyone else sees the historic form, and a saved
+// "return" choice is always shown so it can never be silently hidden or changed.
+// ============================================================
+
+function EndForm({ scope, onUpdateConfig, t }: { scope?: string; onUpdateConfig: (patch: Record<string, unknown>) => void; t: ReturnType<typeof useTranslations> }) {
+  const subflowAuthoring = useSubflowAuthoringCapability();
+  return (
+    <>
+      <p className="text-xs text-muted-foreground">{t("endNodeHelp")}</p>
+      {(subflowAuthoring || scope === "subflow") && (
+        <div>
+          <label className="mb-1 block text-xs text-muted-foreground">{t("endScopeLabel")}</label>
+          <Select value={scope ?? "run"} disabled={!subflowAuthoring} onValueChange={(v) => { if (v) onUpdateConfig({ scope: v === "run" ? undefined : v }); }}>
+            <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="run">{t("endScopeRun")}</SelectItem>
+              <SelectItem value="subflow">{t("endScopeSubflow")}</SelectItem>
+            </SelectContent>
+          </Select>
+          <p className="mt-1 text-xs text-muted-foreground">{t("endScopeHelp")}</p>
+        </div>
+      )}
     </>
   );
 }

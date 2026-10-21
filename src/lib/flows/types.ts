@@ -82,9 +82,18 @@ export interface SendListNodeConfig {
  * meaningful behavioural difference.
  */
 export interface SendMediaNodeConfig {
-  media_type: "image" | "video" | "document";
+  /**
+   * `audio` is ALWAYS sent as a native WhatsApp voice note (OGG/Opus, mono):
+   * `media_url` must be a verified voice note of the flow's account and
+   * `media_sha256` its content hash, both produced by POST
+   * /api/flows/voice-notes. Caption, filename and the ManyChat bridge field
+   * do not apply to audio.
+   */
+  media_type: "image" | "video" | "document" | "audio";
   /** Public URL Meta will fetch. Uploaded via the builder's file picker. */
   media_url: string;
+  /** Audio only: SHA-256 (hex) of the verified file; must match the hash in `media_url`. */
+  media_sha256?: string;
   /** Optional caption shown under the media (Meta caps at 1024 chars). */
   caption?: string;
   /**
@@ -159,9 +168,11 @@ export type ConditionOperator =
   | "equals"
   | "contains"
   | "present"
-  | "absent";
+  | "absent"
+  /** Only with subject `customer_activity` (P7): the customer wrote after the reference send. */
+  | "replied_after_reference";
 
-export type ConditionSubject = "var" | "tag" | "contact_field";
+export type ConditionSubject = "var" | "tag" | "contact_field" | "customer_activity";
 
 /**
  * Routes the run based on a predicate over the contact's tags,
@@ -174,6 +185,7 @@ export interface ConditionNodeConfig {
    * For `var`: the key in flow_runs.vars.
    * For `tag`: the tag UUID (matched against contact_tags).
    * For `contact_field`: one of 'name' | 'email' | 'phone' | 'company'.
+   * For `customer_activity`: the node_key of the send_message / send_media node whose first send is the reference.
    */
   subject_key: string;
   operator: ConditionOperator;
@@ -209,9 +221,15 @@ export interface SetTagNodeConfig {
 export interface DelayNodeConfig {
   /** Whole seconds to wait. Clamped to [1, 30] at execution time — the
    *  builder also clamps on input so authored flows can't drift out of
-   *  range. */
+   *  range. Absent on a durable wait. */
   seconds: number;
   next_node_key: string;
+  /**
+   * Durable wait (migration 069): when `unit` is present the node does NOT sleep in-process. The run is parked in
+   * flow_runs.wait_* and the scheduler resumes it after `amount` x `unit` (1 second .. 30 days). See durable-wait.ts.
+   */
+  amount?: number;
+  unit?: "seconds" | "minutes" | "hours" | "days";
 }
 
 /**
@@ -236,8 +254,48 @@ export interface SetContactFieldNodeConfig {
   next_node_key: string;
 }
 
+/**
+ * Sends the contact's product voice notes from the audio-guide catalog ("Audios por producto"). See src/lib/flows/product-audios.ts.
+ * Every route is required so no outcome can fall off the graph; the gate is required so an unconfigured node can never send.
+ */
+export interface SendProductAudiosNodeConfig {
+  /** Provisional gate: the contact must carry this tag (it is not claimed to reproduce ManyChat's Switch). */
+  gate_tag_id: string;
+  /** Optional explicit custom field holding the product; otherwise the account's single field named "Producto". */
+  product_field_id?: string;
+  /** Every audio was sent. */
+  next_node_key: string;
+  /** No Producto value, a value the catalog does not know, or an inactive product. */
+  unknown_node_key: string;
+  /** The product exists and is active but has no active audio. */
+  no_audios_node_key: string;
+  /** The contact does not carry the gate tag: nothing is sent. */
+  gate_closed_node_key: string;
+}
+
+/**
+ * Versioned-execution only (F06): calls another published flow of the same account and resumes at
+ * `next_node_key` of THIS flow when the callee reaches its END. The legacy runner does not support it
+ * (it ends the run as unknown_node_type) and the legacy validator rejects it.
+ */
+export interface ExecuteFlowNodeConfig {
+  target_flow_id: string;
+  /** Node of THIS flow where the run resumes when the callee finishes normally. */
+  next_node_key: string;
+  /** P8: a send node of THIS flow whose first send is handed to the callee as its inherited reference message. */
+  reference_node_key?: string;
+  /** P8: "stop" (default) ends the run, instead of returning, when the customer wrote spontaneously while the callee was waiting. */
+  on_customer_reply?: "stop" | "continue";
+}
+
 // Terminal nodes carry no config — they just stop the run.
-export type EndNodeConfig = Record<string, never>;
+export interface EndNodeConfig {
+  /**
+   * P8. "run" (default, the historic behaviour): ends the whole execution, whatever flow the run is inside.
+   * "subflow": inside a called flow, ends THIS flow and returns to the caller; outside one it ends the run like "run".
+   */
+  scope?: "run" | "subflow";
+}
 
 /**
  * Total union — every concrete node_type the v1 engine understands.
@@ -259,7 +317,9 @@ export type FlowNodeConfig =
   | { node_type: "delay"; config: DelayNodeConfig }
   | { node_type: "set_contact_field"; config: SetContactFieldNodeConfig }
   | { node_type: "handoff"; config: HandoffNodeConfig }
-  | { node_type: "end"; config: EndNodeConfig };
+  | { node_type: "end"; config: EndNodeConfig }
+  | { node_type: "execute_flow"; config: ExecuteFlowNodeConfig }
+  | { node_type: "send_product_audios"; config: SendProductAudiosNodeConfig };
 
 export type FlowNodeType = FlowNodeConfig["node_type"];
 
@@ -314,6 +374,8 @@ export interface FlowRow {
   fallback_policy: FlowFallbackPolicy;
   execution_count: number;
   last_executed_at: string | null;
+  /** Latest immutable snapshot, populated only after an activation. */
+  active_version_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -353,6 +415,13 @@ export interface FlowRunRow {
   last_advanced_at: string;
   ended_at: string | null;
   end_reason: string | null;
+  /** Durable wait (migration 069). NULL unless the run is parked at a durable `delay`. */
+  wait_until?: string | null;
+  wait_node_key?: string | null;
+  wait_claim_token?: string | null;
+  wait_claimed_at?: string | null;
+  /** Subflow execution (migration 070). NULL = the run is inside its root flow (flow_id); otherwise the flow it is currently inside. */
+  current_flow_id?: string | null;
 }
 
 // ============================================================
@@ -432,6 +501,7 @@ export interface DispatchInboundResult {
     | "handed_off"
     | "fallback_fired"
     | "duplicate_inbound_ignored"
+    | "waiting"
     | "no_match";
 }
 

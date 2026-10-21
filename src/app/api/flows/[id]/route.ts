@@ -3,15 +3,21 @@ import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
+import { isMediaAudioEnabledForAccount, isVoiceNoteEnabledForAccount } from '@/lib/flows/voice-note-capability'
+import { isSubflowAuthoringEnabledForAccount } from '@/lib/flows/subflow-authoring-capability'
+import { isDurableWaitAuthoringEnabledForAccount } from '@/lib/flows/durable-wait-capability'
+import { durableWaitSeconds, isDurableWaitConfig } from '@/lib/flows/durable-wait'
+import { isCustomerActivityConfig, isCustomerReplyConditionEnabledForAccount } from '@/lib/flows/customer-reply-condition'
 import { ConditionReferenceInfrastructureError, validateConditionReferences } from '@/lib/flows/condition-references'
 
 /**
  * GET   /api/flows/[id]  — fetch one flow with its nodes.
  * PUT   /api/flows/[id]  — replace name/trigger/entry/fallback + the
- *                          full node graph (delete-then-insert under
- *                          the hood; not atomic, but the runner is
- *                          resilient to mid-edit reads — node_not_found
- *                          gracefully ends the run).
+ *                          full node graph in ONE database transaction
+ *                          (replace_flow_draft_atomic, migration 067):
+ *                          either the whole save is applied or nothing
+ *                          changes. A draft may be incomplete; activation,
+ *                          not saving, validates the graph.
  * DELETE /api/flows/[id] — hard delete (RLS+CASCADE clean up nodes,
  *                          runs, events).
  *
@@ -48,6 +54,63 @@ async function requireOwnership(
     return { ok: false, status: 404, body: { error: 'Not found' } }
   }
   return { ok: true, userId: user.id, supabase }
+}
+
+/**
+ * Maps a failed atomic save to a response that explains what happened without echoing database text. In every case the
+ * previous version of the flow is intact: the save is a single transaction.
+ */
+function saveFailure(code: string | undefined, message?: string) {
+  console.error('[flows PUT] atomic save failed', code ?? 'no-code')
+  switch (code) {
+    case 'P0002':
+      return NextResponse.json({ error: 'Not found' }, { status: 404 })
+    case '22023':
+      return NextResponse.json({ error: 'Invalid flow data. Nothing was saved.' }, { status: 400 })
+    case '23503': // migration 068: execute_flow target is not a flow of this account
+      return NextResponse.json({ error: 'A connected flow does not exist anymore or does not belong to this account. Nothing was saved.', code: 'invalid_subflow_target' }, { status: 422 })
+    case '0A000': // migrations 068 / 069: execute_flow nodes and durable waits cannot live in an active flow
+      return NextResponse.json({ error: /durable/i.test(message ?? '') ? 'Waits can only be added while the flow is a draft. Nothing was saved.' : 'Connected flows can only be edited while the flow is a draft. Nothing was saved.', code: /durable/i.test(message ?? '') ? 'durable_wait_requires_draft' : 'subflow_requires_draft' }, { status: 409 })
+    case '23505': // duplicate node_key
+    case '23514': // unknown node_type / bad trigger_type
+    case '23502': // missing node_key / node_type
+    case '22P02': // value of the wrong type
+    case '22003': // number out of range
+      return NextResponse.json({ error: 'The flow definition is not valid (for example a duplicated or unknown node). Nothing was saved.' }, { status: 422 })
+    default:
+      return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
+  }
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Checks every execute_flow target against the caller's OWN account. An empty target is fine (an unfinished draft);
+ * a malformed id, the flow itself, or a flow that is missing / deleted / in another account is reported per node.
+ * Returns null when the lookup itself failed (the caller must not save on an unverified reference).
+ */
+async function subflowTargetIssues(
+  admin: ReturnType<typeof supabaseAdmin>,
+  accountId: string,
+  flowId: string,
+  nodes: Array<{ node_key: string; config: Record<string, unknown> }>,
+): Promise<Array<{ node_key: string; issue: 'invalid_target' | 'target_is_self' | 'target_not_found' }> | null> {
+  const issues: Array<{ node_key: string; issue: 'invalid_target' | 'target_is_self' | 'target_not_found' }> = []
+  const wanted = new Map<string, string[]>()
+  for (const node of nodes) {
+    const raw = (node.config ?? {}).target_flow_id
+    if (raw === undefined || raw === null || raw === '') continue
+    if (typeof raw !== 'string' || !UUID_RE.test(raw)) { issues.push({ node_key: node.node_key, issue: 'invalid_target' }); continue }
+    if (raw.toLowerCase() === flowId.toLowerCase()) { issues.push({ node_key: node.node_key, issue: 'target_is_self' }); continue }
+    wanted.set(raw.toLowerCase(), [...(wanted.get(raw.toLowerCase()) ?? []), node.node_key])
+  }
+  if (wanted.size) {
+    const { data, error } = await admin.from('flows').select('id').eq('account_id', accountId).in('id', [...wanted.keys()])
+    if (error) return null
+    const found = new Set((data ?? []).map((row: { id: string }) => row.id.toLowerCase()))
+    for (const [target, keys] of wanted) if (!found.has(target)) for (const key of keys) issues.push({ node_key: key, issue: 'target_not_found' })
+  }
+  return issues
 }
 
 export async function GET(
@@ -108,10 +171,12 @@ export async function PUT(
     if (body.name !== undefined && !body.name.trim()) {
       return NextResponse.json({ error: 'name cannot be empty' }, { status: 400 })
     }
+    if (body.nodes !== undefined && !Array.isArray(body.nodes)) {
+      return NextResponse.json({ error: 'nodes must be an array' }, { status: 400 })
+    }
 
     const admin = supabaseAdmin()
-    // Validate ALL external references before the existing delete+insert
-    // replacement starts, so an invalid request cannot leave partial nodes.
+    // Validate ALL external references before anything is written, so an invalid request never reaches the database.
     if (body.nodes !== undefined) {
       const capabilityEnabled = isCustomConditionEnabledForAccount(account.accountId)
       const { data: currentNodes, error: currentNodesError } = !capabilityEnabled
@@ -128,12 +193,60 @@ export async function PUT(
       if (issues.length) return NextResponse.json({ error: 'Invalid condition reference', issues }, { status: 422 })
     }
 
-    // Update the flow row first — the body may not include `nodes` (a
-    // header-only save for editing the trigger config without touching
-    // the graph). Skip node replacement in that case.
-    const flowPatch: Record<string, unknown> = {
-      updated_at: new Date().toISOString(),
+    // "Run another flow" nodes (pilot): only accounts opted in on the server may write them, and every target must be
+    // an existing flow of the caller's own account (never the flow itself). Migration 068 enforces the same in SQL.
+    const subflowNodes = (body.nodes ?? []).filter((n) => n.node_type === 'execute_flow')
+    if (subflowNodes.length) {
+      if (!isSubflowAuthoringEnabledForAccount(account.accountId)) {
+        return NextResponse.json({ error: 'Connecting flows is not enabled for this account.', code: 'subflow_authoring_disabled' }, { status: 403 })
+      }
+      // P8 settings of the call: the reference must be a send step of THIS payload, the reply policy one of two values.
+      const sendKeys = new Set((body.nodes ?? []).filter((n) => n.node_type === 'send_message' || n.node_type === 'send_media').map((n) => n.node_key))
+      const badSettings = subflowNodes.flatMap((n) => {
+        const c = n.config as { reference_node_key?: unknown; on_customer_reply?: unknown }
+        const issues: Array<{ node_key: string; issue: string }> = []
+        if (c.reference_node_key !== undefined && (typeof c.reference_node_key !== 'string' || !sendKeys.has(c.reference_node_key))) issues.push({ node_key: n.node_key, issue: 'invalid_reference_node' })
+        if (c.on_customer_reply !== undefined && c.on_customer_reply !== 'stop' && c.on_customer_reply !== 'continue') issues.push({ node_key: n.node_key, issue: 'invalid_on_customer_reply' })
+        return issues
+      })
+      if (badSettings.length) return NextResponse.json({ error: 'A call setting is not valid. Nothing was saved.', code: 'invalid_subflow_settings', issues: badSettings }, { status: 422 })
+      const subflowIssues = await subflowTargetIssues(admin, account.accountId, id, subflowNodes)
+      if (subflowIssues === null) return NextResponse.json({ error: 'Could not validate the connected flows' }, { status: 503 })
+      if (subflowIssues.length) {
+        return NextResponse.json({ error: 'A connected flow does not exist anymore or does not belong to this account. Nothing was saved.', code: 'invalid_subflow_target', issues: subflowIssues }, { status: 422 })
+      }
     }
+
+    // Durable waits (delay nodes with a unit): only accounts opted in on the server may write them, and each one must be
+    // well formed. Legacy delays (seconds only) are untouched. Migration 069 enforces the same shape in SQL.
+    const durableNodes = (body.nodes ?? []).filter((n) => n.node_type === 'delay' && isDurableWaitConfig(n.config))
+    if (durableNodes.length) {
+      if (!isDurableWaitAuthoringEnabledForAccount(account.accountId)) {
+        return NextResponse.json({ error: 'Durable waits are not enabled for this account.', code: 'durable_wait_authoring_disabled' }, { status: 403 })
+      }
+      const badWaits = durableNodes.flatMap((n) => { const w = durableWaitSeconds(n.config); return w.ok ? [] : [{ node_key: n.node_key, issue: w.reason }] })
+      if (badWaits.length) {
+        return NextResponse.json({ error: 'A wait is not valid (whole amount of at least 1 second, at most 30 days). Nothing was saved.', code: 'invalid_durable_wait', issues: badWaits }, { status: 422 })
+      }
+    }
+
+    // Voice notes (send_media audio): only accounts opted in on the server may write them. Independent of F04/F06.
+    if (((body.nodes ?? []).some((n) => n.node_type === 'send_product_audios') && !isVoiceNoteEnabledForAccount(account.accountId)) || ((body.nodes ?? []).some((n) => n.node_type === 'send_media' && (n.config as { media_type?: unknown } | null)?.media_type === 'audio') && !isMediaAudioEnabledForAccount(account.accountId))) {
+      return NextResponse.json({ error: 'Voice notes are not enabled for this account.', code: 'voice_note_disabled' }, { status: 403 })
+    }
+
+    // End scope (P8): "run" (default) or "subflow". Anything else is refused before anything is written.
+    const badEnds = (body.nodes ?? []).filter((n) => n.node_type === 'end' && (n.config as { scope?: unknown })?.scope !== undefined && !['run', 'subflow'].includes(String((n.config as { scope?: unknown }).scope)))
+    if (badEnds.length) return NextResponse.json({ error: 'An End step has an invalid scope. Nothing was saved.', code: 'invalid_end_scope', issues: badEnds.map((n) => ({ node_key: n.node_key })) }, { status: 422 })
+
+    // Customer-activity conditions (P7): only accounts opted in on the server may write them. Drafts only: activation is
+    // blocked by the validator (and the engine fails closed at run time), so saving one never runs anything.
+    if ((body.nodes ?? []).some((n) => n.node_type === 'condition' && isCustomerActivityConfig(n.config)) && !isCustomerReplyConditionEnabledForAccount(account.accountId)) {
+      return NextResponse.json({ error: 'The customer-activity condition is not enabled for this account.', code: 'customer_reply_condition_disabled' }, { status: 403 })
+    }
+
+    // Only the fields the client sent are patched: a header-only save (no `nodes`) leaves the graph alone.
+    const flowPatch: Record<string, unknown> = {}
     if (body.name !== undefined) flowPatch.name = body.name.trim()
     if (body.description !== undefined) flowPatch.description = body.description
     if (body.trigger_type !== undefined) flowPatch.trigger_type = body.trigger_type
@@ -141,16 +254,15 @@ export async function PUT(
     if (body.entry_node_id !== undefined) flowPatch.entry_node_id = body.entry_node_id
     if (body.fallback_policy !== undefined) flowPatch.fallback_policy = body.fallback_policy
 
-    const { error: updErr } = await admin.from('flows').update(flowPatch).eq('id', id)
-    if (updErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
-    if (body.nodes !== undefined) {
-      const { error: delErr } = await admin.from('flow_nodes').delete().eq('flow_id', id)
-      if (delErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
-      if (body.nodes.length) {
-        const { error: insErr } = await admin.from('flow_nodes').insert(body.nodes.map((n) => ({ flow_id: id, node_key: n.node_key, node_type: n.node_type, config: n.config, position_x: n.position_x ?? 0, position_y: n.position_y ?? 0 })))
-        if (insErr) return NextResponse.json({ error: 'Could not save flow' }, { status: 500 })
-      }
-    }
+    // ONE call = ONE transaction. The account comes from the authenticated session (requireRole), never from the
+    // request body, and the function only writes a flow that belongs to it.
+    const { error: saveErr } = await admin.rpc('replace_flow_draft_atomic', {
+      p_account_id: account.accountId,
+      p_flow_id: id,
+      p_patch: flowPatch,
+      p_nodes: body.nodes === undefined ? null : body.nodes.map((n) => ({ node_key: n.node_key, node_type: n.node_type, config: n.config, position_x: n.position_x ?? 0, position_y: n.position_y ?? 0 })),
+    })
+    if (saveErr) return saveFailure(saveErr.code, saveErr.message)
     const [{ data: flow }, { data: nodes }] = await Promise.all([
       admin.from('flows').select('*').eq('id', id).maybeSingle(),
       admin.from('flow_nodes').select('*').eq('flow_id', id).order('created_at', { ascending: true }),
