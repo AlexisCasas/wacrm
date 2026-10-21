@@ -67,6 +67,8 @@ import { NodeConfigForm, useAccountTags } from './forms/node-config-form';
 import { NodeKeySelect } from './forms/fields';
 import { IssueLine } from './validation-panel';
 import { useFlowEditor, type BuilderState } from './flow-editor-state';
+import { useAudioGuideEnabled } from '@/hooks/use-audio-guide-enabled';
+import { useSubflowAuthoringCapability } from './use-subflow-authoring';
 import {
   buildWhatsAppAdvertisingLink,
   combineKeywords,
@@ -811,6 +813,8 @@ function NodeConfigWithAdvanced({
 // ============================================================
 
 function AddNodeButton({ onAdd, t }: { onAdd: (type: NodeType) => void; t: ReturnType<typeof useTranslations> }) {
+  const subflowAuthoring = useSubflowAuthoringCapability();
+  const audioGuideEnabled = useAudioGuideEnabled() === true;
   const types: NodeType[] = [
     'start',
     'send_buttons',
@@ -822,6 +826,10 @@ function AddNodeButton({ onAdd, t }: { onAdd: (type: NodeType) => void; t: Retur
     'set_tag',
     'delay',
     'set_contact_field',
+    // pilot: offered only to accounts the server opted in
+    ...(subflowAuthoring ? (['execute_flow'] as NodeType[]) : []),
+    // "Audios por producto": only for accounts the server enabled for voice notes
+    ...(audioGuideEnabled ? (['send_product_audios'] as NodeType[]) : []),
     'handoff',
     'end',
   ];

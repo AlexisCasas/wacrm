@@ -43,13 +43,35 @@ import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition-capability";
+import { isDurableWaitExecutionEnabledForAccount } from "@/lib/flows/durable-wait-capability";
+import { computeResumeAt, durableWaitSeconds, isDurableWaitConfig } from "@/lib/flows/durable-wait";
 import { NATIVE_CONTACT_CONDITION_FIELDS } from "@/lib/flows/condition-references";
+import { randomUUID } from "node:crypto";
+import {
+  CUSTOMER_ACTIVITY_SUBJECT,
+  INHERITED_REFERENCE_KEY,
+  MAX_PRE_EXISTING_IDS,
+  REPLIED_AFTER_REFERENCE_OPERATOR,
+  REPLY_GUARD_VARS_KEY,
+  type SendReference,
+  floorToSecondIso,
+  isCustomerReplyConditionEnabledForAccount,
+  parseReferenceObject,
+  parseSendReference,
+  referenceKey,
+  referencedSendKeys,
+  withSendReference,
+} from "@/lib/flows/customer-reply-condition";
+import { isSubflowExecutionEnabledForAccount, type OnCustomerReply } from "@/lib/flows/subflow-execution-capability";
 import { ContactBlockedError } from "@/lib/contacts/blocking";
+import { executeSendProductAudios } from "@/lib/flows/product-audios";
 import {
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
   type DelayNodeConfig,
   type DispatchInboundInput,
+  type EndNodeConfig,
+  type ExecuteFlowNodeConfig,
   type DispatchInboundResult,
   type FlowNodeRow,
   type FlowRow,
@@ -192,6 +214,9 @@ export function evaluateConditionPredicate(args: {
     case "contains":
       if (args.subjectValue === undefined) return false;
       return args.subjectValue.includes(args.configValue ?? "");
+    default:
+      // `replied_after_reference` is decided by `customerRepliedAfterReference` (a DB question), never here. Fail closed.
+      return false;
   }
 }
 
@@ -495,6 +520,203 @@ async function executeHandoff(
   await endRun(db, run.id, "handed_off", "handoff_node");
 }
 
+/** Does this graph use something whose recovery needs the send-intent record? Plain legacy flows never do. */
+function graphNeedsSendTracking(nodes: Map<string, FlowNodeRow>): boolean {
+  for (const n of nodes.values()) {
+    if (n.node_type === "execute_flow") return true;
+    if (n.node_type === "delay" && isDurableWaitConfig(n.config)) return true;
+    if (n.node_type === "condition" && (n.config as { subject?: unknown }).subject === CUSTOMER_ACTIVITY_SUBJECT) return true;
+  }
+  return false;
+}
+
+/** The flow the run is inside right now: the callee while a subflow is running, the root flow otherwise. */
+function currentFlowIdOf(run: FlowRunRow): string {
+  return run.current_flow_id ?? run.flow_id;
+}
+
+/** Strict variant of logEvent: callers that must not go on without the evidence (send intent, spontaneous replies) need to know. */
+async function logEventStrict(
+  db: AdminClient,
+  flowRunId: string,
+  event_type: "node_entered" | "reply_received" | "error",
+  node_key: string | null,
+  payload: Record<string, unknown>,
+): Promise<boolean> {
+  const { error } = await db.from("flow_run_events").insert({ flow_run_id: flowRunId, event_type, node_key, payload });
+  if (error) console.error("[flows] strict event failed:", error.message);
+  return !error;
+}
+
+/** Conversations of the run's contact inside the run's account (one today: idx_conversations_account_contact). */
+async function contactConversationIds(db: AdminClient, run: FlowRunRow): Promise<string[]> {
+  if (!run.contact_id) throw new Error("customer_reply_contact_missing");
+  const { data, error } = await db.from("conversations").select("id").eq("account_id", run.account_id).eq("contact_id", run.contact_id);
+  if (error) throw new Error("customer_reply_conversation_lookup_failed");
+  return ((data ?? []) as Array<{ id: string }>).map((row) => row.id);
+}
+
+/**
+ * P7: did the customer write after the reference send? One question, no text comparison.
+ *
+ * Fails CLOSED (throws, so the caller ends the run WITHOUT sending anything) when: the account is not enabled, the reference is
+ * missing / corrupt / not from this contact's conversations, or any query fails.
+ *
+ * Tenancy: the contact's conversations in the run's account; the reference message must live in one of them. Only
+ * `sender_type = 'customer'` rows count, whatever their content_type (text, image, audio, video, document, location, sticker,
+ * interactive taps). Bot, agent and automation rows never count; reactions are not stored as messages.
+ *
+ * Time: inbound rows carry Meta's whole-second timestamp, so "newer than the reference" would miss a reply sent inside the same
+ * second as our message. The check is therefore `created_at >= window_start` (the reference second rounded down) excluding the
+ * `pre_ids` that were already stored when the reference was recorded (e.g. the message that started the flow).
+ */
+async function customerRepliedAfterReference(db: AdminClient, run: FlowRunRow, ref: SendReference): Promise<boolean> {
+  if (!isCustomerReplyConditionEnabledForAccount(run.account_id) || !isDurableWaitExecutionEnabledForAccount(run.account_id)) {
+    throw new Error("customer_reply_capability_disabled");
+  }
+  const conversationIds = await contactConversationIds(db, run);
+  if (!conversationIds.includes(ref.conversation_id)) throw new Error("customer_reply_reference_not_in_contact");
+
+  // The persisted outbound row is the source of truth for the timestamp; the copy in vars is only a pointer.
+  const { data: referenceRow, error: referenceError } = await db
+    .from("messages").select("id, created_at, sender_type").eq("id", ref.message_id).eq("conversation_id", ref.conversation_id).maybeSingle();
+  if (referenceError) throw new Error("customer_reply_reference_lookup_failed");
+  const row = referenceRow as { id: string; created_at: string | null; sender_type: string } | null;
+  if (!row || row.sender_type === "customer" || !row.created_at || Number.isNaN(Date.parse(row.created_at))
+      || new Date(row.created_at).getTime() !== new Date(ref.sent_at).getTime()) {
+    throw new Error("customer_reply_reference_invalid");
+  }
+
+  let query = db.from("messages").select("id").in("conversation_id", conversationIds).eq("sender_type", "customer").gte("created_at", ref.window_start);
+  if (ref.pre_ids.length) query = query.not("id", "in", `(${ref.pre_ids.join(",")})`);
+  const { data: replies, error: repliesError } = await query.limit(1);
+  if (repliesError) throw new Error("customer_reply_query_failed");
+  return (replies ?? []).length > 0;
+}
+
+/** Resolve the reference a condition names: a send node of the CURRENT flow, or the one handed down by the calling flow. */
+function resolveConditionReference(run: FlowRunRow, subjectKey: string): SendReference {
+  const key = subjectKey === INHERITED_REFERENCE_KEY ? INHERITED_REFERENCE_KEY : referenceKey(currentFlowIdOf(run), subjectKey);
+  const ref = typeof subjectKey === "string" && subjectKey ? parseSendReference(run.vars, key) : null;
+  if (!ref) throw new Error("customer_reply_reference_missing");
+  return ref;
+}
+
+/**
+ * Remember the FIRST successful send of a node that a customer-activity condition (or a calling flow) points at. Never throws:
+ * the message is already out, so a failure here only means the condition will fail closed later (no follow-up).
+ */
+async function recordSendReference(db: AdminClient, run: FlowRunRow, nodeKey: string, whatsappMessageId: string): Promise<void> {
+  try {
+    const key = referenceKey(currentFlowIdOf(run), nodeKey);
+    if (parseSendReference(run.vars, key) || !run.conversation_id) return;
+    const { data, error } = await db
+      .from("messages").select("id, created_at").eq("conversation_id", run.conversation_id).eq("message_id", whatsappMessageId).maybeSingle();
+    const row = data as { id: string; created_at: string | null } | null;
+    if (error || !row?.created_at) throw new Error(error?.message ?? "reference_row_not_found");
+    // customer messages ALREADY stored whose stamp lies inside the reference second up to our own timestamp: they predate our message and
+    // must never count as a reply. A stamp AFTER our timestamp can only be an answer, so it is never excluded.
+    const windowStart = floorToSecondIso(row.created_at);
+    const conversationIds = await contactConversationIds(db, run);
+    const { data: existing, error: existingError } = await db
+      .from("messages").select("id").in("conversation_id", conversationIds).eq("sender_type", "customer").gte("created_at", windowStart).lte("created_at", row.created_at).limit(MAX_PRE_EXISTING_IDS + 1);
+    if (existingError) throw new Error("pre_existing_lookup_failed");
+    const preIds = ((existing ?? []) as Array<{ id: string }>).map((m) => m.id);
+    if (preIds.length > MAX_PRE_EXISTING_IDS) throw new Error("too_many_messages_in_reference_second");   // cannot be told apart reliably: no reference, fail closed
+    const vars = withSendReference(run.vars, key, { message_id: row.id, conversation_id: run.conversation_id, sent_at: row.created_at, window_start: windowStart, pre_ids: preIds });
+    const { error: updateError } = await db.from("flow_runs").update({ vars }).eq("id", run.id).eq("account_id", run.account_id);
+    if (updateError) throw new Error(updateError.message);
+    run.vars = vars;
+    await logEvent(db, run.id, "node_entered", nodeKey, { reason: "reply_reference_recorded", reference_message_id: row.id, pre_existing: preIds.length });
+  } catch (err) {
+    await logEvent(db, run.id, "error", nodeKey, { reason: "reply_reference_not_recorded", detail: err instanceof Error ? err.message : String(err) });
+  }
+}
+
+/** Persist (or clear) the "do not send if the customer wrote meanwhile" guard. It stores the RESOLVED reference, so it survives returns. */
+async function setReplyGuard(db: AdminClient, run: FlowRunRow, reference: SendReference | null): Promise<void> {
+  const vars: Record<string, unknown> = { ...run.vars };
+  if (reference) vars[REPLY_GUARD_VARS_KEY] = { reference };
+  else delete vars[REPLY_GUARD_VARS_KEY];
+  const { error } = await db.from("flow_runs").update({ vars }).eq("id", run.id).eq("account_id", run.account_id);
+  if (error) throw new Error("customer_reply_guard_not_saved");
+  run.vars = vars;
+}
+
+/** The frame of the subflow the run is inside (null for a flat run). */
+async function topSubflowFrame(db: AdminClient, run: FlowRunRow): Promise<{ on_customer_reply: OnCustomerReply; called_at: string; return_node_key: string; caller_flow_id: string; callee_flow_id: string } | null> {
+  if (!run.current_flow_id) return null;
+  const { data, error } = await db
+    .from("flow_run_subflow_frames").select("on_customer_reply, called_at, return_node_key, caller_flow_id, callee_flow_id")
+    .eq("flow_run_id", run.id).eq("account_id", run.account_id).order("depth", { ascending: false }).limit(1).maybeSingle();
+  if (error) throw new Error("subflow_frame_lookup_failed");
+  return (data as never) ?? null;
+}
+
+/**
+ * A SPONTANEOUS reply is a customer message that reached the run while it sat parked on a wait (recorded as reply_received
+ * with during_wait). Answers to a button, a list or a collect_input are consumed by that node and never recorded this way, so
+ * they do not count. Evidence comes from the append-only event log, written strictly when the reply arrives.
+ */
+async function spontaneousReplySince(db: AdminClient, run: FlowRunRow, sinceIso: string): Promise<boolean> {
+  const { data, error } = await db
+    .from("flow_run_events").select("id").eq("flow_run_id", run.id).eq("event_type", "reply_received").eq("payload->>during_wait", "true").gt("created_at", sinceIso).limit(1);
+  if (error) throw new Error("spontaneous_reply_lookup_failed");
+  return (data ?? []).length > 0;
+}
+
+/**
+ * Right before any send, look again at everything that says "do not send this follow-up":
+ *   1. the P7 guard armed by a condition that answered "did not reply" (a customer message newer than the reference), and
+ *   2. inside a subflow called with on_customer_reply = stop, a spontaneous reply that arrived while the run was parked.
+ * Closes the long part of the race (everything between the decision and the send); the few milliseconds of the Meta call itself
+ * cannot be closed and are documented. If the answer cannot be determined the run ends WITHOUT sending.
+ * Returns true when the send must NOT happen (the run has been ended here).
+ */
+async function sendSuppressedByReplyGuard(db: AdminClient, run: FlowRunRow, nodeKey: string): Promise<boolean> {
+  const guard = run.vars[REPLY_GUARD_VARS_KEY] as { reference?: unknown } | undefined;
+  if (!guard && !run.current_flow_id) return false;
+  try {
+    if (guard) {
+      const reference = parseReferenceObject(guard.reference);
+      if (!reference) throw new Error("reply_guard_reference_invalid");
+      if (await customerRepliedAfterReference(db, run, reference)) {
+        await logEvent(db, run.id, "node_entered", nodeKey, { reason: "send_suppressed_customer_replied" });
+        await endRun(db, run.id, "completed", "customer_replied_before_send");
+        return true;
+      }
+    }
+    const frame = await topSubflowFrame(db, run);
+    if (frame?.on_customer_reply === "stop" && (await spontaneousReplySince(db, run, frame.called_at))) {
+      await logEvent(db, run.id, "node_entered", nodeKey, { reason: "send_suppressed_spontaneous_reply" });
+      await endRun(db, run.id, "completed", "customer_replied_in_subflow");
+      return true;
+    }
+    return false;
+  } catch (err) {
+    await logEvent(db, run.id, "error", nodeKey, { reason: "reply_guard_failed", code: err instanceof Error ? err.message : "unknown" });
+    await endRun(db, run.id, "failed", "reply_guard_failed");
+    return true;
+  }
+}
+
+/**
+ * Write the intent to send BEFORE calling Meta. If the process dies afterwards, the run shows an intent without a matching
+ * message_sent: the outcome is UNKNOWN and recovery must not resend it. If the intent cannot be written, nothing is sent.
+ */
+async function recordSendIntent(db: AdminClient, run: FlowRunRow, nodeKey: string, nodeType: string, track: boolean): Promise<boolean> {
+  // Only runs of flows that use the P6 / P8 machinery (a durable wait, a call to another flow, the customer-activity condition, or a
+  // run that is inside a called flow) pay for, and depend on, the intent record: every other flow keeps the exact historic send
+  // path, with no extra write and no new way to fail, whatever the account-level switches say.
+  if (!track) return true;
+  const ok = await logEventStrict(db, run.id, "node_entered", nodeKey, { reason: "send_intent", node_type: nodeType, flow_id: currentFlowIdOf(run), attempt: randomUUID() });
+  if (!ok) {
+    await logEvent(db, run.id, "error", nodeKey, { reason: "send_intent_not_recorded" });
+    await endRun(db, run.id, "failed", "send_intent_not_recorded");
+  }
+  return ok;
+}
+
 /**
  * Resolve a condition node's subject value from DB / run state, then
  * call the pure `evaluateConditionPredicate`. Splits out so the
@@ -512,6 +734,10 @@ export async function evaluateConditionNode(
   run: FlowRunRow,
   cfg: ConditionNodeConfig,
 ): Promise<boolean> {
+  if (cfg.subject === CUSTOMER_ACTIVITY_SUBJECT) {
+    if (cfg.operator !== REPLIED_AFTER_REFERENCE_OPERATOR) throw new Error("customer_reply_operator_invalid");
+    return customerRepliedAfterReference(db, run, resolveConditionReference(run, cfg.subject_key));
+  }
   if (!run.contact_id && cfg.subject !== "var") {
     throw new Error("condition_contact_missing");
   }
@@ -719,6 +945,97 @@ async function endRunForContactBlocked(
   await endRun(db, runId, "paused_by_agent", "contact_blocked");
 }
 
+/** Re-read what the push / pop RPCs changed on the run, so the in-memory copy never disagrees with the database. */
+async function refreshRunAfterStackChange(db: AdminClient, run: FlowRunRow): Promise<boolean> {
+  const { data, error } = await db.from("flow_runs").select("vars, current_flow_id, current_node_key, status").eq("id", run.id).eq("account_id", run.account_id).maybeSingle();
+  const row = data as { vars: Record<string, unknown>; current_flow_id: string | null; current_node_key: string | null; status: string } | null;
+  if (error || !row || row.status !== "active") return false;
+  run.vars = row.vars ?? {}; run.current_flow_id = row.current_flow_id; run.current_node_key = row.current_node_key;
+  return true;
+}
+
+/** The graph of the flow the run is now inside, checked against the pins the frames hold. A mismatch ends the run. */
+async function loadStackGraph(db: AdminClient, run: FlowRunRow, nodeKey: string): Promise<Map<string, FlowNodeRow> | null> {
+  const graph = await loadAllNodes(db, currentFlowIdOf(run));
+  const { data, error } = await db.rpc("verify_flow_run_stack", { p_account_id: run.account_id, p_run_id: run.id });
+  const verdict = data as { ok?: boolean; reason?: string } | null;
+  if (error || !verdict?.ok || !graph.has(nodeKey)) {
+    await logEvent(db, run.id, "error", nodeKey, { reason: "subflow_stack_invalid", code: error ? "rpc_failed" : (verdict?.reason ?? (graph.has(nodeKey) ? "unknown" : "node_missing")) });
+    await endRun(db, run.id, "failed", "subflow_stack_invalid");
+    return null;
+  }
+  return graph;
+}
+
+/**
+ * execute_flow: call another flow of the same account and come back. The database is the authority (migration 070 re-checks the
+ * account, the call node, depth, cycles, enablement and pins both graphs); this function only prepares the call and moves on.
+ */
+async function enterSubflow(
+  db: AdminClient,
+  run: FlowRunRow,
+  node: FlowNodeRow,
+): Promise<{ kind: "ended" } | { kind: "entered"; nodes: Map<string, FlowNodeRow>; entryNodeKey: string }> {
+  const fail = async (reason: string, detail?: string): Promise<{ kind: "ended" }> => {
+    await logEvent(db, run.id, "error", node.node_key, { reason, ...(detail ? { detail } : {}) });
+    await endRun(db, run.id, "failed", reason);
+    return { kind: "ended" };
+  };
+  if (!isSubflowExecutionEnabledForAccount(run.account_id)) return fail("subflow_execution_not_enabled");
+  const cfg = node.config as unknown as ExecuteFlowNodeConfig;
+  if (typeof cfg.target_flow_id !== "string" || typeof cfg.next_node_key !== "string" || !cfg.next_node_key) return fail("invalid_execute_flow_config");
+  const policy: OnCustomerReply = cfg.on_customer_reply === "continue" ? "continue" : "stop";
+  // The caller's chosen reference (a send node of THIS flow) travels with the call. Missing => the callee fails closed if it needs it.
+  const reference = cfg.reference_node_key ? parseSendReference(run.vars, referenceKey(currentFlowIdOf(run), cfg.reference_node_key)) : null;
+  if (cfg.reference_node_key && !reference) return fail("subflow_reference_missing");
+  const { data, error } = await db.rpc("push_flow_subflow", {
+    p_account_id: run.account_id, p_run_id: run.id, p_call_node_key: node.node_key, p_callee_flow_id: cfg.target_flow_id,
+    p_return_node_key: cfg.next_node_key, p_reference: reference, p_on_customer_reply: policy,
+  });
+  const result = data as { ok?: boolean; reason?: string; entry_node_key?: string; depth?: number } | null;
+  if (error || !result?.ok || !result.entry_node_key) return fail(`subflow_call_refused:${error ? "rpc_failed" : (result?.reason ?? "unknown")}`);
+  if (!(await refreshRunAfterStackChange(db, run))) return { kind: "ended" };
+  await logEvent(db, run.id, "node_entered", node.node_key, { reason: "subflow_called", callee_flow_id: cfg.target_flow_id, depth: result.depth, return_node_key: cfg.next_node_key, on_customer_reply: policy });
+  const graph = await loadStackGraph(db, run, result.entry_node_key);
+  return graph ? { kind: "entered", nodes: graph, entryNodeKey: result.entry_node_key } : { kind: "ended" };
+}
+
+/**
+ * "End this subflow and return" reached inside a called flow. The caller continues ONLY if: the stack is intact, and (policy stop)
+ * the customer did not write spontaneously while the callee was parked. Otherwise the run ends here and the caller never resumes.
+ */
+async function leaveSubflow(
+  db: AdminClient,
+  run: FlowRunRow,
+  node: FlowNodeRow,
+): Promise<{ kind: "ended" } | { kind: "returned"; nodes: Map<string, FlowNodeRow>; returnNodeKey: string }> {
+  const fail = async (reason: string, detail?: string): Promise<{ kind: "ended" }> => {
+    await logEvent(db, run.id, "error", node.node_key, { reason, ...(detail ? { detail } : {}) });
+    await endRun(db, run.id, "failed", reason);
+    return { kind: "ended" };
+  };
+  const calleeFlowId = currentFlowIdOf(run);
+  let frame: Awaited<ReturnType<typeof topSubflowFrame>>;
+  try {
+    frame = await topSubflowFrame(db, run);
+    if (frame?.on_customer_reply === "stop" && (await spontaneousReplySince(db, run, frame.called_at))) {
+      await logEvent(db, run.id, "node_entered", node.node_key, { reason: "return_cancelled_spontaneous_reply", callee_flow_id: calleeFlowId });
+      await endRun(db, run.id, "completed", "customer_replied_in_subflow");
+      return { kind: "ended" };
+    }
+  } catch (err) {
+    return fail("subflow_return_check_failed", err instanceof Error ? err.message : undefined);
+  }
+  if (!frame) return fail("subflow_frame_missing");
+  const { data, error } = await db.rpc("pop_flow_subflow", { p_account_id: run.account_id, p_run_id: run.id, p_expected_callee_flow_id: calleeFlowId });
+  const result = data as { ok?: boolean; reason?: string; return_node_key?: string } | null;
+  if (error || !result?.ok || !result.return_node_key) return fail(`subflow_return_refused:${error ? "rpc_failed" : (result?.reason ?? "unknown")}`);
+  if (!(await refreshRunAfterStackChange(db, run))) return { kind: "ended" };
+  await logEvent(db, run.id, "node_entered", node.node_key, { reason: "subflow_returned", callee_flow_id: calleeFlowId, return_node_key: result.return_node_key });
+  const graph = await loadStackGraph(db, run, result.return_node_key);
+  return graph ? { kind: "returned", nodes: graph, returnNodeKey: result.return_node_key } : { kind: "ended" };
+}
+
 // ============================================================
 // The synchronous advance loop. Walks through auto-advance nodes
 // until it hits one that suspends (send_buttons/send_list) or
@@ -730,9 +1047,13 @@ async function advanceFromNodeKey(
   db: AdminClient,
   run: FlowRunRow,
   startNodeKey: string,
-  nodes: Map<string, FlowNodeRow>,
+  initialNodes: Map<string, FlowNodeRow>,
 ): Promise<{ outcome: "advanced" | "completed" | "handed_off" }> {
   let currentKey: string | null = startNodeKey;
+  // The graph the run is walking. It changes when the run enters a subflow or returns from one (execute_flow / end).
+  let nodes = initialNodes;
+  let referenceKeys = referencedSendKeys(nodes.values());
+  let trackSends = !!run.current_flow_id || graphNeedsSendTracking(nodes);
   // Defensive cap — if a flow has a cycle (which the validator
   // SHOULD catch but doesn't yet in v1), we bail rather than loop.
   for (let safety = 0; safety < 64; safety += 1) {
@@ -759,6 +1080,14 @@ async function advanceFromNodeKey(
       currentKey = (node.config as unknown as StartNodeConfig).next_node_key;
       continue;
     }
+    if (
+      node.node_type === "send_message" || node.node_type === "send_media" || node.node_type === "collect_input" ||
+      node.node_type === "send_buttons" || node.node_type === "send_list"
+    ) {
+      // Re-validate everything that says "do not send this follow-up", then write the intent BEFORE the Meta call.
+      if (await sendSuppressedByReplyGuard(db, run, node.node_key)) return { outcome: "completed" };
+      if (!(await recordSendIntent(db, run, node.node_key, node.node_type, trackSends))) return { outcome: "completed" };
+    }
     if (node.node_type === "send_message") {
       const cfg = node.config as unknown as SendMessageNodeConfig;
       try {
@@ -773,6 +1102,7 @@ async function advanceFromNodeKey(
           node_type: "send_message",
           whatsapp_message_id,
         });
+        if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
         if (err instanceof ContactBlockedError) {
           await endRunForContactBlocked(db, run.id, node.node_key);
@@ -802,6 +1132,9 @@ async function advanceFromNodeKey(
             ? interpolateVars(cfg.caption, run.vars)
             : undefined,
           filename: cfg.filename,
+          // An audio node is always a native voice note; engineSendMedia
+          // refuses anything else for audio and drops caption/filename.
+          voice: cfg.media_type === "audio" ? true : undefined,
           // TEMPORARY ManyChat coexistence bridge (PENDIENTE 02.1B) —
           // ignored by meta-send.ts under Meta transport. No ManyChat
           // dependency here: engine.ts only ever hands the config
@@ -811,8 +1144,10 @@ async function advanceFromNodeKey(
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "send_media",
           media_type: cfg.media_type,
+          ...(cfg.media_type === "audio" ? { voice: true } : {}),
           whatsapp_message_id,
         });
+        if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
         if (err instanceof ContactBlockedError) {
           await endRunForContactBlocked(db, run.id, node.node_key);
@@ -827,6 +1162,28 @@ async function advanceFromNodeKey(
       }
       currentKey = cfg.next_node_key;
       continue;
+    }
+    if (node.node_type === "send_product_audios") {
+      // "Audios por producto": the catalog sequence is sent by src/lib/flows/product-audios.ts over audio_guide_requests/_sends. The run is
+      // never marked complete while audios are missing: anything but "every audio sent" (or a deliberate route) ends it as failed.
+      const result = await executeSendProductAudios({ db: db as never, run, nodeKey: node.node_key, config: node.config });
+      if (result.kind === "next") {
+        await logEvent(db, run.id, "message_sent", node.node_key, { node_type: "send_product_audios", ...result.detail });
+        currentKey = result.nodeKey;
+        continue;
+      }
+      if (result.kind === "blocked") {
+        await endRunForContactBlocked(db, run.id, node.node_key);
+        return { outcome: "completed" };
+      }
+      if (result.kind === "paused") {
+        // A person took over (the run is no longer active): stop quietly, exactly like a delay that wakes up to a paused run.
+        await logEvent(db, run.id, "error", node.node_key, { reason: result.reason });
+        return { outcome: "completed" };
+      }
+      await logEvent(db, run.id, "error", node.node_key, { reason: result.reason, node_type: "send_product_audios", ...(result.detail ?? {}) });
+      await endRun(db, run.id, "failed", result.reason.split(":")[0]);
+      return { outcome: "completed" };
     }
     if (node.node_type === "collect_input") {
       // Send the prompt and suspend. Customer's next TEXT reply will
@@ -897,6 +1254,16 @@ async function advanceFromNodeKey(
         await endRun(db, run.id, "failed", "condition_evaluation_failed");
         return { outcome: "completed" };
       }
+      if (cfg.subject === CUSTOMER_ACTIVITY_SUBJECT) {
+        // "Did not reply" arms the guard so every later send re-checks right before going out; "replied" disarms it.
+        try {
+          await setReplyGuard(db, run, branch === "false" ? resolveConditionReference(run, cfg.subject_key) : null);
+        } catch (err) {
+          await logEvent(db, run.id, "error", node.node_key, { reason: "reply_guard_failed", code: err instanceof Error ? err.message : "unknown" });
+          await endRun(db, run.id, "failed", "reply_guard_failed");
+          return { outcome: "completed" };
+        }
+      }
       currentKey =
         branch === "true" ? cfg.true_next : cfg.false_next;
       await logEvent(db, run.id, "node_entered", node.node_key, {
@@ -936,6 +1303,47 @@ async function advanceFromNodeKey(
       }
       currentKey = cfg.next_node_key;
       continue;
+    }
+    if (node.node_type === "delay" && isDurableWaitConfig(node.config)) {
+      // Durable wait (migration 069): never sleep in-process. Park the run and let the scheduler resume it.
+      const cfg = node.config as unknown as DelayNodeConfig;
+      if (!isDurableWaitExecutionEnabledForAccount(run.account_id)) {
+        // Fail CLOSED: a build or a flag that cannot honour the wait must not run the steps after it early.
+        await logEvent(db, run.id, "error", node.node_key, { reason: "durable_wait_not_enabled" });
+        await endRun(db, run.id, "failed", "durable_wait_not_enabled");
+        return { outcome: "completed" };
+      }
+      const wait = durableWaitSeconds(cfg);
+      if (!wait.ok || !cfg.next_node_key || !nodes.has(cfg.next_node_key)) {
+        await logEvent(db, run.id, "error", node.node_key, { reason: "invalid_durable_wait", detail: wait.ok ? "next_node_missing" : wait.reason });
+        await endRun(db, run.id, "failed", "invalid_durable_wait");
+        return { outcome: "completed" };
+      }
+      const resumeAt = computeResumeAt(wait.seconds, new Date());
+      const { data: scheduled, error: scheduleError } = await db.rpc("schedule_flow_wait", {
+        p_account_id: run.account_id,
+        p_run_id: run.id,
+        p_node_key: node.node_key,
+        p_wait_until: resumeAt.toISOString(),
+      });
+      if (scheduleError) {
+        await logEvent(db, run.id, "error", node.node_key, { reason: "wait_schedule_failed", detail: scheduleError.message });
+        await endRun(db, run.id, "failed", "wait_schedule_failed");
+        return { outcome: "completed" };
+      }
+      if (scheduled !== true) {
+        // The run is no longer active (an agent took over, the contact was blocked...): do NOT touch its status.
+        await logEvent(db, run.id, "node_entered", node.node_key, { reason: "wait_not_scheduled_run_no_longer_active" });
+        return { outcome: "completed" };
+      }
+      await logEvent(db, run.id, "node_entered", node.node_key, {
+        node_type: "delay",
+        durable: true,
+        amount: cfg.amount,
+        unit: cfg.unit,
+        resume_at: resumeAt.toISOString(),
+      });
+      return { outcome: "advanced" };
     }
     if (node.node_type === "delay") {
       const cfg = node.config as unknown as DelayNodeConfig;
@@ -1020,7 +1428,21 @@ async function advanceFromNodeKey(
       await executeHandoff(db, run, node);
       return { outcome: "handed_off" };
     }
+    if (node.node_type === "execute_flow") {
+      const call = await enterSubflow(db, run, node);
+      if (call.kind === "ended") return { outcome: "completed" };
+      nodes = call.nodes; referenceKeys = referencedSendKeys(nodes.values()); trackSends = true; currentKey = call.entryNodeKey;
+      continue;
+    }
     if (node.node_type === "end") {
+      if ((node.config as EndNodeConfig).scope === "subflow" && run.current_flow_id) {
+        // "End this subflow and return": the caller resumes at its return node, unless the stack or the customer says otherwise.
+        const back = await leaveSubflow(db, run, node);
+        if (back.kind === "ended") return { outcome: "completed" };
+        nodes = back.nodes; referenceKeys = referencedSendKeys(nodes.values()); trackSends = !!run.current_flow_id || graphNeedsSendTracking(nodes); currentKey = back.returnNodeKey;
+        continue;
+      }
+      // Default (historic behaviour): the whole execution ends, wherever the run is.
       await logEvent(db, run.id, "completed", node.node_key);
       await endRun(db, run.id, "completed", "end_node");
       return { outcome: "completed" };
@@ -1109,7 +1531,17 @@ export async function dispatchInboundToFlows(
       }
       // One SELECT for the whole flow's nodes — advance loop is now
       // in-memory. See loadAllNodes.
-      const nodes = await loadAllNodes(db, activeRun.flow_id);
+      const nodes = await loadAllNodes(db, currentFlowIdOf(activeRun));
+      if (activeRun.current_flow_id) {
+        // The run sits inside a called flow: answer it only if every flow of the stack is still the one the call pinned.
+        const { data: verdictData, error: verdictError } = await db.rpc("verify_flow_run_stack", { p_account_id: activeRun.account_id, p_run_id: activeRun.id });
+        const verdict = verdictData as { ok?: boolean; reason?: string } | null;
+        if (verdictError || !verdict?.ok) {
+          await logEvent(db, activeRun.id, "error", activeRun.current_node_key, { reason: "subflow_stack_invalid", code: verdictError ? "rpc_failed" : (verdict?.reason ?? "unknown") });
+          await endRun(db, activeRun.id, "failed", "subflow_stack_invalid");
+          return { consumed: false, flow_run_id: activeRun.id, outcome: "no_match" };
+        }
+      }
       return handleReplyForActiveRun(db, activeRun, input.message, nodes);
     }
 
@@ -1147,12 +1579,33 @@ async function handleReplyForActiveRun(
   // table. Length is enough for "did they actually reply?" debugging;
   // for the captured value itself, the `node_entered` event already
   // records `captured_key` + `captured_length` after the var is stored.
-  await logEvent(db, run.id, "reply_received", run.current_node_key, {
+  const replyPayload = {
     meta_message_id: message.meta_message_id,
     reply_kind: message.kind,
     reply_id: message.kind === "interactive_reply" ? message.reply_id : null,
     text_length: message.kind === "text" ? message.text.length : null,
-  });
+    // The marker the subflow reply policy (and the P7 history) rely on: a reply that arrived while the run was parked.
+    ...(run.wait_until ? { during_wait: true } : {}),
+  };
+  if (run.wait_until) {
+    // A spontaneous reply must be on record: later sends decide from it. If it cannot be recorded, fail closed (no follow-up);
+    // the message itself is already in the Inbox and remains available to everything else.
+    if (!(await logEventStrict(db, run.id, "reply_received", run.current_node_key, replyPayload))) {
+      await logEvent(db, run.id, "error", run.current_node_key, { reason: "reply_not_recorded" });
+      await endRun(db, run.id, "failed", "reply_not_recorded");
+      return { consumed: false, flow_run_id: run.id, outcome: "no_match" };
+    }
+  } else {
+    await logEvent(db, run.id, "reply_received", run.current_node_key, replyPayload);
+  }
+
+  // The run is parked on a durable wait. A reply is NOT an answer to anything: no reprompt, no handoff, no fallback
+  // (which could exhaust and end the run). The message itself is already stored for the Inbox and the agents by the
+  // webhook; here it is only recorded on the run. The flow does not claim the message (consumed: false), so other
+  // automations treat it like any inbound.
+  if (run.wait_until) {
+    return { consumed: false, flow_run_id: run.id, outcome: "waiting" };
+  }
 
   if (!run.current_node_key) {
     // Defensive — a run with status='active' but no current node is
@@ -1658,4 +2111,228 @@ export async function startFlowManually(
     flow_id: flow.id,
     flow_name: flow.name,
   };
+}
+
+// ============================================================
+// Durable waits: resumption (called by /api/flows/waits/cron).
+//
+// Four distinct steps, each with its own failure behaviour (see qa/durable-wait/DESIGN.md):
+//   1. CLAIM    claim_due_flow_waits: one worker gets the run (lease + token). A crash here leaves the wait intact: the
+//               lease expires and another worker claims it. Nothing is lost, nothing is duplicated.
+//   2. CONSUME  consume_flow_wait: the token holder ends the wait and moves the run to the next node in ONE statement.
+//               From here on the wait can never be resumed again.
+//   3. ADVANCE  advanceFromNodeKey: walks the following nodes in memory (the legacy engine only persists progress when
+//               it suspends). A crash between 2 and the first send LOSES the follow-up (the run is stranded at the next
+//               node until the stale-run sweep ends it); it can never duplicate it.
+//   4. EFFECTS  each send is a Meta call followed by an event row. A crash after Meta accepted a message but before the
+//               loop finished cannot be recovered without a duplicate, exactly as for any legacy multi-node advance.
+// Execution therefore stays disabled per account until these windows are accepted (FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS).
+// ============================================================
+
+export interface ResumeWaitsSummary {
+  claimed: number;
+  resumed: number;
+  /** Claimed but not resumed because the run was cancelled / the flow is no longer usable (the run was ended or left alone). */
+  skipped: number;
+  /** Lost the race at consume time (another worker or a cancellation got there first). */
+  lost: number;
+  failed: number;
+  /** True when the time budget ended the pass early; the rest is picked up by the next pass. */
+  budgetExhausted: boolean;
+}
+
+export async function resumeDueFlowWaits(options: {
+  accountIds: string[];
+  limit?: number;
+  leaseSeconds?: number;
+  /** Stop starting new resumptions after this many milliseconds (default 45 000). */
+  budgetMs?: number;
+  db?: AdminClient;
+}): Promise<ResumeWaitsSummary> {
+  const db = options.db ?? supabaseAdmin();
+  const summary: ResumeWaitsSummary = { claimed: 0, resumed: 0, skipped: 0, lost: 0, failed: 0, budgetExhausted: false };
+  if (options.accountIds.length === 0) return summary;
+  const started = Date.now();
+  const { data, error } = await db.rpc("claim_due_flow_waits", {
+    p_account_ids: options.accountIds,
+    p_limit: options.limit ?? 25,
+    p_lease_seconds: options.leaseSeconds ?? 300,
+  });
+  if (error) throw new Error(`claim_due_flow_waits failed: ${error.message}`);
+  const claims = (data ?? []) as Array<{ run_id: string; account_id: string; flow_id: string; node_key: string; claim_token: string; due_at: string }>;
+  summary.claimed = claims.length;
+  for (const claim of claims) {
+    if (Date.now() - started > (options.budgetMs ?? 45_000)) {
+      // Unprocessed claims simply keep their lease; they are re-claimed after it expires (<= leaseSeconds).
+      summary.budgetExhausted = true;
+      break;
+    }
+    try {
+      const outcome = await resumeOneWait(db, claim);
+      summary[outcome] += 1;
+    } catch (err) {
+      summary.failed += 1;
+      console.error("[flows] durable wait resume threw:", err instanceof Error ? err.message : err);
+    }
+  }
+  return summary;
+}
+
+async function resumeOneWait(
+  db: AdminClient,
+  claim: { run_id: string; account_id: string; flow_id: string; node_key: string; claim_token: string; due_at: string },
+): Promise<"resumed" | "skipped" | "lost" | "failed"> {
+  const { data: runRow } = await db.from("flow_runs").select("*").eq("id", claim.run_id).eq("account_id", claim.account_id).maybeSingle();
+  const run = runRow as FlowRunRow | null;
+  // Cancelled (agent, block, sweep, deleted flow) or taken over by another worker since the claim: leave it alone.
+  if (!run || run.status !== "active" || run.wait_claim_token !== claim.claim_token) return "lost";
+
+  const flow = await loadFlow(db, run.flow_id);
+  if (!flow || flow.status !== "active" || flow.account_id !== run.account_id) {
+    // The flow was paused / archived / deleted while the customer waited: do not send on its behalf.
+    await logEvent(db, run.id, "error", claim.node_key, { reason: "flow_not_active_at_resume" });
+    await endRun(db, run.id, "failed", "flow_not_active_at_resume");
+    return "skipped";
+  }
+  if (run.current_flow_id) {
+    // Parked inside a called flow: every flow of the stack must still be the one the call pinned, or nothing continues.
+    const { data: verdictData, error: verdictError } = await db.rpc("verify_flow_run_stack", { p_account_id: run.account_id, p_run_id: run.id });
+    const verdict = verdictData as { ok?: boolean; reason?: string } | null;
+    if (verdictError || !verdict?.ok) {
+      await logEvent(db, run.id, "error", claim.node_key, { reason: "subflow_stack_invalid", code: verdictError ? "rpc_failed" : (verdict?.reason ?? "unknown") });
+      await endRun(db, run.id, "failed", "subflow_stack_invalid");
+      return "skipped";
+    }
+  }
+  const nodes = await loadAllNodes(db, currentFlowIdOf(run));
+  const waitNode = nodes.get(claim.node_key);
+  const cfg = waitNode?.config as unknown as DelayNodeConfig | undefined;
+  const next = cfg?.next_node_key;
+  if (!waitNode || waitNode.node_type !== "delay" || !isDurableWaitConfig(cfg) || !next || !nodes.has(next)) {
+    await logEvent(db, run.id, "error", claim.node_key, { reason: "wait_node_invalid_at_resume" });
+    await endRun(db, run.id, "failed", "wait_node_invalid_at_resume");
+    return "skipped";
+  }
+
+  // CONSUME: from this point the wait cannot be resumed again by anyone.
+  const { data: consumed, error: consumeError } = await db.rpc("consume_flow_wait", {
+    p_account_id: run.account_id,
+    p_run_id: run.id,
+    p_claim_token: claim.claim_token,
+    p_next_node_key: next,
+  });
+  if (consumeError) throw new Error(`consume_flow_wait failed: ${consumeError.message}`);
+  if (consumed !== true) return "lost";
+
+  await logEvent(db, run.id, "node_entered", claim.node_key, {
+    node_type: "delay",
+    reason: "wait_resumed",
+    due_at: claim.due_at,
+    late_ms: Math.max(0, Date.now() - new Date(claim.due_at).getTime()),
+  });
+  const advancing: FlowRunRow = { ...run, current_node_key: next, wait_until: null, wait_node_key: null, wait_claim_token: null, wait_claimed_at: null };
+  try {
+    await advanceFromNodeKey(db, advancing, next, nodes);
+  } catch (err) {
+    await logEvent(db, run.id, "error", next, { reason: "resume_advance_failed", detail: err instanceof Error ? err.message : String(err) });
+    await endRun(db, run.id, "failed", "resume_advance_failed");
+    return "failed";
+  }
+  return "resumed";
+}
+
+// ============================================================
+// Recovery of stranded runs (P8). Conservative on purpose: what the engine has in memory when a process dies is lost, so a
+// stranded run is only RESUMED when the event log proves that nothing was sent after the last persisted cursor. Any send whose
+// outcome is unknown is NEVER repeated: the run is ended and the incident is on record.
+// ============================================================
+
+export interface RecoverySummary { examined: number; resumed: number; ambiguous: number; unsafe: number; skipped: number; failed: number }
+
+type EvidenceRow = { event_type: string; node_key: string | null; payload: Record<string, unknown>; created_at: string };
+
+/** Pure decision, exported for tests. `events` are the run's events NEWER than its last persisted cursor, oldest first. */
+export function classifyStrandedRun(events: EvidenceRow[]): { kind: "recoverable" } | { kind: "ambiguous"; nodeKey: string | null } | { kind: "unsafe" } {
+  let pendingIntent: EvidenceRow | null = null;
+  let sentAfterCursor = false;
+  for (const e of events) {
+    if (e.event_type === "node_entered" && e.payload?.reason === "send_intent") pendingIntent = e;
+    else if (e.event_type === "message_sent") { sentAfterCursor = true; pendingIntent = null; }
+  }
+  if (pendingIntent) return { kind: "ambiguous", nodeKey: pendingIntent.node_key };   // an intent without its confirmation: the message may or may not have left
+  if (sentAfterCursor) return { kind: "unsafe" };                                    // the run progressed in memory after the cursor and sent something: cannot replay safely
+  return { kind: "recoverable" };
+}
+
+export async function recoverStrandedRuns(options: { accountIds: string[]; minAgeSeconds?: number; limit?: number; db?: AdminClient }): Promise<RecoverySummary> {
+  const db = options.db ?? supabaseAdmin();
+  const summary: RecoverySummary = { examined: 0, resumed: 0, ambiguous: 0, unsafe: 0, skipped: 0, failed: 0 };
+  if (options.accountIds.length === 0) return summary;
+  const cutoff = new Date(Date.now() - (options.minAgeSeconds ?? 300) * 1000).toISOString();
+  const { data, error } = await db
+    .from("flow_runs").select("*").eq("status", "active").is("wait_until", null).lt("last_advanced_at", cutoff).in("account_id", options.accountIds)
+    .order("last_advanced_at", { ascending: true }).limit(options.limit ?? 25);
+  if (error) throw new Error(`stranded run lookup failed: ${error.message}`);
+  for (const row of (data ?? []) as FlowRunRow[]) {
+    try {
+      const outcome = await recoverOneStrandedRun(db, row);
+      summary.examined += outcome === "skipped" ? 0 : 1;
+      summary[outcome] += 1;
+    } catch (err) {
+      summary.failed += 1;
+      console.error("[flows] stranded run recovery threw:", err instanceof Error ? err.message : err);
+    }
+  }
+  return summary;
+}
+
+async function recoverOneStrandedRun(db: AdminClient, run: FlowRunRow): Promise<"resumed" | "ambiguous" | "unsafe" | "skipped" | "failed"> {
+  if (!run.current_node_key) return "skipped";
+  const flowId = currentFlowIdOf(run);
+  const nodes = await loadAllNodes(db, flowId);
+  const node = nodes.get(run.current_node_key);
+  // Runs that legitimately wait for the customer (buttons, lists, collect_input) are not stranded, however long they have been quiet.
+  if (!node || !isAutoAdvancing(node.node_type) || (node.node_type === "delay" && isDurableWaitConfig(node.config))) return "skipped";
+  const { data: events, error } = await db
+    .from("flow_run_events").select("event_type, node_key, payload, created_at").eq("flow_run_id", run.id).gt("created_at", run.last_advanced_at).order("created_at", { ascending: true }).order("id", { ascending: true });
+  if (error) throw new Error("recovery_evidence_lookup_failed");
+  const verdict = classifyStrandedRun((events ?? []) as EvidenceRow[]);
+  if (verdict.kind === "ambiguous") {
+    await logEvent(db, run.id, "error", verdict.nodeKey, { reason: "send_outcome_unknown", detail: "intent recorded, no confirmation; NOT resent" });
+    await endRun(db, run.id, "failed", "send_outcome_unknown");
+    return "ambiguous";
+  }
+  if (verdict.kind === "unsafe") {
+    await logEvent(db, run.id, "error", run.current_node_key, { reason: "recovery_not_safe", detail: "progress after the last cursor included a send; not replayed" });
+    await endRun(db, run.id, "failed", "recovery_not_safe");
+    return "unsafe";
+  }
+  // Take the run: only one recovery worker can move the cursor timestamp it just read.
+  const { data: taken, error: takeError } = await db
+    .from("flow_runs").update({ last_advanced_at: new Date().toISOString() }).eq("id", run.id).eq("account_id", run.account_id).eq("status", "active").eq("last_advanced_at", run.last_advanced_at).is("wait_until", null).select("id");
+  if (takeError || !taken || taken.length === 0) return "skipped";
+  const flow = await loadFlow(db, run.flow_id);
+  if (!flow || flow.status !== "active" || flow.account_id !== run.account_id) {
+    await logEvent(db, run.id, "error", run.current_node_key, { reason: "flow_not_active_at_recovery" });
+    await endRun(db, run.id, "failed", "flow_not_active_at_recovery");
+    return "failed";
+  }
+  if (run.current_flow_id) {
+    const { data: verdictData, error: verdictError } = await db.rpc("verify_flow_run_stack", { p_account_id: run.account_id, p_run_id: run.id });
+    const stack = verdictData as { ok?: boolean; reason?: string } | null;
+    if (verdictError || !stack?.ok) {
+      await logEvent(db, run.id, "error", run.current_node_key, { reason: "subflow_stack_invalid", code: verdictError ? "rpc_failed" : (stack?.reason ?? "unknown") });
+      await endRun(db, run.id, "failed", "subflow_stack_invalid");
+      return "failed";
+    }
+  }
+  await logEvent(db, run.id, "node_entered", run.current_node_key, { reason: "stranded_run_resumed" });
+  try {
+    await advanceFromNodeKey(db, run, run.current_node_key, nodes);
+  } catch (err) {
+    await logEvent(db, run.id, "error", run.current_node_key, { reason: "recovery_advance_failed", detail: err instanceof Error ? err.message : String(err) });
+    await endRun(db, run.id, "failed", "recovery_advance_failed");
+    return "failed";
+  }
+  return "resumed";
 }

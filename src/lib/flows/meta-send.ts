@@ -18,6 +18,8 @@ import {
 import { resolveOutboundTransport } from '@/lib/whatsapp/send-message'
 import { sendManyChatTextToContact, sendManyChatFlowToContact } from '@/lib/manychat/contact-send'
 import { assertContactCanReceive } from '@/lib/contacts/blocking'
+import { isVoiceNoteUrlForAccount } from '@/lib/media/voice-note-path'
+import { isMediaAudioEnabledForAccount } from './voice-note-capability'
 import { supabaseAdmin } from './admin-client'
 
 // ------------------------------------------------------------
@@ -256,10 +258,18 @@ interface SendMediaEngineArgs {
    * `SendMediaNodeConfig.manychat_bridge_flow_ns` in types.ts.
    */
   manychatBridgeFlowNs?: string
+  /**
+   * Audio only: send as a native WhatsApp voice note (`audio.voice = true`).
+   * From Flows an audio is ALWAYS a voice note, so `kind: 'audio'` requires
+   * this flag and a link to a verified voice note of THIS account
+   * (`isVoiceNoteUrlForAccount`); any other combination throws before Meta is
+   * called. Caption and filename are never sent with an audio.
+   */
+  voice?: boolean
 }
 
 /**
- * Send an image / video / document from the Flows engine.
+ * Send an image / video / document / voice note from the Flows engine.
  *
  * Used by the runner's `send_media` node. Auto-advances after the
  * send lands (same suspend semantics as send_message).
@@ -283,6 +293,32 @@ export async function engineSendMedia(
   // Same ordering requirement as engineSendText above — must run
   // before the ManyChat-vs-Meta branch, not after.
   await assertContactCanReceive(supabaseAdmin(), args.accountId, args.contactId)
+
+  // Voice-note contract (see `voice` above). Checked before any transport is
+  // chosen so a misconfigured node can never reach a provider, and so the
+  // ManyChat branch below cannot deliver an audio as a plain attachment.
+  if (args.voice && args.kind !== 'audio') {
+    throw new Error('[flows] voice is only valid for audio sends')
+  }
+  if (args.kind === 'audio') {
+    if (!isMediaAudioEnabledForAccount(args.accountId)) {
+      throw new Error('[flows] voice notes are not enabled for this account — this send was NOT attempted')
+    }
+    if (args.voice !== true) {
+      throw new Error('[flows] audio must be sent as a voice note (voice: true)')
+    }
+    if (!isVoiceNoteUrlForAccount(args.link, args.accountId)) {
+      throw new Error('[flows] audio link is not a verified voice note of this account')
+    }
+    if (resolveOutboundTransport(args.accountId) === 'manychat') {
+      throw new Error(
+        '[flows] voice notes cannot be sent through the ManyChat bridge — this send was NOT attempted. Wait for the Meta cutover.',
+      )
+    }
+  }
+  // Meta rejects a caption or filename on audio.
+  const caption = args.kind === 'audio' ? undefined : args.caption
+  const filename = args.kind === 'audio' ? undefined : args.filename
 
   if (resolveOutboundTransport(args.accountId) === 'manychat') {
     return sendMediaViaManyChatBridge(args)
@@ -323,8 +359,9 @@ export async function engineSendMedia(
       to: phone,
       kind: args.kind,
       link: args.link,
-      caption: args.caption,
-      filename: args.filename,
+      caption,
+      filename,
+      voice: args.kind === 'audio' ? true : undefined,
     })
     return r.messageId
   }
@@ -359,12 +396,12 @@ export async function engineSendMedia(
   // (see src/components/inbox/message-media.tsx) — was missing here
   // even though the ManyChat bridge branch below already persists it;
   // this keeps both transports symmetric for the same send_media node.
-  const preview = args.caption?.trim() || `[${args.kind}]`
+  const preview = caption?.trim() || `[${args.kind}]`
   const { error: msgErr } = await db.from('messages').insert({
     conversation_id: args.conversationId,
     sender_type: 'bot',
     content_type: args.kind,
-    content_text: args.caption ?? null,
+    content_text: caption ?? null,
     media_url: args.link,
     message_id: waMessageId,
     status: 'sent',

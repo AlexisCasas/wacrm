@@ -37,6 +37,14 @@ export interface CanvasEdge {
   label?: string;
 }
 
+/** The four outputs of a `send_product_audios` node: [handle id, config key, label]. */
+const PRODUCT_AUDIO_HANDLES: ReadonlyArray<readonly [string, string, string]> = [
+  ["next", "next_node_key", "All sent"],
+  ["unknown", "unknown_node_key", "Unknown product"],
+  ["no_audios", "no_audios_node_key", "No audios"],
+  ["gate_closed", "gate_closed_node_key", "Gate closed"],
+];
+
 export function deriveCanvasEdges(nodes: BuilderNode[]): CanvasEdge[] {
   const knownKeys = new Set(nodes.map((n) => n.node_key));
   const edges: CanvasEdge[] = [];
@@ -50,7 +58,8 @@ export function deriveCanvasEdges(nodes: BuilderNode[]): CanvasEdge[] {
       case "collect_input":
       case "set_tag":
       case "delay":
-      case "set_contact_field": {
+      case "set_contact_field":
+      case "execute_flow": {
         const next = (cfg as { next_node_key?: string }).next_node_key;
         if (next && knownKeys.has(next)) {
           edges.push({
@@ -59,6 +68,16 @@ export function deriveCanvasEdges(nodes: BuilderNode[]): CanvasEdge[] {
             target: next,
             sourceHandle: "next",
           });
+        }
+        break;
+      }
+
+      case "send_product_audios": {
+        for (const [handle, key, label] of PRODUCT_AUDIO_HANDLES) {
+          const target = (cfg as Record<string, unknown>)[key];
+          if (typeof target === "string" && target && knownKeys.has(target)) {
+            edges.push({ id: `${node.node_key}--${handle}--${target}`, source: node.node_key, target, sourceHandle: handle, label });
+          }
         }
         break;
       }
@@ -183,7 +202,11 @@ export function outgoingSlots(node: BuilderNode): OutgoingSlot[] {
     case "set_tag":
     case "delay":
     case "set_contact_field":
+    case "execute_flow":
       return [{ id: "next", label: "Next" }];
+
+    case "send_product_audios":
+      return PRODUCT_AUDIO_HANDLES.map(([id, , label]) => ({ id, label }));
 
     case "condition":
       return [
@@ -259,8 +282,14 @@ export function applyEdgeConnection(
     case "set_tag":
     case "delay":
     case "set_contact_field":
+    case "execute_flow":
       if (sourceHandle === "next") return { next_node_key: targetKey };
       return null;
+
+    case "send_product_audios": {
+      const handle = PRODUCT_AUDIO_HANDLES.find(([id]) => id === sourceHandle);
+      return handle ? { [handle[1]]: targetKey } : null;
+    }
 
     case "condition":
       if (sourceHandle === "true") return { true_next: targetKey };
@@ -354,10 +383,17 @@ function patchedConfigWithoutKey(
     case "collect_input":
     case "set_tag":
     case "delay":
-    case "set_contact_field": {
+    case "set_contact_field":
+    case "execute_flow": {
       const next = (cfg as { next_node_key?: string }).next_node_key;
       if (next !== deletedKey) return null;
       return { ...cfg, next_node_key: "" };
+    }
+
+    case "send_product_audios": {
+      const patch: Record<string, string> = {};
+      for (const [, key] of PRODUCT_AUDIO_HANDLES) if ((cfg as Record<string, unknown>)[key] === deletedKey) patch[key] = "";
+      return Object.keys(patch).length ? { ...cfg, ...patch } : null;
     }
 
     case "condition": {
