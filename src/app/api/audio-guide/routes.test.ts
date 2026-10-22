@@ -325,3 +325,41 @@ describe("GET /lookup: how a Producto value resolves for the session account", (
     expect((await look("solo b")).body.kind).toBe("unknown_product");
   });
 });
+
+describe("the three refusals the editor must tell apart", () => {
+  const create = () => productsRoute.POST(req("POST", "/p", { display_name: "X" }));
+
+  it("owner and admin of an account WITHOUT the module get voice_notes_disabled (the role is fine; the module is off)", async () => {
+    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", B);
+    for (const role of ["owner", "admin"]) {
+      h.session.role = role;
+      const r = await read(await create());
+      expect(r.status, role).toBe(403);
+      expect(r.body, role).toEqual({ error: "voice_notes_disabled" });
+    }
+  });
+
+  it("an agent or viewer of an account WITH the module gets a role refusal, not voice_notes_disabled", async () => {
+    for (const role of ["agent", "viewer"]) {
+      h.session.role = role;
+      const r = await read(await create());
+      expect(r.status, role).toBe(403);
+      expect(r.body, role).not.toEqual({ error: "voice_notes_disabled" });
+      expect(r.body, role).toEqual({ error: "Forbidden" });
+    }
+  });
+
+  it("no session is a 401 whatever the module state", async () => {
+    h.session.authenticated = false;
+    expect((await read(await create())).status).toBe(401);
+    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", B);
+    expect((await read(await create())).status).toBe(401);
+  });
+
+  it("the owner of an enabled account can create (the 'role = user' of the legacy column plays no part: only the effective role counts)", async () => {
+    h.session.role = "owner";
+    const r = await read(await create());
+    expect(r.status).not.toBe(403);
+    expect(r.status).not.toBe(401);
+  });
+});

@@ -25,10 +25,10 @@ describe("/api/flows/voice-notes", () => {
   it("GET reports disabled by default and enabled for a listed account, never caching", async () => {
     delete process.env.FLOW_VOICE_NOTE_ACCOUNT_IDS;
     const off = await GET();
-    expect(await off.json()).toEqual({ enabled: false });
+    expect(await off.json()).toEqual({ enabled: false, product_audios: false });
     expect(off.headers.get("Cache-Control")).toContain("no-store");
     vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", A);
-    expect(await (await GET()).json()).toEqual({ enabled: true });
+    expect(await (await GET()).json()).toEqual({ enabled: true, product_audios: true });
   });
 
   it("POST is refused with 403 when the account is not enabled, before touching storage", async () => {
@@ -72,10 +72,55 @@ describe("/api/flows/voice-notes with FLOW_MEDIA_AUDIO_SCOPE=all", () => {
   it("offers and accepts Multimedia audio to an account that is not in the list", async () => {
     delete process.env.FLOW_VOICE_NOTE_ACCOUNT_IDS;
     vi.stubEnv("FLOW_MEDIA_AUDIO_SCOPE", "all");
-    expect(await (await GET()).json()).toEqual({ enabled: true });
+    expect(await (await GET()).json()).toEqual({ enabled: true, product_audios: false });
     mocks.promote.mockResolvedValue({ ok: true, url: "https://s/u.ogg", sha256: "a".repeat(64), bytes: 10, durationMs: 2000, objectPath: "p" });
     const res = await post({ path: `account-${A}/voice-staging/x.ogg` });
     expect(res.status).toBe(200);
     expect(mocks.promote).toHaveBeenCalledWith({ admin: { marker: "admin" }, accountId: A, stagingPath: `account-${A}/voice-staging/x.ogg` });
+  });
+});
+
+describe("/api/flows/voice-notes reports two independent capabilities", () => {
+  const ids = { pilot: "046ff8c2-644e-4aec-8fab-64047fdf9e38", keyler: "4d04a2e0-62b8-4508-a046-4b125aa2e8db", commercial: "c35b393f-9492-4321-80f2-987766c224d0" };
+  const as = async (accountId: string) => {
+    mocks.getCurrentAccount.mockResolvedValue({ accountId });
+    return (await GET()).json();
+  };
+
+  it("pilot and Keyler (listed): Multimedia audio AND the product module", async () => {
+    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", `${ids.pilot}, ${ids.keyler}`);
+    vi.stubEnv("FLOW_MEDIA_AUDIO_SCOPE", "all");
+    expect(await as(ids.pilot)).toEqual({ enabled: true, product_audios: true });
+    expect(await as(ids.keyler)).toEqual({ enabled: true, product_audios: true });
+  });
+
+  it("the commercial account (not listed) with scope=all keeps Multimedia audio but NOT the product module", async () => {
+    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", `${ids.pilot}, ${ids.keyler}`);
+    vi.stubEnv("FLOW_MEDIA_AUDIO_SCOPE", "all");
+    expect(await as(ids.commercial)).toEqual({ enabled: true, product_audios: false });
+  });
+
+  it("without scope=all an unlisted account has neither, and a listed one has both (the old behaviour)", async () => {
+    delete process.env.FLOW_MEDIA_AUDIO_SCOPE;
+    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", ids.pilot);
+    expect(await as(ids.commercial)).toEqual({ enabled: false, product_audios: false });
+    expect(await as(ids.pilot)).toEqual({ enabled: true, product_audios: true });
+  });
+
+  it("scope=all never turns the product module on for everybody, and the answer is never cached", async () => {
+    delete process.env.FLOW_VOICE_NOTE_ACCOUNT_IDS;
+    vi.stubEnv("FLOW_MEDIA_AUDIO_SCOPE", "all");
+    mocks.getCurrentAccount.mockResolvedValue({ accountId: ids.keyler });
+    const res = await GET();
+    expect(await res.json()).toEqual({ enabled: true, product_audios: false });
+    expect(res.headers.get("Cache-Control")).toContain("no-store");
+  });
+
+  it("keeps `enabled` exactly as before for existing consumers (same value as the media gate)", async () => {
+    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", ids.pilot);
+    vi.stubEnv("FLOW_MEDIA_AUDIO_SCOPE", "all");
+    const body = await as(ids.commercial);
+    expect(typeof body.enabled).toBe("boolean");
+    expect(Object.keys(body).sort()).toEqual(["enabled", "product_audios"]);
   });
 });
