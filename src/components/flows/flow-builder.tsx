@@ -56,6 +56,7 @@ import { type ValidationIssue } from '@/lib/flows/validate';
 import {
   NODE_META,
   NodeIconChip,
+  addableNodeTypes,
   groupNodeTypesByCategory,
   nodeColors,
   slugify,
@@ -812,27 +813,11 @@ function NodeConfigWithAdvanced({
 // Add-node menu
 // ============================================================
 
-function AddNodeButton({ onAdd, t }: { onAdd: (type: NodeType) => void; t: ReturnType<typeof useTranslations> }) {
+export function AddNodeButton({ onAdd, t }: { onAdd: (type: NodeType) => void; t: ReturnType<typeof useTranslations> }) {
   const subflowAuthoring = useSubflowAuthoringCapability();
   const audioGuideEnabled = useAudioGuideEnabled() === true;
-  const types: NodeType[] = [
-    'start',
-    'send_buttons',
-    'send_list',
-    'send_message',
-    'send_media',
-    'collect_input',
-    'condition',
-    'set_tag',
-    'delay',
-    'set_contact_field',
-    // pilot: offered only to accounts the server opted in
-    ...(subflowAuthoring ? (['execute_flow'] as NodeType[]) : []),
-    // "Audios por producto": only for accounts the server enabled for voice notes
-    ...(audioGuideEnabled ? (['send_product_audios'] as NodeType[]) : []),
-    'handoff',
-    'end',
-  ];
+  // The same list the canvas menu uses (addableNodeTypes), so both views offer exactly the same steps.
+  const types = addableNodeTypes({ subflowAuthoring, productAudios: audioGuideEnabled });
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
