@@ -2351,6 +2351,8 @@
     "loading": "Cargando…",
     "errorGeneric": "Algo salió mal. Inténtalo de nuevo.",
     "errorDuplicateKey": "Otro producto ya usa ese valor de Producto.",
+    "errorDuplicateAudio": "Este audio ya está en la secuencia de este producto. No se agregó de nuevo.",
+    "audioRepaired": "El archivo no traía la marca de fin de audio; se completó automáticamente sin alterar el sonido. Duración detectada: {seconds} s. Comprueba que corresponde al audio completo.",
     "errorInvalidName": "Ingresa un nombre de hasta 120 caracteres.",
     "errorInvalidValue": "Ingresa un valor de Producto de hasta 120 caracteres.",
     "errorNeedsOgg": "Las notas de voz deben ser archivos .ogg.",

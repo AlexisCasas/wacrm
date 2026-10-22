@@ -41,7 +41,7 @@ export function badRequest(field: string, error: string) {
 }
 
 const STATUS: Record<CatalogFailureReason, number> = {
-  not_found: 404, revision_conflict: 409, duplicate_key: 409, conflict: 409,
+  not_found: 404, revision_conflict: 409, duplicate_key: 409, duplicate_audio: 409, conflict: 409,
   invalid_value: 422, limit_reached: 422, invalid_order: 422, file_not_stored: 422, file_rejected: 422,
   storage_error: 502, db_error: 500,
 };

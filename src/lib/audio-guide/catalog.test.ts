@@ -198,6 +198,51 @@ describe("addItem", () => {
   });
 });
 
+describe("addItem: the same audio is never added twice to one product", () => {
+  const calls = { n: 0 };
+  const rpcOk = { audio_guide_add_item: () => { calls.n++; return { data: { ok: true, item_id: "new-item", position: 3, revision: 8 } }; } };
+  const staged = { kind: "staged" as const, path: `account-${A}/voice-staging/1700000000000-guia.ogg` };
+  beforeEach(() => { calls.n = 0; });
+
+  it("a staged file whose hash is already in the product is refused as duplicate_audio, without calling the add function", async () => {
+    store.promote.mockResolvedValue({ ok: true, sha256: sha("1"), bytes: 1000, durationMs: 2000, url: "u", objectPath: "o" }); // p1 already has sha("1")
+    const { db } = setup({}, { rpc: rpcOk });
+    expect(await addItem(db, A, "p1", { expectedRevision: 1, source: staged })).toEqual({ ok: false, reason: "duplicate_audio" });
+    expect(calls.n).toBe(0);
+  });
+
+  it("the same holds for a stored hash, and for a disabled audio already in the product", async () => {
+    store.verify.mockResolvedValue({ ok: true, sha256: sha("2"), bytes: 1000, durationMs: 2000 }); // p1 has sha("2") (disabled)
+    const { db } = setup({}, { rpc: rpcOk });
+    expect(await addItem(db, A, "p1", { expectedRevision: 1, source: { kind: "stored", sha256: sha("2") } })).toEqual({ ok: false, reason: "duplicate_audio" });
+    expect(calls.n).toBe(0);
+  });
+
+  it("a new hash is added; the same hash in ANOTHER product of the account is allowed (the stored file is immutable and shared)", async () => {
+    store.promote.mockResolvedValue({ ok: true, sha256: sha("1"), bytes: 1000, durationMs: 2000, url: "u", objectPath: "o" });
+    const { db } = setup({}, { rpc: rpcOk });
+    expect((await addItem(db, A, "p2", { expectedRevision: 1, source: staged })).ok).toBe(true);
+    store.promote.mockResolvedValue({ ok: true, sha256: sha("7"), bytes: 1000, durationMs: 2000, url: "u", objectPath: "o" });
+    expect((await addItem(db, A, "p1", { expectedRevision: 1, source: staged })).ok).toBe(true);
+    expect(calls.n).toBe(2);
+  });
+
+  it("another account's identical hash does not count (the check is scoped to the account and the product)", async () => {
+    store.promote.mockResolvedValue({ ok: true, sha256: sha("9"), bytes: 1000, durationMs: 2000, url: "u", objectPath: "o" }); // only B's product has sha("9")
+    const { db } = setup({}, { rpc: rpcOk });
+    expect((await addItem(db, A, "p1", { expectedRevision: 1, source: staged })).ok).toBe(true);
+  });
+
+  it("a failure of the check is a db_error, never a silent add", async () => {
+    store.promote.mockResolvedValue({ ok: true, sha256: sha("7"), bytes: 1000, durationMs: 2000, url: "u", objectPath: "o" });
+    const { db, mem } = setup({}, { rpc: rpcOk });
+    void mem;
+    const broken = new Proxy(db as object, { get: (t, k) => (k === "from" ? (table: string) => (table === "audio_guide_items" ? { select: () => ({ eq: () => ({ eq: () => ({ eq: () => ({ limit: async () => ({ data: null, error: { message: "boom" } }) }) }) }) }) } : (t as { from: (n: string) => unknown }).from(table)) : (t as Record<string | symbol, unknown>)[k]) }) as unknown as CatalogDb;
+    expect(await addItem(broken, A, "p1", { expectedRevision: 1, source: staged })).toEqual({ ok: false, reason: "db_error" });
+    expect(calls.n).toBe(0);
+  });
+});
+
 describe("defaultLabelFromStagedPath", () => {
   it("drops the editor's epoch prefix and keeps a readable name", () => {
     expect(defaultLabelFromStagedPath(`account-${A}/voice-staging/1700000000000-Guia_1.ogg`)).toBe("Guia_1.ogg");
