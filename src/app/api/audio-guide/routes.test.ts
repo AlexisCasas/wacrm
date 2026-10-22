@@ -363,3 +363,30 @@ describe("the three refusals the editor must tell apart", () => {
     expect(r.status).not.toBe(401);
   });
 });
+
+describe("E7: the same audio twice, over HTTP", () => {
+  const path = `account-${A}/voice-staging/1700000000000-guia.ogg`;
+
+  it("adding a file whose hash is already in the product answers 409 duplicate_audio and never calls the database function", async () => {
+    h.promote.mockResolvedValue({ ok: true, sha256: sha("1"), bytes: 10, durationMs: 1000, url: "u", objectPath: "o" }); // PA already has sha("1")
+    const r = await read(await itemsRoute.POST(req("POST", "/i", { expected_revision: 3, path }), ctx(PA)));
+    expect(r.status).toBe(409);
+    expect(r.body).toEqual({ error: "duplicate_audio" });
+    expect(rpcCalls.filter((c) => c.fn === "audio_guide_add_item")).toHaveLength(0);
+  });
+
+  it("a different audio is still added (201), so a retry after a lost reply cannot create a second row but a new file can", async () => {
+    h.promote.mockResolvedValue({ ok: true, sha256: sha("3"), bytes: 10, durationMs: 1000, url: "u", objectPath: "o" });
+    const r = await read(await itemsRoute.POST(req("POST", "/i", { expected_revision: 3, path }), ctx(PA)));
+    expect(r.status).toBe(201);
+    expect(rpcCalls.filter((c) => c.fn === "audio_guide_add_item")).toHaveLength(1);
+  });
+
+  it("the server stays strict: a staged file the verifier rejects (for example one without the end-of-stream flag) is refused, with no repair on this side", async () => {
+    h.promote.mockResolvedValue({ ok: false, code: "rejected", reason: "missing_end_of_stream" });
+    const r = await read(await itemsRoute.POST(req("POST", "/i", { expected_revision: 3, path }), ctx(PA)));
+    expect(r.status).toBe(422);
+    expect(r.body).toEqual({ error: "file_rejected", reason: "missing_end_of_stream" });
+    expect(rpcCalls).toHaveLength(0);
+  });
+});

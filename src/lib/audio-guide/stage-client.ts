@@ -1,13 +1,16 @@
 "use client";
 
 /**
- * Browser half of adding a voice note to the catalog: check the file here (fast feedback, nothing uploaded if it is wrong), then
- * stage it in the editor's staging folder. The SERVER verifies it again and stores the immutable copy when the audio is added to a
+ * Browser half of adding a voice note to the catalog: prepare and check the file here (fast feedback, nothing uploaded if it is wrong),
+ * then stage it in the editor's staging folder. A well-formed file goes up as it is; the one recoverable defect, a complete stream whose
+ * last page lacks the end-of-stream flag, is repaired first (`prepareVoiceNote`, the same repair Multimedia uses) and the caller is told
+ * so. The SERVER verifies the staged file again with the strict verifier and stores the immutable copy when the audio is added to a
  * product (POST /api/audio-guide/products/:id/items), so nothing in this file is trusted.
  */
 
 import { hasOggExtension, normalizeOggFile } from "@/lib/media/ogg-opus";
-import { VOICE_NOTE_MAX_BYTES, inspectVoiceNote, isOggFamilyContentType, type VoiceNoteRejection } from "@/lib/media/voice-note";
+import { VOICE_NOTE_MAX_BYTES, isOggFamilyContentType, type VoiceNoteRejection } from "@/lib/media/voice-note";
+import { prepareVoiceNote } from "@/lib/media/voice-note-prepare";
 import { VOICE_NOTE_STAGING_BUCKET, VOICE_NOTE_STAGING_SUBFOLDER } from "@/lib/media/voice-note-path";
 import { uploadAccountMedia } from "@/lib/storage/upload-media";
 
@@ -23,17 +26,21 @@ export function problemOf(reason: VoiceNoteRejection | undefined): VoiceNoteProb
   }
 }
 
-export type StageResult = { ok: true; path: string; fileName: string } | { ok: false; problem: VoiceNoteProblem };
+/** `repaired`: the missing end-of-stream flag was completed before upload. `durationMs` is the length the file declares. */
+export type StageResult = { ok: true; path: string; fileName: string; repaired: boolean; durationMs: number } | { ok: false; problem: VoiceNoteProblem };
 
 export async function stageVoiceNote(file: File): Promise<StageResult> {
   if (!hasOggExtension(file.name)) return { ok: false, problem: "needs_ogg" };
   if (file.size > VOICE_NOTE_MAX_BYTES) return { ok: false, problem: "too_large" };
   if (!isOggFamilyContentType(file.type)) return { ok: false, problem: "not_ogg" };
-  const local = inspectVoiceNote(new Uint8Array(await file.arrayBuffer()));
-  if (!local.ok) return { ok: false, problem: problemOf(local.reason) };
+  const prepared = prepareVoiceNote(new Uint8Array(await file.arrayBuffer()));
+  if (!prepared.ok) return { ok: false, problem: problemOf(prepared.reason) };
+  const toUpload = prepared.repaired
+    ? new File([prepared.bytes as BlobPart], file.name, { type: "audio/ogg", lastModified: file.lastModified })
+    : normalizeOggFile(file);
   try {
-    const staged = await uploadAccountMedia(VOICE_NOTE_STAGING_BUCKET, normalizeOggFile(file), { subfolder: VOICE_NOTE_STAGING_SUBFOLDER });
-    return { ok: true, path: staged.path, fileName: file.name };
+    const staged = await uploadAccountMedia(VOICE_NOTE_STAGING_BUCKET, toUpload, { subfolder: VOICE_NOTE_STAGING_SUBFOLDER });
+    return { ok: true, path: staged.path, fileName: file.name, repaired: prepared.repaired !== false, durationMs: prepared.inspection.durationMs };
   } catch {
     return { ok: false, problem: "upload_failed" };
   }

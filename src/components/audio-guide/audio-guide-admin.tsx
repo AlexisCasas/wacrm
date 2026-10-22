@@ -66,6 +66,7 @@ export function AudioGuideAdmin() {
     if (r.status === 401) return t("errorUnauthenticated");
     if (r.status === 403) return code === "voice_notes_disabled" ? t("errorModuleDisabled") : t("errorForbidden");
     if (code === "duplicate_key") return t("errorDuplicateKey");
+    if (code === "duplicate_audio") return t("errorDuplicateAudio");
     if (code === "display_name_required" || code === "display_name_too_long") return t("errorInvalidName");
     if (code === "invalid_value" || code === "product_value_invalid") return t("errorInvalidValue");
     if (code === "pause_out_of_range") return t("errorPause");
@@ -116,6 +117,11 @@ export function AudioGuideAdmin() {
     }
     if (r.status === 409 && r.body.error === "revision_conflict") {
       toast.error(t("conflict"));
+      void loadDetail(detail.id);
+      void loadList(query);
+    } else if (r.status === 409 && r.body.error === "duplicate_audio") {
+      // Already there (a retry that had in fact worked, or the same file twice): show the sequence as it is now, add nothing.
+      toast.info(t("errorDuplicateAudio"));
       void loadDetail(detail.id);
       void loadList(query);
     } else toast.error(errorText(r));
@@ -400,7 +406,9 @@ function ProductEditor({ detail, canEdit, busy, write, onDelete }: { detail: Det
     setUploading(true);
     const staged = await stageVoiceNote(file);
     if (!staged.ok) { setUploading(false); toast.error(problemText(staged.problem, t)); return; }
-    await write("add", (rev) => api("POST", `/api/audio-guide/products/${detail.id}/items`, { expected_revision: rev, path: staged.path, label: file.name.replace(/\.ogg$/i, "").slice(0, 120) || undefined }), t("audioAdded"));
+    const added = await write("add", (rev) => api("POST", `/api/audio-guide/products/${detail.id}/items`, { expected_revision: rev, path: staged.path, label: file.name.replace(/\.ogg$/i, "").slice(0, 120) || undefined }), t("audioAdded"));
+    // Say it when the file was completed automatically, with the length it declares, so the person can compare it with what they expect.
+    if (added && staged.repaired) toast.warning(t("audioRepaired", { seconds: (staged.durationMs / 1000).toFixed(1) }));
     setUploading(false);
   };
 

@@ -2351,6 +2351,8 @@
     "loading": "Loading…",
     "errorGeneric": "Something went wrong. Please try again.",
     "errorDuplicateKey": "Another product already uses that Producto value.",
+    "errorDuplicateAudio": "This audio is already in this product's sequence. It was not added again.",
+    "audioRepaired": "The file had no end-of-audio marker; it was completed automatically without altering the sound. Detected length: {seconds} s. Check that it matches the whole audio.",
     "errorInvalidName": "Enter a name of up to 120 characters.",
     "errorInvalidValue": "Enter a Producto value of up to 120 characters.",
     "errorNeedsOgg": "Voice notes must be .ogg files.",

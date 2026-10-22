@@ -20,7 +20,7 @@ export type CatalogDb = Pick<SupabaseClient, "from" | "rpc" | "storage">;
 
 export type CatalogFailureReason =
   | "not_found" | "revision_conflict" | "duplicate_key" | "invalid_value" | "limit_reached" | "invalid_order"
-  | "file_not_stored" | "file_rejected" | "conflict" | "storage_error" | "db_error";
+  | "file_not_stored" | "file_rejected" | "duplicate_audio" | "conflict" | "storage_error" | "db_error";
 
 export type CatalogResult<T> =
   | { ok: true; value: T }
@@ -190,6 +190,13 @@ export async function addItem(db: CatalogDb, accountId: string, productId: strin
     if (!stored.ok) return stored.code === "rejected" ? refuse("file_rejected", { voiceNoteReason: stored.reason }) : refuse("file_not_stored");
     meta = stored;
   }
+  // The same audio twice in one product is never intended: a retry whose first attempt actually succeeded, or an original and its
+  // repaired copy (same bytes, same hash), must not add a second row. Checked per product and account; the stored file itself may
+  // serve other products. Concurrent identical adds are still serialised by the product lock and its revision.
+  const { data: same, error: sameError } = await db.from("audio_guide_items").select("id")
+    .eq("account_id", accountId).eq("product_id", productId).eq("voice_sha256", meta.sha256).limit(1);
+  if (sameError) return refuse("db_error");
+  if (Array.isArray(same) && same.length > 0) return refuse("duplicate_audio");
   return call(db, "audio_guide_add_item", {
     p_account: accountId, p_product: productId, p_expected: input.expectedRevision, p_sha256: meta.sha256, p_bytes: meta.bytes,
     p_duration_ms: meta.durationMs, p_label: label ?? null, p_pre_delay: input.preDelaySeconds ?? 5,
