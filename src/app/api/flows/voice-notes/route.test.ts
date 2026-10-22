@@ -81,21 +81,21 @@ describe("/api/flows/voice-notes with FLOW_MEDIA_AUDIO_SCOPE=all", () => {
 });
 
 describe("/api/flows/voice-notes reports two independent capabilities", () => {
-  const ids = { pilot: "046ff8c2-644e-4aec-8fab-64047fdf9e38", keyler: "4d04a2e0-62b8-4508-a046-4b125aa2e8db", commercial: "c35b393f-9492-4321-80f2-987766c224d0" };
+  const ids = { pilot: "22222222-2222-4222-8222-222222222222", second: "11111111-1111-4111-8111-111111111111", commercial: "33333333-3333-4333-8333-333333333333" };
   const as = async (accountId: string) => {
     mocks.getCurrentAccount.mockResolvedValue({ accountId });
     return (await GET()).json();
   };
 
-  it("pilot and Keyler (listed): Multimedia audio AND the product module", async () => {
-    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", `${ids.pilot}, ${ids.keyler}`);
+  it("two listed accounts (pilot and a second one): Multimedia audio AND the product module", async () => {
+    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", `${ids.pilot}, ${ids.second}`);
     vi.stubEnv("FLOW_MEDIA_AUDIO_SCOPE", "all");
     expect(await as(ids.pilot)).toEqual({ enabled: true, product_audios: true });
-    expect(await as(ids.keyler)).toEqual({ enabled: true, product_audios: true });
+    expect(await as(ids.second)).toEqual({ enabled: true, product_audios: true });
   });
 
   it("the commercial account (not listed) with scope=all keeps Multimedia audio but NOT the product module", async () => {
-    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", `${ids.pilot}, ${ids.keyler}`);
+    vi.stubEnv("FLOW_VOICE_NOTE_ACCOUNT_IDS", `${ids.pilot}, ${ids.second}`);
     vi.stubEnv("FLOW_MEDIA_AUDIO_SCOPE", "all");
     expect(await as(ids.commercial)).toEqual({ enabled: true, product_audios: false });
   });
@@ -110,7 +110,7 @@ describe("/api/flows/voice-notes reports two independent capabilities", () => {
   it("scope=all never turns the product module on for everybody, and the answer is never cached", async () => {
     delete process.env.FLOW_VOICE_NOTE_ACCOUNT_IDS;
     vi.stubEnv("FLOW_MEDIA_AUDIO_SCOPE", "all");
-    mocks.getCurrentAccount.mockResolvedValue({ accountId: ids.keyler });
+    mocks.getCurrentAccount.mockResolvedValue({ accountId: ids.second });
     const res = await GET();
     expect(await res.json()).toEqual({ enabled: true, product_audios: false });
     expect(res.headers.get("Cache-Control")).toContain("no-store");

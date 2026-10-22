@@ -8,7 +8,7 @@ vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ accountId: auth.accountId
 import { resetVoiceNoteCapabilityCache, useAudioGuideEnabled, useVoiceNoteCapabilities } from "./use-audio-guide-enabled";
 
 const A = "046ff8c2-1111-4222-8333-444455556666";
-const B = "c35b393f-9492-4321-80f2-987766c224d0";
+const B = "33333333-3333-4333-8333-333333333333";
 
 const answer = (status: number, body: unknown) => ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response;
 const fetchMock = vi.fn<(url: string) => Promise<Response>>();
@@ -39,7 +39,7 @@ describe("useVoiceNoteCapabilities / useAudioGuideEnabled", () => {
     expect(result.current.caps).toEqual({ enabled: true, productAudios: false }); // Multimedia audio is still on
   });
 
-  it("an enabled account (pilot, Keyler) gets the module", async () => {
+  it("an enabled account (pilot and the second listed account) gets the module", async () => {
     fetchMock.mockResolvedValue(answer(200, { enabled: true, product_audios: true }));
     const { result } = renderHook(() => useAudioGuideEnabled());
     await waitFor(() => expect(result.current).toBe(true));
