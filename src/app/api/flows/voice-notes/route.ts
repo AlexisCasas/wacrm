@@ -1,18 +1,23 @@
 import { NextResponse } from 'next/server'
 import { getCurrentAccount, requireRole, toErrorResponse } from '@/lib/auth/account'
-import { isMediaAudioEnabledForAccount } from '@/lib/flows/voice-note-capability'
+import { isMediaAudioEnabledForAccount, isVoiceNoteEnabledForAccount } from '@/lib/flows/voice-note-capability'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { promoteVoiceNote } from '@/lib/audio-guide/voice-note-store'
 
 /**
- * GET /api/flows/voice-notes -> { enabled }: whether this account may use voice notes (server-side flags
- * FLOW_MEDIA_AUDIO_SCOPE / FLOW_VOICE_NOTE_ACCOUNT_IDS). The editor only offers the option when this says yes; every write path checks it again.
+ * GET /api/flows/voice-notes -> { enabled, product_audios }: two independent capabilities of the session's account.
+ *   - enabled: Audio inside the Multimedia node (server flags FLOW_MEDIA_AUDIO_SCOPE / FLOW_VOICE_NOTE_ACCOUNT_IDS).
+ *   - product_audios: the specialised "Audios por producto" module (FLOW_VOICE_NOTE_ACCOUNT_IDS only).
+ * The editor only offers an option when this says yes; every write path checks its own gate again on the server.
  */
 export async function GET() {
   try {
     const account = await getCurrentAccount()
     return NextResponse.json(
-      { enabled: isMediaAudioEnabledForAccount(account.accountId) },
+      {
+        enabled: isMediaAudioEnabledForAccount(account.accountId),
+        product_audios: isVoiceNoteEnabledForAccount(account.accountId),
+      },
       { headers: { 'Cache-Control': 'private, no-store' } },
     )
   } catch (err) {

@@ -62,7 +62,9 @@ export function AudioGuideAdmin() {
 
   const errorText = useCallback((r: ApiResult): string => {
     const code = String(r.body.error ?? "");
-    if (r.status === 403) return t("errorForbidden");
+    // Three different refusals: no session (401), the module is off for this account (403 voice_notes_disabled) and a real lack of role (403).
+    if (r.status === 401) return t("errorUnauthenticated");
+    if (r.status === 403) return code === "voice_notes_disabled" ? t("errorModuleDisabled") : t("errorForbidden");
     if (code === "duplicate_key") return t("errorDuplicateKey");
     if (code === "display_name_required" || code === "display_name_too_long") return t("errorInvalidName");
     if (code === "invalid_value" || code === "product_value_invalid") return t("errorInvalidValue");
@@ -140,7 +142,7 @@ export function AudioGuideAdmin() {
         </div>
         {canEdit && <Button data-testid="new-product" onClick={() => { setCreateKey((k) => k + 1); setCreateOpen(true); }}><Plus className="mr-1 h-4 w-4" />{t("newProduct")}</Button>}
       </div>
-      {!canEdit && <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground" data-testid="read-only-notice">{t("readOnlyNotice")}</p>}
+      {accountRole && !canEdit && <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground" data-testid="read-only-notice">{t("readOnlyNotice")}</p>}
 
       <div className="grid gap-4 md:grid-cols-[320px_1fr]">
         {/* ------------------------------------------------ product list */}
