@@ -80,6 +80,7 @@ import { autoLayout, shouldAutoLayout } from '@/lib/flows/layout';
 import {
   NODE_META,
   NodeIconChip,
+  addableNodeTypes,
   groupNodeTypesByCategory,
   nodeColors,
   summarizeNode,
@@ -97,6 +98,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { useFlowEditor } from './flow-editor-state';
 import { useSubflowAuthoringCapability } from './use-subflow-authoring';
+import { useAudioGuideEnabled } from '@/hooks/use-audio-guide-enabled';
 import { NodeConfigForm, useAccountTags } from './forms/node-config-form';
 
 // React-Flow node `data` payload — the bits our custom renderer needs.
@@ -696,27 +698,12 @@ function NodeEditSheet({
 // center of the visible viewport rather than appending to a list.
 // ============================================================
 
-const ADD_NODE_TYPES: NodeType[] = [
-  'start',
-  'send_buttons',
-  'send_list',
-  'send_message',
-  'send_media',
-  'collect_input',
-  'condition',
-  'set_tag',
-  'delay',
-  'set_contact_field',
-  'handoff',
-  'end',
-];
-
-function CanvasAddNodeButton({ t }: { t: ReturnType<typeof useTranslations> }) {
+export function CanvasAddNodeButton({ t }: { t: ReturnType<typeof useTranslations> }) {
   const subflowAuthoring = useSubflowAuthoringCapability();
-  // pilot: "Run another flow" only for accounts the server opted in, placed with the other flow-control types
-  const addTypes: NodeType[] = subflowAuthoring
-    ? ADD_NODE_TYPES.flatMap((type) => (type === 'handoff' ? (['execute_flow', 'handoff'] as NodeType[]) : [type]))
-    : ADD_NODE_TYPES;
+  const audioGuideEnabled = useAudioGuideEnabled() === true;
+  // The same list the list view's menu uses (addableNodeTypes): "Run another flow" and "Audios por producto" appear only for the
+  // accounts the server enabled them for, exactly as in the list view.
+  const addTypes = addableNodeTypes({ subflowAuthoring, productAudios: audioGuideEnabled });
   const reactFlow = useReactFlow();
   const { addNode, updateNodePosition } = useFlowEditor();
 

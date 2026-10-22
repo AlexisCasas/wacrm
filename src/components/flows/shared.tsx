@@ -219,6 +219,32 @@ export function groupNodeTypesByCategory(
   })).filter((group) => group.types.length > 0);
 }
 
+/**
+ * The node types an account may ADD from the "Add step" menu. THE one list both editors use (the list view's AddNodeButton and the
+ * canvas's CanvasAddNodeButton), so the two menus can never drift apart:
+ *   - "Run another flow" (execute_flow) only for accounts the server opted in to subflow authoring;
+ *   - "Audios por producto" (send_product_audios) only for accounts the server enabled for the product module (`product_audios`).
+ * Both sit with the other flow-control steps, just before "Hand off". The server checks the same gates again on save and activation.
+ */
+export function addableNodeTypes(opts: { subflowAuthoring: boolean; productAudios: boolean }): NodeType[] {
+  return [
+    'start',
+    'send_buttons',
+    'send_list',
+    'send_message',
+    'send_media',
+    'collect_input',
+    'condition',
+    'set_tag',
+    'delay',
+    'set_contact_field',
+    ...(opts.subflowAuthoring ? (['execute_flow'] as NodeType[]) : []),
+    ...(opts.productAudios ? (['send_product_audios'] as NodeType[]) : []),
+    'handoff',
+    'end',
+  ];
+}
+
 // ============================================================
 // Per-node-type color system.
 //
