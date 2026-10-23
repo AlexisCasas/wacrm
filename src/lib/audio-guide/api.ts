@@ -44,6 +44,8 @@ const STATUS: Record<CatalogFailureReason, number> = {
   not_found: 404, revision_conflict: 409, duplicate_key: 409, duplicate_audio: 409, conflict: 409,
   invalid_value: 422, limit_reached: 422, invalid_order: 422, file_not_stored: 422, file_rejected: 422,
   storage_error: 502, db_error: 500,
+  duplicate_name: 409, in_use: 409, purpose_inactive: 409, identifier_inactive: 409, duplicate_classification: 409,
+  purpose_not_found: 422, identifier_not_found: 422,
 };
 
 /** The HTTP answer for a refused catalog change. A conflict carries the current revision so the editor can reload. */
@@ -51,12 +53,13 @@ export function failure(result: Extract<CatalogResult<unknown>, { ok: false }>) 
   const body: Record<string, unknown> = { error: result.reason === "db_error" ? "internal_error" : result.reason };
   if (result.revision !== undefined) body.revision = result.revision;
   if (result.voiceNoteReason) body.reason = result.voiceNoteReason;
+  if (result.conflictItemId) body.conflict_item = result.conflictItemId;
   return json(body, STATUS[result.reason]);
 }
 
 export const itemDto = (i: CatalogItem) => ({
   id: i.id, position: i.position, sha256: i.sha256, url: i.url, label: i.label, bytes: i.bytes,
-  duration_ms: i.durationMs, pre_delay_seconds: i.preDelaySeconds, status: i.status,
+  duration_ms: i.durationMs, pre_delay_seconds: i.preDelaySeconds, status: i.status, purpose_id: i.purposeId, identifier_id: i.identifierId,
 });
 
 const productFields = (p: CatalogProduct) => ({

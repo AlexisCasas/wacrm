@@ -20,14 +20,16 @@ export type CatalogDb = Pick<SupabaseClient, "from" | "rpc" | "storage">;
 
 export type CatalogFailureReason =
   | "not_found" | "revision_conflict" | "duplicate_key" | "invalid_value" | "limit_reached" | "invalid_order"
-  | "file_not_stored" | "file_rejected" | "duplicate_audio" | "conflict" | "storage_error" | "db_error";
+  | "file_not_stored" | "file_rejected" | "duplicate_audio" | "conflict" | "storage_error" | "db_error"
+  // migration 076: names of purposes / identifiers and the classification of an audio
+  | "duplicate_name" | "in_use" | "purpose_not_found" | "identifier_not_found" | "purpose_inactive" | "identifier_inactive" | "duplicate_classification";
 
 export type CatalogResult<T> =
   | { ok: true; value: T }
-  | { ok: false; reason: CatalogFailureReason; revision?: number; voiceNoteReason?: VoiceNoteRejection };
+  | { ok: false; reason: CatalogFailureReason; revision?: number; voiceNoteReason?: VoiceNoteRejection; conflictItemId?: string };
 
 const ok = <T>(value: T): CatalogResult<T> => ({ ok: true, value });
-const refuse = <T = never>(reason: CatalogFailureReason, extra: { revision?: number; voiceNoteReason?: VoiceNoteRejection } = {}): CatalogResult<T> => ({ ok: false, reason, ...extra });
+const refuse = <T = never>(reason: CatalogFailureReason, extra: { revision?: number; voiceNoteReason?: VoiceNoteRejection; conflictItemId?: string } = {}): CatalogResult<T> => ({ ok: false, reason, ...extra });
 
 export interface CatalogProduct {
   id: string;
@@ -49,6 +51,9 @@ export interface CatalogItem {
   durationMs: number;
   preDelaySeconds: number;
   status: "active" | "disabled";
+  /** Classification (migration 076): both set or both null. Null = "sin clasificar" (every audio loaded before 076 is). */
+  purposeId: string | null;
+  identifierId: string | null;
 }
 export interface CatalogProductDetail extends CatalogProduct { items: CatalogItem[] }
 
@@ -67,13 +72,14 @@ export function storageOrigin(): string {
 }
 
 const PRODUCT_COLUMNS = "id, product_key, display_name, active, revision, created_at, updated_at";
-const ITEM_COLUMNS = "id, product_id, position, voice_sha256, bytes, duration_ms, label, pre_delay_seconds, status";
+const ITEM_COLUMNS = "id, product_id, position, voice_sha256, bytes, duration_ms, label, pre_delay_seconds, status, purpose_id, identifier_id";
 
 function itemOf(r: Row, accountId: string, origin: string): CatalogItem {
   return {
     id: r.id as string, position: Number(r.position), sha256: r.voice_sha256 as string,
     url: buildVoiceNotePublicUrl(origin, accountId, r.voice_sha256 as string), label: (r.label as string | null) ?? null,
     bytes: Number(r.bytes), durationMs: Number(r.duration_ms), preDelaySeconds: Number(r.pre_delay_seconds), status: r.status === "disabled" ? "disabled" : "active",
+    purposeId: (r.purpose_id as string | null | undefined) ?? null, identifierId: (r.identifier_id as string | null | undefined) ?? null,
   };
 }
 
@@ -117,16 +123,19 @@ export async function createProduct(db: CatalogDb, accountId: string, input: { d
   return ok({ ...productOf(data as Row), items: [] });
 }
 
-const KNOWN: ReadonlySet<string> = new Set(["not_found", "revision_conflict", "duplicate_key", "invalid_value", "limit_reached", "invalid_order", "file_not_stored", "conflict"]);
+const KNOWN: ReadonlySet<string> = new Set([
+  "not_found", "revision_conflict", "duplicate_key", "invalid_value", "limit_reached", "invalid_order", "file_not_stored", "conflict",
+  "duplicate_name", "in_use", "purpose_not_found", "identifier_not_found", "purpose_inactive", "identifier_inactive", "duplicate_classification",
+]);
 
 /** One atomic change through a migration-074 function. Anything the function does not recognise is a `db_error`, never a success. */
-async function call<T>(db: CatalogDb, fn: string, args: Record<string, unknown>, pick: (r: Record<string, unknown>) => T): Promise<CatalogResult<T>> {
+export async function call<T>(db: CatalogDb, fn: string, args: Record<string, unknown>, pick: (r: Record<string, unknown>) => T): Promise<CatalogResult<T>> {
   const { data, error } = await db.rpc(fn, args);
   const r = data as Record<string, unknown> | null;
   if (error || !r || typeof r !== "object") return refuse("db_error");
   if (r.ok === true) return ok(pick(r));
   const reason = typeof r.reason === "string" && KNOWN.has(r.reason) ? (r.reason as CatalogFailureReason) : "db_error";
-  return refuse(reason, typeof r.revision === "number" ? { revision: r.revision } : {});
+  return refuse(reason, { ...(typeof r.revision === "number" ? { revision: r.revision } : {}), ...(typeof r.conflict_item === "string" ? { conflictItemId: r.conflict_item } : {}) });
 }
 
 export function saveProduct(db: CatalogDb, accountId: string, productId: string, input: { expectedRevision: number; displayName?: string; productValue?: string; active?: boolean }) {
@@ -156,6 +165,14 @@ export const updateItem = (db: CatalogDb, accountId: string, itemId: string, inp
     p_account: accountId, p_item: itemId, p_expected: input.expectedRevision, p_status: input.status ?? null,
     p_pre_delay: input.preDelaySeconds ?? null, p_label: input.label ?? null, p_clear_label: input.clearLabel === true,
   }, (r) => ({ revision: Number(r.revision) }));
+
+/**
+ * Classifies one audio with a purpose AND an identifier, or clears both (null, null). One atomic change through `audio_guide_classify_item`
+ * (migration 076): it locks the product, compares the revision, checks both belong to the account and are active, and the unique index
+ * (product, purpose, identifier) refuses a second audio with the same pair - disabled audios included. Never touches the file.
+ */
+export const classifyItem = (db: CatalogDb, accountId: string, itemId: string, input: { expectedRevision: number; purposeId: string | null; identifierId: string | null }) =>
+  call(db, "audio_guide_classify_item", { p_account: accountId, p_item: itemId, p_expected: input.expectedRevision, p_purpose: input.purposeId, p_identifier: input.identifierId }, (r) => ({ revision: Number(r.revision) }));
 
 /** The display name of a staged upload (`<epoch>-<name>.ogg`) as a readable default label. */
 export function defaultLabelFromStagedPath(path: string): string {

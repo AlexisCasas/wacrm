@@ -9,12 +9,14 @@
  *     behaviour, `product_field_id` optionally names the field) or "manual" (a catalog product of the same account chosen with `product_id`,
  *     independent of what the contact stores). A node without `product_source` means "auto".
  * Anything else in either field is invalid, never guessed.
- *   - SELECTION: `audio_selection` absent or "all" sends every active audio of the product (the original behaviour). Any other value, or a
- *     purpose/identifier, belongs to a newer version of the node and is refused (fail closed): see the forward-compatibility guard below.
+ *   - SELECTION: `audio_selection` absent or "all" sends every active audio of the product (the original behaviour). "single" sends exactly the ONE
+ *     audio of the product that carries the node's `purpose_id` + `identifier_id` (migration 076; both are UUIDs of the node's account). Any other
+ *     value - or a purpose/identifier on a node that sends "all" - is refused (fail closed): it must never turn into "send everything".
  */
 
 export type GateMode = "required" | "none";
 export type ProductSource = "auto" | "manual";
+export type AudioSelection = "all" | "single";
 
 export interface ProductAudiosProblem {
   field: string;
@@ -74,16 +76,24 @@ export function inspectProductAudiosConfig(input: object | null | undefined): Pr
     if (product !== "") add("product_id", "product_audios_source_conflict", "A catalog product is chosen but the product is read from the contact. Clear it or pick the product by hand.");
   }
 
-  // FORWARD COMPATIBILITY. Newer versions of this node can pick ONE audio (`audio_selection: "single"` with a purpose and an identifier). This
-  // version does not know how, and ignoring those fields would send EVERY audio of the product. So anything that is not the original behaviour
-  // ("all", or the field absent) is refused here, which makes the validator block activation and the runtime fail closed (nothing is sent).
-  if (selectionOf(cfg) === "unsupported") add("audio_selection", "product_audios_selection_unsupported", "This step selects audios in a way this version cannot run. It was saved by a newer version; it will not send anything until that version is back.");
-  else if (text(cfg.purpose_id) !== "" || text(cfg.identifier_id) !== "") add("audio_selection", "product_audios_selection_unsupported", "This step names a purpose or identifier this version cannot run. It will not send anything until a newer version is back.");
+  // SELECTION. Fail closed: a value this version does not know, or a purpose/identifier that the chosen mode ignores, would silently send more (or
+  // less) than the person meant, so it blocks activation and the runtime refuses to send.
+  const selection = selectionOf(cfg);
+  const purpose = text(cfg.purpose_id), identifier = text(cfg.identifier_id);
+  if (selection === "unsupported") {
+    add("audio_selection", "product_audios_selection_unsupported", "This step selects audios in a way this version cannot run. It will not send anything until it is changed.");
+  } else if (selection === "all") {
+    if (purpose !== "" || identifier !== "") add("audio_selection", "product_audios_selection_conflict", "A purpose or identifier is chosen but the step is set to send every audio. Clear them or choose to send one specific audio.");
+  } else {
+    if (!UUID.test(purpose)) add("purpose_id", "product_audios_purpose_missing", "Choose the purpose of the audio to send.");
+    if (!UUID.test(identifier)) add("identifier_id", "product_audios_identifier_missing", "Choose the identifier of the audio to send.");
+  }
   return problems;
 }
 
-/** Which audios the node asks for: the original "all" (field absent or "all"), or something this version does not understand. */
-export function selectionOf(cfg: object | null | undefined): "all" | "unsupported" {
+/** Which audios the node asks for: the original "all" (field absent or "all"), exactly "single", or something this version does not understand. */
+export function selectionOf(cfg: object | null | undefined): AudioSelection | "unsupported" {
   const value = (cfg as Record<string, unknown> | null | undefined)?.audio_selection;
-  return value === undefined || value === null || value === "all" ? "all" : "unsupported";
+  if (value === undefined || value === null || value === "all") return "all";
+  return value === "single" ? "single" : "unsupported";
 }

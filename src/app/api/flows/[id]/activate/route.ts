@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { isMediaAudioEnabledForAccount, isVoiceNoteEnabledForAccount } from '@/lib/flows/voice-note-capability'
-import { gateModeOf, productSourceOf } from '@/lib/flows/product-audios-config'
+import { gateModeOf, productSourceOf, selectionOf } from '@/lib/flows/product-audios-config'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateFlowForActivation } from '@/lib/flows/validate'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
@@ -57,6 +57,7 @@ export async function POST(
     if (!existing) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
     const admin = supabaseAdmin()
+    const warningsOf: Array<Record<string, unknown>> = []
     if (status === 'active') {
       const [{ data: flow, error: flowError }, { data: nodes, error: nodesError }] = await Promise.all([
         admin.from('flows').select('name, trigger_type, trigger_config, entry_node_id').eq('id', id).maybeSingle(),
@@ -93,15 +94,49 @@ export async function POST(
         const knownProducts = new Set((ownProducts ?? []).map((p: { id: string }) => p.id))
         for (const g of manualProducts) if (!knownProducts.has(g.product as string)) issues.push({ severity: 'error', scope: 'node', node_key: g.key, field: 'product_id', code: 'product_audios_product_unknown', message: 'The chosen product does not exist in this account.' })
       }
+      // One specific audio: its purpose and identifier must be THIS account's (error if not); an inactive one only warns (the node would take its
+      // "no audios" route); and when the product is chosen by hand, warn if no audio of it carries that pair.
+      const singles = (nodes ?? []).filter((node) => node.node_type === 'send_product_audios' && selectionOf(node.config) === 'single').map((node) => {
+        const c = (node.config ?? {}) as { purpose_id?: unknown; identifier_id?: unknown; product_id?: unknown }
+        return { key: node.node_key as string, purpose: typeof c.purpose_id === 'string' ? c.purpose_id.toLowerCase() : '', identifier: typeof c.identifier_id === 'string' ? c.identifier_id.toLowerCase() : '', product: productSourceOf(node.config) === 'manual' && typeof c.product_id === 'string' ? c.product_id : '' }
+      }).filter((g) => g.purpose && g.identifier)
+      if (singles.length) {
+        const [purposesRes, identifiersRes] = await Promise.all([
+          admin.from('audio_guide_purposes').select('id, active').eq('account_id', account.accountId).in('id', singles.map((g) => g.purpose)),
+          admin.from('audio_guide_identifiers').select('id, active').eq('account_id', account.accountId).in('id', singles.map((g) => g.identifier)),
+        ])
+        if (purposesRes.error || identifiersRes.error) return NextResponse.json({ error: 'Could not validate the chosen purpose and identifier' }, { status: 503 })
+        const purposeState = new Map((purposesRes.data ?? []).map((r: { id: string; active: boolean }) => [r.id.toLowerCase(), r.active]))
+        const identifierState = new Map((identifiersRes.data ?? []).map((r: { id: string; active: boolean }) => [r.id.toLowerCase(), r.active]))
+        for (const g of singles) {
+          if (!purposeState.has(g.purpose)) issues.push({ severity: 'error', scope: 'node', node_key: g.key, field: 'purpose_id', code: 'product_audios_purpose_unknown', message: 'The chosen purpose does not exist in this account.' })
+          else if (purposeState.get(g.purpose) === false) issues.push({ severity: 'warning', scope: 'node', node_key: g.key, field: 'purpose_id', code: 'product_audios_purpose_inactive', message: 'The chosen purpose is inactive: this step will not find its audio and will take the "no audios" route.' })
+          if (!identifierState.has(g.identifier)) issues.push({ severity: 'error', scope: 'node', node_key: g.key, field: 'identifier_id', code: 'product_audios_identifier_unknown', message: 'The chosen identifier does not exist in this account.' })
+          else if (identifierState.get(g.identifier) === false) issues.push({ severity: 'warning', scope: 'node', node_key: g.key, field: 'identifier_id', code: 'product_audios_identifier_inactive', message: 'The chosen identifier is inactive: this step will not find its audio and will take the "no audios" route.' })
+        }
+        const withProduct = singles.filter((g) => g.product && purposeState.has(g.purpose) && identifierState.has(g.identifier))
+        if (withProduct.length) {
+          const { data: classified, error: classifiedError } = await admin.from('audio_guide_items').select('product_id, purpose_id, identifier_id, status').eq('account_id', account.accountId).in('product_id', withProduct.map((g) => g.product))
+          if (classifiedError) return NextResponse.json({ error: 'Could not validate the chosen audio' }, { status: 503 })
+          for (const g of withProduct) {
+            const match = (classified ?? []).find((r: { product_id: string; purpose_id: string | null; identifier_id: string | null }) => r.product_id === g.product && r.purpose_id?.toLowerCase() === g.purpose && r.identifier_id?.toLowerCase() === g.identifier)
+            if (!match) issues.push({ severity: 'warning', scope: 'node', node_key: g.key, field: 'audio_selection', code: 'product_audios_audio_not_classified', message: 'No audio of the chosen product has this purpose and identifier yet: this step will take the "no audios" route until one is classified.' })
+            else if ((match as { status?: string }).status === 'disabled') issues.push({ severity: 'warning', scope: 'node', node_key: g.key, field: 'audio_selection', code: 'product_audios_audio_disabled', message: 'The audio with this purpose and identifier is switched off: this step will take the "no audios" route.' })
+          }
+        }
+      }
       for (const issue of callGraphIssues) issues.push({ severity: issue.severity, scope: 'node', node_key: issue.node_key, field: 'target_flow_id', code: `execute_flow_${issue.code}`, ...(issue.params ? { params: issue.params } : {}), message: issue.message })
       const referenceIssues = await validateConditionReferences(account.supabase, account.accountId, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, isCustomConditionEnabledForAccount(account.accountId))
       for (const issue of referenceIssues) issues.push({ severity: 'error', scope: 'node', node_key: issue.node_key, field: 'subject_key', message: issue.issue })
       if (issues.some((issue) => issue.severity === 'error')) return NextResponse.json({ error: 'Cannot activate flow — fix the issues below first.', issues }, { status: 422 })
+      for (const issue of issues) if (issue.severity === 'warning') warningsOf.push({ node_key: issue.node_key, field: issue.field, code: (issue as { code?: string }).code, message: issue.message })
     }
     const { data: updated, error } = await admin.from('flows').update({ status, updated_at: new Date().toISOString() }).eq('id', id).select().maybeSingle()
     // 0A000 = migration 068's database guard (covers a node added between the check above and this update)
     if (error) return error.code === '0A000' ? NextResponse.json(/durable/i.test(error.message ?? '') ? DURABLE_WAIT_EXECUTION_DISABLED : SUBFLOW_EXECUTION_DISABLED, { status: 409 }) : NextResponse.json({ error: 'Could not update flow' }, { status: 500 })
-    return NextResponse.json({ flow: updated })
+    // Warnings never block (for example a chosen audio that is not classified yet): they travel with the saved flow so the editor can show them.
+    const warnings = status === 'active' ? warningsOf : []
+    return NextResponse.json(warnings.length ? { flow: updated, warnings } : { flow: updated })
   } catch (err) {
     if (err instanceof ConditionReferenceInfrastructureError) return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
     return toErrorResponse(err)

@@ -22,25 +22,18 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useAuth } from "@/hooks/use-auth";
+import { useAudioSelectionNames, type SelectionNames } from "@/hooks/use-audio-selection-names";
 import { useAudioGuideEnabled } from "@/hooks/use-audio-guide-enabled";
 import { canEditSettings } from "@/lib/auth/roles";
 import { stageVoiceNote, type VoiceNoteProblem } from "@/lib/audio-guide/stage-client";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
+import { api, type ApiResult } from "./api-client";
+import { SelectionCatalogs } from "./selection-catalogs";
 
-interface Item { id: string; position: number; sha256: string; url: string; label: string | null; bytes: number; duration_ms: number; pre_delay_seconds: number; status: "active" | "disabled" }
+interface Item { id: string; position: number; sha256: string; url: string; label: string | null; bytes: number; duration_ms: number; pre_delay_seconds: number; status: "active" | "disabled"; purpose_id?: string | null; identifier_id?: string | null }
 interface Summary { id: string; product_key: string; display_name: string; active: boolean; revision: number; item_count: number; active_item_count: number }
 interface Detail extends Omit<Summary, "item_count" | "active_item_count"> { items: Item[] }
-
-type ApiResult = { status: number; body: Record<string, unknown> };
-async function api(method: string, url: string, body?: unknown): Promise<ApiResult> {
-  try {
-    const response = await fetch(url, { method, headers: body === undefined ? undefined : { "Content-Type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
-    return { status: response.status, body: ((await response.json().catch(() => ({}))) ?? {}) as Record<string, unknown> };
-  } catch {
-    return { status: 0, body: {} };
-  }
-}
 
 const MAX_ITEMS = 6;
 
@@ -49,6 +42,7 @@ export function AudioGuideAdmin() {
   const enabled = useAudioGuideEnabled();
   const { accountRole } = useAuth();
   const canEdit = accountRole ? canEditSettings(accountRole) : false;
+  const names = useAudioSelectionNames(enabled === true);
 
   const [query, setQuery] = useState("");
   const [products, setProducts] = useState<Summary[] | null>(null);
@@ -70,6 +64,13 @@ export function AudioGuideAdmin() {
     if (code === "display_name_required" || code === "display_name_too_long") return t("errorInvalidName");
     if (code === "invalid_value" || code === "product_value_invalid") return t("errorInvalidValue");
     if (code === "pause_out_of_range") return t("errorPause");
+    if (code === "duplicate_name") return t("errorDuplicateName");
+    if (code === "in_use") return t("errorInUse");
+    if (code === "duplicate_classification") return t("errorDuplicateClassification");
+    if (code === "purpose_inactive") return t("errorPurposeInactive");
+    if (code === "identifier_inactive") return t("errorIdentifierInactive");
+    if (code === "purpose_not_found") return t("errorPurposeMissing");
+    if (code === "identifier_not_found") return t("errorIdentifierMissing");
     if (code === "limit_reached") return t("limitReached");
     if (code === "file_not_stored") return t("errorFileNotStored");
     if (code === "file_rejected") {
@@ -78,6 +79,14 @@ export function AudioGuideAdmin() {
     }
     return t("errorGeneric");
   }, [t]);
+
+  /** Errors of the purpose / identifier lists: the generic ones are shared, but 422/invalid_value here is about the NAME, not a product. */
+  const catalogErrorText = useCallback((r: ApiResult): string => {
+    const code = String(r.body.error ?? "");
+    if (code === "invalid_value" || code === "name_required") return t("errorCatalogName");
+    if (code === "limit_reached") return t("errorCatalogLimit");
+    return errorText(r);
+  }, [errorText, t]);
 
   const loadList = useCallback(async (q: string) => {
     const r = await api("GET", `/api/audio-guide/products${q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ""}`);
@@ -104,7 +113,7 @@ export function AudioGuideAdmin() {
   const shown = selectedId && detail?.id === selectedId ? detail : null;
 
   /** One write: sends the loaded revision, applies the answer, and reloads on a conflict. */
-  const write = useCallback(async (key: string, run: (revision: number) => Promise<ApiResult>, success?: string) => {
+  const write = useCallback(async (key: string, run: (revision: number) => Promise<ApiResult>, success?: string, onFail?: (r: ApiResult) => void) => {
     if (!detail) return false;
     setBusy(key);
     const r = await run(detail.revision);
@@ -115,6 +124,7 @@ export function AudioGuideAdmin() {
       void loadList(query);
       return true;
     }
+    onFail?.(r);
     if (r.status === 409 && r.body.error === "revision_conflict") {
       toast.error(t("conflict"));
       void loadDetail(detail.id);
@@ -150,6 +160,8 @@ export function AudioGuideAdmin() {
       </div>
       {accountRole && !canEdit && <p className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground" data-testid="read-only-notice">{t("readOnlyNotice")}</p>}
 
+      <SelectionCatalogs names={names} canEdit={canEdit} errorText={catalogErrorText} />
+
       <div className="grid gap-4 md:grid-cols-[320px_1fr]">
         {/* ------------------------------------------------ product list */}
         <aside className="space-y-3">
@@ -182,7 +194,7 @@ export function AudioGuideAdmin() {
           {!selectedId && <p className="py-12 text-center text-sm text-muted-foreground">{t("noProductSelected")}</p>}
           {selectedId && detailLoading && !shown && <div className="flex items-center justify-center py-12 text-muted-foreground"><Loader2 className="mr-2 h-4 w-4 animate-spin" />{t("loading")}</div>}
           {shown && (
-            <ProductEditor key={`${shown.id}:${shown.revision}`} detail={shown} canEdit={canEdit} busy={busy} write={write}
+            <ProductEditor key={`${shown.id}:${shown.revision}`} detail={shown} canEdit={canEdit} busy={busy} write={write} names={names} errorText={errorText}
               onDelete={() => setDeleteOpen(true)} />
           )}
         </section>
@@ -375,9 +387,9 @@ function LookupCard() {
 }
 
 // ====================================================================================================== product editor
-type Write = (key: string, run: (revision: number) => Promise<ApiResult>, success?: string) => Promise<boolean>;
+type Write = (key: string, run: (revision: number) => Promise<ApiResult>, success?: string, onFail?: (r: ApiResult) => void) => Promise<boolean>;
 
-function ProductEditor({ detail, canEdit, busy, write, onDelete }: { detail: Detail; canEdit: boolean; busy: string | null; write: Write; onDelete: () => void }) {
+function ProductEditor({ detail, canEdit, busy, write, names, errorText, onDelete }: { detail: Detail; canEdit: boolean; busy: string | null; write: Write; names: SelectionNames; errorText: (r: ApiResult) => string; onDelete: () => void }) {
   const t = useTranslations("AudioGuide");
   const [name, setName] = useState(detail.display_name);
   const [value, setValue] = useState(detail.product_key);
@@ -469,7 +481,8 @@ function ProductEditor({ detail, canEdit, busy, write, onDelete }: { detail: Det
             <SortableContext items={items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
               <ol className="mt-3 space-y-2" data-testid="audio-list">
                 {items.map((item, index) => (
-                  <AudioRow key={`${item.id}:${item.pre_delay_seconds}:${item.label ?? ""}`} item={item} index={index} last={index === items.length - 1} canEdit={canEdit} busy={busy !== null}
+                  <AudioRow key={`${item.id}:${item.pre_delay_seconds}:${item.label ?? ""}:${item.purpose_id ?? ""}:${item.identifier_id ?? ""}`} item={item} index={index} last={index === items.length - 1} canEdit={canEdit} busy={busy !== null} names={names}
+                    onClassify={(purposeId, identifierId, onFail) => write(`class-${item.id}`, (rev) => api("PUT", `/api/audio-guide/products/${detail.id}/items/${item.id}/classification`, { expected_revision: rev, purpose_id: purposeId, identifier_id: identifierId }), purposeId ? t("classifySaved") : t("classifyCleared"), (r) => onFail(errorText(r)))}
                     onMove={(d) => move(index, d)}
                     onToggle={(checked) => void write(`status-${item.id}`, (rev) => api("PATCH", `/api/audio-guide/products/${detail.id}/items/${item.id}`, { expected_revision: rev, status: checked ? "active" : "disabled" }), t("saved"))}
                     onPause={(seconds) => write(`pause-${item.id}`, (rev) => api("PATCH", `/api/audio-guide/products/${detail.id}/items/${item.id}`, { expected_revision: rev, pre_delay_seconds: seconds }), t("saved"))}
@@ -496,8 +509,9 @@ function problemText(problem: VoiceNoteProblem, t: ReturnType<typeof useTranslat
   }
 }
 
-function AudioRow({ item, index, last, canEdit, busy, onMove, onToggle, onPause, onLabel, onRemove }: {
-  item: Item; index: number; last: boolean; canEdit: boolean; busy: boolean;
+function AudioRow({ item, index, last, canEdit, busy, names, onClassify, onMove, onToggle, onPause, onLabel, onRemove }: {
+  item: Item; index: number; last: boolean; canEdit: boolean; busy: boolean; names: SelectionNames;
+  onClassify: (purposeId: string | null, identifierId: string | null, onFail: (message: string) => void) => Promise<boolean>;
   onMove: (delta: -1 | 1) => void; onToggle: (checked: boolean) => void; onPause: (seconds: number) => Promise<boolean>; onLabel: (label: string) => Promise<boolean>; onRemove: () => void;
 }) {
   const t = useTranslations("AudioGuide");
@@ -506,6 +520,24 @@ function AudioRow({ item, index, last, canEdit, busy, onMove, onToggle, onPause,
   const [label, setLabel] = useState(item.label ?? "");
   const pauseNumber = Number(pause);
   const pauseValid = Number.isInteger(pauseNumber) && pauseNumber >= 5 && pauseNumber <= 30;
+  // Classification: a purpose AND an identifier (both or neither). Saved as soon as both are chosen, cleared when both are emptied.
+  const [purposeSel, setPurposeSel] = useState(item.purpose_id ?? "");
+  const [identifierSel, setIdentifierSel] = useState(item.identifier_id ?? "");
+  const [classError, setClassError] = useState<string | null>(null);
+  const [classBusy, setClassBusy] = useState(false);
+  const classified = Boolean(item.purpose_id && item.identifier_id);
+  const half = (purposeSel === "") !== (identifierSel === "");
+  const classify = async (purposeId: string, identifierId: string) => {
+    setClassBusy(true); setClassError(null);
+    const ok = await onClassify(purposeId || null, identifierId || null, (message) => setClassError(message));
+    setClassBusy(false);
+    if (!ok) { setPurposeSel(item.purpose_id ?? ""); setIdentifierSel(item.identifier_id ?? ""); }
+  };
+  const choose = (which: "purpose" | "identifier", value: string) => {
+    const p = which === "purpose" ? value : purposeSel, i = which === "identifier" ? value : identifierSel;
+    setPurposeSel(p); setIdentifierSel(i); setClassError(null);
+    if ((p && i) || (!p && !i && classified)) void classify(p, i);
+  };
 
   return (
     <li ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition }} data-testid={`audio-${index + 1}`} data-item-id={item.id} data-status={item.status}
@@ -539,7 +571,35 @@ function AudioRow({ item, index, last, canEdit, busy, onMove, onToggle, onPause,
         </label>
         {canEdit && <Button variant="ghost" size="sm" disabled={busy} onClick={onRemove} data-testid={`remove-${index + 1}`}><Trash2 className="mr-1 h-4 w-4" />{t("removeAudio")}</Button>}
       </div>
+      <div className="mt-2 flex flex-wrap items-center gap-3" data-testid={`classification-${index + 1}`} data-classified={classified}>
+        <ClassSelect label={t("classifyPurposeLabel")} value={purposeSel} savedId={item.purpose_id ?? null} options={names.purposes} disabled={!canEdit || busy || classBusy || names.state !== "ready"} testId={`purpose-${index + 1}`} onChange={(v) => choose("purpose", v)} />
+        <ClassSelect label={t("classifyIdentifierLabel")} value={identifierSel} savedId={item.identifier_id ?? null} options={names.identifiers} disabled={!canEdit || busy || classBusy || names.state !== "ready"} testId={`identifier-${index + 1}`} onChange={(v) => choose("identifier", v)} />
+        {classBusy && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+        {canEdit && classified && <Button variant="ghost" size="sm" disabled={busy || classBusy} data-testid={`clear-classification-${index + 1}`} onClick={() => { setPurposeSel(""); setIdentifierSel(""); void classify("", ""); }}>{t("classifyClear")}</Button>}
+        {!classified && !half && <Badge variant="secondary" data-testid={`unclassified-${index + 1}`}>{t("classifyUnclassified")}</Badge>}
+      </div>
+      {names.state === "loading" && <p className="mt-1 text-xs text-muted-foreground">{t("classifyLoading")}</p>}
+      {names.state === "ready" && canEdit && (names.purposes.length === 0 || names.identifiers.length === 0) && !classified && <p className="mt-1 text-xs text-muted-foreground" data-testid={`no-catalog-${index + 1}`}>{t("classifyNoCatalog")}</p>}
+      {half && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400" data-testid={`half-${index + 1}`}>{t("classifyNeedBoth")}</p>}
+      {classError && <p className="mt-1 text-xs text-destructive" role="alert" data-testid={`classification-error-${index + 1}`}>{classError}</p>}
     </li>
   );
 }
 
+/** A native select (keyboard and screen-reader friendly): "Sin clasificar", the active values, and - if the saved value is inactive or gone - that value, labelled as such. */
+function ClassSelect({ label, value, savedId, options, disabled, testId, onChange }: {
+  label: string; value: string; savedId: string | null; options: SelectionNames["purposes"]; disabled: boolean; testId: string; onChange: (value: string) => void;
+}) {
+  const t = useTranslations("AudioGuide");
+  const saved = savedId ? options.find((o) => o.id === savedId) : undefined;
+  return (
+    <label className="flex items-center gap-1.5 text-xs text-muted-foreground">{label}
+      <select value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} aria-label={label} data-testid={testId}
+        className="h-8 max-w-48 rounded-md border border-input bg-background px-2 text-xs text-foreground disabled:cursor-not-allowed disabled:opacity-60">
+        <option value="">{t("classifyUnclassified")}</option>
+        {savedId && !saved && <option value={savedId}>{t("classifyMissingValue")}</option>}
+        {options.filter((o) => o.active || o.id === savedId).map((o) => <option key={o.id} value={o.id}>{o.active ? o.name : `${o.name} ${t("classifyInactiveSuffix")}`}</option>)}
+      </select>
+    </label>
+  );
+}

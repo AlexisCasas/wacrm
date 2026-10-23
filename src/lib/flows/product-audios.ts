@@ -15,6 +15,10 @@
  *   5. the catalog answers (`lookupProductAudios`, deterministic, no AI): no value / unknown / inactive -> the "unknown" route,
  *      no active audio -> the "no audios" route;
  *   6. the request is opened (snapshot of the active audios) and the sequence runs within the inline budget.
+ * SELECTION. The node sends every active audio ("all", the original behaviour) or exactly ONE ("single": the audio of the product classified with
+ * the node's purpose and identifier, migration 076). In single mode the request is keyed by `<inbound message>#<node key>` so two nodes of the same
+ * Flow never collide, while a retry of the same node for the same message finds its request and sends nothing. Anything that prevents sending that
+ * one audio (inactive/unknown purpose or identifier, no audio with that pair, audio switched off) is the "no audios" route, never "send them all".
  * The node reports success (`next`) only when EVERY audio was sent. Anything else is `failed`: the run is never marked complete while
  * audios are missing. Leftover audios (budget exhausted) stay pending for the resumer.
  */
@@ -25,7 +29,7 @@ import { sendVoiceNoteViaEngine } from "@/lib/audio-guide/sender";
 import { INLINE_BUDGET_MS, makeHaltCheck, runAudioSequence, type SendContext, type SequencerDb, type SequencerDeps } from "@/lib/audio-guide/sequencer";
 import type { CatalogDb } from "@/lib/audio-guide/catalog";
 import { isVoiceNoteEnabledForAccount } from "./voice-note-capability";
-import { gateModeOf, inspectProductAudiosConfig, productAudiosRouteKeys, productSourceOf } from "./product-audios-config";
+import { gateModeOf, inspectProductAudiosConfig, productAudiosRouteKeys, productSourceOf, selectionOf } from "./product-audios-config";
 import type { FlowRunRow, SendProductAudiosNodeConfig } from "./types";
 
 type Db = SequencerDb & CatalogDb;
@@ -36,7 +40,9 @@ export type ProductAudiosResult =
   | { kind: "paused"; reason: string }
   | { kind: "failed"; reason: string; detail?: Record<string, unknown> };
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Answers of audio_guide_open_selected_request that mean "that one audio cannot be sent" (as opposed to a failure). */
+const SELECTED_UNAVAILABLE: ReadonlySet<string> = new Set(["purpose_unavailable", "identifier_unavailable", "audio_not_found", "audio_disabled"]);
+
 
 /** A usable node: its gate/product choices are coherent (see product-audios-config.ts) and every output it needs is set. */
 export function isProductAudiosConfigValid(cfg: Partial<SendProductAudiosNodeConfig> | null | undefined): cfg is SendProductAudiosNodeConfig {
@@ -85,8 +91,17 @@ export async function executeSendProductAudios(args: { db: Db; run: FlowRunRow; 
   if (contactError) return { kind: "failed", reason: "contact_lookup_failed" };
   if (!contact) return { kind: "failed", reason: "contact_not_in_account" };
 
-  const trigger = await triggerKey(db, run);
+  const single = selectionOf(cfg) === "single";
+  const purposeId = single ? String(cfg.purpose_id).toLowerCase() : null;
+  const identifierId = single ? String(cfg.identifier_id).toLowerCase() : null;
+  const inbound = await triggerKey(db, run);
+  // One request per inbound message for "all"; one per inbound message AND node for "single" (the node key is appended, never replaces the message id).
+  const trigger = single ? `${inbound}#${args.nodeKey}` : inbound;
   const skip = async (reason: string, productKey?: string | null) => {
+    if (single) {
+      await db.rpc("audio_guide_record_selected_skip", { p_account: accountId, p_contact: contactId, p_conversation: conversationId, p_run: run.id, p_trigger: trigger, p_product_key: productKey ?? null, p_reason: reason, p_purpose: purposeId, p_identifier: identifierId, p_node_key: args.nodeKey });
+      return;
+    }
     await db.rpc("audio_guide_record_skip", { p_account: accountId, p_contact: contactId, p_conversation: conversationId, p_run: run.id, p_trigger: trigger, p_product_key: productKey ?? null, p_reason: reason });
   };
 
@@ -133,17 +148,29 @@ export async function executeSendProductAudios(args: { db: Db; run: FlowRunRow; 
       await skip("no_audios", found.product.productKey);
       return { kind: "next", nodeKey: cfg.no_audios_node_key, detail: { route: "no_audios", product_key: found.product.productKey } };
     }
-    // ---- 6. open the request (idempotent per inbound message)
-    const { data, error } = await db.rpc("audio_guide_open_request", {
-      p_account: accountId, p_contact: contactId, p_conversation: conversationId, p_run: run.id, p_trigger: trigger,
-      p_product_key: found.product.productKey, p_expected_revision: found.product.revision,
-    });
+    // ---- 6. open the request (idempotent per inbound message, and per node in single mode)
+    const { data, error } = single
+      ? await db.rpc("audio_guide_open_selected_request", {
+        p_account: accountId, p_contact: contactId, p_conversation: conversationId, p_run: run.id, p_trigger: trigger,
+        p_product_key: found.product.productKey, p_expected_revision: found.product.revision,
+        p_purpose: purposeId, p_identifier: identifierId, p_node_key: args.nodeKey,
+      })
+      : await db.rpc("audio_guide_open_request", {
+        p_account: accountId, p_contact: contactId, p_conversation: conversationId, p_run: run.id, p_trigger: trigger,
+        p_product_key: found.product.productKey, p_expected_revision: found.product.revision,
+      });
     const r = data as { ok?: boolean; reason?: string; request_id?: string; created?: boolean; status?: string } | null;
     if (error || !r) return { kind: "failed", reason: "request_open_failed" };
     if (r.ok === true && r.request_id) { opened = { request_id: r.request_id, created: r.created === true, status: String(r.status) }; break; }
     if (r.reason === "catalog_changed") continue;
     if (r.reason === "no_audios") { await skip("no_audios", found.product.productKey); return { kind: "next", nodeKey: cfg.no_audios_node_key, detail: { route: "no_audios" } }; }
     if (r.reason === "product_unavailable") { await skip("unknown_product", found.product.productKey); return { kind: "next", nodeKey: cfg.unknown_node_key, detail: { route: "unknown" } }; }
+    // The one audio asked for cannot be sent: its purpose or identifier is off or gone, no audio carries that pair, or the audio is switched off.
+    // Nothing is sent and the flow takes the "no audios" route; it is NEVER widened to the product's other audios.
+    if (single && typeof r.reason === "string" && SELECTED_UNAVAILABLE.has(r.reason)) {
+      await skip(r.reason, found.product.productKey);
+      return { kind: "next", nodeKey: cfg.no_audios_node_key, detail: { route: "no_audios", selection: "single", why: r.reason, product_key: found.product.productKey } };
+    }
     return { kind: "failed", reason: "request_open_failed" };
   }
   if (!opened) return { kind: "failed", reason: "catalog_changed" };
@@ -165,7 +192,7 @@ export async function executeSendProductAudios(args: { db: Db; run: FlowRunRow; 
     ...args.deps?.sequencer,
   };
   const outcome = await runAudioSequence({ db, context, requestId: opened.request_id, deps, budgetMs: args.deps?.budgetMs ?? INLINE_BUDGET_MS });
-  const detail = { request_id: opened.request_id, sent: outcome.sent };
+  const detail = { request_id: opened.request_id, sent: outcome.sent, ...(single ? { selection: "single" } : {}) };
   switch (outcome.kind) {
     case "completed":
       return { kind: "next", nodeKey: cfg.next_node_key, detail: { ...detail, route: "next" } };

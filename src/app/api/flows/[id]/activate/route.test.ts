@@ -182,3 +182,91 @@ describe("POST /api/flows/[id]/activate — Audios por producto: optional tag an
     expect(w.update).toHaveBeenCalled();
   });
 });
+
+describe("POST /api/flows/[id]/activate — Audios por producto: one specific audio", () => {
+  const PU = "c1111111-1111-4111-8111-111111111111", ID = "d1111111-1111-4111-8111-111111111111", PRODUCT = "44444444-4444-4444-8444-444444444444";
+  const activate = () => POST(new Request("http://localhost/api/flows/flow-1/activate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "active" }) }), params);
+  const routes = { next_node_key: "end", unknown_node_key: "end", no_audios_node_key: "end" };
+  const single = (over: Record<string, unknown> = {}) => ({ gate_mode: "none", gate_tag_id: "", product_source: "auto", audio_selection: "single", purpose_id: PU, identifier_id: ID, ...routes, ...over });
+
+  function world(config: Record<string, unknown>, rows: { purposes?: Array<{ id: string; active: boolean }>; identifiers?: Array<{ id: string; active: boolean }>; items?: Array<Record<string, unknown>> } = {}) {
+    const lookups: Array<{ table: string; ids: string[] }> = [];
+    const update = vi.fn().mockResolvedValue({ data: { id: "flow-1" }, error: null });
+    mocks.validateReferences.mockResolvedValue([]);
+    mocks.validateGraph.mockReturnValue([]);
+    const byTable: Record<string, Array<Record<string, unknown>>> = { audio_guide_purposes: rows.purposes ?? [], audio_guide_identifiers: rows.identifiers ?? [], audio_guide_items: rows.items ?? [], audio_guide_products: [{ id: PRODUCT }] };
+    mocks.admin.mockReturnValue({
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === "flows") {
+          return {
+            select: () => ({ eq: () => ({ maybeSingle: vi.fn().mockResolvedValue({ data: { name: "Flow", trigger_type: "manual", trigger_config: {}, entry_node_id: "start" }, error: null }) }) }),
+            update: () => ({ eq: () => ({ select: () => ({ maybeSingle: update }) }) }),
+          };
+        }
+        if (table in byTable) {
+          return { select: () => ({ eq: () => ({ in: (col: string, ids: string[]) => { lookups.push({ table, ids }); return Promise.resolve({ data: byTable[table].filter((r) => ids.includes(String(r[col === "product_id" ? "product_id" : "id"]))), error: null }); } }) }) };
+        }
+        return { select: () => ({ eq: () => Promise.resolve({ data: [{ node_key: "start", node_type: "start", config: { next_node_key: "vp" } }, { node_key: "vp", node_type: "send_product_audios", config }, { node_key: "end", node_type: "end", config: {} }], error: null }) }) };
+      }),
+    });
+    return { lookups, update };
+  }
+  const codes = async (response: Response) => ((await response.json()) as { issues?: Array<{ code?: string; severity: string }> }).issues ?? [];
+
+  it("a purpose or identifier that is NOT this account's is an error: nothing is activated", async () => {
+    const w = world(single(), { purposes: [], identifiers: [{ id: ID, active: true }] });
+    const response = await activate();
+    expect(response.status).toBe(422);
+    expect(await codes(response)).toEqual(expect.arrayContaining([expect.objectContaining({ code: "product_audios_purpose_unknown", severity: "error" })]));
+    expect(w.lookups).toEqual(expect.arrayContaining([{ table: "audio_guide_purposes", ids: [PU] }, { table: "audio_guide_identifiers", ids: [ID] }]));
+    expect(w.update).not.toHaveBeenCalled();
+    world(single(), { purposes: [{ id: PU, active: true }], identifiers: [] });
+    expect(await codes(await activate())).toEqual(expect.arrayContaining([expect.objectContaining({ code: "product_audios_identifier_unknown" })]));
+  });
+
+  it("an incomplete node (no purpose or identifier) is refused by the validator's contract, not guessed: it never reaches the account lookups", async () => {
+    const w = world(single({ purpose_id: "", identifier_id: "" }));
+    mocks.validateGraph.mockReturnValue([{ severity: "error", scope: "node", node_key: "vp", field: "purpose_id", code: "product_audios_purpose_missing", message: "x" }]);
+    const response = await activate();
+    expect(response.status).toBe(422);
+    expect(w.lookups).toEqual([]);
+    expect(w.update).not.toHaveBeenCalled();
+  });
+
+  it("valid values of the account let it activate; an inactive purpose or identifier only warns", async () => {
+    const ok = world(single(), { purposes: [{ id: PU, active: true }], identifiers: [{ id: ID, active: true }] });
+    expect((await activate()).status).toBe(200);
+    expect(ok.update).toHaveBeenCalled();
+    const off = world(single(), { purposes: [{ id: PU, active: false }], identifiers: [{ id: ID, active: false }] });
+    const response = await activate();
+    expect(response.status).toBe(200);
+    expect(off.update).toHaveBeenCalled();
+    expect(((await response.json()) as { warnings: Array<{ code: string }> }).warnings.map((w) => w.code).sort()).toEqual(["product_audios_identifier_inactive", "product_audios_purpose_inactive"]);
+  });
+
+  it("with the product chosen by hand it also checks the audio exists and is on; when not, it warns but still activates (the node would take 'no audios')", async () => {
+    const config = single({ product_source: "manual", product_id: PRODUCT });
+    const names = { purposes: [{ id: PU, active: true }], identifiers: [{ id: ID, active: true }] };
+    for (const [items, expectCode] of [
+      [[], "product_audios_audio_not_classified"],
+      [[{ product_id: PRODUCT, purpose_id: PU, identifier_id: ID, status: "disabled" }], "product_audios_audio_disabled"],
+    ] as const) {
+      const w = world(config, { ...names, items: items as unknown as Array<Record<string, unknown>> });
+      // The warning is not an error: the flow activates, and the warning travels with the answer.
+      const response = await activate();
+      expect(response.status, expectCode).toBe(200);
+      expect(((await response.json()) as { warnings?: Array<{ code: string; node_key: string }> }).warnings).toEqual([expect.objectContaining({ code: expectCode, node_key: "vp" })]);
+      expect(w.lookups.some((l) => l.table === "audio_guide_items")).toBe(true);
+      expect(w.update).toHaveBeenCalled();
+    }
+    const ok = world(config, { ...names, items: [{ product_id: PRODUCT, purpose_id: PU, identifier_id: ID, status: "active" }] });
+    expect((await activate()).status).toBe(200);
+    expect(ok.update).toHaveBeenCalled();
+  });
+
+  it("a node that sends 'all' (or has no selection) never reads purposes, identifiers or audios", async () => {
+    const w = world({ gate_mode: "none", gate_tag_id: "", product_source: "auto", ...routes });
+    expect((await activate()).status).toBe(200);
+    expect(w.lookups).toEqual([]);
+  });
+});

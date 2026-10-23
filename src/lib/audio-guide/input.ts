@@ -128,3 +128,45 @@ export function parseReorder(raw: unknown): Parsed<ReorderInput> {
   if (new Set(ids.map((i) => i.toLowerCase())).size !== ids.length) return fail("item_ids", "item_ids_repeated");
   return { ok: true, value: { expectedRevision: rev.value, itemIds: ids.map((i) => i.toLowerCase()) } };
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------------------
+// Purposes / identifiers and the classification of an audio (migration 076)
+// ---------------------------------------------------------------------------------------------------------------------------------------
+
+export interface CreateNameInput { name: string; active?: boolean }
+export function parseCreateName(raw: unknown): Parsed<CreateNameInput> {
+  const b = asBody(raw);
+  if (!b) return fail("body", "invalid_body");
+  if (typeof b.name !== "string") return fail("name", "name_required");
+  const out: CreateNameInput = { name: b.name };
+  if (has(b, "active")) { if (typeof b.active !== "boolean") return fail("active", "active_invalid"); out.active = b.active; }
+  return { ok: true, value: out };
+}
+
+export interface SaveNameInput { name?: string; active?: boolean }
+export function parseSaveName(raw: unknown): Parsed<SaveNameInput> {
+  const b = asBody(raw);
+  if (!b) return fail("body", "invalid_body");
+  const out: SaveNameInput = {};
+  if (has(b, "name")) { if (typeof b.name !== "string") return fail("name", "name_required"); out.name = b.name; }
+  if (has(b, "active")) { if (typeof b.active !== "boolean") return fail("active", "active_invalid"); out.active = b.active; }
+  if (out.name === undefined && out.active === undefined) return fail("body", "nothing_to_change");
+  return { ok: true, value: out };
+}
+
+/** Both ids (UUIDs of this account's purpose and identifier) or both null (unclassified). A name is never accepted: references are by id. */
+export interface ClassificationInput { expectedRevision: number; purposeId: string | null; identifierId: string | null }
+export function parseClassification(raw: unknown): Parsed<ClassificationInput> {
+  const b = asBody(raw);
+  if (!b) return fail("body", "invalid_body");
+  const rev = parseRevision(b.expected_revision);
+  if (!rev.ok) return rev;
+  for (const forbidden of ["purpose", "identifier", "purpose_name", "identifier_name"]) if (has(b, forbidden)) return fail(forbidden, "reference_by_id_only");
+  if (!has(b, "purpose_id") || !has(b, "identifier_id")) return fail("purpose_id", "both_ids_required");
+  const p = b.purpose_id, i = b.identifier_id;
+  if ((p === null) !== (i === null)) return fail(p === null ? "purpose_id" : "identifier_id", "both_or_neither");
+  if (p === null) return { ok: true, value: { expectedRevision: rev.value, purposeId: null, identifierId: null } };
+  if (!isUuid(p)) return fail("purpose_id", "invalid_id");
+  if (!isUuid(i)) return fail("identifier_id", "invalid_id");
+  return { ok: true, value: { expectedRevision: rev.value, purposeId: p.toLowerCase(), identifierId: i.toLowerCase() } };
+}

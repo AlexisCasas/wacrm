@@ -42,7 +42,8 @@ import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker";
 import { slugify, type BuilderNode } from "../shared";
-import { gateModeOf, productSourceOf } from "@/lib/flows/product-audios-config";
+import { gateModeOf, productSourceOf, selectionOf } from "@/lib/flows/product-audios-config";
+import { useAudioSelectionNames, type SelectionName } from "@/hooks/use-audio-selection-names";
 import { useFlowEditor } from "../flow-editor-state";
 import { useCustomerReplyConditionCapability, useDurableWaitAuthoringCapability, useSubflowAuthoringCapability } from "../use-subflow-authoring";
 import { WAIT_UNITS, isDurableWaitConfig, maxAmountFor, type WaitUnit } from "@/lib/flows/durable-wait";
@@ -976,6 +977,9 @@ function useCustomConditionCapability(): boolean {
 // ============================================================
 
 interface ProductAudiosCfg {
+  audio_selection?: string;
+  purpose_id?: string;
+  identifier_id?: string;
   gate_mode?: string;
   gate_tag_id?: string;
   product_source?: string;
@@ -1053,6 +1057,60 @@ function RouteField({ label, example, value, allNodes, currentKey, onChange, t }
   );
 }
 
+/** One purpose / identifier picker: shows the VISIBLE name, stores the UUID, and says plainly when the saved value is gone or inactive. */
+function SelectionNameField({ label, placeholder, value, options, ready, missingText, unavailableText, onChange, testId, t }: {
+  label: string; placeholder: string; value: string; options: SelectionName[]; ready: boolean; missingText: string; unavailableText: string;
+  onChange: (id: string) => void; testId: string; t: ReturnType<typeof useTranslations>;
+}) {
+  const chosen = value ? options.find((o) => o.id === value) : undefined;
+  const gone = Boolean(value) && ready && !chosen;
+  return (
+    <div data-testid={testId}>
+      <label className="mb-1 block text-xs text-muted-foreground">{label}</label>
+      {ready && (
+        <Select value={gone ? "" : value} onValueChange={(v) => { if (v !== null) onChange(v); }}>
+          <SelectTrigger className="bg-muted" aria-label={label}><SelectValue placeholder={placeholder} /></SelectTrigger>
+          <SelectContent>
+            {options.filter((o) => o.active || o.id === value).map((o) => <SelectItem key={o.id} value={o.id}>{o.name}{o.active ? "" : ` ${t("productAudiosNameInactive")}`}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      )}
+      {chosen && <p className="mt-1 text-xs text-foreground" data-testid={`${testId}-name`}>{chosen.name}{chosen.active ? "" : ` ${t("productAudiosNameInactive")}`}</p>}
+      {chosen && !chosen.active && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400" data-testid={`${testId}-inactive`}>{t("productAudiosNameInactiveWarning")}</p>}
+      {gone && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400" data-testid={`${testId}-gone`}>{unavailableText}</p>}
+      {!value && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400" data-testid={`${testId}-missing`}>{missingText}</p>}
+    </div>
+  );
+}
+
+type AudioMatch = "checking" | "found" | "missing" | "disabled" | "unknown";
+/** For a product chosen by hand: does one of its audios carry this purpose and identifier? (Read-only; the server decides again when sending.) */
+function useAudioMatch(productId: string, purposeId: string, identifierId: string): AudioMatch {
+  const { accountId } = useAuth();
+  const wanted = productId && purposeId && identifierId ? `${accountId}|${productId}|${purposeId}|${identifierId}` : null;
+  const [answer, setAnswer] = useState<{ key: string; value: AudioMatch } | null>(null);
+  useEffect(() => {
+    if (!wanted) return;
+    let cancelled = false;
+    (async () => {
+      let value: AudioMatch = "unknown";
+      try {
+        const response = await fetch(`/api/audio-guide/products/${productId}`);
+        const body = (await response.json().catch(() => ({}))) as { product?: { items?: Array<{ purpose_id?: string | null; identifier_id?: string | null; status?: string }> } };
+        const items = body.product?.items;
+        if (response.ok && Array.isArray(items)) {
+          const hit = items.find((i) => i.purpose_id?.toLowerCase() === purposeId.toLowerCase() && i.identifier_id?.toLowerCase() === identifierId.toLowerCase());
+          value = !hit ? "missing" : hit.status === "disabled" ? "disabled" : "found";
+        }
+      } catch { /* leave "unknown": the server decides when sending */ }
+      if (!cancelled) setAnswer({ key: wanted, value });
+    })();
+    return () => { cancelled = true; };
+  }, [wanted, productId, purposeId, identifierId]);
+  if (!wanted) return "unknown";
+  return answer && answer.key === wanted ? answer.value : "checking";
+}
+
 function SendProductAudiosForm({ cfg, allNodes, currentKey, onUpdateConfig, t }: {
   cfg: ProductAudiosCfg;
   allNodes: BuilderNode[];
@@ -1070,6 +1128,13 @@ function SendProductAudiosForm({ cfg, allNodes, currentKey, onUpdateConfig, t }:
   const tagName = cfg.gate_tag_id ? tagCatalog.tags.find((tag) => tag.id === cfg.gate_tag_id)?.name : undefined;
   const chosenProduct = cfg.product_id ? catalog.products.find((product) => product.id === cfg.product_id) : undefined;
   const productMissing = Boolean(cfg.product_id) && catalog.state === "ready" && !chosenProduct;
+  // Which audios: a node without `audio_selection` sends all of them, exactly as it always did. A value this version does not know is shown as
+  // neither choice (never as "all"), and the validator blocks activation until the person picks one.
+  const selectionKind = selectionOf(cfg);
+  const selection = selectionKind === "unsupported" ? "unsupported" : selectionKind;
+  const names = useAudioSelectionNames(selection === "single");
+  const namesReady = names.state === "ready";
+  const match = useAudioMatch(source === "manual" && selection === "single" ? (cfg.product_id ?? "") : "", cfg.purpose_id ?? "", cfg.identifier_id ?? "");
   return (
     <>
       <p className="text-xs text-muted-foreground">{t("productAudiosHelp")}</p>
@@ -1126,6 +1191,37 @@ function SendProductAudiosForm({ cfg, allNodes, currentKey, onUpdateConfig, t }:
             {chosenProduct && <p className="mt-1 text-xs text-foreground" data-testid="product-name">{chosenProduct.display_name}{chosenProduct.active ? "" : ` ${t("productAudiosProductInactive")}`}</p>}
             {productMissing && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t("productAudiosProductUnavailable")}</p>}
             {!cfg.product_id && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t("productAudiosProductMissing")}</p>}
+          </div>
+        )}
+      </fieldset>
+
+      <fieldset className="space-y-1.5" data-testid="selection-choice">
+        <legend className="mb-1 text-xs text-muted-foreground">{t("productAudiosSelectionTitle")}<HelpHint text={t("productAudiosSelectionTitleHelp")} t={t} /></legend>
+        <ChoiceRow t={t} testId="selection-all" value="all" current={selection} label={t("productAudiosSelectionAll")} example={t("productAudiosSelectionAllExample")}
+          onSelect={() => onUpdateConfig({ audio_selection: "all", purpose_id: "", identifier_id: "" })} />
+        <ChoiceRow t={t} testId="selection-single" value="single" current={selection} label={t("productAudiosSelectionSingle")} help={t("productAudiosSelectionSingleHelp")} example={t("productAudiosSelectionSingleExample")}
+          onSelect={() => onUpdateConfig({ audio_selection: "single" })} />
+        {selection === "single" && (
+          <div className="space-y-2 pl-6" data-testid="single-audio">
+            {names.state === "loading" && <p className="text-xs text-muted-foreground">{t("productAudiosNamesLoading")}</p>}
+            {names.state === "error" && <p className="text-xs text-destructive" role="alert">{t("productAudiosNamesError")}</p>}
+            {names.state === "disabled" && <p className="text-xs text-amber-600 dark:text-amber-400">{t("productAudiosNamesDisabled")}</p>}
+            {namesReady && names.purposes.length === 0 && names.identifiers.length === 0 && <p className="text-xs text-muted-foreground" data-testid="names-empty">{t("productAudiosNamesEmpty")}</p>}
+            {(namesReady || !cfg.purpose_id) && (
+              <SelectionNameField t={t} testId="purpose-field" label={t("productAudiosPurposeLabel")} placeholder={t("productAudiosPurposePlaceholder")} value={cfg.purpose_id ?? ""} options={names.purposes} ready={namesReady}
+                missingText={t("productAudiosPurposeMissing")} unavailableText={t("productAudiosPurposeUnavailable")} onChange={(v) => onUpdateConfig({ purpose_id: v })} />
+            )}
+            {(namesReady || !cfg.identifier_id) && (
+              <SelectionNameField t={t} testId="identifier-field" label={t("productAudiosIdentifierLabel")} placeholder={t("productAudiosIdentifierPlaceholder")} value={cfg.identifier_id ?? ""} options={names.identifiers} ready={namesReady}
+                missingText={t("productAudiosIdentifierMissing")} unavailableText={t("productAudiosIdentifierUnavailable")} onChange={(v) => onUpdateConfig({ identifier_id: v })} />
+            )}
+            {cfg.purpose_id && cfg.identifier_id && (
+              source === "manual" ? (
+                <p className={cn("text-xs", match === "found" ? "text-emerald-600 dark:text-emerald-400" : match === "checking" || match === "unknown" ? "text-muted-foreground" : "text-amber-600 dark:text-amber-400")} data-testid="audio-match" data-match={match}>
+                  {match === "found" ? t("productAudiosMatchFound") : match === "missing" ? t("productAudiosMatchMissing") : match === "disabled" ? t("productAudiosMatchDisabled") : match === "checking" ? t("productAudiosMatchChecking") : ""}
+                </p>
+              ) : <p className="text-xs text-muted-foreground" data-testid="audio-match" data-match="auto">{t("productAudiosMatchAuto")}</p>
+            )}
           </div>
         )}
       </fieldset>

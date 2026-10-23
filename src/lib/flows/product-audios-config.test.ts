@@ -72,7 +72,7 @@ describe("product: from the contact (auto) or chosen from the catalog (manual)",
   });
 });
 
-describe("forward compatibility: a selection this version cannot run is refused, never read as 'all'", () => {
+describe("selection: 'all' (the original), 'single' (one specific audio) and everything else refused, never read as 'all'", () => {
   const base = { gate_mode: "none", gate_tag_id: "", product_source: "auto", product_field_id: "", product_id: "" };
 
   it("the original behaviour is untouched: the field absent, null or 'all' sends every audio", () => {
@@ -83,27 +83,36 @@ describe("forward compatibility: a selection this version cannot run is refused,
     expect(codes({ gate_tag_id: TAG, product_field_id: "" })).toEqual([]); // a node saved before any of the options
   });
 
-  it("'single' (written by a newer version) is refused", () => {
-    expect(selectionOf({ ...base, audio_selection: "single" })).toBe("unsupported");
-    expect(codes({ ...base, audio_selection: "single", purpose_id: PRODUCT, identifier_id: FIELD })).toContain("product_audios_selection_unsupported");
+  it("'single' with a purpose and an identifier (UUIDs) is a valid node", () => {
+    expect(selectionOf({ ...base, audio_selection: "single" })).toBe("single");
+    expect(codes({ ...base, audio_selection: "single", purpose_id: PRODUCT, identifier_id: FIELD })).toEqual([]);
   });
 
-  it("any other value is refused too (typos, a future mode, the wrong type)", () => {
-    for (const bad of ["ALL", "One", "group", "", 0, 1, true, false, {}, []]) {
+  it("'single' without both ids, or with something that is not a UUID (a visible name), is incomplete: it names the missing field", () => {
+    expect(codes({ ...base, audio_selection: "single" })).toEqual(expect.arrayContaining(["product_audios_purpose_missing", "product_audios_identifier_missing"]));
+    expect(codes({ ...base, audio_selection: "single", purpose_id: PRODUCT })).toEqual(["product_audios_identifier_missing"]);
+    expect(codes({ ...base, audio_selection: "single", identifier_id: FIELD })).toEqual(["product_audios_purpose_missing"]);
+    expect(codes({ ...base, audio_selection: "single", purpose_id: "Pago", identifier_id: "Principal" })).toEqual(expect.arrayContaining(["product_audios_purpose_missing", "product_audios_identifier_missing"]));
+    expect(codes({ ...base, audio_selection: "single", purpose_id: "", identifier_id: "" })).toHaveLength(2);
+  });
+
+  it("any other value is refused (typos, a future mode, the wrong type)", () => {
+    for (const bad of ["ALL", "Single", "One", "group", "", 0, 1, true, false, {}, []]) {
       expect(selectionOf({ ...base, audio_selection: bad }), String(bad)).toBe("unsupported");
       expect(codes({ ...base, audio_selection: bad }), String(bad)).toContain("product_audios_selection_unsupported");
     }
   });
 
-  it("a purpose or an identifier, even without the mode, is refused instead of ignored", () => {
-    expect(codes({ ...base, purpose_id: PRODUCT })).toContain("product_audios_selection_unsupported");
-    expect(codes({ ...base, identifier_id: PRODUCT })).toContain("product_audios_selection_unsupported");
-    expect(codes({ ...base, audio_selection: "all", purpose_id: PRODUCT })).toContain("product_audios_selection_unsupported");
+  it("a purpose or an identifier on a node that sends 'all' (absent mode included) is refused instead of ignored", () => {
+    expect(codes({ ...base, purpose_id: PRODUCT })).toContain("product_audios_selection_conflict");
+    expect(codes({ ...base, identifier_id: PRODUCT })).toContain("product_audios_selection_conflict");
+    expect(codes({ ...base, audio_selection: "all", purpose_id: PRODUCT })).toContain("product_audios_selection_conflict");
     // empty strings are what an editor writes for 'not chosen': they are fine
     expect(codes({ ...base, purpose_id: "", identifier_id: "" })).toEqual([]);
   });
 
-  it("the guard does not hide the other checks", () => {
-    expect(codes({ ...base, audio_selection: "single", product_source: "ai" })).toEqual(expect.arrayContaining(["product_audios_selection_unsupported", "product_audios_source_invalid"]));
+  it("the selection checks do not hide the other checks", () => {
+    expect(codes({ ...base, audio_selection: "group", product_source: "ai" })).toEqual(expect.arrayContaining(["product_audios_selection_unsupported", "product_audios_source_invalid"]));
+    expect(codes({ ...base, audio_selection: "single", purpose_id: PRODUCT, identifier_id: FIELD, product_source: "manual" })).toContain("product_audios_product_missing");
   });
 });

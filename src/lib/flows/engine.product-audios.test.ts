@@ -28,6 +28,7 @@ import { sendVoiceNoteViaEngine } from "@/lib/audio-guide/sender";
 import { dispatchInboundToFlows } from "./engine";
 import { createMemoryDb, type Row } from "./test-support/memory-db";
 import { audioGuideRpc } from "./test-support/audio-guide-model";
+import { audioSelectionRpc } from "./test-support/audio-selection-model";
 
 const A = "046ff8c2-1111-4222-8333-444455556666";
 const B = "99999999-aaaa-4bbb-8ccc-dddddddddddd";
@@ -61,7 +62,7 @@ function setup(over: { nodes?: Row[]; items?: Row[]; products?: Row[]; tagged?: 
     audio_guide_products: over.products ?? [{ id: "p-xtd", account_id: A, product_key: "combo xtd", display_name: "Combo XTD", active: true, revision: 2 }],
     audio_guide_items: over.items ?? items([5, 5, 5]),
     ...over.extra,
-  }, { rpc: audioGuideRpc((n) => mem.table(n), clock) });
+  }, { rpc: { ...audioGuideRpc((n) => mem.table(n), clock), ...audioSelectionRpc((n) => mem.table(n), clock) } });
   h.db = mem.client;
   return mem;
 }
@@ -516,12 +517,12 @@ describe("send_product_audios: optional tag and manual product, in the runner", 
   });
 });
 
-describe("send_product_audios: a selection written by a newer version fails closed in this one", () => {
+describe("send_product_audios: a selection this version does not understand fails closed", () => {
   const cfg = (over: Row = {}): Row => ({ gate_mode: "none", gate_tag_id: "", product_source: "auto", product_field_id: "", product_id: "", next_node_key: "ok", unknown_node_key: "unk", no_audios_node_key: "noa", gate_closed_node_key: "", ...over });
   const sentLinks = () => wire().map((w) => w.link);
 
-  it("'single' sends NOTHING (it must never fall back to sending every audio) and takes no route", async () => {
-    const mem = setup({ nodes: graph(cfg({ audio_selection: "single", purpose_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", identifier_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" })) });
+  it("an unknown mode sends NOTHING (it must never fall back to sending every audio) and takes no route", async () => {
+    const mem = setup({ nodes: graph(cfg({ audio_selection: "group", purpose_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", identifier_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" })) });
     await run();
     expect(sentLinks()).toEqual([]);
     expect(h.sendMediaMessage).not.toHaveBeenCalled();
@@ -531,8 +532,8 @@ describe("send_product_audios: a selection written by a newer version fails clos
     expect(mem.table("audio_guide_sends")).toHaveLength(0);
   });
 
-  it("a purpose or identifier alone, or an unknown mode, fail closed too", async () => {
-    for (const [i, over] of ([{ purpose_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, { audio_selection: "group" }, { audio_selection: 7 }] as Row[]).entries()) {
+  it("a purpose or identifier alone, 'single' without them, or an unknown mode, fail closed too", async () => {
+    for (const [i, over] of ([{ purpose_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, { audio_selection: "single" }, { audio_selection: "single", purpose_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, { audio_selection: "group" }, { audio_selection: 7 }] as Row[]).entries()) {
       h.sendMediaMessage.mockClear();
       const mem = setup({ nodes: graph(cfg(over)) });
       await run(`wamid.F${i}`);
@@ -549,5 +550,307 @@ describe("send_product_audios: a selection written by a newer version fails clos
       expect(sentLinks()).toEqual([url("1"), url("2"), url("3")]);
       expect(entered(mem)).toEqual(["start", "vp", "ok"]);
     }
+  });
+});
+
+// ============================================================
+// F2-C: ONE specific audio ("single"): the audio of the product classified with the node's purpose and identifier (migration 076).
+// ============================================================
+describe("send_product_audios: ONE specific audio (single)", () => {
+  const PU1 = "c1111111-1111-4111-8111-111111111111", PU2 = "c2222222-2222-4222-8222-222222222222", PU_B = "c3333333-3333-4333-8333-333333333333";
+  const ID1 = "d1111111-1111-4111-8111-111111111111", ID2 = "d2222222-2222-4222-8222-222222222222", ID_B = "d3333333-3333-4333-8333-333333333333";
+  const PX = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+  const sentLinks = () => wire().map((w) => w.link);
+  const names = (over: { purposes?: Row[]; identifiers?: Row[] } = {}): Record<string, Row[]> => ({
+    audio_guide_purposes: over.purposes ?? [
+      { id: PU1, account_id: A, name: "Pago", name_key: "pago", active: true }, { id: PU2, account_id: A, name: "Provincia", name_key: "provincia", active: true },
+      { id: PU_B, account_id: B, name: "Pago", name_key: "pago", active: true },
+    ],
+    audio_guide_identifiers: over.identifiers ?? [
+      { id: ID1, account_id: A, name: "Principal", name_key: "principal", active: true }, { id: ID2, account_id: A, name: "Alternativo", name_key: "alternativo", active: true },
+      { id: ID_B, account_id: B, name: "Principal", name_key: "principal", active: true },
+    ],
+  });
+  /** audio 1 = Pago/Principal (5 s), audio 2 = Pago/Alternativo (7 s), audio 3 = Provincia/Principal (9 s) */
+  const classified = (over: Array<Partial<Row>> = [], product = "p-xtd"): Row[] => items([5, 7, 9], product).map((r, n) => ({
+    ...r, purpose_id: [PU1, PU1, PU2][n], identifier_id: [ID1, ID2, ID1][n], ...(over[n] ?? {}),
+  }));
+  const single = (purpose: string | null, identifier: string | null, over: Row = {}): Row => ({
+    gate_mode: "none", gate_tag_id: "", product_source: "auto", product_field_id: "", product_id: "", audio_selection: "single", purpose_id: purpose, identifier_id: identifier,
+    next_node_key: "ok", unknown_node_key: "unk", no_audios_node_key: "noa", gate_closed_node_key: "gate", ...over,
+  });
+  const world = (nodeCfg: Row, over: Parameters<typeof setup>[0] = {}) => setup({ nodes: graph(nodeCfg), items: classified(), extra: names(), ...over });
+  const requestsOf = (mem: ReturnType<typeof createMemoryDb>) => mem.table("audio_guide_requests");
+
+  it("sends exactly the audio with that purpose and identifier - nothing else - and follows 'next'", async () => {
+    const mem = world(single(PU1, ID2));
+    await run();
+    expect(sentLinks()).toEqual([url("2")]);
+    expect(entered(mem)).toEqual(["start", "vp", "ok"]);
+    expect(lastRun(mem)).toMatchObject({ status: "completed" });
+    expect(mem.table("audio_guide_sends")).toHaveLength(1);
+    expect(mem.table("audio_guide_sends")[0]).toMatchObject({ item_id: "p-xtd-i2", position: 1, status: "sent", pre_delay_seconds: 7 });
+  });
+  it("each pair finds its own audio (three nodes, three audios), whatever the order of the product's audios", async () => {
+    for (const [pu, id, want] of [[PU1, ID1, "1"], [PU1, ID2, "2"], [PU2, ID1, "3"]] as const) {
+      h.sendMediaMessage.mockClear();
+      world(single(pu, id));
+      await run(`wamid.P${want}`);
+      expect(sentLinks(), `${pu}/${id}`).toEqual([url(want)]);
+    }
+  });
+  it("respects the audio's own pause before it (7 s here): nothing is sent before it elapsed", async () => {
+    world(single(PU1, ID2));
+    const pending = dispatch();
+    await vi.advanceTimersByTimeAsync(6_000);
+    expect(h.sendMediaMessage).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.sendMediaMessage).toHaveBeenCalledTimes(1);
+    await pending;
+  });
+  it("records what was asked: mode, purpose and identifier ids and the names seen, and the node", async () => {
+    const mem = world(single(PU1, ID2));
+    await run("wamid.IN1");
+    expect(requestsOf(mem)).toHaveLength(1);
+    expect(requestsOf(mem)[0]).toMatchObject({ trigger_message_id: "wamid.IN1#vp", selection_mode: "single", purpose_id: PU1, identifier_id: ID2, purpose_name: "Pago", identifier_name: "Alternativo", node_key: "vp", status: "completed", product_id: "p-xtd" });
+    expect(mem.table("flow_run_events").find((e) => e.event_type === "message_sent")?.payload).toMatchObject({ selection: "single", sent: 1, route: "next" });
+  });
+  it("works with the product chosen by hand, and with an automatic product, the same way", async () => {
+    const XTD: Row = { id: PX, account_id: A, product_key: "combo xtd", display_name: "Combo XTD", active: true, revision: 1 };
+    const manual = world(single(PU2, ID1, { product_source: "manual", product_id: PX }), { products: [XTD], items: classified([], PX), value: null });
+    await run("wamid.M1");
+    expect(sentLinks()).toEqual([url("3")]);
+    expect(entered(manual)).toEqual(["start", "vp", "ok"]);
+    h.sendMediaMessage.mockClear();
+    world(single(PU2, ID1, { product_source: "auto" }));
+    await run("wamid.A1");
+    expect(sentLinks()).toEqual([url("3")]);
+  });
+  it("the 'all' node keeps sending the whole product, classified or not (the classification changes nothing for it)", async () => {
+    const mem = world({ ...NODE_CFG, gate_tag_id: TAG });
+    await run();
+    expect(sentLinks()).toEqual([url("1"), url("2"), url("3")]);
+    expect(requestsOf(mem)[0].trigger_message_id).toBe("wamid.IN1"); // the plain message id, exactly as before
+    expect(requestsOf(mem)[0].selection_mode ?? null).toBeNull();
+  });
+
+  describe("no matching audio: the 'no audios' route, nothing sent, never widened to the other audios", () => {
+    const expectNoAudios = async (mem: ReturnType<typeof createMemoryDb>, why: string) => {
+      expect(sentLinks()).toEqual([]);
+      expect(h.sendMediaMessage).not.toHaveBeenCalled();
+      expect(entered(mem)).toEqual(["start", "vp", "noa"]);
+      expect(mem.table("audio_guide_sends")).toHaveLength(0);
+      expect(requestsOf(mem)).toHaveLength(1);
+      expect(requestsOf(mem)[0]).toMatchObject({ status: "skipped", reason: why, selection_mode: "single", node_key: "vp" });
+    };
+    it("no audio of the product carries that pair", async () => {
+      const mem = world(single(PU2, ID2)); // Provincia/Alternativo exists as names but no audio has it
+      await run();
+      await expectNoAudios(mem, "audio_not_found");
+    });
+    it("the audio is switched off (a disabled audio is not sent, and the other audios are not used instead)", async () => {
+      const mem = world(single(PU1, ID2), { items: classified([{}, { status: "disabled" }, {}]) });
+      await run();
+      await expectNoAudios(mem, "audio_disabled");
+    });
+    it("the purpose or the identifier is inactive (the audio keeps its classification but cannot be asked for)", async () => {
+      let mem = world(single(PU1, ID1), { extra: names({ purposes: [{ id: PU1, account_id: A, name: "Pago", name_key: "pago", active: false }] }) });
+      await run("wamid.X1");
+      await expectNoAudios(mem, "purpose_unavailable");
+      h.sendMediaMessage.mockClear();
+      mem = world(single(PU1, ID1), { extra: names({ identifiers: [{ id: ID1, account_id: A, name: "Principal", name_key: "principal", active: false }] }) });
+      await run("wamid.X2");
+      await expectNoAudios(mem, "identifier_unavailable");
+    });
+    it("the purpose or identifier was deleted or never existed", async () => {
+      const mem = world(single("c9999999-9999-4999-8999-999999999999", ID1));
+      await run();
+      await expectNoAudios(mem, "purpose_unavailable");
+    });
+    it("a purpose / identifier of ANOTHER account is unavailable, even though it has the same name here and there", async () => {
+      const mem = world(single(PU_B, ID_B));
+      await run();
+      await expectNoAudios(mem, "purpose_unavailable");
+      expect(requestsOf(mem)[0]).toMatchObject({ purpose_id: null, identifier_id: null }); // ids that are not this account's are not recorded
+    });
+    it("a product with no active audio at all", async () => {
+      const mem = world(single(PU1, ID1), { items: classified([{ status: "disabled" }, { status: "disabled" }, { status: "disabled" }]) });
+      await run();
+      await expectNoAudios(mem, "no_audios");
+    });
+    it("an audio of another account's product with the same pair is never used", async () => {
+      const mem = world(single(PU1, ID1), { items: [...classified().filter((r) => r.pre_delay_seconds !== 5 && r.pre_delay_seconds !== 7 && r.pre_delay_seconds !== 9), ...classified([], "p-b").map((r) => ({ ...r, account_id: B }))] });
+      await run();
+      await expectNoAudios(mem, "no_audios");
+    });
+  });
+
+  describe("the other routes still work with a selected audio", () => {
+    it("unknown product -> the 'unknown' route, recorded with the selection and the node", async () => {
+      const mem = world(single(PU1, ID1), { value: "Producto que no existe" });
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(entered(mem)).toEqual(["start", "vp", "unk"]);
+      expect(requestsOf(mem)[0]).toMatchObject({ status: "skipped", reason: "unknown_product", selection_mode: "single", purpose_id: PU1, identifier_id: ID1, node_key: "vp" });
+    });
+    it("a contact without a Producto value -> 'unknown'", async () => {
+      const mem = world(single(PU1, ID1), { value: null });
+      await run();
+      expect(entered(mem)).toEqual(["start", "vp", "unk"]);
+    });
+    it("an inactive product -> 'unknown'", async () => {
+      const mem = world(single(PU1, ID1), { products: [{ id: "p-xtd", account_id: A, product_key: "combo xtd", display_name: "Combo XTD", active: false, revision: 2 }] });
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(entered(mem)).toEqual(["start", "vp", "unk"]);
+    });
+    it("the optional tag: a contact without it takes 'gate closed', and with it gets the one audio", async () => {
+      const gated = single(PU1, ID1, { gate_mode: "required", gate_tag_id: TAG });
+      let mem = world(gated, { tagged: false });
+      await run("wamid.G1");
+      expect(sentLinks()).toEqual([]);
+      expect(entered(mem)).toEqual(["start", "vp", "gate"]);
+      expect(requestsOf(mem)[0]).toMatchObject({ reason: "gate_closed", selection_mode: "single", trigger_message_id: "wamid.G1#vp" });
+      h.sendMediaMessage.mockClear();
+      mem = world(gated, { tagged: true });
+      await run("wamid.G2");
+      expect(sentLinks()).toEqual([url("1")]);
+    });
+  });
+
+  describe("idempotency: one send per inbound message AND node", () => {
+    it("the same inbound message delivered again after it finished sends nothing more and follows 'next'", async () => {
+      const mem = world(single(PU1, ID2));
+      await run("wamid.IN1");
+      expect(h.sendMediaMessage).toHaveBeenCalledTimes(1);
+      const again = await run("wamid.IN1");
+      expect(again).toMatchObject({ consumed: true });
+      expect(h.sendMediaMessage).toHaveBeenCalledTimes(1);
+      expect(requestsOf(mem)).toHaveLength(1);
+      expect(mem.table("flow_run_events").find((e) => e.event_type === "message_sent" && (e.payload as { duplicate?: boolean }).duplicate)).toBeTruthy();
+    });
+    it("a different inbound message later gets its own audio", async () => {
+      const mem = world(single(PU1, ID2));
+      await run("wamid.IN1"); await run("wamid.IN2");
+      expect(h.sendMediaMessage).toHaveBeenCalledTimes(2);
+      expect(requestsOf(mem).map((r) => r.trigger_message_id)).toEqual(["wamid.IN1#vp", "wamid.IN2#vp"]);
+    });
+    it("two specific-audio nodes of the same Flow for the same message do not collide: each sends its own audio, once", async () => {
+      const second = single(PU2, ID1, { next_node_key: "ok" });
+      const nodes: Row[] = [
+        { flow_id: "flow-1", node_key: "start", node_type: "start", config: { next_node_key: "vp" } },
+        { flow_id: "flow-1", node_key: "vp", node_type: "send_product_audios", config: single(PU1, ID2, { next_node_key: "vp2" }) },
+        { flow_id: "flow-1", node_key: "vp2", node_type: "send_product_audios", config: second },
+        ...["ok", "unk", "noa", "gate"].map((k) => ({ flow_id: "flow-1", node_key: k, node_type: "end", config: {} })),
+      ];
+      const mem = world(single(PU1, ID2), { nodes });
+      await run("wamid.IN1");
+      expect(sentLinks()).toEqual([url("2"), url("3")]);
+      expect(entered(mem)).toEqual(["start", "vp", "vp2", "ok"]);
+      expect(requestsOf(mem).map((r) => r.trigger_message_id)).toEqual(["wamid.IN1#vp", "wamid.IN1#vp2"]);
+      await run("wamid.IN1");
+      expect(h.sendMediaMessage).toHaveBeenCalledTimes(2); // redelivery: neither node sends again
+    });
+    it("a node that sends 'all' and a node that sends one audio for the same message use different keys", async () => {
+      const nodes: Row[] = [
+        { flow_id: "flow-1", node_key: "start", node_type: "start", config: { next_node_key: "vp" } },
+        { flow_id: "flow-1", node_key: "vp", node_type: "send_product_audios", config: single(PU1, ID1, { next_node_key: "vpall" }) },
+        { flow_id: "flow-1", node_key: "vpall", node_type: "send_product_audios", config: { gate_mode: "none", gate_tag_id: "", next_node_key: "ok", unknown_node_key: "unk", no_audios_node_key: "noa" } },
+        ...["ok", "unk", "noa", "gate"].map((k) => ({ flow_id: "flow-1", node_key: k, node_type: "end", config: {} })),
+      ];
+      const mem = world(single(PU1, ID1), { nodes });
+      await run("wamid.IN1");
+      expect(requestsOf(mem).map((r) => r.trigger_message_id)).toEqual(["wamid.IN1#vp", "wamid.IN1"]);
+      expect(sentLinks()).toEqual([url("1"), url("1"), url("2"), url("3")]);
+    });
+    it("a manual start (no inbound message) keys the request on the run and the node", async () => {
+      const mem = world(single(PU1, ID1));
+      await run("", "provincia");
+      expect(requestsOf(mem)[0].trigger_message_id).toMatch(/^run:.+#vp$/);
+    });
+  });
+
+  describe("failures never look like success, and nothing extra is sent", () => {
+    it("Meta rejects the one audio: the run FAILS, the request is failed, the 'next' route is not taken, nothing else is sent", async () => {
+      h.sendMediaMessage.mockImplementation(async () => { throw new MetaApiError({ message: "Media upload error", code: 131053, httpStatus: 400 }); });
+      const mem = world(single(PU1, ID2));
+      await run();
+      expect(h.sendMediaMessage).toHaveBeenCalledTimes(1);
+      expect(mem.table("audio_guide_sends").map((s) => s.status)).toEqual(["failed"]);
+      expect(requestsOf(mem)[0].status).toBe("failed");
+      expect(lastRun(mem)).toMatchObject({ status: "failed", end_reason: "audio_sequence_incomplete" });
+      expect(entered(mem)).not.toContain("ok");
+      await vi.advanceTimersByTimeAsync(300_000);
+      await resumeAudioRequests({ db: mem.client as unknown as SequencerDb, isEnabled: () => true, depsFor: () => ({ sendVoiceNote: sendVoiceNoteViaEngine }) });
+      expect(h.sendMediaMessage).toHaveBeenCalledTimes(1); // the resumer never retries a failed audio
+    });
+    it("the database cannot open the request: the run fails with request_open_failed and nothing is sent", async () => {
+      const mem = world(single(PU1, ID1));
+      const handlers = mem.client as unknown as { rpc: (fn: string, args: Row) => Promise<unknown> };
+      const real = handlers.rpc.bind(handlers);
+      handlers.rpc = (fn, args) => (fn === "audio_guide_open_selected_request" ? Promise.resolve({ data: null, error: { message: "db down" } }) : real(fn, args));
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(errors(mem).map((e) => (e.payload as { reason?: string }).reason)).toContain("request_open_failed");
+      expect(entered(mem)).not.toContain("ok");
+    });
+    it("an answer this version does not recognise is a failure, never a success and never 'send all'", async () => {
+      const mem = world(single(PU1, ID1));
+      const handlers = mem.client as unknown as { rpc: (fn: string, args: Row) => Promise<unknown> };
+      const real = handlers.rpc.bind(handlers);
+      handlers.rpc = (fn, args) => (fn === "audio_guide_open_selected_request" ? Promise.resolve({ data: { ok: false, reason: "something_new" }, error: null }) : real(fn, args));
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(errors(mem).map((e) => (e.payload as { reason?: string }).reason)).toContain("request_open_failed");
+    });
+    it("the catalog changing between the lookup and the request is retried once, then fails: it is not turned into another audio", async () => {
+      const mem = world(single(PU1, ID1));
+      const handlers = mem.client as unknown as { rpc: (fn: string, args: Row) => Promise<unknown> };
+      const real = handlers.rpc.bind(handlers);
+      handlers.rpc = (fn, args) => (fn === "audio_guide_open_selected_request" ? Promise.resolve({ data: { ok: false, reason: "catalog_changed" }, error: null }) : real(fn, args));
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(errors(mem).map((e) => (e.payload as { reason?: string }).reason)).toContain("catalog_changed");
+    });
+    it("a blocked contact: nothing is sent", async () => {
+      const mem = world(single(PU1, ID1), { contact: { blocked: true } });
+      await run();
+      expect(sentLinks()).toEqual([]);
+      void mem;
+    });
+  });
+
+  describe("pauses, budget and the resumer: the same runner, a one-audio request", () => {
+    it("when the inline budget is spent the audio stays pending and the resumer sends exactly that one audio, once", async () => {
+      const { executeSendProductAudios } = await import("./product-audios");
+      const mem = world(single(PU1, ID2));
+      const run1 = { id: "run-x", account_id: A, flow_id: "flow-1", user_id: "u-1", contact_id: "ct-1", conversation_id: "cv-1", status: "active", vars: {}, current_node_key: "vp" } as never;
+      mem.table("flow_runs").push(run1 as unknown as Row);
+      mem.table("flow_run_events").push({ flow_run_id: "run-x", event_type: "started", payload: { meta_message_id: "wamid.BUD" } });
+      const first = await executeSendProductAudios({ db: mem.client as never, run: run1, nodeKey: "vp", config: single(PU1, ID2), deps: { budgetMs: 1 } });
+      expect(first).toMatchObject({ kind: "failed", reason: "audio_sequence_incomplete" });
+      expect(h.sendMediaMessage).not.toHaveBeenCalled();
+      expect(mem.table("audio_guide_sends").map((s) => s.status)).toEqual(["pending"]);
+      expect(requestsOf(mem)[0]).toMatchObject({ trigger_message_id: "wamid.BUD#vp", selection_mode: "single" });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const summary = await resumeAudioRequests({ db: mem.client as unknown as SequencerDb, isEnabled: () => true, depsFor: () => ({ sendVoiceNote: sendVoiceNoteViaEngine }) });
+      expect(summary.examined).toBe(1);
+      expect(sentLinks()).toEqual([url("2")]);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await resumeAudioRequests({ db: mem.client as unknown as SequencerDb, isEnabled: () => true, depsFor: () => ({ sendVoiceNote: sendVoiceNoteViaEngine }) });
+      expect(h.sendMediaMessage).toHaveBeenCalledTimes(1);
+      expect(mem.table("audio_guide_sends").map((s) => s.status)).toEqual(["sent"]);
+    });
+  });
+
+  describe("accounts with the same names stay apart", () => {
+    it("account B's identical product, purposes and identifiers never answer account A's node, and A's node never reads B's audio", async () => {
+      const bItems = classified([], "p-b").map((r) => ({ ...r, account_id: B, purpose_id: PU_B, identifier_id: ID_B }));
+      const bProduct: Row = { id: "p-b", account_id: B, product_key: "combo xtd", display_name: "Combo XTD", active: true, revision: 2 };
+      const mem = world(single(PU1, ID1), { products: [{ id: "p-xtd", account_id: A, product_key: "combo xtd", display_name: "Combo XTD", active: true, revision: 2 }, bProduct], items: [...classified(), ...bItems] });
+      await run();
+      expect(sentLinks()).toEqual([url("1")]);
+      expect(requestsOf(mem)[0]).toMatchObject({ account_id: A, product_id: "p-xtd", purpose_id: PU1, identifier_id: ID1 });
+    });
   });
 });
