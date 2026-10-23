@@ -173,8 +173,9 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
         next_node_key: "",
       };
     case "send_product_audios":
-      // The gate has NO default: until a tag is chosen the node cannot be activated and, if it ever ran, would send nothing.
-      return { gate_tag_id: "", product_field_id: "", next_node_key: "", unknown_node_key: "", no_audios_node_key: "", gate_closed_node_key: "" };
+      // New nodes: no extra tag and the product read from the contact. The choices are written explicitly so they are visible in the node;
+      // a node saved before these fields existed has neither and keeps its required tag (see product-audios-config.ts).
+      return { gate_mode: "none", gate_tag_id: "", product_source: "auto", product_field_id: "", product_id: "", next_node_key: "", unknown_node_key: "", no_audios_node_key: "", gate_closed_node_key: "" };
     case "collect_input":
       return {
         prompt_text: "",

@@ -23,6 +23,7 @@
  */
 
 import type { BuilderNode } from "@/components/flows/shared";
+import { productAudiosRouteKeys } from "./product-audios-config";
 
 export interface CanvasEdge {
   /** Stable per-edge id — required by React-Flow. */
@@ -74,6 +75,7 @@ export function deriveCanvasEdges(nodes: BuilderNode[]): CanvasEdge[] {
 
       case "send_product_audios": {
         for (const [handle, key, label] of PRODUCT_AUDIO_HANDLES) {
+          if (!productAudiosRouteKeys(cfg).includes(key)) continue;
           const target = (cfg as Record<string, unknown>)[key];
           if (typeof target === "string" && target && knownKeys.has(target)) {
             edges.push({ id: `${node.node_key}--${handle}--${target}`, source: node.node_key, target, sourceHandle: handle, label });
@@ -206,7 +208,7 @@ export function outgoingSlots(node: BuilderNode): OutgoingSlot[] {
       return [{ id: "next", label: "Next" }];
 
     case "send_product_audios":
-      return PRODUCT_AUDIO_HANDLES.map(([id, , label]) => ({ id, label }));
+      return PRODUCT_AUDIO_HANDLES.filter(([, key]) => productAudiosRouteKeys(node.config).includes(key)).map(([id, , label]) => ({ id, label }));
 
     case "condition":
       return [

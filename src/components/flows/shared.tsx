@@ -16,6 +16,7 @@
  * file .tsx future-proofs it for inline JSX in node-card renderers.
  */
 
+import { gateModeOf, productSourceOf } from '@/lib/flows/product-audios-config';
 import {
   Mic,
   Clock,
@@ -435,10 +436,15 @@ export function summarizeNode(
         ? `${label}: ${truncate(name, 30)} · ${truncate(caption, 40)}`
         : `${label}: ${truncate(name, 60)}`;
     }
-    case 'send_product_audios':
-      return typeof cfg.gate_tag_id === 'string' && cfg.gate_tag_id
-        ? (t ? t('productAudiosGated') : 'Sends the product voice notes (gate set)')
-        : (t ? t('productAudiosNoGate') : 'Choose the gate tag');
+    case 'send_product_audios': {
+      // Same reading of the config as the runtime: a node without `gate_mode` still requires its tag; without `product_source` it reads the contact.
+      const gate = gateModeOf(cfg);
+      const manual = productSourceOf(cfg) === 'manual';
+      if (gate !== 'none' && !(typeof cfg.gate_tag_id === 'string' && cfg.gate_tag_id)) return t ? t('productAudiosNoGate') : 'Choose the required tag';
+      if (manual && !(typeof cfg.product_id === 'string' && cfg.product_id)) return t ? t('productAudiosChooseProduct') : 'Choose the product';
+      if (gate !== 'none') return t ? t('productAudiosGated') : 'Sends the product voice notes (tag required)';
+      return manual ? (t ? t('productAudiosOpenManual') : 'Sends the voice notes of the chosen product') : (t ? t('productAudiosOpenAuto') : "Sends the voice notes of the contact's product");
+    }
     case 'collect_input': {
       const prompt = typeof cfg.prompt_text === 'string' ? cfg.prompt_text : '';
       const varKey = typeof cfg.var_key === 'string' ? cfg.var_key : '';

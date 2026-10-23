@@ -45,16 +45,30 @@ export type ProductAudioLookup =
   | { kind: "no_audios"; product: ProductRef; disabledItems: number }
   | { kind: "ready"; product: ProductRef; items: SequenceItem[] };
 
-export async function lookupProductAudios(args: { db: CatalogDb; accountId: string; productValue: unknown; origin?: string }): Promise<ProductAudioLookup> {
+/**
+ * `productValue` is the text the contact stores (automatic mode); `productId` picks a catalog product of THIS account by id (manual mode)
+ * and ignores any value. Either way only the account's own products are read.
+ */
+export async function lookupProductAudios(args: { db: CatalogDb; accountId: string; productValue?: unknown; productId?: string; origin?: string }): Promise<ProductAudioLookup> {
   const { db, accountId } = args;
-  const normalized = normalizeProductValue(args.productValue);
-  if (!normalized.ok) {
-    return normalized.reason === "too_long" ? { kind: "unknown_product", key: null, reason: "too_long" } : { kind: "no_value" };
+  let row: Record<string, unknown> | null;
+  if (args.productId !== undefined) {
+    const { data, error } = await db.from("audio_guide_products").select("id, product_key, display_name, active, revision")
+      .eq("account_id", accountId).eq("id", args.productId).maybeSingle();
+    if (error) throw new CatalogLookupError("product lookup failed");
+    if (!data) return { kind: "unknown_product", key: null };
+    row = data as Record<string, unknown>;
+  } else {
+    const normalized = normalizeProductValue(args.productValue);
+    if (!normalized.ok) {
+      return normalized.reason === "too_long" ? { kind: "unknown_product", key: null, reason: "too_long" } : { kind: "no_value" };
+    }
+    const { data, error } = await db.from("audio_guide_products").select("id, product_key, display_name, active, revision")
+      .eq("account_id", accountId).eq("product_key", normalized.key).maybeSingle();
+    if (error) throw new CatalogLookupError("product lookup failed");
+    if (!data) return { kind: "unknown_product", key: normalized.key };
+    row = data as Record<string, unknown>;
   }
-  const { data: row, error } = await db.from("audio_guide_products").select("id, product_key, display_name, active, revision")
-    .eq("account_id", accountId).eq("product_key", normalized.key).maybeSingle();
-  if (error) throw new CatalogLookupError("product lookup failed");
-  if (!row) return { kind: "unknown_product", key: normalized.key };
   const product: ProductRef = { id: row.id as string, productKey: row.product_key as string, displayName: row.display_name as string, revision: Number(row.revision) };
   if (row.active !== true) return { kind: "product_inactive", product };
 

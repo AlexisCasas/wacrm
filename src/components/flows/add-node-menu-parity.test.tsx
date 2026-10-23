@@ -133,11 +133,11 @@ describe("the step can be created, configured, saved and recovered from either v
     await waitFor(() => expect(api.state.nodes.filter((n) => n.node_type === "send_product_audios")).toHaveLength(2));
     const [first, second] = api.state.nodes.filter((n) => n.node_type === "send_product_audios");
     expect(first.config).toEqual(second.config); // same defaults whichever menu created it
-    expect(first.config).toMatchObject({ gate_tag_id: "", product_field_id: "", next_node_key: "", unknown_node_key: "", no_audios_node_key: "", gate_closed_node_key: "" });
+    expect(first.config).toEqual({ gate_mode: "none", gate_tag_id: "", product_source: "auto", product_field_id: "", product_id: "", next_node_key: "", unknown_node_key: "", no_audios_node_key: "", gate_closed_node_key: "" });
     expect(first.node_key).not.toBe(second.node_key);
 
     // Configure the first one (what the form writes) and save through the real save path.
-    const configured = { gate_tag_id: gate, product_field_id: "", next_node_key: "end", unknown_node_key: "end", no_audios_node_key: "end", gate_closed_node_key: "end" };
+    const configured = { gate_mode: "required", gate_tag_id: gate, product_source: "auto", product_field_id: "", product_id: "", next_node_key: "end", unknown_node_key: "end", no_audios_node_key: "end", gate_closed_node_key: "end" };
     api.updateNodeConfig(first.node_key, configured);
     await waitFor(() => expect(api.state.nodes.find((n) => n.node_key === first.node_key)?.config).toMatchObject(configured));
     const puts: Array<{ url: string; body: { nodes: Array<{ node_key: string; node_type: string; config: Record<string, unknown> }> } }> = [];

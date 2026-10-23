@@ -25,7 +25,7 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Info, Plus, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { Button } from "@/components/ui/button";
@@ -42,6 +42,7 @@ import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
 import { MediaPicker, type MediaPickerValue } from "@/components/shared/media-picker";
 import { slugify, type BuilderNode } from "../shared";
+import { gateModeOf, productSourceOf } from "@/lib/flows/product-audios-config";
 import { useFlowEditor } from "../flow-editor-state";
 import { useCustomerReplyConditionCapability, useDurableWaitAuthoringCapability, useSubflowAuthoringCapability } from "../use-subflow-authoring";
 import { WAIT_UNITS, isDurableWaitConfig, maxAmountFor, type WaitUnit } from "@/lib/flows/durable-wait";
@@ -975,7 +976,10 @@ function useCustomConditionCapability(): boolean {
 // ============================================================
 
 interface ProductAudiosCfg {
+  gate_mode?: string;
   gate_tag_id?: string;
+  product_source?: string;
+  product_id?: string;
   product_field_id?: string;
   next_node_key?: string;
   unknown_node_key?: string;
@@ -984,6 +988,70 @@ interface ProductAudiosCfg {
 }
 
 const AUTO_FIELD = "__auto__";
+
+interface CatalogProductOption { id: string; display_name: string; product_key: string; active: boolean }
+type CatalogProducts = { state: "loading" | "ready" | "empty" | "error" | "disabled"; products: CatalogProductOption[] };
+
+/** The account's catalog products, from the same API the Audios por producto screen uses (account from the session, module-gated). */
+function useCatalogProducts(): CatalogProducts {
+  const { accountId } = useAuth();
+  // The answer is remembered WITH the account it was fetched for, so a different account never sees it and "loading" needs no reset.
+  const [answer, setAnswer] = useState<{ accountId: string | null; value: CatalogProducts } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const done = (value: CatalogProducts) => { if (!cancelled) setAnswer({ accountId, value }); };
+    (async () => {
+      try {
+        const response = await fetch("/api/audio-guide/products");
+        const body = (await response.json().catch(() => ({}))) as { products?: CatalogProductOption[]; error?: string };
+        if (response.status === 403 && body.error === "voice_notes_disabled") return done({ state: "disabled", products: [] });
+        if (!response.ok) return done({ state: "error", products: [] });
+        const products = body.products ?? [];
+        done({ state: products.length ? "ready" : "empty", products });
+      } catch {
+        done({ state: "error", products: [] });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [accountId]);
+  return answer && answer.accountId === accountId ? answer.value : { state: "loading", products: [] };
+}
+
+/** A small information icon (native tooltip, also read by screen readers). The same text is usually shown below the field as well. */
+function HelpHint({ text, t }: { text: string; t: ReturnType<typeof useTranslations> }) {
+  return (
+    <span className="ml-1 inline-flex cursor-help align-middle text-muted-foreground" title={text} aria-label={`${t("productAudiosInfo")}: ${text}`} role="img">
+      <Info className="h-3 w-3" />
+    </span>
+  );
+}
+
+function ChoiceRow({ value, current, label, help, example, onSelect, testId, t }: {
+  value: string; current: string; label: string; help?: string; example: string; onSelect: (value: string) => void; testId: string; t: ReturnType<typeof useTranslations>;
+}) {
+  const selected = current === value;
+  return (
+    <label className={cn("flex cursor-pointer items-start gap-2 rounded-md border p-2 text-xs", selected ? "border-primary bg-muted" : "border-border")} data-testid={testId}>
+      <input type="radio" className="mt-0.5" checked={selected} onChange={() => onSelect(value)} aria-label={label} />
+      <span className="space-y-0.5">
+        <span className="block font-medium text-foreground">{label}{help && <HelpHint text={help} t={t} />}</span>
+        {help && <span className="block text-muted-foreground">{help}</span>}
+        <span className="block text-[11px] text-muted-foreground">{example}</span>
+      </span>
+    </label>
+  );
+}
+
+function RouteField({ label, example, value, allNodes, currentKey, onChange, t }: {
+  label: string; example: string; value: string; allNodes: BuilderNode[]; currentKey: string; onChange: (value: string) => void; t: ReturnType<typeof useTranslations>;
+}) {
+  return (
+    <div>
+      <NextNodeRow value={value} allNodes={allNodes} currentKey={currentKey} onChange={onChange} label={label} />
+      <p className="mt-1 text-[11px] text-muted-foreground"><HelpHint text={example} t={t} />{example}</p>
+    </div>
+  );
+}
 
 function SendProductAudiosForm({ cfg, allNodes, currentKey, onUpdateConfig, t }: {
   cfg: ProductAudiosCfg;
@@ -994,33 +1062,80 @@ function SendProductAudiosForm({ cfg, allNodes, currentKey, onUpdateConfig, t }:
 }) {
   const tagCatalog = useAccountTags();
   const fields = useAccountCustomFields();
+  const catalog = useCatalogProducts();
+  // What the runtime does with this config (product-audios-config.ts): a node saved before these choices existed still requires its tag
+  // and reads the contact's Producto. Nothing is written until the person changes a choice.
+  const gate = gateModeOf(cfg) === "none" ? "none" : "required";
+  const source = productSourceOf(cfg) === "manual" ? "manual" : "auto";
+  const tagName = cfg.gate_tag_id ? tagCatalog.tags.find((tag) => tag.id === cfg.gate_tag_id)?.name : undefined;
+  const chosenProduct = cfg.product_id ? catalog.products.find((product) => product.id === cfg.product_id) : undefined;
+  const productMissing = Boolean(cfg.product_id) && catalog.state === "ready" && !chosenProduct;
   return (
     <>
       <p className="text-xs text-muted-foreground">{t("productAudiosHelp")}</p>
-      <div>
-        <label className="mb-1 block text-xs text-muted-foreground">{t("productAudiosGateLabel")}</label>
-        <TagSelect value={cfg.gate_tag_id ?? ""} catalog={tagCatalog} onChange={(v) => onUpdateConfig({ gate_tag_id: v })} t={t} />
-        {cfg.gate_tag_id && tagCatalog.tags.find((tag) => tag.id === cfg.gate_tag_id) && (
-          <p className="mt-1 text-xs text-foreground" data-testid="gate-tag-name">{tagCatalog.tags.find((tag) => tag.id === cfg.gate_tag_id)?.name}</p>
+
+      <fieldset className="space-y-1.5" data-testid="gate-choice">
+        <legend className="mb-1 text-xs text-muted-foreground">{t("productAudiosGateTitle")}<HelpHint text={t("productAudiosGateTitleHelp")} t={t} /></legend>
+        <ChoiceRow t={t} testId="gate-none" value="none" current={gate} label={t("productAudiosGateNone")} example={t("productAudiosGateNoneExample")}
+          onSelect={() => onUpdateConfig({ gate_mode: "none", gate_tag_id: "", gate_closed_node_key: "" })} />
+        <ChoiceRow t={t} testId="gate-required" value="required" current={gate} label={t("productAudiosGateRequired")} example={t("productAudiosGateRequiredExample")}
+          onSelect={() => onUpdateConfig({ gate_mode: "required" })} />
+        {gate === "required" && (
+          <div className="pl-6">
+            <TagSelect value={cfg.gate_tag_id ?? ""} catalog={tagCatalog} onChange={(v) => onUpdateConfig({ gate_tag_id: v })} t={t} />
+            {tagName && <p className="mt-1 text-xs text-foreground" data-testid="gate-tag-name">{tagName}</p>}
+            {!cfg.gate_tag_id && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t("productAudiosGateMissing")}</p>}
+          </div>
         )}
-        <p className="mt-1 text-[10px] text-muted-foreground">{t("productAudiosGateHelp")}</p>
-        {!cfg.gate_tag_id && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t("productAudiosGateMissing")}</p>}
-      </div>
-      <div>
-        <label className="mb-1 block text-xs text-muted-foreground">{t("productAudiosFieldLabel")}</label>
-        <Select value={cfg.product_field_id ? cfg.product_field_id : AUTO_FIELD} onValueChange={(v) => { if (v !== null) onUpdateConfig({ product_field_id: v === AUTO_FIELD ? "" : v }); }}>
-          <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value={AUTO_FIELD}>{t("productAudiosFieldAuto")}</SelectItem>
-            {fields.map((field) => <SelectItem key={field.id} value={field.id}>{field.field_name}</SelectItem>)}
-          </SelectContent>
-        </Select>
-        <p className="mt-1 text-xs text-muted-foreground">{cfg.product_field_id ? (fields.find((field) => field.id === cfg.product_field_id)?.field_name ?? "") : t("productAudiosFieldAuto")}</p>
-      </div>
-      <NextNodeRow value={cfg.next_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ next_node_key: v })} label={t("productAudiosRouteNext")} />
-      <NextNodeRow value={cfg.unknown_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ unknown_node_key: v })} label={t("productAudiosRouteUnknown")} />
-      <NextNodeRow value={cfg.no_audios_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ no_audios_node_key: v })} label={t("productAudiosRouteNoAudios")} />
-      <NextNodeRow value={cfg.gate_closed_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ gate_closed_node_key: v })} label={t("productAudiosRouteGateClosed")} />
+      </fieldset>
+
+      <fieldset className="space-y-1.5" data-testid="source-choice">
+        <legend className="mb-1 text-xs text-muted-foreground">{t("productAudiosSourceTitle")}<HelpHint text={t("productAudiosSourceTitleHelp")} t={t} /></legend>
+        <ChoiceRow t={t} testId="source-auto" value="auto" current={source} label={t("productAudiosSourceAuto")} help={t("productAudiosSourceAutoHelp")} example={t("productAudiosSourceAutoExample")}
+          onSelect={() => onUpdateConfig({ product_source: "auto", product_id: "" })} />
+        {source === "auto" && (
+          <div className="pl-6">
+            <label className="mb-1 block text-xs text-muted-foreground">{t("productAudiosFieldLabel")}</label>
+            <Select value={cfg.product_field_id ? cfg.product_field_id : AUTO_FIELD} onValueChange={(v) => { if (v !== null) onUpdateConfig({ product_field_id: v === AUTO_FIELD ? "" : v }); }}>
+              <SelectTrigger className="bg-muted"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={AUTO_FIELD}>{t("productAudiosFieldAuto")}</SelectItem>
+                {fields.map((field) => <SelectItem key={field.id} value={field.id}>{field.field_name}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <p className="mt-1 text-xs text-foreground" data-testid="field-name">{cfg.product_field_id ? (fields.find((field) => field.id === cfg.product_field_id)?.field_name ?? "") : t("productAudiosFieldAuto")}</p>
+          </div>
+        )}
+        <ChoiceRow t={t} testId="source-manual" value="manual" current={source} label={t("productAudiosSourceManual")} help={t("productAudiosSourceManualHelp")} example={t("productAudiosSourceManualExample")}
+          onSelect={() => onUpdateConfig({ product_source: "manual", product_field_id: "" })} />
+        {source === "manual" && (
+          <div className="pl-6" data-testid="manual-product">
+            <label className="mb-1 block text-xs text-muted-foreground">{t("productAudiosProductLabel")}</label>
+            {catalog.state === "loading" && <p className="text-xs text-muted-foreground">{t("productAudiosProductsLoading")}</p>}
+            {catalog.state === "error" && <p className="text-xs text-destructive">{t("productAudiosProductsError")}</p>}
+            {catalog.state === "disabled" && <p className="text-xs text-amber-600 dark:text-amber-400">{t("productAudiosProductsDisabled")}</p>}
+            {catalog.state === "empty" && <p className="text-xs text-muted-foreground">{t("productAudiosProductsEmpty")}</p>}
+            {catalog.state === "ready" && (
+              <Select value={productMissing ? "" : (cfg.product_id ?? "")} onValueChange={(v) => { if (v !== null) onUpdateConfig({ product_id: v }); }}>
+                <SelectTrigger className="bg-muted"><SelectValue placeholder={t("productAudiosProductPlaceholder")} /></SelectTrigger>
+                <SelectContent>
+                  {catalog.products.map((product) => <SelectItem key={product.id} value={product.id}>{product.display_name}{product.active ? "" : ` ${t("productAudiosProductInactive")}`}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            )}
+            {chosenProduct && <p className="mt-1 text-xs text-foreground" data-testid="product-name">{chosenProduct.display_name}{chosenProduct.active ? "" : ` ${t("productAudiosProductInactive")}`}</p>}
+            {productMissing && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t("productAudiosProductUnavailable")}</p>}
+            {!cfg.product_id && <p className="mt-1 text-xs text-amber-600 dark:text-amber-400">{t("productAudiosProductMissing")}</p>}
+          </div>
+        )}
+      </fieldset>
+
+      <RouteField label={t("productAudiosRouteNext")} example={t("productAudiosRouteNextExample")} value={cfg.next_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ next_node_key: v })} t={t} />
+      <RouteField label={t("productAudiosRouteUnknown")} example={t("productAudiosRouteUnknownExample")} value={cfg.unknown_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ unknown_node_key: v })} t={t} />
+      <RouteField label={t("productAudiosRouteNoAudios")} example={t("productAudiosRouteNoAudiosExample")} value={cfg.no_audios_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ no_audios_node_key: v })} t={t} />
+      {gate === "required" && (
+        <RouteField label={t("productAudiosRouteGateClosed")} example={t("productAudiosRouteGateClosedExample")} value={cfg.gate_closed_node_key ?? ""} allNodes={allNodes} currentKey={currentKey} onChange={(v) => onUpdateConfig({ gate_closed_node_key: v })} t={t} />
+      )}
     </>
   );
 }

@@ -259,9 +259,18 @@ export interface SetContactFieldNodeConfig {
  * Every route is required so no outcome can fall off the graph; the gate is required so an unconfigured node can never send.
  */
 export interface SendProductAudiosNodeConfig {
-  /** Provisional gate: the contact must carry this tag (it is not claimed to reproduce ManyChat's Switch). */
+  /**
+   * Whether a tag is required before sending: "required" (the contact must carry `gate_tag_id`) or "none" (no extra tag). A node saved before
+   * this field existed has none and keeps meaning "required". See product-audios-config.ts.
+   */
+  gate_mode?: "required" | "none";
+  /** The tag a contact must carry when `gate_mode` is "required" (empty when "none"). Provisional: not claimed to reproduce ManyChat's Switch. */
   gate_tag_id: string;
-  /** Optional explicit custom field holding the product; otherwise the account's single field named "Producto". */
+  /** "auto" (default, and the meaning of a node without it): read the contact's Producto field. "manual": use `product_id`. */
+  product_source?: "auto" | "manual";
+  /** product_source "manual": the catalog product (audio_guide_products.id) of the SAME account this node sends. */
+  product_id?: string;
+  /** product_source "auto": optional explicit custom field holding the product; otherwise the account's single field named "Producto". */
   product_field_id?: string;
   /** Every audio was sent. */
   next_node_key: string;
