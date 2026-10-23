@@ -104,13 +104,18 @@ describe("new nodes start without a tag, reading the product from the contact", 
   });
 });
 
-describe("activation refuses a selection this version cannot run", () => {
-  it("a node saved by a newer version (single audio) cannot be activated", () => {
-    const single = { ...noTag, audio_selection: "single", purpose_id: PRODUCT, identifier_id: TAG };
-    const found = issues(single);
+describe("activation and the selection of the audio", () => {
+  it("one specific audio needs a purpose and an identifier: complete it activates, incomplete it does not", () => {
+    const complete = { ...noTag, audio_selection: "single", purpose_id: PRODUCT, identifier_id: TAG };
+    expect(issues(complete)).toEqual([]);
+    const incomplete = issues({ ...noTag, audio_selection: "single", purpose_id: PRODUCT });
+    expect(incomplete.map((i) => (i as { code?: string }).code)).toEqual(["product_audios_identifier_missing"]);
+    expect(validateFlowForActivation(flow, graph({ ...noTag, audio_selection: "single" }), { voiceNoteEnabled: true }).some((i) => i.severity === "error")).toBe(true);
+  });
+  it("a mode this version does not know cannot be activated", () => {
+    const found = issues({ ...noTag, audio_selection: "group", purpose_id: PRODUCT, identifier_id: TAG });
     expect(found.map((i) => (i as { code?: string }).code)).toContain("product_audios_selection_unsupported");
     expect(found.every((i) => i.severity === "error")).toBe(true);
-    expect(validateFlowForActivation(flow, graph(single), { voiceNoteEnabled: true }).some((i) => i.severity === "error")).toBe(true);
   });
   it("nodes without the field, and with 'all', still activate", () => {
     expect(issues(noTag)).toEqual([]);

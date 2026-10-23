@@ -272,11 +272,20 @@ export interface SendProductAudiosNodeConfig {
   product_id?: string;
   /** product_source "auto": optional explicit custom field holding the product; otherwise the account's single field named "Producto". */
   product_field_id?: string;
+  /**
+   * Which audios of the product: "all" (default, and the meaning of a node without it) sends every active audio; "single" sends the ONE audio
+   * classified with `purpose_id` + `identifier_id` (migration 076). See product-audios-config.ts.
+   */
+  audio_selection?: "all" | "single";
+  /** audio_selection "single": the purpose (audio_guide_purposes.id) of the SAME account. */
+  purpose_id?: string;
+  /** audio_selection "single": the identifier (audio_guide_identifiers.id) of the SAME account. */
+  identifier_id?: string;
   /** Every audio was sent. */
   next_node_key: string;
   /** No Producto value, a value the catalog does not know, or an inactive product. */
   unknown_node_key: string;
-  /** The product exists and is active but has no active audio. */
+  /** The product exists and is active but has no active audio - or, when one audio is selected, that audio does not exist, is off or is unavailable. */
   no_audios_node_key: string;
   /** The contact does not carry the gate tag: nothing is sent. */
   gate_closed_node_key: string;
