@@ -515,3 +515,39 @@ describe("send_product_audios: optional tag and manual product, in the runner", 
     });
   });
 });
+
+describe("send_product_audios: a selection written by a newer version fails closed in this one", () => {
+  const cfg = (over: Row = {}): Row => ({ gate_mode: "none", gate_tag_id: "", product_source: "auto", product_field_id: "", product_id: "", next_node_key: "ok", unknown_node_key: "unk", no_audios_node_key: "noa", gate_closed_node_key: "", ...over });
+  const sentLinks = () => wire().map((w) => w.link);
+
+  it("'single' sends NOTHING (it must never fall back to sending every audio) and takes no route", async () => {
+    const mem = setup({ nodes: graph(cfg({ audio_selection: "single", purpose_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", identifier_id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" })) });
+    await run();
+    expect(sentLinks()).toEqual([]);
+    expect(h.sendMediaMessage).not.toHaveBeenCalled();
+    expect(entered(mem)).toEqual(["start", "vp"]);
+    expect(errors(mem).map((e) => (e.payload as { reason?: string }).reason)).toContain("node_config_invalid");
+    expect(mem.table("audio_guide_requests")).toHaveLength(0);
+    expect(mem.table("audio_guide_sends")).toHaveLength(0);
+  });
+
+  it("a purpose or identifier alone, or an unknown mode, fail closed too", async () => {
+    for (const [i, over] of ([{ purpose_id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }, { audio_selection: "group" }, { audio_selection: 7 }] as Row[]).entries()) {
+      h.sendMediaMessage.mockClear();
+      const mem = setup({ nodes: graph(cfg(over)) });
+      await run(`wamid.F${i}`);
+      expect(sentLinks(), JSON.stringify(over)).toEqual([]);
+      expect(errors(mem).map((e) => (e.payload as { reason?: string }).reason)).toContain("node_config_invalid");
+    }
+  });
+
+  it("the original 'all' behaviour is untouched: absent or 'all' send the full sequence", async () => {
+    for (const [i, over] of ([{}, { audio_selection: "all" }] as Row[]).entries()) {
+      h.sendMediaMessage.mockClear();
+      const mem = setup({ tagged: false, nodes: graph(cfg(over)) });
+      await run(`wamid.OK${i}`);
+      expect(sentLinks()).toEqual([url("1"), url("2"), url("3")]);
+      expect(entered(mem)).toEqual(["start", "vp", "ok"]);
+    }
+  });
+});

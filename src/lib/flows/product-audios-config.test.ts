@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { gateModeOf, inspectProductAudiosConfig, productAudiosRouteKeys, productSourceOf } from "./product-audios-config";
+import { gateModeOf, inspectProductAudiosConfig, productAudiosRouteKeys, productSourceOf, selectionOf } from "./product-audios-config";
 
 const TAG = "11111111-1111-4111-8111-111111111111";
 const FIELD = "33333333-3333-4333-8333-333333333333";
@@ -69,5 +69,41 @@ describe("product: from the contact (auto) or chosen from the catalog (manual)",
   it("an unknown source is invalid", () => {
     expect(productSourceOf({ product_source: "ai" })).toBe("invalid");
     expect(codes({ ...base, product_source: "ai" })).toContain("product_audios_source_invalid");
+  });
+});
+
+describe("forward compatibility: a selection this version cannot run is refused, never read as 'all'", () => {
+  const base = { gate_mode: "none", gate_tag_id: "", product_source: "auto", product_field_id: "", product_id: "" };
+
+  it("the original behaviour is untouched: the field absent, null or 'all' sends every audio", () => {
+    for (const cfg of [base, { ...base, audio_selection: undefined }, { ...base, audio_selection: null }, { ...base, audio_selection: "all" }]) {
+      expect(selectionOf(cfg)).toBe("all");
+      expect(codes(cfg)).toEqual([]);
+    }
+    expect(codes({ gate_tag_id: TAG, product_field_id: "" })).toEqual([]); // a node saved before any of the options
+  });
+
+  it("'single' (written by a newer version) is refused", () => {
+    expect(selectionOf({ ...base, audio_selection: "single" })).toBe("unsupported");
+    expect(codes({ ...base, audio_selection: "single", purpose_id: PRODUCT, identifier_id: FIELD })).toContain("product_audios_selection_unsupported");
+  });
+
+  it("any other value is refused too (typos, a future mode, the wrong type)", () => {
+    for (const bad of ["ALL", "One", "group", "", 0, 1, true, false, {}, []]) {
+      expect(selectionOf({ ...base, audio_selection: bad }), String(bad)).toBe("unsupported");
+      expect(codes({ ...base, audio_selection: bad }), String(bad)).toContain("product_audios_selection_unsupported");
+    }
+  });
+
+  it("a purpose or an identifier, even without the mode, is refused instead of ignored", () => {
+    expect(codes({ ...base, purpose_id: PRODUCT })).toContain("product_audios_selection_unsupported");
+    expect(codes({ ...base, identifier_id: PRODUCT })).toContain("product_audios_selection_unsupported");
+    expect(codes({ ...base, audio_selection: "all", purpose_id: PRODUCT })).toContain("product_audios_selection_unsupported");
+    // empty strings are what an editor writes for 'not chosen': they are fine
+    expect(codes({ ...base, purpose_id: "", identifier_id: "" })).toEqual([]);
+  });
+
+  it("the guard does not hide the other checks", () => {
+    expect(codes({ ...base, audio_selection: "single", product_source: "ai" })).toEqual(expect.arrayContaining(["product_audios_selection_unsupported", "product_audios_source_invalid"]));
   });
 });
