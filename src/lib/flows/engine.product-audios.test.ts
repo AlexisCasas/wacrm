@@ -364,3 +364,154 @@ describe("send_product_audios: accounts are isolated", () => {
     expect(mem.table("audio_guide_requests")[0].trigger_message_id).toBe("run:run-manual");
   });
 });
+
+// ============================================================
+// Optional tag and manual product (the node's two explicit choices). A node saved BEFORE them has neither field and must behave exactly
+// as it always did; new choices are written explicitly.
+// ============================================================
+describe("send_product_audios: optional tag and manual product, in the runner", () => {
+  const PX = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"; // catalog product ids are uuids
+  const PB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+  const PNONE = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+  const XTD: Row = { id: PX, account_id: A, product_key: "combo xtd", display_name: "Combo XTD", active: true, revision: 1 };
+  const P_B: Row = { id: PB, account_id: B, product_key: "combo xtd", display_name: "Combo de B", active: true, revision: 1 };
+  const sentLinks = () => wire().map((w) => w.link);
+  const noTagCfg = (over: Row = {}): Row => ({ gate_mode: "none", gate_tag_id: "", product_source: "auto", product_field_id: "", product_id: "", next_node_key: "ok", unknown_node_key: "unk", no_audios_node_key: "noa", gate_closed_node_key: "", ...over });
+
+  describe("a node saved before the options existed", () => {
+    it("still requires its tag: an untagged contact is stopped at 'gate closed' and nothing is sent", async () => {
+      const mem = setup({ tagged: false }); // graph() uses the legacy config: no gate_mode, no product_source
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(entered(mem)).toEqual(["start", "vp", "gate"]);
+    });
+    it("a tagged contact gets the audios of the product in its Producto field, exactly as before", async () => {
+      const mem = setup();
+      await run();
+      expect(sentLinks()).toEqual([url("1"), url("2"), url("3")]);
+      expect(entered(mem)).toEqual(["start", "vp", "ok"]);
+    });
+    it("an explicit 'tag required' behaves the same as the legacy node", async () => {
+      const mem = setup({ tagged: false, nodes: graph({ ...NODE_CFG, gate_mode: "required", product_source: "auto" }) });
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(entered(mem)).toEqual(["start", "vp", "gate"]);
+    });
+  });
+
+  describe("no extra tag", () => {
+    it("sends to a contact that has no tag at all, reading the product from the contact", async () => {
+      const mem = setup({ tagged: false, nodes: graph(noTagCfg()) });
+      await run();
+      expect(sentLinks()).toEqual([url("1"), url("2"), url("3")]);
+      expect(entered(mem)).toEqual(["start", "vp", "ok"]);
+      expect(mem.table("audio_guide_requests")[0]).toMatchObject({ status: "completed", product_key: "combo xtd" });
+      expect(mem.table("flow_run_events").find((e) => e.event_type === "message_sent")).toMatchObject({ payload: { route: "next" } });
+    });
+    it("does not need the tag to exist or the contact to carry any", async () => {
+      const mem = setup({ tagged: false, extra: { tags: [] }, nodes: graph(noTagCfg()) });
+      await run();
+      expect(entered(mem)).toEqual(["start", "vp", "ok"]);
+    });
+    it("every other safeguard still applies: unknown product, no audios and a blocked contact", async () => {
+      let mem = setup({ value: "Producto que no existe", nodes: graph(noTagCfg()) });
+      await run();
+      expect(entered(mem)).toEqual(["start", "vp", "unk"]);
+      mem = setup({ items: [], nodes: graph(noTagCfg()) });
+      await run("wamid.IN2");
+      expect(entered(mem)).toEqual(["start", "vp", "noa"]);
+      h.sendMediaMessage.mockClear();
+      mem = setup({ contact: { blocked: true }, nodes: graph(noTagCfg()) });
+      await run("wamid.IN3");
+      expect(sentLinks()).toEqual([]);
+    });
+    it("the gate is not consulted for a node without a tag even if a leftover 'gate closed' step is set", async () => {
+      const mem = setup({ tagged: false, nodes: graph(noTagCfg({ gate_closed_node_key: "gate" })) });
+      await run();
+      expect(entered(mem)).toEqual(["start", "vp", "ok"]);
+    });
+    it("a contradictory node (no tag but a tag still set) fails closed instead of ignoring the tag", async () => {
+      const mem = setup({ nodes: graph(noTagCfg({ gate_tag_id: TAG })) });
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(errors(mem).map((e) => (e.payload as { reason?: string }).reason)).toContain("node_config_invalid");
+    });
+  });
+
+  describe("product chosen by hand", () => {
+    const manual = (over: Row = {}) => noTagCfg({ product_source: "manual", product_id: PX, ...over });
+    const own = { products: [XTD], items: items([5, 5, 5], PX) };
+
+    it("sends the chosen product's audios whatever the contact stores: another product, nothing at all, or no Producto field", async () => {
+      for (const [i, value] of (["Taladro Pro", null, "???"] as const).entries()) {
+        h.sendMediaMessage.mockClear();
+        const mem = setup({ value, ...own, nodes: graph(manual()), ...(i === 1 ? { fields: [] } : {}) });
+        await run(`wamid.M${i}`);
+        expect(sentLinks(), String(value)).toEqual([url("1"), url("2"), url("3")]);
+        expect(entered(mem)).toEqual(["start", "vp", "ok"]);
+        expect(mem.table("audio_guide_requests")[0]).toMatchObject({ product_key: "combo xtd", status: "completed" });
+      }
+    });
+    it("a required tag still applies together with a manual product", async () => {
+      const mem = setup({ tagged: false, ...own, nodes: graph(manual({ gate_mode: "required", gate_tag_id: TAG, gate_closed_node_key: "gate" })) });
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(entered(mem)).toEqual(["start", "vp", "gate"]);
+    });
+    it("a product that does not exist, belongs to ANOTHER account, or is disabled goes to 'unknown' and sends nothing", async () => {
+      const cases: Array<[string, Row]> = [
+        ["missing", { product_id: PNONE }],
+        ["another account's", { product_id: PB }],
+      ];
+      for (const [name, over] of cases) {
+        h.sendMediaMessage.mockClear();
+        const mem = setup({ products: [XTD, P_B], items: [...items([5, 5], PX), ...items([5], PB, B)], nodes: graph(manual(over)) });
+        await run(`wamid.U-${name}`);
+        expect(sentLinks(), name).toEqual([]);
+        expect(entered(mem), name).toEqual(["start", "vp", "unk"]);
+      }
+      const inactive = setup({ products: [{ ...XTD, active: false }], items: items([5, 5, 5], PX), nodes: graph(manual()) });
+      await run("wamid.U-off");
+      expect(entered(inactive)).toEqual(["start", "vp", "unk"]);
+      expect(sentLinks()).toEqual([]);
+    });
+    it("a product without active audios goes to 'no audios'", async () => {
+      const mem = setup({ products: [XTD], items: [], nodes: graph(manual()) });
+      await run();
+      expect(entered(mem)).toEqual(["start", "vp", "noa"]);
+      expect(sentLinks()).toEqual([]);
+    });
+    it("a manual node without a product, or mixed with a contact field, fails closed", async () => {
+      for (const over of [{ product_id: "" }, { product_field_id: FIELD }]) {
+        h.sendMediaMessage.mockClear();
+        const mem = setup({ ...own, nodes: graph(manual(over)) });
+        await run(`wamid.C${JSON.stringify(over).length}`);
+        expect(sentLinks()).toEqual([]);
+        expect(errors(mem).map((e) => (e.payload as { reason?: string }).reason)).toContain("node_config_invalid");
+      }
+    });
+    it("keeps the duplicate guard: the same inbound message never sends twice", async () => {
+      const mem = setup({ ...own, nodes: graph(manual()) });
+      await run("wamid.SAME");
+      const first = sentLinks().length;
+      await run("wamid.SAME");
+      expect(sentLinks()).toHaveLength(first);
+      expect(mem.table("audio_guide_requests")).toHaveLength(1);
+    });
+  });
+
+  describe("automatic product (the default) is unchanged", () => {
+    it("matches the contact's value ignoring case, accents and spaces, and uses the named field when one is chosen", async () => {
+      const mem = setup({ value: " Cómbo   XTD ", nodes: graph(noTagCfg({ product_field_id: FIELD })) });
+      await run();
+      expect(sentLinks()).toEqual([url("1"), url("2"), url("3")]);
+      expect(entered(mem)).toEqual(["start", "vp", "ok"]);
+    });
+    it("with no Producto field in the account it still fails closed with a clear reason", async () => {
+      const mem = setup({ fields: [], nodes: graph(noTagCfg()) });
+      await run();
+      expect(sentLinks()).toEqual([]);
+      expect(errors(mem).map((e) => (e.payload as { reason?: string }).reason)).toContain("product_field_missing");
+    });
+  });
+});

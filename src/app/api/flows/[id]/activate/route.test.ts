@@ -114,3 +114,71 @@ describe("POST /api/flows/[id]/activate — voice notes", () => {
     expect(update).not.toHaveBeenCalled();
   });
 });
+
+describe("POST /api/flows/[id]/activate — Audios por producto: optional tag and manual product", () => {
+  const TAG = "11111111-1111-4111-8111-111111111111";
+  const OWN_PRODUCT = "44444444-4444-4444-8444-444444444444";
+  const activate = () => POST(new Request("http://localhost/api/flows/flow-1/activate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "active" }) }), params);
+  const routes = { next_node_key: "end", unknown_node_key: "end", no_audios_node_key: "end" };
+
+  function world(config: Record<string, unknown>, known: { tags?: string[]; products?: string[] } = {}) {
+    const lookups: Array<{ table: string; ids: string[] }> = [];
+    const update = vi.fn().mockResolvedValue({ data: { id: "flow-1" }, error: null });
+    mocks.validateReferences.mockResolvedValue([]);
+    mocks.validateGraph.mockReturnValue([]);
+    mocks.admin.mockReturnValue({
+      from: vi.fn().mockImplementation((table: string) => {
+        if (table === "flows") {
+          return {
+            select: () => ({ eq: () => ({ maybeSingle: vi.fn().mockResolvedValue({ data: { name: "Flow", trigger_type: "manual", trigger_config: {}, entry_node_id: "start" }, error: null }) }) }),
+            update: () => ({ eq: () => ({ select: () => ({ maybeSingle: update }) }) }),
+          };
+        }
+        if (table === "tags" || table === "audio_guide_products") {
+          const rows = (table === "tags" ? known.tags : known.products) ?? [];
+          return { select: () => ({ eq: () => ({ in: (_col: string, ids: string[]) => { lookups.push({ table, ids }); return Promise.resolve({ data: ids.filter((id) => rows.includes(id)).map((id) => ({ id })), error: null }); } }) }) };
+        }
+        return { select: () => ({ eq: () => Promise.resolve({ data: [{ node_key: "start", node_type: "start", config: { next_node_key: "vp" } }, { node_key: "vp", node_type: "send_product_audios", config }, { node_key: "end", node_type: "end", config: {} }], error: null }) }) };
+      }),
+    });
+    return { lookups, update };
+  }
+
+  it("a product chosen by hand that is NOT this account's is refused before any update", async () => {
+    const w = world({ gate_mode: "none", gate_tag_id: "", product_source: "manual", product_id: OWN_PRODUCT, ...routes }, { products: [] });
+    const response = await activate();
+    expect(response.status).toBe(422);
+    const body = await response.json();
+    expect(body.issues).toEqual(expect.arrayContaining([expect.objectContaining({ node_key: "vp", field: "product_id", code: "product_audios_product_unknown" })]));
+    expect(w.lookups).toEqual([{ table: "audio_guide_products", ids: [OWN_PRODUCT] }]);
+    expect(w.update).not.toHaveBeenCalled();
+  });
+
+  it("a product chosen by hand that exists in the account lets the flow activate", async () => {
+    const w = world({ gate_mode: "none", gate_tag_id: "", product_source: "manual", product_id: OWN_PRODUCT, ...routes }, { products: [OWN_PRODUCT] });
+    expect((await activate()).status).toBe(200);
+    expect(w.update).toHaveBeenCalled();
+  });
+
+  it("a node without a tag does not look for any tag", async () => {
+    const w = world({ gate_mode: "none", gate_tag_id: "", product_source: "auto", ...routes });
+    expect((await activate()).status).toBe(200);
+    expect(w.lookups.filter((l) => l.table === "tags")).toHaveLength(0);
+    expect(w.lookups.filter((l) => l.table === "audio_guide_products")).toHaveLength(0);
+  });
+
+  it("a node saved before the options existed still has its tag checked against the account", async () => {
+    const w = world({ gate_tag_id: TAG, product_field_id: "", ...routes, gate_closed_node_key: "end" }, { tags: [] });
+    const response = await activate();
+    expect(response.status).toBe(422);
+    expect((await response.json()).issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "product_audios_gate_unknown" })]));
+    expect(w.lookups).toEqual([{ table: "tags", ids: [TAG] }]);
+    expect(w.update).not.toHaveBeenCalled();
+  });
+
+  it("a legacy node whose tag is the account's can activate (nothing changed for it)", async () => {
+    const w = world({ gate_tag_id: TAG, product_field_id: "", ...routes, gate_closed_node_key: "end" }, { tags: [TAG] });
+    expect((await activate()).status).toBe(200);
+    expect(w.update).toHaveBeenCalled();
+  });
+});

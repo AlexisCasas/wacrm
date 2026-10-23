@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { isMediaAudioEnabledForAccount, isVoiceNoteEnabledForAccount } from '@/lib/flows/voice-note-capability'
+import { gateModeOf, productSourceOf } from '@/lib/flows/product-audios-config'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateFlowForActivation } from '@/lib/flows/validate'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
@@ -77,12 +78,20 @@ export async function POST(
       if (callGraphIssues === null) return NextResponse.json({ error: 'Could not validate the connected flows' }, { status: 503 })
       const issues = validateFlowForActivation(flow as { name: string; trigger_type: 'keyword' | 'first_inbound_message' | 'manual'; trigger_config: Record<string, unknown>; entry_node_id: string | null }, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, { accountId: account.accountId, voiceNoteEnabled: isVoiceNoteEnabledForAccount(account.accountId), mediaAudioEnabled: isMediaAudioEnabledForAccount(account.accountId), durableWaitExecution: durableEnabled, subflowExecution: subflowAllowed })
       // "Audios por producto": the gate tag must be one of THIS account's tags (the runtime also fails closed on it).
-      const gateTags = (nodes ?? []).filter((node) => node.node_type === 'send_product_audios').map((node) => ({ key: node.node_key as string, tag: (node.config as { gate_tag_id?: unknown } | null)?.gate_tag_id })).filter((g) => typeof g.tag === 'string' && g.tag)
+      const gateTags = (nodes ?? []).filter((node) => node.node_type === 'send_product_audios' && gateModeOf(node.config) !== 'none').map((node) => ({ key: node.node_key as string, tag: (node.config as { gate_tag_id?: unknown } | null)?.gate_tag_id })).filter((g) => typeof g.tag === 'string' && g.tag)
       if (gateTags.length) {
         const { data: ownTags, error: tagsError } = await admin.from('tags').select('id').eq('account_id', account.accountId).in('id', gateTags.map((g) => g.tag as string))
         if (tagsError) return NextResponse.json({ error: 'Could not validate the gate tag' }, { status: 503 })
         const known = new Set((ownTags ?? []).map((t: { id: string }) => t.id))
         for (const g of gateTags) if (!known.has(g.tag as string)) issues.push({ severity: 'error', scope: 'node', node_key: g.key, field: 'gate_tag_id', code: 'product_audios_gate_unknown', message: 'The gate tag does not exist in this account.' })
+      }
+      // A product picked by hand must be one of THIS account's catalog products (an inactive one is allowed: it just routes to "unknown").
+      const manualProducts = (nodes ?? []).filter((node) => node.node_type === 'send_product_audios' && productSourceOf(node.config) === 'manual').map((node) => ({ key: node.node_key as string, product: (node.config as { product_id?: unknown } | null)?.product_id })).filter((g) => typeof g.product === 'string' && g.product)
+      if (manualProducts.length) {
+        const { data: ownProducts, error: productsError } = await admin.from('audio_guide_products').select('id').eq('account_id', account.accountId).in('id', manualProducts.map((g) => g.product as string))
+        if (productsError) return NextResponse.json({ error: 'Could not validate the chosen product' }, { status: 503 })
+        const knownProducts = new Set((ownProducts ?? []).map((p: { id: string }) => p.id))
+        for (const g of manualProducts) if (!knownProducts.has(g.product as string)) issues.push({ severity: 'error', scope: 'node', node_key: g.key, field: 'product_id', code: 'product_audios_product_unknown', message: 'The chosen product does not exist in this account.' })
       }
       for (const issue of callGraphIssues) issues.push({ severity: issue.severity, scope: 'node', node_key: issue.node_key, field: 'target_flow_id', code: `execute_flow_${issue.code}`, ...(issue.params ? { params: issue.params } : {}), message: issue.message })
       const referenceIssues = await validateConditionReferences(account.supabase, account.accountId, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, isCustomConditionEnabledForAccount(account.accountId))

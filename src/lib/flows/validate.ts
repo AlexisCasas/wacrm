@@ -26,6 +26,7 @@
 import { durableWaitSeconds, isDurableWaitConfig } from "./durable-wait";
 import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/meta-api";
 import { parseVoiceNoteUrl } from "@/lib/media/voice-note-path";
+import { gateModeOf, inspectProductAudiosConfig, productAudiosRouteKeys } from "./product-audios-config";
 
 export interface ValidationIssue {
   severity: "error" | "warning";
@@ -968,20 +969,18 @@ function validateNode(
     }
 
     case "send_product_audios": {
-      const cfg = node.config as { gate_tag_id?: unknown; product_field_id?: unknown; next_node_key?: unknown; unknown_node_key?: unknown; no_audios_node_key?: unknown; gate_closed_node_key?: unknown };
+      const cfg = node.config as Record<string, unknown>;
       const err = (field: string, code: string, message: string) =>
         issues.push({ severity: "error", scope: "node", node_key: node.node_key, field, code, message });
       if (options.voiceNoteEnabled === false) {
         err("media_type", "product_audios_not_enabled", "Voice notes are not enabled for this account.");
       }
-      // The gate has no default: an unconfigured node must never be able to send.
-      if (typeof cfg.gate_tag_id !== "string" || !UUID_RE.test(cfg.gate_tag_id)) {
-        err("gate_tag_id", "product_audios_gate_missing", "Choose the tag a contact must have for the audios to be sent (the gate). Without it the node cannot be activated.");
-      }
-      if (cfg.product_field_id !== undefined && cfg.product_field_id !== "" && (typeof cfg.product_field_id !== "string" || !UUID_RE.test(cfg.product_field_id))) {
-        err("product_field_id", "product_audios_field_invalid", "The Producto field must be left empty or be a valid custom field.");
-      }
-      for (const [field, label] of [["next_node_key", "when every audio was sent"], ["unknown_node_key", "when the product is missing, unknown or inactive"], ["no_audios_node_key", "when the product has no active audio"], ["gate_closed_node_key", "when the gate is closed"]] as const) {
+      // Gate and product choices, in one place (product-audios-config.ts). A node saved before `gate_mode` existed still requires its tag.
+      for (const problem of inspectProductAudiosConfig(cfg)) err(problem.field, problem.code, problem.message);
+      // The "gate closed" output exists only when a tag is required.
+      const routes: Array<[string, string]> = [["next_node_key", "when every audio was sent"], ["unknown_node_key", "when the product is missing, unknown or inactive"], ["no_audios_node_key", "when the product has no active audio"]];
+      if (gateModeOf(cfg) !== "none") routes.push(["gate_closed_node_key", "when the required tag is missing"]);
+      for (const [field, label] of routes) {
         const target = cfg[field];
         if (typeof target !== "string" || !target) err(field, "product_audios_route_missing", `Choose the step to continue at ${label}.`);
         else if (!knownKeys.has(target)) err(field, "product_audios_route_unknown", `The step chosen ${label} ("${target}") does not exist.`);
@@ -1041,8 +1040,8 @@ function outgoingEdges(node: NodeInput): string[] {
       return cfg.next_node_key ? [cfg.next_node_key] : [];
     }
     case "send_product_audios": {
-      const cfg = node.config as { next_node_key?: string; unknown_node_key?: string; no_audios_node_key?: string; gate_closed_node_key?: string };
-      return [cfg.next_node_key, cfg.unknown_node_key, cfg.no_audios_node_key, cfg.gate_closed_node_key].filter((k): k is string => !!k);
+      const cfg = node.config as Record<string, unknown>;
+      return productAudiosRouteKeys(cfg).map((key) => cfg[key]).filter((k): k is string => typeof k === "string" && !!k);
     }
     case "condition": {
       const cfg = node.config as {

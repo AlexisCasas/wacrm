@@ -25,6 +25,7 @@ import { sendVoiceNoteViaEngine } from "@/lib/audio-guide/sender";
 import { INLINE_BUDGET_MS, makeHaltCheck, runAudioSequence, type SendContext, type SequencerDb, type SequencerDeps } from "@/lib/audio-guide/sequencer";
 import type { CatalogDb } from "@/lib/audio-guide/catalog";
 import { isVoiceNoteEnabledForAccount } from "./voice-note-capability";
+import { gateModeOf, inspectProductAudiosConfig, productAudiosRouteKeys, productSourceOf } from "./product-audios-config";
 import type { FlowRunRow, SendProductAudiosNodeConfig } from "./types";
 
 type Db = SequencerDb & CatalogDb;
@@ -36,12 +37,12 @@ export type ProductAudiosResult =
   | { kind: "failed"; reason: string; detail?: Record<string, unknown> };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const ROUTE_KEYS = ["next_node_key", "unknown_node_key", "no_audios_node_key", "gate_closed_node_key"] as const;
 
+/** A usable node: its gate/product choices are coherent (see product-audios-config.ts) and every output it needs is set. */
 export function isProductAudiosConfigValid(cfg: Partial<SendProductAudiosNodeConfig> | null | undefined): cfg is SendProductAudiosNodeConfig {
-  if (!cfg || typeof cfg.gate_tag_id !== "string" || !UUID.test(cfg.gate_tag_id)) return false;
-  if (cfg.product_field_id !== undefined && cfg.product_field_id !== "" && (typeof cfg.product_field_id !== "string" || !UUID.test(cfg.product_field_id))) return false;
-  return ROUTE_KEYS.every((k) => typeof cfg[k] === "string" && cfg[k]!.trim() !== "");
+  if (!cfg || inspectProductAudiosConfig(cfg).length > 0) return false;
+  const values = cfg as Record<string, unknown>;
+  return productAudiosRouteKeys(cfg).every((k) => typeof values[k] === "string" && (values[k] as string).trim() !== "");
 }
 
 /** The custom field that holds the product, or why it cannot be chosen. Never picks one of several. */
@@ -89,30 +90,38 @@ export async function executeSendProductAudios(args: { db: Db; run: FlowRunRow; 
     await db.rpc("audio_guide_record_skip", { p_account: accountId, p_contact: contactId, p_conversation: conversationId, p_run: run.id, p_trigger: trigger, p_product_key: productKey ?? null, p_reason: reason });
   };
 
-  // ---- 3. the gate (fails closed: a tag that is not this account's counts as an error, a missing tag on the contact closes the gate)
-  const { data: tag, error: tagError } = await db.from("tags").select("id").eq("id", cfg.gate_tag_id).eq("account_id", accountId).maybeSingle();
-  if (tagError) return { kind: "failed", reason: "gate_lookup_failed" };
-  if (!tag) return { kind: "failed", reason: "gate_tag_not_in_account" };
-  const { count: tagged, error: taggedError } = await db.from("contact_tags").select("contact_id", { count: "exact", head: true }).eq("contact_id", contactId).eq("tag_id", cfg.gate_tag_id);
-  if (taggedError) return { kind: "failed", reason: "gate_lookup_failed" };
-  if (!tagged) {
-    await skip("gate_closed");
-    return { kind: "next", nodeKey: cfg.gate_closed_node_key, detail: { route: "gate_closed" } };
+  // ---- 3. the gate, only when the node asks for a tag (a node saved before `gate_mode` existed always does). Fails closed: a tag that is
+  //         not this account's counts as an error, a missing tag on the contact closes the gate.
+  const gateRequired = gateModeOf(cfg) !== "none";
+  if (gateRequired) {
+    const { data: tag, error: tagError } = await db.from("tags").select("id").eq("id", cfg.gate_tag_id).eq("account_id", accountId).maybeSingle();
+    if (tagError) return { kind: "failed", reason: "gate_lookup_failed" };
+    if (!tag) return { kind: "failed", reason: "gate_tag_not_in_account" };
+    const { count: tagged, error: taggedError } = await db.from("contact_tags").select("contact_id", { count: "exact", head: true }).eq("contact_id", contactId).eq("tag_id", cfg.gate_tag_id);
+    if (taggedError) return { kind: "failed", reason: "gate_lookup_failed" };
+    if (!tagged) {
+      await skip("gate_closed");
+      return { kind: "next", nodeKey: cfg.gate_closed_node_key, detail: { route: "gate_closed" } };
+    }
   }
 
-  // ---- 4. the Producto field and its value
-  const field = await resolveProductField(db, accountId, cfg.product_field_id || undefined);
-  if (!field.ok) return { kind: "failed", reason: field.reason };
-  const { data: valueRow, error: valueError } = await db.from("contact_custom_values").select("value").eq("contact_id", contactId).eq("custom_field_id", field.fieldId).maybeSingle();
-  if (valueError) return { kind: "failed", reason: "product_value_lookup_failed" };
-  const productValue = (valueRow as { value?: string | null } | null)?.value ?? null;
+  // ---- 4. which product: the contact's Producto field (automatic) or the catalog product chosen in the node (manual)
+  const manual = productSourceOf(cfg) === "manual";
+  let productValue: string | null = null;
+  if (!manual) {
+    const field = await resolveProductField(db, accountId, cfg.product_field_id || undefined);
+    if (!field.ok) return { kind: "failed", reason: field.reason };
+    const { data: valueRow, error: valueError } = await db.from("contact_custom_values").select("value").eq("contact_id", contactId).eq("custom_field_id", field.fieldId).maybeSingle();
+    if (valueError) return { kind: "failed", reason: "product_value_lookup_failed" };
+    productValue = (valueRow as { value?: string | null } | null)?.value ?? null;
+  }
 
   // ---- 5. the catalog (one retry if the catalog changed between the lookup and the snapshot)
   let opened: { request_id: string; created: boolean; status: string } | null = null;
   for (let attempt = 0; attempt < 2 && !opened; attempt++) {
     let found: ProductAudioLookup;
     try {
-      found = await lookupProductAudios({ db, accountId, productValue });
+      found = await lookupProductAudios(manual ? { db, accountId, productId: cfg.product_id } : { db, accountId, productValue });
     } catch (err) {
       return { kind: "failed", reason: err instanceof CatalogLookupError ? "catalog_lookup_failed" : "catalog_error" };
     }
