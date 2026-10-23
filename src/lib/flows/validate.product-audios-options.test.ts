@@ -103,3 +103,18 @@ describe("new nodes start without a tag, reading the product from the contact", 
     expect(sum({ ...manual, product_id: "" })).toMatch(/choose the product/i);
   });
 });
+
+describe("activation refuses a selection this version cannot run", () => {
+  it("a node saved by a newer version (single audio) cannot be activated", () => {
+    const single = { ...noTag, audio_selection: "single", purpose_id: PRODUCT, identifier_id: TAG };
+    const found = issues(single);
+    expect(found.map((i) => (i as { code?: string }).code)).toContain("product_audios_selection_unsupported");
+    expect(found.every((i) => i.severity === "error")).toBe(true);
+    expect(validateFlowForActivation(flow, graph(single), { voiceNoteEnabled: true }).some((i) => i.severity === "error")).toBe(true);
+  });
+  it("nodes without the field, and with 'all', still activate", () => {
+    expect(issues(noTag)).toEqual([]);
+    expect(issues({ ...noTag, audio_selection: "all" })).toEqual([]);
+    expect(issues(legacy)).toEqual([]);
+  });
+});
