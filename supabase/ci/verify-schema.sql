@@ -290,6 +290,45 @@ BEGIN
     RAISE EXCEPTION 'execute_flow guard triggers are missing — migration 068 did not apply';
   END IF;
 
+  -- 076: audio selection. Purposes and identifiers per account, the same-account composite keys on the audios, ONE unique index that includes inactive
+  -- audios, the "both or neither" rule, and the service-role-only functions. A silent no-op here would let a Flow node think it can pick an audio.
+  IF to_regclass('public.audio_guide_purposes') IS NULL OR to_regclass('public.audio_guide_identifiers') IS NULL THEN
+    RAISE EXCEPTION 'audio_guide_purposes / audio_guide_identifiers are missing — migration 076 did not apply';
+  END IF;
+  IF (SELECT count(*) FROM pg_class WHERE oid IN ('public.audio_guide_purposes'::regclass, 'public.audio_guide_identifiers'::regclass) AND relrowsecurity) <> 2 THEN
+    RAISE EXCEPTION 'audio_guide_purposes / audio_guide_identifiers must have row level security — migration 076';
+  END IF;
+  IF has_table_privilege('authenticated', 'public.audio_guide_purposes', 'INSERT') OR has_table_privilege('authenticated', 'public.audio_guide_identifiers', 'UPDATE')
+     OR NOT has_table_privilege('service_role', 'public.audio_guide_purposes', 'INSERT') THEN
+    RAISE EXCEPTION 'audio_guide_purposes / audio_guide_identifiers: only the service role may write — migration 076';
+  END IF;
+  IF (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'audio_guide_items' AND column_name IN ('purpose_id', 'identifier_id')) <> 2
+     OR (SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'audio_guide_requests'
+           AND column_name IN ('selection_mode', 'purpose_id', 'identifier_id', 'purpose_name', 'identifier_name', 'node_key')) <> 6 THEN
+    RAISE EXCEPTION 'the selection columns of audio_guide_items / audio_guide_requests are missing — migration 076 did not apply';
+  END IF;
+  IF (SELECT count(*) FROM pg_constraint WHERE conrelid = 'public.audio_guide_items'::regclass
+        AND conname IN ('audio_guide_items_purpose_fkey', 'audio_guide_items_identifier_fkey', 'audio_guide_items_classified_both')) <> 3 THEN
+    RAISE EXCEPTION 'audio_guide_items classification constraints are missing — migration 076 did not apply';
+  END IF;
+  -- the keys are COMPOSITE with the account: a purpose of another account can never be referenced
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'audio_guide_items_purpose_fkey' AND conrelid = 'public.audio_guide_items'::regclass
+                   AND array_length(conkey, 1) = 2 AND confdeltype = 'r') THEN
+    RAISE EXCEPTION 'audio_guide_items_purpose_fkey must be a composite (purpose, account) RESTRICT key — migration 076';
+  END IF;
+  -- the unique index covers EVERY audio of the combination (no status condition), so reactivating one cannot create ambiguity
+  IF NOT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'audio_guide_items_classification_key'
+                   AND indexdef LIKE '%UNIQUE%' AND indexdef LIKE '%WHERE (purpose_id IS NOT NULL)%' AND indexdef NOT LIKE '%status%') THEN
+    RAISE EXCEPTION 'audio_guide_items_classification_key must be unique over (product, purpose, identifier) for every audio — migration 076';
+  END IF;
+  IF (SELECT count(*) FROM pg_proc p WHERE p.pronamespace = 'public'::regnamespace AND NOT p.prosecdef
+        AND p.proname IN ('audio_guide_save_purpose', 'audio_guide_save_identifier', 'audio_guide_delete_purpose', 'audio_guide_delete_identifier',
+                          'audio_guide_classify_item', 'audio_guide_open_selected_request', 'audio_guide_record_selected_skip')
+        AND has_function_privilege('service_role', p.oid, 'EXECUTE') AND NOT has_function_privilege('authenticated', p.oid, 'EXECUTE')
+        AND NOT has_function_privilege('anon', p.oid, 'EXECUTE')) <> 7 THEN
+    RAISE EXCEPTION 'the 7 selection functions must exist, be SECURITY INVOKER and be executable by service_role only — migration 076';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;
