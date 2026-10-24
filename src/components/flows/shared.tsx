@@ -475,16 +475,22 @@ export function summarizeNode(
       const op =
         cfg.operator === 'equals'
           ? '=='
-          : cfg.operator === 'contains'
-            ? t ? t('opContains') : 'contains'
-            : cfg.operator === 'present'
-              ? t ? t('opExists') : 'exists'
-              : cfg.operator === 'absent'
-                ? t ? t('opMissing') : 'missing'
-                : '';
+          : cfg.operator === 'not_equals'
+            ? '!='
+            : cfg.operator === 'contains'
+              ? t ? t('opContains') : 'contains'
+              : cfg.operator === 'not_contains'
+                ? t ? t('opNotContains') : 'does not contain'
+                : cfg.operator === 'starts_with'
+                  ? t ? t('opStartsWith') : 'starts with'
+                  : cfg.operator === 'present'
+                    ? t ? t('opExists') : 'exists'
+                    : cfg.operator === 'absent'
+                      ? t ? t('opMissing') : 'missing'
+                      : '';
       const value = typeof cfg.value === 'string' ? cfg.value : '';
       const valStr =
-        (cfg.operator === 'equals' || cfg.operator === 'contains') && value
+        ['equals', 'not_equals', 'contains', 'not_contains', 'starts_with'].includes(String(cfg.operator)) && value
           ? ` "${truncate(value, 20)}"`
           : '';
       return subject === 'tag' ? subjectStr : `${subjectStr} ${op}${valStr}`;

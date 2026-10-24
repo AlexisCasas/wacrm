@@ -629,11 +629,14 @@ function SendListForm({
 // condition
 // ============================================================
 
+const VALUE_OPERATORS = ["equals", "not_equals", "contains", "not_contains", "starts_with"];
+
 interface ConditionCfg {
   subject?: "var" | "tag" | "contact_field" | "customer_activity";
   subject_key?: string;
-  operator?: "equals" | "contains" | "present" | "absent" | "replied_after_reference";
+  operator?: "equals" | "not_equals" | "contains" | "not_contains" | "starts_with" | "present" | "absent" | "replied_after_reference";
   value?: string;
+  case_sensitive?: boolean;
   true_next?: string;
   false_next?: string;
 }
@@ -710,7 +713,7 @@ function ConditionForm({
   const isActivity = subject === "customer_activity";
   const referenceCandidates = allNodes.filter((n) => n.node_type === "send_message" || n.node_type === "send_media");
   const operator = cfg.operator ?? "equals";
-  const showValue = operator === "equals" || operator === "contains";
+  const showValue = VALUE_OPERATORS.includes(operator);
 
   return (
     <>
@@ -831,7 +834,10 @@ function ConditionForm({
               <SelectItem value="present">{t("isPresent")}</SelectItem>
               <SelectItem value="absent">{t("isAbsent")}</SelectItem>
               <SelectItem value="equals">{t("equals")}</SelectItem>
+              <SelectItem value="not_equals">{t("notEquals")}</SelectItem>
               <SelectItem value="contains">{t("contains")}</SelectItem>
+              <SelectItem value="not_contains">{t("notContains")}</SelectItem>
+              <SelectItem value="starts_with">{t("startsWith")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -843,6 +849,17 @@ function ConditionForm({
               onChange={(e) => onUpdateConfig({ value: e.target.value })}
               className="bg-muted"
             />
+            <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={cfg.case_sensitive !== false}
+                onChange={(e) => onUpdateConfig({ case_sensitive: e.target.checked })}
+              />
+              {t("caseSensitive")}
+            </label>
+            {(operator === "not_equals" || operator === "not_contains") && (
+              <p className="mt-1 text-xs text-muted-foreground">{t("unknownNotMatched")}</p>
+            )}
           </div>
         )}
       </div>}

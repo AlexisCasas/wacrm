@@ -202,7 +202,11 @@ export function evaluateConditionPredicate(args: {
   subjectValue: string | undefined;
   /** The configured comparison value, when applicable. */
   configValue: string | undefined;
+  /** Default true: exact text match, as before the option existed. Only `false` ignores case. */
+  caseSensitive?: boolean;
 }): boolean {
+  const fold = (v: string) => (args.caseSensitive === false ? v.toLowerCase() : v);
+  const expected = fold(args.configValue ?? "");
   switch (args.operator) {
     case "present":
       return args.subjectValue !== undefined && args.subjectValue !== "";
@@ -210,10 +214,22 @@ export function evaluateConditionPredicate(args: {
       return args.subjectValue === undefined || args.subjectValue === "";
     case "equals":
       if (args.subjectValue === undefined) return false;
-      return args.subjectValue === (args.configValue ?? "");
+      return fold(args.subjectValue) === expected;
     case "contains":
       if (args.subjectValue === undefined) return false;
-      return args.subjectValue.includes(args.configValue ?? "");
+      return fold(args.subjectValue).includes(expected);
+    // Negative and prefix operators. An absent or empty subject is UNKNOWN, not "a different value":
+    // all three answer false so that "not SAFARI" never silently claims knowledge of an unset field.
+    // Route unknown values with `absent` instead.
+    case "not_equals":
+      if (args.subjectValue === undefined || args.subjectValue === "") return false;
+      return fold(args.subjectValue) !== expected;
+    case "not_contains":
+      if (args.subjectValue === undefined || args.subjectValue === "") return false;
+      return !fold(args.subjectValue).includes(expected);
+    case "starts_with":
+      if (args.subjectValue === undefined || args.subjectValue === "") return false;
+      return fold(args.subjectValue).startsWith(expected);
     default:
       // `replied_after_reference` is decided by `customerRepliedAfterReference` (a DB question), never here. Fail closed.
       return false;
@@ -806,6 +822,7 @@ export async function evaluateConditionNode(
     operator: cfg.operator,
     subjectValue,
     configValue: cfg.value,
+    caseSensitive: cfg.case_sensitive === false ? false : true,
   });
 }
 

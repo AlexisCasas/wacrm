@@ -166,7 +166,10 @@ export interface CollectInputNodeConfig {
 
 export type ConditionOperator =
   | "equals"
+  | "not_equals"
   | "contains"
+  | "not_contains"
+  | "starts_with"
   | "present"
   | "absent"
   /** Only with subject `customer_activity` (P7): the customer wrote after the reference send. */
@@ -189,8 +192,17 @@ export interface ConditionNodeConfig {
    */
   subject_key: string;
   operator: ConditionOperator;
-  /** Compared against `subject` for `equals`/`contains`. Ignored for `present`/`absent`. */
+  /** Compared against `subject` for the value operators. Ignored for `present`/`absent`. */
   value?: string;
+  /**
+   * Text comparison only (`equals`, `not_equals`, `contains`, `not_contains`, `starts_with`).
+   * Absent or `true` = case-sensitive (the behaviour every flow saved before this option had);
+   * only an explicit `false` ignores upper/lower case.
+   *
+   * Unknown subjects: an absent or empty subject is "unknown", never "different". Every value
+   * operator (negatives included) answers false for it; use `absent` to route unknown values.
+   */
+  case_sensitive?: boolean;
   /** Node to advance to when the predicate evaluates true. */
   true_next: string;
   /** Node to advance to when it evaluates false. */

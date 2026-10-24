@@ -28,6 +28,9 @@ import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/meta-api";
 import { parseVoiceNoteUrl } from "@/lib/media/voice-note-path";
 import { gateModeOf, inspectProductAudiosConfig, productAudiosRouteKeys } from "./product-audios-config";
 
+/** Condition operators that compare the subject with a configured value. */
+const CONDITION_VALUE_OPERATORS: string[] = ["equals", "not_equals", "contains", "not_contains", "starts_with"];
+
 export interface ValidationIssue {
   severity: "error" | "warning";
   scope: "flow" | "trigger" | "node";
@@ -697,8 +700,9 @@ function validateNode(
       const cfg = node.config as {
         subject?: "var" | "tag" | "contact_field" | "customer_activity";
         subject_key?: string;
-        operator?: "equals" | "contains" | "present" | "absent" | "replied_after_reference";
+        operator?: "equals" | "not_equals" | "contains" | "not_contains" | "starts_with" | "present" | "absent" | "replied_after_reference";
         value?: string;
+        case_sensitive?: unknown;
         true_next?: string;
         false_next?: string;
       };
@@ -744,7 +748,7 @@ function validateNode(
         // operator already validated above
       } else if (
         !cfg.operator ||
-        !["equals", "contains", "present", "absent"].includes(cfg.operator)
+        !CONDITION_VALUE_OPERATORS.concat(["present", "absent"]).includes(cfg.operator)
       ) {
         issues.push({
           severity: "error",
@@ -754,7 +758,7 @@ function validateNode(
           message: "Condition needs an operator.",
         });
       } else if (
-        (cfg.operator === "equals" || cfg.operator === "contains") &&
+        CONDITION_VALUE_OPERATORS.includes(cfg.operator) &&
         (cfg.value === undefined || cfg.value === "")
       ) {
         issues.push({
@@ -763,6 +767,16 @@ function validateNode(
           node_key: node.node_key,
           field: "value",
           message: `Operator "${cfg.operator}" usually expects a comparison value — empty value will only match empty subjects.`,
+        });
+      }
+      if (cfg.case_sensitive !== undefined && typeof cfg.case_sensitive !== "boolean") {
+        issues.push({
+          severity: "error",
+          scope: "node",
+          node_key: node.node_key,
+          field: "case_sensitive",
+          code: "condition_case_sensitive_invalid",
+          message: "Case sensitivity must be true or false.",
         });
       }
       for (const branch of ["true_next", "false_next"] as const) {

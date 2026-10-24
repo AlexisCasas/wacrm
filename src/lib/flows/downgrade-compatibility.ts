@@ -23,7 +23,12 @@ export function inspectDowngradeCompatibility(input: {
 }): DowngradeCompatibility {
   const customFlowIds = new Set(
     input.nodes
-      .filter((node) => node.node_type === "condition" && node.config.subject === "contact_field" && typeof node.config.subject_key === "string" && node.config.subject_key.startsWith("custom:"))
+      .filter((node) => node.node_type === "condition" && (
+        (node.config.subject === "contact_field" && typeof node.config.subject_key === "string" && node.config.subject_key.startsWith("custom:")) ||
+        // An older build treats these operators / this option as unknown and silently answers false, so they block a rollback too.
+        ["not_equals", "not_contains", "starts_with"].includes(node.config.operator as string) ||
+        node.config.case_sensitive === false
+      ))
       .map((node) => node.flow_id),
   );
   const activeCustom = input.flows.filter((flow) => flow.status === "active" && customFlowIds.has(flow.id)).map((flow) => flow.id);
