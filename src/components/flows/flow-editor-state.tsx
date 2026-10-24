@@ -187,6 +187,7 @@ export function defaultConfigFor(type: NodeType): Record<string, unknown> {
         subject: "var",
         subject_key: "",
         operator: "equals",
+        case_sensitive: false,
         value: "",
         true_next: "",
         false_next: "",

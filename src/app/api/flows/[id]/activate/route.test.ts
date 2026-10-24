@@ -39,7 +39,7 @@ describe("POST /api/flows/[id]/activate", () => {
   it("rejects a direct activation with a disabled custom condition before status update", async () => {
     const response = await POST(new Request("http://localhost/api/flows/flow-1/activate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ status: "active" }) }), params);
     expect(response.status).toBe(422);
-    expect(mocks.validateReferences).toHaveBeenCalledWith(context.supabase, context.accountId, expect.any(Array), false);
+    expect(mocks.validateReferences).toHaveBeenCalledWith(context.supabase, context.accountId, expect.any(Array), false, false);
   });
 
   it("refuses to activate a flow that runs another flow, before any status update (pilot: authoring only)", async () => {

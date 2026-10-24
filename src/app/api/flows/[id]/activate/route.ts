@@ -6,6 +6,7 @@ import { gateModeOf, productSourceOf, selectionOf } from '@/lib/flows/product-au
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateFlowForActivation } from '@/lib/flows/validate'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
+import { isCompoundConditionEnabledForAccount } from '@/lib/flows/compound-condition-capability'
 import { executionAllowedForAccount } from '@/lib/flows/execution-gates'
 import { isDurableWaitConfig } from '@/lib/flows/durable-wait'
 import { isCustomerActivityConfig, isCustomerReplyConditionEnabledForAccount } from '@/lib/flows/customer-reply-condition'
@@ -126,7 +127,7 @@ export async function POST(
         }
       }
       for (const issue of callGraphIssues) issues.push({ severity: issue.severity, scope: 'node', node_key: issue.node_key, field: 'target_flow_id', code: `execute_flow_${issue.code}`, ...(issue.params ? { params: issue.params } : {}), message: issue.message })
-      const referenceIssues = await validateConditionReferences(account.supabase, account.accountId, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, isCustomConditionEnabledForAccount(account.accountId))
+      const referenceIssues = await validateConditionReferences(account.supabase, account.accountId, (nodes ?? []) as Array<{ node_key: string; node_type: string; config: Record<string, unknown> }>, isCustomConditionEnabledForAccount(account.accountId), isCompoundConditionEnabledForAccount(account.accountId))
       for (const issue of referenceIssues) issues.push({ severity: 'error', scope: 'node', node_key: issue.node_key, field: 'subject_key', message: issue.issue })
       if (issues.some((issue) => issue.severity === 'error')) return NextResponse.json({ error: 'Cannot activate flow — fix the issues below first.', issues }, { status: 422 })
       for (const issue of issues) if (issue.severity === 'warning') warningsOf.push({ node_key: issue.node_key, field: issue.field, code: (issue as { code?: string }).code, message: issue.message })

@@ -27,6 +27,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Info, Plus, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { MAX_CONDITION_RULES, readConditionConfig, toCompoundPatch } from "@/lib/flows/condition-rules";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -629,11 +630,14 @@ function SendListForm({
 // condition
 // ============================================================
 
+const VALUE_OPERATORS = ["equals", "not_equals", "contains", "not_contains", "starts_with"];
+
 interface ConditionCfg {
   subject?: "var" | "tag" | "contact_field" | "customer_activity";
   subject_key?: string;
-  operator?: "equals" | "contains" | "present" | "absent" | "replied_after_reference";
+  operator?: "equals" | "not_equals" | "contains" | "not_contains" | "starts_with" | "present" | "absent" | "replied_after_reference";
   value?: string;
+  case_sensitive?: boolean;
   true_next?: string;
   false_next?: string;
 }
@@ -688,29 +692,35 @@ function TagSelect({ value, catalog, onChange, t }: { value: string; catalog: Ta
   </div>;
 }
 
-function ConditionForm({
+function ConditionRuleFields({
   cfg,
   allNodes,
   currentKey,
   onUpdateConfig,
+  tagCatalog,
+  fields,
+  customConditionsEnabled,
+  customerReplyEnabled,
+  allowActivity,
   t,
 }: {
   cfg: ConditionCfg;
   allNodes: BuilderNode[];
   currentKey: string;
   onUpdateConfig: (patch: Record<string, unknown>) => void;
+  tagCatalog: TagCatalog;
+  fields: AccountCustomField[];
+  customConditionsEnabled: boolean;
+  customerReplyEnabled: boolean;
+  /** Only a stand-alone (single-rule) node may use customer activity. */
+  allowActivity: boolean;
   t: ReturnType<typeof useTranslations>;
 }) {
-  const tagCatalog = useAccountTags();
-  const fields = useAccountCustomFields();
-  const customConditionsEnabled = useCustomConditionCapability();
-  const customerReplyEnabled = useCustomerReplyConditionCapability();
-
   const subject = cfg.subject ?? "var";
   const isActivity = subject === "customer_activity";
   const referenceCandidates = allNodes.filter((n) => n.node_type === "send_message" || n.node_type === "send_media");
   const operator = cfg.operator ?? "equals";
-  const showValue = operator === "equals" || operator === "contains";
+  const showValue = VALUE_OPERATORS.includes(operator);
 
   return (
     <>
@@ -719,6 +729,12 @@ function ConditionForm({
           <label className="mb-1 block text-xs text-muted-foreground">{t("ifLabel")}</label>
           <Select
             value={subject}
+            items={[
+              { value: "var", label: t("capturedVariable") },
+              { value: "tag", label: t("contactHasTag") },
+              { value: "contact_field", label: t("contactField") },
+              { value: "customer_activity", label: t("customerActivity") },
+            ]}
             onValueChange={(v) =>
               onUpdateConfig(
                 v === "customer_activity"
@@ -736,7 +752,7 @@ function ConditionForm({
               <SelectItem value="var">{t("capturedVariable")}</SelectItem>
               <SelectItem value="tag">{t("contactHasTag")}</SelectItem>
               <SelectItem value="contact_field">{t("contactField")}</SelectItem>
-              {(customerReplyEnabled || isActivity) && <SelectItem value="customer_activity">{t("customerActivity")}</SelectItem>}
+              {allowActivity && (customerReplyEnabled || isActivity) && <SelectItem value="customer_activity">{t("customerActivity")}</SelectItem>}
             </SelectContent>
           </Select>
         </div>
@@ -781,6 +797,11 @@ function ConditionForm({
             <>
             <Select
               value={cfg.subject_key ?? ""}
+              // Without `items` the closed trigger would print the raw value (custom:<uuid>) instead of the field's name.
+              items={[
+                ...["name", "email", "phone", "company"].map((key) => ({ value: key, label: key })),
+                ...fields.map((field) => ({ value: `custom:${field.id}`, label: field.field_name })),
+              ]}
               onValueChange={(v) => onUpdateConfig({ subject_key: v })}
             >
               <SelectTrigger className="bg-muted">
@@ -820,6 +841,15 @@ function ConditionForm({
           <label className="mb-1 block text-xs text-muted-foreground">{t("operatorLabel")}</label>
           <Select
             value={operator}
+            items={[
+              { value: "present", label: t("isPresent") },
+              { value: "absent", label: t("isAbsent") },
+              { value: "equals", label: t("equals") },
+              { value: "not_equals", label: t("notEquals") },
+              { value: "contains", label: t("contains") },
+              { value: "not_contains", label: t("notContains") },
+              { value: "starts_with", label: t("startsWith") },
+            ]}
             onValueChange={(v) =>
               onUpdateConfig({ operator: v as ConditionCfg["operator"] })
             }
@@ -831,7 +861,10 @@ function ConditionForm({
               <SelectItem value="present">{t("isPresent")}</SelectItem>
               <SelectItem value="absent">{t("isAbsent")}</SelectItem>
               <SelectItem value="equals">{t("equals")}</SelectItem>
+              <SelectItem value="not_equals">{t("notEquals")}</SelectItem>
               <SelectItem value="contains">{t("contains")}</SelectItem>
+              <SelectItem value="not_contains">{t("notContains")}</SelectItem>
+              <SelectItem value="starts_with">{t("startsWith")}</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -843,27 +876,123 @@ function ConditionForm({
               onChange={(e) => onUpdateConfig({ value: e.target.value })}
               className="bg-muted"
             />
+            <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={cfg.case_sensitive !== false}
+                onChange={(e) => onUpdateConfig({ case_sensitive: e.target.checked })}
+              />
+              {t("caseSensitive")}
+            </label>
+            {(operator === "not_equals" || operator === "not_contains") && (
+              <p className="mt-1 text-xs text-muted-foreground">{t("unknownNotMatched")}</p>
+            )}
           </div>
         )}
       </div>}
       {isActivity && <p className="text-sm">{t("repliedAfterReference")}</p>}
 
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        <NextNodeRow
-          value={cfg.true_next ?? ""}
-          allNodes={allNodes}
-          currentKey={currentKey}
-          onChange={(v) => onUpdateConfig({ true_next: v })}
-          label={isActivity ? t("ifRepliedAdvance") : t("ifTrueAdvance")}
-        />
-        <NextNodeRow
-          value={cfg.false_next ?? ""}
-          allNodes={allNodes}
-          currentKey={currentKey}
-          onChange={(v) => onUpdateConfig({ false_next: v })}
-          label={isActivity ? t("ifNotRepliedAdvance") : t("ifFalseAdvance")}
-        />
+    </>
+  );
+}
+
+/** Blank rule added by "+ Add condition": the same defaults a new single-rule node gets. */
+const BLANK_RULE = { subject: "var", subject_key: "", operator: "equals", value: "", case_sensitive: false } as const;
+
+function ConditionForm({
+  cfg,
+  allNodes,
+  currentKey,
+  onUpdateConfig,
+  t,
+}: {
+  cfg: ConditionCfg;
+  allNodes: BuilderNode[];
+  currentKey: string;
+  onUpdateConfig: (patch: Record<string, unknown>) => void;
+  t: ReturnType<typeof useTranslations>;
+}) {
+  const tagCatalog = useAccountTags();
+  const fields = useAccountCustomFields();
+  const customConditionsEnabled = useCustomConditionCapability();
+  const customerReplyEnabled = useCustomerReplyConditionCapability();
+  const compoundEnabled = useCompoundConditionCapability();
+
+  const read = readConditionConfig(cfg);
+  const shared = { allNodes, currentKey, tagCatalog, fields, customConditionsEnabled, customerReplyEnabled, t };
+  const routes = (
+    <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+      <NextNodeRow
+        value={cfg.true_next ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ true_next: v })}
+        label={read.kind === "legacy" && read.rule.subject === "customer_activity" ? t("ifRepliedAdvance") : t("ifTrueAdvance")}
+      />
+      <NextNodeRow
+        value={cfg.false_next ?? ""}
+        allNodes={allNodes}
+        currentKey={currentKey}
+        onChange={(v) => onUpdateConfig({ false_next: v })}
+        label={read.kind === "legacy" && read.rule.subject === "customer_activity" ? t("ifNotRepliedAdvance") : t("ifFalseAdvance")}
+      />
+    </div>
+  );
+
+  if (read.kind === "invalid") {
+    return (
+      <>
+        <p className="text-sm text-destructive" data-testid="condition-config-invalid">{t("conditionConfigInvalid")}</p>
+        {routes}
+      </>
+    );
+  }
+
+  if (read.kind === "legacy") {
+    const isActivity = read.rule.subject === "customer_activity";
+    return (
+      <>
+        <ConditionRuleFields {...shared} cfg={cfg} onUpdateConfig={onUpdateConfig} allowActivity />
+        {/* A customer-activity condition stays on its own: it arms the reply guard. Everything else can grow into a list. */}
+        {compoundEnabled && !isActivity && (
+          <Button type="button" variant="outline" size="sm" data-testid="condition-add-rule" onClick={() => onUpdateConfig(toCompoundPatch(cfg, { ...BLANK_RULE } as never))}>
+            {t("addCondition")}
+          </Button>
+        )}
+        {routes}
+      </>
+    );
+  }
+
+  const setRules = (rules: unknown[]) => onUpdateConfig({ conditions: rules });
+  return (
+    <>
+      <div>
+        <label className="mb-1 block text-xs text-muted-foreground">{t("matchModeLabel")}</label>
+        <Select value={read.mode} items={[{ value: "all", label: t("matchAll") }, { value: "any", label: t("matchAny") }]} onValueChange={(v) => { if (v === "all" || v === "any") onUpdateConfig({ match_mode: v }); }}>
+          <SelectTrigger className="bg-muted" data-testid="condition-match-mode"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">{t("matchAll")}</SelectItem>
+            <SelectItem value="any">{t("matchAny")}</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
+      {read.rules.map((rule, index) => (
+        <div key={index} className="space-y-3 rounded-md border border-border p-3" data-testid={`condition-rule-${index}`}>
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-medium text-muted-foreground">{t("conditionN", { n: index + 1 })}</span>
+            <Button type="button" variant="ghost" size="sm" disabled={read.rules.length <= 1} aria-label={t("removeCondition", { n: index + 1 })} data-testid={`condition-remove-${index}`} onClick={() => setRules(read.rules.filter((_, i) => i !== index))}>
+              {t("removeCondition", { n: index + 1 })}
+            </Button>
+          </div>
+          <ConditionRuleFields {...shared} cfg={rule as ConditionCfg} allowActivity={false} onUpdateConfig={(patch) => setRules(read.rules.map((r, i) => (i === index ? { ...r, ...patch } : r)))} />
+        </div>
+      ))}
+      <Button type="button" variant="outline" size="sm" disabled={read.rules.length >= MAX_CONDITION_RULES} data-testid="condition-add-rule" onClick={() => setRules([...read.rules, { ...BLANK_RULE }])}>
+        {t("addCondition")}
+      </Button>
+      {read.rules.length >= MAX_CONDITION_RULES && <p className="text-xs text-muted-foreground">{t("maxConditions", { max: MAX_CONDITION_RULES })}</p>}
+      {routes}
     </>
   );
 }
@@ -961,6 +1090,27 @@ function useCustomConditionCapability(): boolean {
         if (!response.ok) return;
         const data = (await response.json()) as { customConditions?: boolean };
         if (!cancelled) setEnabled(data.customConditions === true);
+      } catch {
+        // Remain fail-closed; the server enforces this independently.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return enabled;
+}
+
+function useCompoundConditionCapability(): boolean {
+  const [enabled, setEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch("/api/flows/capabilities");
+        if (!response.ok) return;
+        const data = (await response.json()) as { compoundConditions?: boolean };
+        if (!cancelled) setEnabled(data.compoundConditions === true);
       } catch {
         // Remain fail-closed; the server enforces this independently.
       }
@@ -1409,7 +1559,7 @@ interface AccountCustomField {
  * falls back to a raw-UUID input in practice. Falls back the same way
  * here if the query returns nothing, so the node is still authorable.
  */
-function useAccountCustomFields(): AccountCustomField[] {
+export function useAccountCustomFields(): AccountCustomField[] {
   const [fields, setFields] = useState<AccountCustomField[]>([]);
   useEffect(() => {
     let cancelled = false;

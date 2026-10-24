@@ -166,7 +166,10 @@ export interface CollectInputNodeConfig {
 
 export type ConditionOperator =
   | "equals"
+  | "not_equals"
   | "contains"
+  | "not_contains"
+  | "starts_with"
   | "present"
   | "absent"
   /** Only with subject `customer_activity` (P7): the customer wrote after the reference send. */
@@ -179,21 +182,52 @@ export type ConditionSubject = "var" | "tag" | "contact_field" | "customer_activ
  * profile fields, or stored vars. Always auto-advances — no Meta
  * call, no customer-side input.
  */
-export interface ConditionNodeConfig {
+/** One predicate over the contact or the run. The shape a legacy node keeps at its top level. */
+export interface ConditionRule {
   subject: ConditionSubject;
   /**
    * For `var`: the key in flow_runs.vars.
    * For `tag`: the tag UUID (matched against contact_tags).
-   * For `contact_field`: one of 'name' | 'email' | 'phone' | 'company'.
+   * For `contact_field`: one of 'name' | 'email' | 'phone' | 'company', or `custom:<custom_field_id>`.
    * For `customer_activity`: the node_key of the send_message / send_media node whose first send is the reference.
    */
   subject_key: string;
   operator: ConditionOperator;
-  /** Compared against `subject` for `equals`/`contains`. Ignored for `present`/`absent`. */
+  /** Compared against `subject` for the value operators. Ignored for `present`/`absent`. */
   value?: string;
+  /**
+   * Text comparison only (`equals`, `not_equals`, `contains`, `not_contains`, `starts_with`).
+   * Absent or `true` = case-sensitive (the behaviour every flow saved before this option had);
+   * only an explicit `false` ignores upper/lower case.
+   *
+   * Unknown subjects: an absent or empty subject is "unknown", never "different". Every value
+   * operator (negatives included) answers false for it; use `absent` to route unknown values.
+   */
+  case_sensitive?: boolean;
+}
+
+/**
+ * Routes the run based on a predicate over the contact's tags,
+ * profile fields, or stored vars. Always auto-advances — no Meta
+ * call, no customer-side input.
+ *
+ * Legacy shape: one rule at the top level.
+ */
+export interface ConditionNodeConfig extends ConditionRule {
   /** Node to advance to when the predicate evaluates true. */
   true_next: string;
   /** Node to advance to when it evaluates false. */
+  false_next: string;
+}
+
+/**
+ * Compound shape (see condition-rules.ts): 1..10 rules joined by `match_mode`, the same two exits for all of them.
+ * Never combined with the top-level rule keys of the legacy shape. `customer_activity` is not allowed inside.
+ */
+export interface CompoundConditionNodeConfig {
+  match_mode: "all" | "any";
+  conditions: ConditionRule[];
+  true_next: string;
   false_next: string;
 }
 
@@ -330,7 +364,7 @@ export type FlowNodeConfig =
   | { node_type: "send_list"; config: SendListNodeConfig }
   | { node_type: "send_media"; config: SendMediaNodeConfig }
   | { node_type: "collect_input"; config: CollectInputNodeConfig }
-  | { node_type: "condition"; config: ConditionNodeConfig }
+  | { node_type: "condition"; config: ConditionNodeConfig | CompoundConditionNodeConfig }
   | { node_type: "set_tag"; config: SetTagNodeConfig }
   | { node_type: "delay"; config: DelayNodeConfig }
   | { node_type: "set_contact_field"; config: SetContactFieldNodeConfig }

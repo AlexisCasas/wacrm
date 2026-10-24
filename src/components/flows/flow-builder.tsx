@@ -64,7 +64,7 @@ import {
   type BuilderNode,
   type NodeType,
 } from './shared';
-import { NodeConfigForm, useAccountTags } from './forms/node-config-form';
+import { NodeConfigForm, useAccountCustomFields, useAccountTags } from './forms/node-config-form';
 import { NodeKeySelect } from './forms/fields';
 import { IssueLine } from './validation-panel';
 import { useFlowEditor, type BuilderState } from './flow-editor-state';
@@ -99,7 +99,9 @@ export function FlowBuilder() {
     removeNode: removeNodeCtx,
   } = useFlowEditor();
   const tagCatalog = useAccountTags();
-  const tagNames = useMemo(() => new Map(tagCatalog.tags.map((tag) => [tag.id, tag.name])), [tagCatalog.tags]);
+  const customFields = useAccountCustomFields();
+  // Tags by id, custom fields by `custom:<id>`: the node summary reads both from one map.
+  const tagNames = useMemo(() => new Map([...tagCatalog.tags.map((tag) => [tag.id, tag.name] as const), ...customFields.map((field) => [`custom:${field.id}`, field.field_name] as const)]), [tagCatalog.tags, customFields]);
 
   // List-only UI state: which cards are expanded + scroll refs for
   // jump-to-node. The flash itself is read from context (flashKey)
