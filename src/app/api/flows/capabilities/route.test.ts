@@ -15,7 +15,7 @@ afterEach(() => { for (const k of KEYS) delete process.env[k]; });
 describe("GET /api/flows/capabilities", () => {
   it("today's production setting: only the account on the historic lists gets the authoring features; nothing can run", async () => {
     process.env.FLOW_SUBFLOW_AUTHORING_ACCOUNT_IDS = KEYLER; process.env.FLOW_DURABLE_WAIT_AUTHORING_ACCOUNT_IDS = KEYLER; process.env.FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS = KEYLER;
-    expect(await caps(KEYLER)).toEqual({ customConditions: false, subflowAuthoring: true, durableWaitAuthoring: true, customerReplyCondition: true, subflowExecution: false, durableWaitExecution: false });
+    expect(await caps(KEYLER)).toEqual({ customConditions: false, compoundConditions: false, subflowAuthoring: true, durableWaitAuthoring: true, customerReplyCondition: true, subflowExecution: false, durableWaitExecution: false });
     expect(await caps(ROSSY)).toMatchObject({ subflowAuthoring: false, durableWaitAuthoring: false, customerReplyCondition: false });
   });
   it("FLOW_AUTHORING_SCOPE=all: Keyler, Rossy, a third company and a company created later all get every authoring feature; F04 stays off", async () => {

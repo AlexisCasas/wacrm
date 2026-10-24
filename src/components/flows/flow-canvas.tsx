@@ -99,7 +99,7 @@ import {
 import { useFlowEditor } from './flow-editor-state';
 import { useSubflowAuthoringCapability } from './use-subflow-authoring';
 import { useAudioGuideEnabled } from '@/hooks/use-audio-guide-enabled';
-import { NodeConfigForm, useAccountTags } from './forms/node-config-form';
+import { NodeConfigForm, useAccountCustomFields, useAccountTags } from './forms/node-config-form';
 
 // React-Flow node `data` payload — the bits our custom renderer needs.
 interface NodeData extends Record<string, unknown> {
@@ -292,7 +292,8 @@ function FlowCanvasInner() {
   const builderNodes = state.nodes;
   const entryNodeId = state.entry_node_id;
   const tagCatalog = useAccountTags();
-  const tagNames = useMemo(() => Object.fromEntries(tagCatalog.tags.map((tag) => [tag.id, tag.name])), [tagCatalog.tags]);
+  const customFields = useAccountCustomFields();
+  const tagNames = useMemo(() => Object.fromEntries([...tagCatalog.tags.map((tag) => [tag.id, tag.name] as const), ...customFields.map((field) => [`custom:${field.id}`, field.field_name] as const)]), [tagCatalog.tags, customFields]);
 
   // Side-panel state — which node's form is open. Canvas-only UI; the
   // list view's analogue is the per-card expanded set in

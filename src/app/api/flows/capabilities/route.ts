@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentAccount, toErrorResponse } from "@/lib/auth/account";
 import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition-capability";
+import { isCompoundConditionEnabledForAccount } from "@/lib/flows/compound-condition-capability";
 import { isSubflowAuthoringEnabledForAccount } from "@/lib/flows/subflow-authoring-capability";
 import { isCustomerReplyConditionEnabledForAccount } from "@/lib/flows/customer-reply-condition";
 import { isDurableWaitAuthoringEnabledForAccount } from "@/lib/flows/durable-wait-capability";
@@ -17,6 +18,7 @@ export async function GET() {
     return NextResponse.json(
       {
         customConditions: isCustomConditionEnabledForAccount(ctx.accountId),
+        compoundConditions: isCompoundConditionEnabledForAccount(ctx.accountId),
         subflowAuthoring: isSubflowAuthoringEnabledForAccount(ctx.accountId),
         durableWaitAuthoring: isDurableWaitAuthoringEnabledForAccount(ctx.accountId),
         customerReplyCondition: isCustomerReplyConditionEnabledForAccount(ctx.accountId),

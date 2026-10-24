@@ -17,6 +17,7 @@
  */
 
 import { gateModeOf, productSourceOf } from '@/lib/flows/product-audios-config';
+import { readConditionConfig } from '@/lib/flows/condition-rules';
 import {
   Mic,
   Clock,
@@ -343,6 +344,52 @@ export function NodeIconChip({
 // Pure editing helpers — used by forms in both views.
 // ============================================================
 
+/** One condition rule as a short readable phrase. The legacy single-rule output is unchanged. */
+function summarizeConditionRule(
+  rule: Record<string, unknown>,
+  t: ((key: string, values?: Record<string, string | number>) => string) | undefined,
+  tagNames: ReadonlyMap<string, string>,
+): string | null {
+  const subjectKey =
+    typeof rule.subject_key === 'string' ? rule.subject_key : '';
+  if (!subjectKey) return null;
+  if (rule.subject === 'customer_activity') {
+    return t ? t('repliedAfter', { node: truncate(subjectKey, 24) }) : `customer replied after ${truncate(subjectKey, 24)}`;
+  }
+  const subject =
+    rule.subject === 'tag'
+      ? 'tag'
+      : rule.subject === 'contact_field'
+        ? 'field'
+        : 'var';
+  const subjectStr =
+    subject === 'tag'
+      ? t ? t('hasTag', { tag: tagNames.get(subjectKey) ?? t('tagUnavailable') }) : `has tag ${tagNames.get(subjectKey) ?? truncate(subjectKey, 24)}`
+      : `${subject}.${tagNames.get(subjectKey) ?? subjectKey}`;
+  const op =
+    rule.operator === 'equals'
+      ? '=='
+      : rule.operator === 'not_equals'
+        ? '!='
+        : rule.operator === 'contains'
+          ? t ? t('opContains') : 'contains'
+          : rule.operator === 'not_contains'
+            ? t ? t('opNotContains') : 'does not contain'
+            : rule.operator === 'starts_with'
+              ? t ? t('opStartsWith') : 'starts with'
+              : rule.operator === 'present'
+                ? t ? t('opExists') : 'exists'
+                : rule.operator === 'absent'
+                  ? t ? t('opMissing') : 'missing'
+                  : '';
+  const value = typeof rule.value === 'string' ? rule.value : '';
+  const valStr =
+    ['equals', 'not_equals', 'contains', 'not_contains', 'starts_with'].includes(String(rule.operator)) && value
+      ? ` "${truncate(value, 20)}"`
+      : '';
+  return subject === 'tag' ? subjectStr : `${subjectStr} ${op}${valStr}`;
+}
+
 /**
  * Coerce an arbitrary string into a stable identifier (node_key,
  * reply_id, etc.). Lowercases, collapses non-alphanumerics into
@@ -456,44 +503,13 @@ export function summarizeNode(
       return varKey ? `→ vars.${varKey}` : null;
     }
     case 'condition': {
-      const subjectKey =
-        typeof cfg.subject_key === 'string' ? cfg.subject_key : '';
-      if (!subjectKey) return null;
-      if (cfg.subject === 'customer_activity') {
-        return t ? t('repliedAfter', { node: truncate(subjectKey, 24) }) : `customer replied after ${truncate(subjectKey, 24)}`;
-      }
-      const subject =
-        cfg.subject === 'tag'
-          ? 'tag'
-          : cfg.subject === 'contact_field'
-            ? 'field'
-            : 'var';
-      const subjectStr =
-        subject === 'tag'
-          ? t ? t('hasTag', { tag: tagNames.get(subjectKey) ?? t('tagUnavailable') }) : `has tag ${tagNames.get(subjectKey) ?? truncate(subjectKey, 24)}`
-          : `${subject}.${subjectKey}`;
-      const op =
-        cfg.operator === 'equals'
-          ? '=='
-          : cfg.operator === 'not_equals'
-            ? '!='
-            : cfg.operator === 'contains'
-              ? t ? t('opContains') : 'contains'
-              : cfg.operator === 'not_contains'
-                ? t ? t('opNotContains') : 'does not contain'
-                : cfg.operator === 'starts_with'
-                  ? t ? t('opStartsWith') : 'starts with'
-                  : cfg.operator === 'present'
-                    ? t ? t('opExists') : 'exists'
-                    : cfg.operator === 'absent'
-                      ? t ? t('opMissing') : 'missing'
-                      : '';
-      const value = typeof cfg.value === 'string' ? cfg.value : '';
-      const valStr =
-        ['equals', 'not_equals', 'contains', 'not_contains', 'starts_with'].includes(String(cfg.operator)) && value
-          ? ` "${truncate(value, 20)}"`
-          : '';
-      return subject === 'tag' ? subjectStr : `${subjectStr} ${op}${valStr}`;
+      const read = readConditionConfig(cfg);
+      if (read.kind === 'invalid') return t ? t('conditionInvalid') : 'Invalid condition';
+      if (read.kind === 'legacy') return summarizeConditionRule(read.rule as unknown as Record<string, unknown>, t, tagNames);
+      // Compound node: "All of: a · b" / "Any of: a · b". Names come from the same map as tags (custom fields are keyed `custom:<id>`).
+      const parts = read.rules.map((rule) => summarizeConditionRule(rule as unknown as Record<string, unknown>, t, tagNames) ?? '?');
+      const head = read.mode === 'all' ? (t ? t('matchAllShort') : 'All of') : (t ? t('matchAnyShort') : 'Any of');
+      return `${head}: ${truncate(parts.join(' · '), 90)}`;
     }
     case 'set_tag': {
       const mode = cfg.mode === 'remove' ? (t ? t('modeRemove') : 'Remove') : (t ? t('modeAdd') : 'Add');

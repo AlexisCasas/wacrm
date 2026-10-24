@@ -23,6 +23,7 @@
  * `node_key`; trigger-scoped use `scope: 'trigger'`.
  */
 
+import { MAX_CONDITION_RULES, readConditionConfig } from "./condition-rules";
 import { durableWaitSeconds, isDurableWaitConfig } from "./durable-wait";
 import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/meta-api";
 import { parseVoiceNoteUrl } from "@/lib/media/voice-note-path";
@@ -706,78 +707,109 @@ function validateNode(
         true_next?: string;
         false_next?: string;
       };
-      if (!cfg.subject || !["var", "tag", "contact_field", "customer_activity"].includes(cfg.subject)) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "subject",
-          message: "Condition needs a subject (var / tag / contact_field / customer_activity).",
-        });
-      }
-      if (cfg.subject === "customer_activity") {
-        // P7: "the customer replied after the reference message". The reference is an explicit send node of THIS flow.
-        const inherited = cfg.subject_key === "$inherited";
-        const referenceNode = allNodes.find((candidate) => candidate.node_key === cfg.subject_key);
-        if (cfg.operator !== "replied_after_reference") {
-          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "operator", code: "customer_activity_operator", message: "A customer-activity condition must use the operator replied_after_reference." });
-        }
-        if (inherited) {
-          // Handed down by the calling flow (execute_flow.reference_node_key). Nothing to check here: without a caller it fails closed.
-        } else if (!cfg.subject_key?.trim() || !referenceNode) {
-          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", code: "customer_activity_reference_missing", message: "Pick the message that marks the start (the reference message) from this flow." });
-        } else if (referenceNode.node_type !== "send_message" && referenceNode.node_type !== "send_media") {
-          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", code: "customer_activity_reference_type", message: "The reference must be a Send message or Send media step." });
-        }
-        if (!options.durableWaitExecution && !options.executionStatusUnknown) {
-          issues.push({
-            severity: "error", scope: "node", node_key: node.node_key, field: "subject", code: "customer_activity_not_enabled",
-            message: "The customer-activity condition can be saved in a draft, but running it is not enabled for this account yet, so this flow cannot be activated.",
+      const read = readConditionConfig(node.config);
+      if (read.kind !== "legacy") {
+        // Compound shape (match_mode + conditions): every rule is checked on its own; customer_activity cannot be combined.
+        const fail = (field: string, code: string, message: string) =>
+          issues.push({ severity: "error", scope: "node", node_key: node.node_key, field, code, message });
+        if (read.kind === "invalid") {
+          const messages: Record<string, string> = {
+            ambiguous_mixed_shapes: "A condition cannot mix the single-rule fields with a list of conditions.",
+            match_mode_without_conditions: "match_mode needs a list of conditions.",
+            conditions_not_array: "conditions must be a list.",
+            conditions_empty: "Add at least one condition.",
+            conditions_too_many: `A condition node can hold at most ${MAX_CONDITION_RULES} conditions.`,
+            match_mode_invalid: "Choose whether ALL or ANY of the conditions must be met.",
+            rule_not_object: "Every condition must be an object.",
+            rule_not_combinable: "This kind of condition cannot be combined with others (customer activity must stay on its own).",
+          };
+          fail(read.error === "match_mode_invalid" ? "match_mode" : "conditions", `condition_${read.error}`, messages[read.error]);
+        } else {
+          read.rules.forEach((rule, index) => {
+            const at = (name: string) => `conditions[${index}].${name}`;
+            if (typeof rule.subject_key !== "string" || !rule.subject_key.trim()) fail(at("subject_key"), "condition_rule_subject_key", `Condition ${index + 1} needs a subject_key (var name, tag id, or field name).`);
+            if (!rule.operator || !CONDITION_VALUE_OPERATORS.concat(["present", "absent"]).includes(rule.operator)) {
+              fail(at("operator"), "condition_rule_operator", `Condition ${index + 1} needs an operator.`);
+            } else if (CONDITION_VALUE_OPERATORS.includes(rule.operator) && (rule.value === undefined || rule.value === "")) {
+              issues.push({ severity: "warning", scope: "node", node_key: node.node_key, field: at("value"), message: `Condition ${index + 1}: operator "${rule.operator}" usually expects a comparison value — empty value will only match empty subjects.` });
+            }
+            if (rule.case_sensitive !== undefined && typeof rule.case_sensitive !== "boolean") fail(at("case_sensitive"), "condition_case_sensitive_invalid", "Case sensitivity must be true or false.");
           });
         }
-      } else if (!cfg.subject_key?.trim()) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "subject_key",
-          message: "Condition needs a subject_key (var name, tag id, or field name).",
-        });
-      }
-      if (cfg.subject === "customer_activity") {
-        // operator already validated above
-      } else if (
-        !cfg.operator ||
-        !CONDITION_VALUE_OPERATORS.concat(["present", "absent"]).includes(cfg.operator)
-      ) {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "operator",
-          message: "Condition needs an operator.",
-        });
-      } else if (
-        CONDITION_VALUE_OPERATORS.includes(cfg.operator) &&
-        (cfg.value === undefined || cfg.value === "")
-      ) {
-        issues.push({
-          severity: "warning",
-          scope: "node",
-          node_key: node.node_key,
-          field: "value",
-          message: `Operator "${cfg.operator}" usually expects a comparison value — empty value will only match empty subjects.`,
-        });
-      }
-      if (cfg.case_sensitive !== undefined && typeof cfg.case_sensitive !== "boolean") {
-        issues.push({
-          severity: "error",
-          scope: "node",
-          node_key: node.node_key,
-          field: "case_sensitive",
-          code: "condition_case_sensitive_invalid",
-          message: "Case sensitivity must be true or false.",
-        });
+      } else {
+        if (!cfg.subject || !["var", "tag", "contact_field", "customer_activity"].includes(cfg.subject)) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: "subject",
+            message: "Condition needs a subject (var / tag / contact_field / customer_activity).",
+          });
+        }
+        if (cfg.subject === "customer_activity") {
+          // P7: "the customer replied after the reference message". The reference is an explicit send node of THIS flow.
+          const inherited = cfg.subject_key === "$inherited";
+          const referenceNode = allNodes.find((candidate) => candidate.node_key === cfg.subject_key);
+          if (cfg.operator !== "replied_after_reference") {
+            issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "operator", code: "customer_activity_operator", message: "A customer-activity condition must use the operator replied_after_reference." });
+          }
+          if (inherited) {
+            // Handed down by the calling flow (execute_flow.reference_node_key). Nothing to check here: without a caller it fails closed.
+          } else if (!cfg.subject_key?.trim() || !referenceNode) {
+            issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", code: "customer_activity_reference_missing", message: "Pick the message that marks the start (the reference message) from this flow." });
+          } else if (referenceNode.node_type !== "send_message" && referenceNode.node_type !== "send_media") {
+            issues.push({ severity: "error", scope: "node", node_key: node.node_key, field: "subject_key", code: "customer_activity_reference_type", message: "The reference must be a Send message or Send media step." });
+          }
+          if (!options.durableWaitExecution && !options.executionStatusUnknown) {
+            issues.push({
+              severity: "error", scope: "node", node_key: node.node_key, field: "subject", code: "customer_activity_not_enabled",
+              message: "The customer-activity condition can be saved in a draft, but running it is not enabled for this account yet, so this flow cannot be activated.",
+            });
+          }
+        } else if (!cfg.subject_key?.trim()) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: "subject_key",
+            message: "Condition needs a subject_key (var name, tag id, or field name).",
+          });
+        }
+        if (cfg.subject === "customer_activity") {
+          // operator already validated above
+        } else if (
+          !cfg.operator ||
+          !CONDITION_VALUE_OPERATORS.concat(["present", "absent"]).includes(cfg.operator)
+        ) {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: "operator",
+            message: "Condition needs an operator.",
+          });
+        } else if (
+          CONDITION_VALUE_OPERATORS.includes(cfg.operator) &&
+          (cfg.value === undefined || cfg.value === "")
+        ) {
+          issues.push({
+            severity: "warning",
+            scope: "node",
+            node_key: node.node_key,
+            field: "value",
+            message: `Operator "${cfg.operator}" usually expects a comparison value — empty value will only match empty subjects.`,
+          });
+        }
+        if (cfg.case_sensitive !== undefined && typeof cfg.case_sensitive !== "boolean") {
+          issues.push({
+            severity: "error",
+            scope: "node",
+            node_key: node.node_key,
+            field: "case_sensitive",
+            code: "condition_case_sensitive_invalid",
+            message: "Case sensitivity must be true or false.",
+          });
+        }
       }
       for (const branch of ["true_next", "false_next"] as const) {
         const key = cfg[branch];

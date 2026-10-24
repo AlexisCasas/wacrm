@@ -27,7 +27,9 @@ export function inspectDowngradeCompatibility(input: {
         (node.config.subject === "contact_field" && typeof node.config.subject_key === "string" && node.config.subject_key.startsWith("custom:")) ||
         // An older build treats these operators / this option as unknown and silently answers false, so they block a rollback too.
         ["not_equals", "not_contains", "starts_with"].includes(node.config.operator as string) ||
-        node.config.case_sensitive === false
+        node.config.case_sensitive === false ||
+        // The compound shape (match_mode + conditions) is unknown to an older build, which would read no rule at all.
+        node.config.conditions !== undefined
       ))
       .map((node) => node.flow_id),
   );

@@ -43,6 +43,8 @@ import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition-capability";
+import { isCompoundConditionEnabledForAccount } from "@/lib/flows/compound-condition-capability";
+import { readConditionConfig } from "@/lib/flows/condition-rules";
 import { isDurableWaitExecutionEnabledForAccount } from "@/lib/flows/durable-wait-capability";
 import { computeResumeAt, durableWaitSeconds, isDurableWaitConfig } from "@/lib/flows/durable-wait";
 import { NATIVE_CONTACT_CONDITION_FIELDS } from "@/lib/flows/condition-references";
@@ -68,6 +70,8 @@ import { executeSendProductAudios } from "@/lib/flows/product-audios";
 import {
   type CollectInputNodeConfig,
   type ConditionNodeConfig,
+  type CompoundConditionNodeConfig,
+  type ConditionRule,
   type DelayNodeConfig,
   type DispatchInboundInput,
   type EndNodeConfig,
@@ -745,10 +749,10 @@ async function recordSendIntent(db: AdminClient, run: FlowRunRow, nodeKey: strin
  *     `subject_key` IS the tag UUID; the SELECT returns 1 row or 0.
  *   - `contact_field` → one of name/email/phone/company on `contacts`.
  */
-export async function evaluateConditionNode(
+async function evaluateConditionRule(
   db: AdminClient,
   run: FlowRunRow,
-  cfg: ConditionNodeConfig,
+  cfg: ConditionRule,
 ): Promise<boolean> {
   if (cfg.subject === CUSTOMER_ACTIVITY_SUBJECT) {
     if (cfg.operator !== REPLIED_AFTER_REFERENCE_OPERATOR) throw new Error("customer_reply_operator_invalid");
@@ -824,6 +828,30 @@ export async function evaluateConditionNode(
     configValue: cfg.value,
     caseSensitive: cfg.case_sensitive === false ? false : true,
   });
+}
+
+/**
+ * Evaluate a `condition` node, legacy (one rule on the node) or compound (several rules, `all` / `any`).
+ *
+ * Rules run in order and stop as soon as the answer is decided (`all` at the first false, `any` at the first true).
+ * A rule that cannot be evaluated THROWS (database error, foreign reference, disabled capability): it is never turned
+ * into "false", because the run would then silently take the false branch. The caller ends the run as failed.
+ */
+export async function evaluateConditionNode(
+  db: AdminClient,
+  run: FlowRunRow,
+  cfg: ConditionNodeConfig | CompoundConditionNodeConfig,
+): Promise<boolean> {
+  const read = readConditionConfig(cfg);
+  if (read.kind === "invalid") throw new Error(`condition_config_${read.error}`);
+  if (read.kind === "legacy") return evaluateConditionRule(db, run, read.rule);
+  if (!isCompoundConditionEnabledForAccount(run.account_id)) throw new Error("compound_condition_capability_disabled");
+  for (const rule of read.rules) {
+    const result = await evaluateConditionRule(db, run, rule);
+    if (read.mode === "any" && result) return true;
+    if (read.mode === "all" && !result) return false;
+  }
+  return read.mode === "all";
 }
 
 /**
@@ -1255,7 +1283,7 @@ async function advanceFromNodeKey(
       return { outcome: "advanced" };
     }
     if (node.node_type === "condition") {
-      const cfg = node.config as unknown as ConditionNodeConfig;
+      const cfg = node.config as unknown as ConditionNodeConfig & CompoundConditionNodeConfig;
       let branch: "true" | "false";
       try {
         branch = (await evaluateConditionNode(db, run, cfg))

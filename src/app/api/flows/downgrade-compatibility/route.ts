@@ -104,9 +104,12 @@ export async function GET() {
           .filter(
             (node) =>
               node.node_type === 'condition' &&
-              node.config.subject === 'contact_field' &&
-              typeof node.config.subject_key === 'string' &&
-              node.config.subject_key.startsWith('custom:')
+              ((node.config.subject === 'contact_field' &&
+                typeof node.config.subject_key === 'string' &&
+                node.config.subject_key.startsWith('custom:')) ||
+                ['not_equals', 'not_contains', 'starts_with'].includes(node.config.operator as string) ||
+                node.config.case_sensitive === false ||
+                node.config.conditions !== undefined)
           )
           .map((node) => node.flow_id)
       ),

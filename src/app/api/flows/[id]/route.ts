@@ -3,6 +3,8 @@ import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { isCustomConditionEnabledForAccount } from '@/lib/flows/custom-condition-capability'
+import { isCompoundConditionEnabledForAccount } from '@/lib/flows/compound-condition-capability'
+import { hasConditionsField } from '@/lib/flows/condition-rules'
 import { isMediaAudioEnabledForAccount, isVoiceNoteEnabledForAccount } from '@/lib/flows/voice-note-capability'
 import { isSubflowAuthoringEnabledForAccount } from '@/lib/flows/subflow-authoring-capability'
 import { isDurableWaitAuthoringEnabledForAccount } from '@/lib/flows/durable-wait-capability'
@@ -179,17 +181,21 @@ export async function PUT(
     // Validate ALL external references before anything is written, so an invalid request never reaches the database.
     if (body.nodes !== undefined) {
       const capabilityEnabled = isCustomConditionEnabledForAccount(account.accountId)
-      const { data: currentNodes, error: currentNodesError } = !capabilityEnabled
+      const compoundEnabled = isCompoundConditionEnabledForAccount(account.accountId)
+      const { data: currentNodes, error: currentNodesError } = !capabilityEnabled || !compoundEnabled
         ? await admin.from('flow_nodes').select('node_key, node_type, config').eq('flow_id', id)
         : { data: [], error: null }
       if (currentNodesError) return NextResponse.json({ error: 'Could not validate condition references' }, { status: 503 })
       const existingCustom = new Set((currentNodes ?? []).filter((node) => node.node_type === 'condition' && (node.config as Record<string, unknown>).subject === 'contact_field' && typeof (node.config as Record<string, unknown>).subject_key === 'string').map((node) => `${node.node_key}:${(node.config as Record<string, unknown>).subject_key}`))
+      // A compound node already stored in this flow may still be saved while the pilot is off (so other edits are not blocked); a NEW one may not.
+      const existingCompound = new Set((currentNodes ?? []).filter((node) => node.node_type === 'condition' && hasConditionsField(node.config)).map((node) => node.node_key))
       const issues = (await validateConditionReferences(
         account.supabase,
         account.accountId,
         body.nodes,
         capabilityEnabled,
-      )).filter((issue) => issue.issue !== 'custom_condition_capability_disabled' || !existingCustom.has(`${issue.node_key}:${(body.nodes ?? []).find((node) => node.node_key === issue.node_key)?.config.subject_key}`))
+        compoundEnabled,
+      )).filter((issue) => issue.issue !== 'compound_condition_capability_disabled' || !existingCompound.has(issue.node_key)).filter((issue) => issue.issue !== 'custom_condition_capability_disabled' || !existingCustom.has(`${issue.node_key}:${(body.nodes ?? []).find((node) => node.node_key === issue.node_key)?.config.subject_key}`))
       if (issues.length) return NextResponse.json({ error: 'Invalid condition reference', issues }, { status: 422 })
     }
 
