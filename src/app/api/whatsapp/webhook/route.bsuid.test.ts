@@ -244,7 +244,7 @@ describe('BSUID switch: scope and pilot hold', () => {
     expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
   })
 
-  it('ROSSY-like account (switch off for its number): a BSUID event starts no Flow and sends nothing; phone events work', async () => {
+  it('an account outside the pilot (switch off for its number): a BSUID event starts no Flow and sends nothing; phone events work', async () => {
     await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }], PN_B))
     expect(h.db.tables.contacts).toHaveLength(0)
     expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
@@ -254,7 +254,7 @@ describe('BSUID switch: scope and pilot hold', () => {
     expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
   })
 
-  it('KEYLER-like account (switch on): phone events still run Flows, automations and external events', async () => {
+  it('the pilot account (switch on): phone events still run Flows, automations and external events', async () => {
     await run(phoneEvent())
     expect(h.db.tables.contacts[0]).toMatchObject({ account_id: ACC_A, phone: '51900000001' })
     expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
@@ -267,13 +267,13 @@ describe('BSUID switch: scope and pilot hold', () => {
     expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
   })
 
-  it('pilot hold: a phone-less contact triggers no Flow, automation or AI, is audited once per message, and the external event still goes out', async () => {
+  it('pilot hold: a phone-less contact triggers no Flow, automation, AI or external webhook, and every skipped step is audited', async () => {
     await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID, profile: { name: 'Ana' } }]))
     expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
     expect(h.runAutomationsForTrigger).not.toHaveBeenCalled()
     expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
-    expect(h.db.tables.contact_identity_audit).toEqual([expect.objectContaining({ event: 'automation_skipped', origin: 'inbound', account_id: ACC_A })])
-    expect(h.dispatchWebhookEvent.mock.calls.some((c) => c[2] === 'message.received')).toBe(true)
+    expect(h.db.tables.contact_identity_audit.map((a) => a.event).sort()).toEqual(['automation_skipped', 'external_webhook_skipped', 'external_webhook_skipped'])
+    expect(h.dispatchWebhookEvent).not.toHaveBeenCalled()
   })
 
   it('an authorized pilot contact is still held back from automation (authorization only concerns one manual reply)', async () => {
@@ -307,5 +307,133 @@ describe('BSUID switch: scope and pilot hold', () => {
       await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }]))
     }
     expect(h.db.tables.contacts).toHaveLength(0)
+  })
+})
+
+describe('outbound webhooks (webhook_endpoints) during the pilot', () => {
+  const events = () => h.dispatchWebhookEvent.mock.calls.map((c) => c[2])
+  const statusRequest = (id: string, status = 'delivered') => ({
+    text: async () => JSON.stringify({ entry: [{ id: WABA_A, changes: [{ field: 'messages', value: { metadata: { phone_number_id: PN_A }, statuses: [{ id, status, timestamp: '1700000002', recipient_user_id: BSUID }] } }] }] }),
+    headers: { get: () => 'sha256=stub' },
+  } as unknown as Request)
+
+  it('a phone-less contact: no message.received and no conversation.created leave WACRM; the reception is recorded internally', async () => {
+    await run(deliver([text({ from_user_id: BSUID }, 'texto privado')], [{ user_id: BSUID, profile: { name: 'Ana' } }]))
+    expect(events()).toEqual([])
+    expect(h.db.tables.messages).toHaveLength(1)
+    const held = h.db.tables.contact_identity_audit.filter((a) => a.event === 'external_webhook_skipped').map((a) => (a.detail as { event: string }).event).sort()
+    expect(held).toEqual(['conversation.created', 'message.received'])
+    expect(JSON.stringify(h.db.tables.contact_identity_audit)).not.toContain('texto privado')
+    expect(JSON.stringify(h.db.tables.contact_identity_audit)).not.toContain(BSUID)
+  })
+
+  it('a phone contact in the pilot account still emits both events', async () => {
+    await run(deliver([text({ from: '51900000001' })], [{ wa_id: '51900000001', profile: { name: 'Luis' } }]))
+    expect(events().sort()).toEqual(['conversation.created', 'message.received'])
+  })
+
+  it('an account outside the pilot emits exactly as before', async () => {
+    await run(deliver([text({ from: '51900000002' })], [{ wa_id: '51900000002' }], PN_B))
+    expect(events().sort()).toEqual(['conversation.created', 'message.received'])
+  })
+
+  it('a delivery status for a phone-less contact in the pilot is held (and audited); for a phone contact it goes out', async () => {
+    await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }]))
+    await run(deliver([text({ from: '51900000001' })], [{ wa_id: '51900000001' }]))
+    const [bsuidConv, phoneConv] = h.db.tables.conversations
+    h.db.tables.messages.push({ id: 'o1', conversation_id: bsuidConv.id, message_id: 'wamid.OUT-B', sender_type: 'agent', status: 'sent' })
+    h.db.tables.messages.push({ id: 'o2', conversation_id: phoneConv.id, message_id: 'wamid.OUT-P', sender_type: 'agent', status: 'sent' })
+    h.dispatchWebhookEvent.mockClear()
+    await run(statusRequest('wamid.OUT-B'))
+    expect(events()).toEqual([])
+    await run(statusRequest('wamid.OUT-P'))
+    expect(events()).toEqual(['message.status_updated'])
+    expect(h.db.tables.contact_identity_audit.some((a) => a.event === 'external_webhook_skipped' && (a.detail as { event: string }).event === 'message.status_updated')).toBe(true)
+  })
+
+  it('status events of accounts outside the pilot never query contacts (no cost, no behaviour change)', async () => {
+    h.db.tables.conversations.push({ id: 'cv-b', account_id: ACC_B, contact_id: 'ct-b' })
+    h.db.tables.messages.push({ id: 'o3', conversation_id: 'cv-b', message_id: 'wamid.OUT-OTHER', sender_type: 'agent', status: 'sent' })
+    h.db.failReads.add('contacts') // any contacts read would fail closed and hold
+    await run({ text: async () => JSON.stringify({ entry: [{ id: WABA_B, changes: [{ field: 'messages', value: { metadata: { phone_number_id: PN_B }, statuses: [{ id: 'wamid.OUT-OTHER', status: 'read', timestamp: '1700000003' }] } }] }] }), headers: { get: () => 'sha256=stub' } } as unknown as Request)
+    expect(events()).toEqual(['message.status_updated'])
+  })
+
+  it('a read error for a pilot-account status event holds it (fails closed)', async () => {
+    await run(deliver([text({ from: '51900000001' })], [{ wa_id: '51900000001' }]))
+    h.db.tables.messages.push({ id: 'o4', conversation_id: h.db.tables.conversations[0].id, message_id: 'wamid.OUT-ERR', sender_type: 'agent', status: 'sent' })
+    h.dispatchWebhookEvent.mockClear()
+    h.db.failReads.add('contacts')
+    await run(statusRequest('wamid.OUT-ERR'))
+    expect(events()).toEqual([])
+  })
+})
+
+describe('log hygiene and diagnostic expiry', () => {
+  const MSG_ID = 'wamid.QAFAKE000000000000000099'
+  const SECRETS = [BSUID, BSUID2, 'ana_01', 'Ana Perez', 'texto muy privado', MSG_ID, '51900000001']
+  function spyAll() {
+    return ['log', 'info', 'warn', 'error'].map((m) => vi.spyOn(console, m as 'log').mockImplementation(() => {}))
+  }
+  const logged = (spies: ReturnType<typeof spyAll>) => JSON.stringify(spies.flatMap((s) => s.mock.calls))
+
+  it('with the diagnostic ON, a BSUID event logs shapes only: no ids, username, name, text, phone or message id', async () => {
+    process.env.WEBHOOK_SHAPE_LOG_PHONE_NUMBER_IDS = PN_A
+    process.env.WEBHOOK_SHAPE_LOG_UNTIL = new Date(Date.now() + 3600_000).toISOString()
+    const spies = spyAll()
+    const m = { id: MSG_ID, timestamp: '1700000000', type: 'text', text: { body: 'texto muy privado' }, from_user_id: BSUID }
+    await run(deliver([m], [{ user_id: BSUID, profile: { name: 'Ana Perez', username: 'ana_01' } }]))
+    await run(deliver([m], [{ user_id: BSUID, profile: { name: 'Ana Perez', username: 'ana_01' } }])) // replay -> duplicate log
+    const out = logged(spies)
+    expect(out).toContain('payload shape')
+    for (const secret of SECRETS) expect(out).not.toContain(secret)
+  })
+
+  it('an unresolved or switched-off BSUID event logs presence flags and a digest, never the id or the raw message id', async () => {
+    delete process.env[PILOT]
+    const spies = spyAll()
+    await run(deliver([{ id: MSG_ID, timestamp: '1700000000', type: 'text', text: { body: 'texto muy privado' }, from_user_id: BSUID }], [{ user_id: BSUID, profile: { name: 'Ana Perez', username: 'ana_01' } }]))
+    const out = logged(spies)
+    expect(out).toContain('missing_sender_identity')
+    expect(out).toMatch(/ref:[0-9a-f]{12}/)
+    for (const secret of SECRETS) expect(out).not.toContain(secret)
+  })
+
+  it('a phone-less identity conflict or warning logs no identifier either', async () => {
+    const spies = spyAll()
+    await run(deliver([text({ from_user_id: BSUID, from: '51900000001' }, 'texto muy privado')], [{ wa_id: '51900000001', user_id: BSUID2, profile: { name: 'Ana Perez', username: 'ana_01' } }]))
+    const out = logged(spies)
+    for (const secret of SECRETS) expect(out).not.toContain(secret)
+  })
+
+  it('the diagnostic EXPIRES by itself: same environment, no restart, it falls silent once the time has passed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date('2026-10-26T01:00:00Z'))
+      process.env.WEBHOOK_SHAPE_LOG_PHONE_NUMBER_IDS = PN_A
+      process.env.WEBHOOK_SHAPE_LOG_UNTIL = '2026-10-26T03:00:00Z'
+      let spies = spyAll()
+      await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }]))
+      expect(logged(spies)).toContain('payload shape')
+      vi.restoreAllMocks(); spies = spyAll()
+      vi.setSystemTime(new Date('2026-10-26T03:00:01Z')) // one second after expiry; variables untouched
+      expect(process.env.WEBHOOK_SHAPE_LOG_UNTIL).toBe('2026-10-26T03:00:00Z')
+      await run(deliver([text({ from_user_id: BSUID }, 'despues')], [{ user_id: BSUID }]))
+      expect(logged(spies)).not.toContain('payload shape')
+      expect(h.db.tables.messages).toHaveLength(2) // the webhook itself keeps working
+    } finally {
+      vi.useRealTimers()
+      delete process.env.WEBHOOK_SHAPE_LOG_PHONE_NUMBER_IDS
+      delete process.env.WEBHOOK_SHAPE_LOG_UNTIL
+    }
+  })
+
+  it('the diagnostic never fires for another number even before it expires', async () => {
+    process.env.WEBHOOK_SHAPE_LOG_PHONE_NUMBER_IDS = PN_A
+    process.env.WEBHOOK_SHAPE_LOG_UNTIL = new Date(Date.now() + 3600_000).toISOString()
+    const spies = spyAll()
+    await run(deliver([text({ from: '51900000002' })], [{ wa_id: '51900000002' }], PN_B))
+    expect(logged(spies)).not.toContain('payload shape')
+    delete process.env.WEBHOOK_SHAPE_LOG_PHONE_NUMBER_IDS; delete process.env.WEBHOOK_SHAPE_LOG_UNTIL
   })
 })

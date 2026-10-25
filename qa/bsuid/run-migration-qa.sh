@@ -34,3 +34,10 @@ for s in 1 2; do (for i in $(seq 1 15); do docker exec $C psql -U postgres -d v 
 echo "consumed (expected 1): $(docker exec $C psql -U postgres -d v -At -c "select count(*) from contact_identity_audit where event='send_consumed' and contact_id=(select contact_id from contact_identities where value='PE.RACE000000001')")"
 echo "== pilot_list.sql (the operator's read-only query) runs and masks:"
 docker exec $C psql -U postgres -d v -X -P pager=off -v account=a1a1a1a1-0000-4000-8000-00000000000a -v hours=24 -f /w/pilot_list.sql 2>&1 | head -8
+echo "== operator guard (same query as 06_pilot.sh grant): 1 for a phone-less contact of the account, 0 for a phone contact and for another account"
+VQ="select count(*) from contacts c join contact_identities i on i.contact_id=c.id and i.account_id=c.account_id and i.kind='bsuid' and i.superseded_at is null where c.id='%s' and c.account_id='%s' and c.phone_optional"
+RC=$(docker exec $C psql -U postgres -d v -At -c "select contact_id from contact_identities where value='PE.RACE000000001'")
+PC=$(docker exec $C psql -U postgres -d v -At -c "select id from contacts where name='Phone Only'")
+printf "  phone-less, own account: %s (expected 1)\n" "$(docker exec $C psql -U postgres -d v -At -c "$(printf "$VQ" "$RC" a1a1a1a1-0000-4000-8000-00000000000a)")"
+printf "  phone contact: %s (expected 0)\n" "$(docker exec $C psql -U postgres -d v -At -c "$(printf "$VQ" "$PC" a1a1a1a1-0000-4000-8000-00000000000a)")"
+printf "  phone-less, OTHER account id: %s (expected 0)\n" "$(docker exec $C psql -U postgres -d v -At -c "$(printf "$VQ" "$RC" b2b2b2b2-0000-4000-8000-00000000000b)")"

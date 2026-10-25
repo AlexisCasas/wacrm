@@ -6,9 +6,9 @@ Branch `feat/whatsapp-bsuid-identity`, based on `origin/main` `40df2f9c` (the co
 
 | | Evidence |
 |---|---|
-| **Confirmed** | 52 inbound messages were discarded between 2026-10-24 07:36 and 2026-10-25 18:26 UTC with `reason: missing_sender_identity, has_from: false, has_wa_id: false` (50 on Rossy's number, 2 on Keyler's). The webhook needed a phone and nothing else, so nothing was stored and no Flow ran. |
+| **Confirmed** | 52 inbound messages were discarded between 2026-10-24 07:36 and 2026-10-25 18:26 UTC with `reason: missing_sender_identity, has_from: false, has_wa_id: false` (50 on one business number, 2 on the number later chosen for the pilot). The webhook needed a phone and nothing else, so nothing was stored and no Flow ran. |
 | **Consistent with, not proof** | The message ids of those events carry a `PE.` + digits token. Meta documents a BSUID as a country-code prefix, a dot and an id, so this fits, but a message id is **never** used as an identity (and this change never reads it). |
-| **Not known** | The real payload of those events was not kept. Which fields the practicante's events carried (`from_user_id`? `contacts[].user_id`?) is therefore not proven for this incident. The temporary diagnostic in section 8 exists to capture it safely. |
+| **Not known** | The real payload of those events was not kept. Which fields the affected user's events carried (`from_user_id`? `contacts[].user_id`?) is therefore not proven for this incident. The temporary diagnostic in section 8 exists to capture it safely. |
 | **Related, same cause** | 2 `TypeError ... reading 'name'` at 08:31 and 11:47 on 2026-10-24: `contact.profile.name` with no `profile`. `profile` is now optional everywhere. |
 
 ## 2. Meta contract used
@@ -53,7 +53,7 @@ BSUID handling is **off by default** and is switched on per business number, nev
 
 **Switch (server only):** `WHATSAPP_BSUID_PILOT=<account_id>:<phone_number_id>:<waba_id>[,...]`. A number is in scope only if the account id and WABA of its own `whatsapp_config` row, the delivery's `phone_number_id` and the envelope's `entry.id` all match a listed triple. Missing, empty or malformed values mean off; `*`, `all`, two-part or four-part entries enable nothing; names, usernames and partial numbers are never consulted. Nothing is exposed to the browser.
 
-| | Switch OFF (every account today, and Rossy and the others during the pilot) | Switch ON (Keyler only, during the pilot) |
+| | Switch OFF (every account today, and every account other than the pilot account during the pilot) | Switch ON (the pilot account only) |
 |---|---|---|
 | Phone sender | exactly as before; any BSUID fields in the event are ignored (no identity row, no username) | as before, plus the BSUID is linked to the contact when the event carries one |
 | BSUID-only sender | dropped as before (`missing_sender_identity`, log now adds `bsuid_pilot: off`) | **stored**: contact + conversation + message, visible in the Inbox |
@@ -62,7 +62,11 @@ BSUID handling is **off by default** and is switched on per business number, nev
 
 **One choke point for sending.** Every sender (Flows, automations, AI, audio engines, public API, reactions, Inbox) obtains its destination from `resolveContactTarget(..., { origin })`. For a BSUID it requires, in order: the switch on for the account's own number; `origin = manual_reply` (only the dashboard composer says so; the public API and everything automatic default to `automated` and are refused); and one atomic `consume_bsuid_send` of an authorization the operator granted to that contact. A refusal throws `BsuidSendBlockedError` (HTTP 403 in the Inbox), writes nothing and calls Meta never. A Meta failure after the authorization was consumed does **not** refund it: authorize again explicitly.
 
-**Who is authorized.** The technical identity is the stored BSUID row of the contact in that account, found from the first inbound message. The operator authorizes the exact `contact_id` (from `06_pilot.sh list`, which shows the creation time, the masked id prefix and the message count so it can be correlated with the practicante's message); a name, a username or the message text never grants anything. `authorize_bsuid_send(account, contact, count 1-3, note)` and `revoke_bsuid_send(account, contact)` exist for the service role and the database operator only; there is no admin screen. Every authorization, consumption, refusal and skipped automation is written to `contact_identity_audit` (insert-only, invisible to clients).
+**Who is authorized.** The technical identity is the stored BSUID row of the contact in that account, found from the first inbound message. The operator authorizes the exact `contact_id` (from `06_pilot.sh list`, which shows the creation time, the masked id prefix and the message count so it can be correlated with the pilot user's message); a name, a username or the message text never grants anything. `authorize_bsuid_send(account, contact, count 1-3, note)` and `revoke_bsuid_send(account, contact)` exist for the service role and the database operator only; there is no admin screen. Every authorization, consumption, refusal and skipped automation is written to `contact_identity_audit` (insert-only, invisible to clients).
+
+**Outbound webhooks (`webhook_endpoints`).** The three events (`message.received`, `conversation.created`, `message.status_updated`) can reach arbitrary external automations and carry the message text and the WhatsApp message id (which embeds the sender's identifier). During the pilot none of them is emitted for a phone-less contact: the webhook handler withholds them and writes `external_webhook_skipped` to the audit table instead; the message and conversation are still stored. Only accounts listed in the switch can be held, so other accounts behave and cost exactly as before; a read error for a pilot account holds (fails closed). At the time of review no account had any endpoint configured.
+
+**Logs.** For a sender without a phone the webhook logs a short digest (`message_ref`) instead of the WhatsApp message id, plus presence flags only. The shape diagnostic prints field names and types, is limited to the listed `phone_number_id`, and stops by itself at `WEBHOOK_SHAPE_LOG_UNTIL` (evaluated on every event, no restart).
 
 **Enabling and disabling.** Enable = add the triple to `WHATSAPP_BSUID_PILOT` and recreate `app` (done by `03_deploy_image.sh`). Instant kill switch for sending = `revoke_bsuid_send` (no restart). Disable receiving = remove the variable and recreate `app` (≈10-20 s); stored contacts and messages stay. General availability later = add more triples, and a separate decision to allow automatic sends (not part of this change).
 
@@ -104,7 +108,7 @@ The 52 discarded events were acknowledged with HTTP 200 and processed afterwards
 
 ## 9. Controlled test (needs authorization, not run) — see the RUNBOOK
 
-Order: backup and isolated restore check → migration 077 (separate go) → image swap with the switch for Keyler only and the shape diagnostic in the same restart → health and phone-contact regression → the practicante sends a NEW text → verify the fields, the contact and the stored message → the operator authorizes **one** manual reply for that exact contact → one manual reply from the Inbox → confirm delivery → a second text lands in the same conversation → close. The optional four-file Flow is not part of it.
+Order: backup and isolated restore check → migration 077 (separate go) → image swap with the switch for the pilot number only and the shape diagnostic in the same restart → health and phone-contact regression → the pilot user sends a NEW text → verify the fields, the contact and the stored message → the operator authorizes **one** manual reply for that exact contact → one manual reply from the Inbox → confirm delivery → a second text lands in the same conversation → close. The optional four-file Flow is not part of it.
 
 ## 10. Deployment and recovery
 

@@ -1,5 +1,5 @@
 -- READ-ONLY. Phone-less (BSUID) contacts of one account created in the last :hours hours, with masked data only.
--- Use it to find the practicante's contact from the time of his message, then authorize that exact contact_id.
+-- Use it to find the pilot user's contact from the time of the message, then authorize that exact contact_id.
 -- psql -v account=<uuid> -v hours=<n> -f pilot_list.sql
 select c.id                                                           as contact_id,
        to_char(c.created_at at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS') as created_utc,

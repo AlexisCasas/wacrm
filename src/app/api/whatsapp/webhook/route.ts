@@ -6,6 +6,8 @@ import { mirrorInboundMedia } from '@/lib/whatsapp/mirror-inbound-media'
 import { resolveInboundIdentity } from '@/lib/whatsapp/resolve-sender-identity'
 import { resolveInboundContact } from '@/lib/contacts/resolve-identity'
 import { pairContact } from '@/lib/whatsapp/pair-contact'
+import { messageRef } from '@/lib/whatsapp/message-ref'
+import { auditExternalEventHeld, externalEventsHeldForContact } from '@/lib/webhooks/pilot-hold'
 import { isBsuidPilotEnabled } from '@/lib/whatsapp/bsuid-pilot'
 import { hasPhone } from '@/lib/contacts/display'
 import { describeShape, shapeLoggingActiveFor } from '@/lib/whatsapp/payload-shape'
@@ -486,15 +488,17 @@ async function handleStatusUpdate(status: WhatsAppWebhookStatus) {
   //    the owning account for delivery.
   const { data: msgRow } = await supabaseAdmin()
     .from('messages')
-    .select('conversation_id, conversations(account_id)')
+    .select('conversation_id, conversations(account_id, contact_id)')
     .eq('message_id', status.id)
     .limit(1)
     .maybeSingle()
 
   if (msgRow) {
-    const conv = msgRow.conversations as { account_id: string } | null
+    const conv = msgRow.conversations as { account_id: string; contact_id?: string } | null
     const accountId = conv?.account_id
-    if (accountId) {
+    if (accountId && (await externalEventsHeldForContact(supabaseAdmin(), accountId, conv?.contact_id))) {
+      await auditExternalEventHeld(supabaseAdmin(), accountId, conv?.contact_id, 'message.status_updated')
+    } else if (accountId) {
       await dispatchWebhookEvent(
         supabaseAdmin(),
         accountId,
@@ -681,7 +685,8 @@ async function processMessage(
     console.warn('[webhook] inbound message dropped — sender identity unresolved', {
       reason: identity.ok ? 'missing_sender_identity' : identity.reason,
       message_type: message.type,
-      message_id: message.id,
+      // The WhatsApp message id embeds the sender's identifier, so an unresolved sender gets a short digest instead.
+      message_ref: messageRef(message.id),
       phone_number_id: phoneNumberId,
       has_from: present.from,
       has_wa_id: present.wa_id,
@@ -701,7 +706,7 @@ async function processMessage(
       {
         reason: warning,
         message_type: message.type,
-        message_id: message.id,
+        ...(warning === 'sender_identity_mismatch' ? { message_id: message.id } : { message_ref: messageRef(message.id) }),
         phone_number_id: phoneNumberId,
       },
     )
@@ -766,10 +771,15 @@ async function processMessage(
   // a reaction still fires the event, and a subscriber always sees the
   // thread open before its first message.received.
   if (convResult.created) {
-    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'conversation.created', {
-      conversation_id: conversation.id,
-      contact_id: contactRecord.id,
-    })
+    if (bsuidEnabled && !hasPhone(contactRecord)) {
+      // Pilot hold: nothing about a phone-less contact goes to external endpoints (see webhooks/pilot-hold.ts).
+      await auditExternalEventHeld(supabaseAdmin(), accountId, contactRecord.id, 'conversation.created')
+    } else {
+      await dispatchWebhookEvent(supabaseAdmin(), accountId, 'conversation.created', {
+        conversation_id: conversation.id,
+        contact_id: contactRecord.id,
+      })
+    }
   }
 
   // Reactions short-circuit here — they aren't messages. We never insert
@@ -885,7 +895,7 @@ async function processMessage(
   if (!insertedRows || insertedRows.length === 0) {
     console.info(
       '[webhook] duplicate inbound message ignored (idempotent replay):',
-      message.id
+      hasPhone(contactRecord) ? message.id : messageRef(message.id)
     )
     return
   }
@@ -946,13 +956,8 @@ async function processMessage(
     await supabaseAdmin()
       .rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contactRecord.id, p_event: 'automation_skipped', p_origin: 'inbound', p_detail: { reason: 'pilot_hold_phoneless_contact', message_type: message.type } })
       .then(undefined, () => undefined)
-    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
-      conversation_id: conversation.id,
-      contact_id: contactRecord.id,
-      whatsapp_message_id: message.id,
-      content_type: contentType,
-      text: contentText,
-    })
+    // External endpoints get nothing for a phone-less contact during the pilot; the reception stays recorded internally.
+    await auditExternalEventHeld(supabaseAdmin(), accountId, contactRecord.id, 'message.received')
     return
   }
 

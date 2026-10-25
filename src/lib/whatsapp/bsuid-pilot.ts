@@ -58,3 +58,8 @@ export function isBsuidPilotEnabled(subject: PilotSubject, env: Record<string, s
     (s) => s.accountId === accountId.toLowerCase() && s.phoneNumberId === String(phoneNumberId) && s.wabaId === String(wabaId),
   )
 }
+
+/** Is this account listed in the pilot switch at all (any of its numbers)? In-process only: no query, no cost for other accounts. */
+export function accountHasBsuidPilot(accountId: string, env: Record<string, string | undefined> = process.env): boolean {
+  return !!accountId && parseBsuidPilot(env[BSUID_PILOT_ENV]).some((s) => s.accountId === accountId.toLowerCase())
+}

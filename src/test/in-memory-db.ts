@@ -58,6 +58,7 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
     let limitN: number | null = null
     let selectAfterWrite = false
     let embedContact = false
+    let embedConversation = false
 
     const matching = () => (tables[table] ?? []).filter((r) => filters.every((f) => f(r)))
 
@@ -65,6 +66,7 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
       if (op === 'select') {
         if (db.failReads.has(table)) return { data: null, error: { code: 'XX000', message: 'simulated read failure' } }
         let rows = matching().map((r) => ({ ...r }))
+        if (embedConversation) rows = rows.map((r) => ({ ...r, conversations: { ...(tables.conversations.find((c) => c.id === r.conversation_id) ?? {}) } }))
         if (embedContact) rows = rows.map((r) => ({ ...r, contact: { ...(tables.contacts.find((c) => c.id === r.contact_id) ?? {}) } }))
         if (orderKey) rows.sort((a, b) => (String(a[orderKey!]) < String(b[orderKey!]) ? -1 : 1) * (orderAsc ? 1 : -1))
         if (limitN !== null) rows = rows.slice(0, limitN)
@@ -103,6 +105,7 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
     const api: Record<string, unknown> = {
       select(cols?: string, opts?: { head?: boolean; count?: string }) {
         if (typeof cols === 'string' && cols.includes('contact:contacts(')) embedContact = true
+        if (typeof cols === 'string' && cols.includes('conversations(')) embedConversation = true
         if (op === 'insert' || op === 'upsert' || op === 'update') selectAfterWrite = true
         else op = 'select'
         head = Boolean(opts?.head); wantCount = Boolean(opts?.count)
