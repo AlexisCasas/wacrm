@@ -28,3 +28,7 @@ echo "== concurrency: 2 sessions x 25 calls, same BSUID"
 for s in 1 2; do (for i in $(seq 1 25); do docker exec $C psql -U postgres -d v -Atq -c "select 1 from resolve_bsuid_contact('a1a1a1a1-0000-4000-8000-00000000000a','aaaaaaaa-0000-4000-8000-000000000001','PE.RACE000000001',null,null,'Race')" >/dev/null; done) & done; wait
 echo "contacts for the raced BSUID: $(docker exec $C psql -U postgres -d v -At -c "select count(*) from contact_identities where value='PE.RACE000000001'")  (expected 1)"
 echo "contacts named Race: $(docker exec $C psql -U postgres -d v -At -c "select count(*) from contacts where name='Race'")  (expected 1)"
+echo "== concurrency: 2 sessions x 15 consume calls with ONE authorization"
+docker exec $C psql -U postgres -d v -Atq -c "select authorize_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a', (select contact_id from contact_identities where value='PE.RACE000000001'), 1, 'race')" >/dev/null
+for s in 1 2; do (for i in $(seq 1 15); do docker exec $C psql -U postgres -d v -Atq -c "select consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a', (select contact_id from contact_identities where value='PE.RACE000000001'), 'manual_reply')" >> "$W/consume.$s" 2>/dev/null; done) & done; wait
+echo "consumed (expected 1): $(docker exec $C psql -U postgres -d v -At -c "select count(*) from contact_identity_audit where event='send_consumed' and contact_id=(select contact_id from contact_identities where value='PE.RACE000000001')")"

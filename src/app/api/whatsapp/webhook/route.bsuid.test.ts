@@ -40,26 +40,31 @@ const ACC_A = 'aaaaaaaa-0000-4000-8000-00000000000a'
 const ACC_B = 'bbbbbbbb-0000-4000-8000-00000000000b'
 const BSUID = 'PE.QA0000000000001'
 const BSUID2 = 'PE.QA0000000000002'
-const PN_A = 'pn-a'
-const PN_B = 'pn-b'
+const PN_A = '1000000000000001'
+const PN_B = '2000000000000002'
+const WABA_A = '3000000000000001'
+const WABA_B = '3000000000000002'
+const PILOT = 'WHATSAPP_BSUID_PILOT'
 let seq = 0
 
 function setup() {
   h.db = createInMemoryDb({
     whatsapp_config: [
-      { id: 'cfg-a', account_id: ACC_A, user_id: 'owner-a', phone_number_id: PN_A, access_token: 'enc', mirror_inbound_media: true },
-      { id: 'cfg-b', account_id: ACC_B, user_id: 'owner-b', phone_number_id: PN_B, access_token: 'enc', mirror_inbound_media: true },
+      { id: 'cfg-a', account_id: ACC_A, user_id: 'owner-a', phone_number_id: PN_A, waba_id: WABA_A, access_token: 'enc', mirror_inbound_media: true },
+      { id: 'cfg-b', account_id: ACC_B, user_id: 'owner-b', phone_number_id: PN_B, waba_id: WABA_B, access_token: 'enc', mirror_inbound_media: true },
     ],
   })
   h.after.length = 0
+  // The pilot switch is ON for account A only (the pilot account); B plays the part of every other account.
+  process.env[PILOT] = `${ACC_A}:${PN_A}:${WABA_A}`
   h.dispatchInboundToFlows.mockReset().mockResolvedValue({ consumed: false })
   h.dispatchInboundToAiReply.mockReset().mockResolvedValue(undefined)
   h.runAutomationsForTrigger.mockReset().mockResolvedValue(undefined)
   h.dispatchWebhookEvent.mockReset().mockResolvedValue(undefined)
 }
 
-function deliver(messages: Record<string, unknown>[], contacts: Record<string, unknown>[], pn = PN_A, extraValue: Record<string, unknown> = {}) {
-  const body = { entry: [{ id: 'waba', changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', metadata: { phone_number_id: pn }, contacts, messages, ...extraValue } }] }] }
+function deliver(messages: Record<string, unknown>[], contacts: Record<string, unknown>[], pn = PN_A, extraValue: Record<string, unknown> = {}, envelopeId?: string) {
+  const body = { entry: [{ id: envelopeId ?? (pn === PN_B ? WABA_B : WABA_A), changes: [{ field: 'messages', value: { messaging_product: 'whatsapp', metadata: { phone_number_id: pn }, contacts, messages, ...extraValue } }] }] }
   return { text: async () => JSON.stringify(body), headers: { get: () => 'sha256=stub' } } as unknown as Request
 }
 async function run(req: Request) {
@@ -72,7 +77,7 @@ const text = (extra: Record<string, unknown>, body = 'hola') => ({ id: `wamid.QA
 beforeEach(() => { vi.restoreAllMocks(); setup() })
 
 describe('webhook: sender without a phone number (BSUID)', () => {
-  it('stores the message, creates the contact and the conversation, and offers it to Flows', async () => {
+  it('stores the message and creates the contact and the conversation (held back from automation during the pilot)', async () => {
     await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID, profile: { name: 'Ana', username: 'ana_01' } }]))
     const [contact] = h.db.tables.contacts
     expect(contact).toMatchObject({ account_id: ACC_A, phone: '', phone_optional: true, name: 'Ana', wa_username: 'ana_01' })
@@ -80,8 +85,8 @@ describe('webhook: sender without a phone number (BSUID)', () => {
     expect(h.db.tables.conversations[0]).toMatchObject({ account_id: ACC_A, contact_id: contact.id })
     expect(h.db.tables.messages).toHaveLength(1)
     expect(h.db.tables.messages[0]).toMatchObject({ conversation_id: h.db.tables.conversations[0].id, sender_type: 'customer', content_text: 'hola' })
-    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
-    expect(JSON.stringify(h.dispatchInboundToFlows.mock.calls[0])).toContain(contact.id as string)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    // pilot hold: stored and visible, but not offered to Flows / automations / AI
   })
 
   it('a second message from the same user lands in the SAME conversation, no new contact', async () => {
@@ -92,12 +97,12 @@ describe('webhook: sender without a phone number (BSUID)', () => {
     expect(h.db.tables.messages.map((m) => m.content_text)).toEqual(['hola', 'otra vez'])
   })
 
-  it('a replayed delivery is ignored (idempotent): one message, Flows run once', async () => {
+  it('a replayed delivery is ignored (idempotent): one message, one audit entry', async () => {
     const m = text({ from_user_id: BSUID })
     await run(deliver([m], [{ user_id: BSUID }]))
     await run(deliver([m], [{ user_id: BSUID }]))
     expect(h.db.tables.messages).toHaveLength(1)
-    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
   })
 
   it('works with no profile at all and no username', async () => {
@@ -127,6 +132,7 @@ describe('webhook: sender without a phone number (BSUID)', () => {
   })
 
   it('two accounts never mix: the same BSUID on another business number is another contact and conversation', async () => {
+    process.env[PILOT] = `${ACC_A}:${PN_A}:${WABA_A},${ACC_B}:${PN_B}:${WABA_B}`
     await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }], PN_A))
     await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }], PN_B))
     expect(h.db.tables.contacts.map((c) => c.account_id).sort()).toEqual([ACC_A, ACC_B])
@@ -210,5 +216,96 @@ describe('webhook: status events for a BSUID recipient', () => {
     const body = { entry: [{ id: 'waba', changes: [{ field: 'messages', value: { metadata: { phone_number_id: PN_A }, statuses: [{ id: 'wamid.OUT1', status: 'delivered', timestamp: '1700000002', recipient_user_id: BSUID }], contacts: [{ user_id: BSUID }] } }] }] }
     await run({ text: async () => JSON.stringify(body), headers: { get: () => 'sha256=stub' } } as unknown as Request)
     expect(h.db.tables.messages.find((m) => m.id === 'm1')?.status).toBe('delivered')
+  })
+})
+
+describe('BSUID switch: scope and pilot hold', () => {
+  const phoneEvent = (extra: Record<string, unknown> = {}, body = 'hola') => deliver([text({ from: '51900000001', ...extra }, body)], [{ wa_id: '51900000001', profile: { name: 'Luis' }, ...(extra.from_user_id ? { user_id: extra.from_user_id } : {}) }])
+
+  it('switch OFF = previous behaviour: a BSUID-only sender is dropped with the legacy reason, nothing is created', async () => {
+    delete process.env[PILOT]
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID, profile: { name: 'Ana' } }]))
+    expect(h.db.tables.contacts).toHaveLength(0)
+    expect(h.db.tables.messages).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    const logged = JSON.stringify(warn.mock.calls)
+    expect(logged).toContain('missing_sender_identity')
+    expect(logged).toContain('"bsuid_pilot":"off"')
+    expect(logged).not.toContain(BSUID)
+  })
+
+  it('switch OFF: a phone sender whose event also carries a BSUID behaves exactly as before (no identity stored, no username)', async () => {
+    delete process.env[PILOT]
+    await run(deliver([text({ from: '51900000001', from_user_id: BSUID })], [{ wa_id: '51900000001', user_id: BSUID, profile: { name: 'Luis', username: 'luis_01' } }]))
+    expect(h.db.tables.contacts).toHaveLength(1)
+    expect(h.db.tables.contacts[0]).toMatchObject({ phone: '51900000001', name: 'Luis', wa_username: null, phone_optional: false })
+    expect(h.db.tables.contact_identities).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+  })
+
+  it('ROSSY-like account (switch off for its number): a BSUID event starts no Flow and sends nothing; phone events work', async () => {
+    await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }], PN_B))
+    expect(h.db.tables.contacts).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    await run(deliver([text({ from: '51900000002' }, 'hola B')], [{ wa_id: '51900000002', profile: { name: 'Beto' } }], PN_B))
+    expect(h.db.tables.contacts).toHaveLength(1)
+    expect(h.db.tables.contacts[0].account_id).toBe(ACC_B)
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+  })
+
+  it('KEYLER-like account (switch on): phone events still run Flows, automations and external events', async () => {
+    await run(phoneEvent())
+    expect(h.db.tables.contacts[0]).toMatchObject({ account_id: ACC_A, phone: '51900000001' })
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    expect(h.runAutomationsForTrigger).toHaveBeenCalled()
+  })
+
+  it('a phone contact that also carries a BSUID is NOT held back (it has a phone)', async () => {
+    await run(phoneEvent({ from_user_id: BSUID }))
+    expect(h.db.tables.contact_identities).toHaveLength(1)
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+  })
+
+  it('pilot hold: a phone-less contact triggers no Flow, automation or AI, is audited once per message, and the external event still goes out', async () => {
+    await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID, profile: { name: 'Ana' } }]))
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.runAutomationsForTrigger).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+    expect(h.db.tables.contact_identity_audit).toEqual([expect.objectContaining({ event: 'automation_skipped', origin: 'inbound', account_id: ACC_A })])
+    expect(h.dispatchWebhookEvent.mock.calls.some((c) => c[2] === 'message.received')).toBe(true)
+  })
+
+  it('an authorized pilot contact is still held back from automation (authorization only concerns one manual reply)', async () => {
+    await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }]))
+    h.db.tables.contact_identities[0].send_authorized_remaining = 1
+    await run(deliver([text({ from_user_id: BSUID }, 'otra')], [{ user_id: BSUID }]))
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+
+  it('two different BSUID contacts never share a conversation', async () => {
+    await run(deliver([text({ from_user_id: BSUID }, 'uno'), text({ from_user_id: BSUID2 }, 'dos')], [{ user_id: BSUID }, { user_id: BSUID2 }]))
+    expect(h.db.tables.contacts).toHaveLength(2)
+    expect(h.db.tables.conversations).toHaveLength(2)
+    expect(new Set(h.db.tables.messages.map((m) => m.conversation_id)).size).toBe(2)
+  })
+
+  it('the envelope WABA must match the number\'s config: a mismatch fails safe (dropped)', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }], PN_A, {}, WABA_B))
+    expect(h.db.tables.contacts).toHaveLength(0)
+  })
+
+  it('invalid or incomplete configuration fails safe: config row without WABA, malformed or generic values', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    h.db.tables.whatsapp_config[0].waba_id = null
+    await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }]))
+    expect(h.db.tables.contacts).toHaveLength(0)
+    h.db.tables.whatsapp_config[0].waba_id = WABA_A
+    for (const bad of ['*', 'all', `${ACC_A}`, `${ACC_A}:${PN_A}`, `not-a-uuid:${PN_A}:${WABA_A}`, `${ACC_B}:${PN_A}:${WABA_A}`]) {
+      process.env[PILOT] = bad
+      await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }]))
+    }
+    expect(h.db.tables.contacts).toHaveLength(0)
   })
 })

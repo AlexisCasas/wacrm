@@ -168,6 +168,8 @@ export async function POST(request: Request) {
         interactivePayload: interactive_payload,
         replyToMessageId: reply_to_message_id,
         voiceNote: voice_note === true,
+        // A signed-in person using the dashboard composer.
+        origin: 'manual_reply',
       })
 
       return NextResponse.json({

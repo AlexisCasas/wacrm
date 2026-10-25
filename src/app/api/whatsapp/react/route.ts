@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
 import { sendReactionMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
-import { resolveContactTarget } from '@/lib/whatsapp/recipient';
+import { BsuidSendBlockedError, resolveContactTarget } from '@/lib/whatsapp/recipient';
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -91,8 +91,12 @@ export async function POST(request: Request) {
     // A valid phone as before; otherwise the contact's BSUID (users who hide their number).
     let target: Awaited<ReturnType<typeof resolveContactTarget>>;
     try {
-      target = await resolveContactTarget(supabase, accountId, contact);
-    } catch {
+      target = await resolveContactTarget(supabase, accountId, contact, { origin: 'automated' });
+    } catch (err) {
+      // Reactions are not an authorized pilot reply: a contact reachable only by a WhatsApp user id is refused.
+      if (err instanceof BsuidSendBlockedError) {
+        return NextResponse.json({ error: 'Sending to this contact is restricted' }, { status: 403 });
+      }
       return NextResponse.json(
         { error: 'Contact phone number not found' },
         { status: 400 },

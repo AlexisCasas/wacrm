@@ -104,7 +104,7 @@ export async function engineSendText(
   }
 
   // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
-  const target = await resolveContactTarget(db, args.accountId, contact)
+  const target = await resolveContactTarget(db, args.accountId, contact, { origin: 'automated' })
   const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
@@ -334,7 +334,7 @@ export async function engineSendMedia(
   }
 
   // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
-  const target = await resolveContactTarget(db, args.accountId, contact)
+  const target = await resolveContactTarget(db, args.accountId, contact, { origin: 'automated' })
   const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
@@ -568,7 +568,7 @@ async function sendInteractiveViaMeta(
   }
 
   // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
-  const target = await resolveContactTarget(db, input.accountId, contact)
+  const target = await resolveContactTarget(db, input.accountId, contact, { origin: 'automated' })
   const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db

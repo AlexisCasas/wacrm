@@ -22,6 +22,9 @@
 --     BSUID is never copied into `phone`.
 --   * `contacts.wa_username` is display-only and mutable; it is never a key.
 --
+-- Pilot control: a BSUID is only addressed after the operator authorizes a number of manual replies for that exact contact
+-- (authorize_bsuid_send / revoke_bsuid_send); every decision is written to contact_identity_audit.
+--
 -- Compatibility with the previous image: every change is additive.
 -- The old code never reads the new table/columns, inserts contacts with
 -- the column defaults (`phone_optional = false`, so migration 046's rule
@@ -81,6 +84,9 @@ CREATE TABLE IF NOT EXISTS public.contact_identities (
   -- resolves to the same contact, but is never used to send.
   superseded_at timestamptz,
   source      text NOT NULL DEFAULT 'webhook' CHECK (source IN ('webhook', 'system_change')),
+  -- Pilot control: how many MANUAL replies may still be sent to this id. Default 0 = nothing is sent to a BSUID.
+  -- Only the operator functions below change it; the application only ever decrements it, atomically.
+  send_authorized_remaining smallint NOT NULL DEFAULT 0 CHECK (send_authorized_remaining BETWEEN 0 AND 3),
   created_at  timestamptz NOT NULL DEFAULT now(),
   CONSTRAINT contact_identities_contact_fkey
     FOREIGN KEY (contact_id, account_id)
@@ -103,6 +109,21 @@ ALTER TABLE public.contact_identities ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS contact_identities_select ON public.contact_identities;
 CREATE POLICY contact_identities_select ON public.contact_identities
   FOR SELECT USING (public.is_account_member(account_id));
+
+-- 3b) Audit trail of everything the pilot decides about sending (authorizations, consumed sends, blocked attempts, skipped
+--     automations). Insert-only, service role / operator only; no client policy, so RLS hides it from every client.
+CREATE TABLE IF NOT EXISTS public.contact_identity_audit (
+  id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id  uuid NOT NULL REFERENCES public.accounts(id) ON DELETE CASCADE,
+  contact_id  uuid,
+  event       text NOT NULL,
+  origin      text,
+  detail      jsonb NOT NULL DEFAULT '{}'::jsonb,
+  created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_contact_identity_audit_account_time
+  ON public.contact_identity_audit (account_id, created_at DESC);
+ALTER TABLE public.contact_identity_audit ENABLE ROW LEVEL SECURITY;
 
 -- 4) A phone_optional contact must have an identity (checked at commit, so
 --    the creating function can insert contact and identity in one statement
@@ -258,10 +279,78 @@ BEGIN
 END;
 $$;
 
+-- 7) Pilot send authorization. The operator authorizes an exact contact (identity verified from the stored row, never from a
+--    name or a username) for a small number of manual replies; the application consumes one atomically before each send.
+CREATE OR REPLACE FUNCTION public.audit_bsuid_event(
+  p_account_id uuid, p_contact_id uuid, p_event text, p_origin text, p_detail jsonb DEFAULT '{}'::jsonb
+) RETURNS void LANGUAGE sql SECURITY DEFINER SET search_path = public, extensions AS $$
+  INSERT INTO contact_identity_audit (account_id, contact_id, event, origin, detail)
+  VALUES (p_account_id, p_contact_id, left(p_event, 60), left(p_origin, 40), COALESCE(p_detail, '{}'::jsonb));
+$$;
+
+CREATE OR REPLACE FUNCTION public.authorize_bsuid_send(
+  p_account_id uuid, p_contact_id uuid, p_count int DEFAULT 1, p_note text DEFAULT NULL
+) RETURNS int LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
+DECLARE v_remaining int;
+BEGIN
+  IF p_count IS NULL OR p_count < 1 OR p_count > 3 THEN
+    RAISE EXCEPTION 'count must be between 1 and 3' USING ERRCODE = '22023';
+  END IF;
+  UPDATE contact_identities
+     SET send_authorized_remaining = p_count
+   WHERE account_id = p_account_id AND contact_id = p_contact_id AND kind = 'bsuid' AND superseded_at IS NULL
+   RETURNING send_authorized_remaining INTO v_remaining;
+  IF v_remaining IS NULL THEN
+    RAISE EXCEPTION 'no active BSUID for this contact in this account' USING ERRCODE = '42704';
+  END IF;
+  INSERT INTO contact_identity_audit (account_id, contact_id, event, detail)
+  VALUES (p_account_id, p_contact_id, 'send_authorized', jsonb_build_object('count', p_count, 'note', left(COALESCE(p_note, ''), 200)));
+  RETURN v_remaining;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.revoke_bsuid_send(p_account_id uuid, p_contact_id uuid)
+RETURNS int LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
+DECLARE v_rows int;
+BEGIN
+  UPDATE contact_identities SET send_authorized_remaining = 0
+   WHERE account_id = p_account_id AND contact_id = p_contact_id AND kind = 'bsuid' AND send_authorized_remaining <> 0;
+  GET DIAGNOSTICS v_rows = ROW_COUNT;
+  INSERT INTO contact_identity_audit (account_id, contact_id, event, detail)
+  VALUES (p_account_id, p_contact_id, 'send_revoked', jsonb_build_object('rows', v_rows));
+  RETURN v_rows;
+END;
+$$;
+
+-- Atomic: of N concurrent callers with 1 authorization left, exactly one gets true.
+CREATE OR REPLACE FUNCTION public.consume_bsuid_send(p_account_id uuid, p_contact_id uuid, p_origin text)
+RETURNS boolean LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, extensions AS $$
+DECLARE v_left int;
+BEGIN
+  UPDATE contact_identities
+     SET send_authorized_remaining = send_authorized_remaining - 1
+   WHERE account_id = p_account_id AND contact_id = p_contact_id AND kind = 'bsuid'
+     AND superseded_at IS NULL AND send_authorized_remaining > 0
+   RETURNING send_authorized_remaining INTO v_left;
+  IF v_left IS NULL THEN RETURN false; END IF;
+  INSERT INTO contact_identity_audit (account_id, contact_id, event, origin, detail)
+  VALUES (p_account_id, p_contact_id, 'send_consumed', left(p_origin, 40), jsonb_build_object('remaining', v_left));
+  RETURN true;
+END;
+$$;
+
 REVOKE ALL ON FUNCTION public.resolve_bsuid_contact(uuid, uuid, text, text, text, text) FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON FUNCTION public.link_contact_bsuid(uuid, uuid, text, text, text, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.resolve_bsuid_contact(uuid, uuid, text, text, text, text) TO service_role;
 GRANT EXECUTE ON FUNCTION public.link_contact_bsuid(uuid, uuid, text, text, text, text) TO service_role;
+REVOKE ALL ON FUNCTION public.audit_bsuid_event(uuid, uuid, text, text, jsonb) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.authorize_bsuid_send(uuid, uuid, int, text) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.revoke_bsuid_send(uuid, uuid) FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON FUNCTION public.consume_bsuid_send(uuid, uuid, text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.audit_bsuid_event(uuid, uuid, text, text, jsonb) TO service_role;
+GRANT EXECUTE ON FUNCTION public.authorize_bsuid_send(uuid, uuid, int, text) TO service_role;
+GRANT EXECUTE ON FUNCTION public.revoke_bsuid_send(uuid, uuid) TO service_role;
+GRANT EXECUTE ON FUNCTION public.consume_bsuid_send(uuid, uuid, text) TO service_role;
 
 -- No backfill, no UPDATE of existing rows. Down path (only needed if the
 -- feature is abandoned AFTER BSUID contacts exist): see

@@ -47,11 +47,30 @@ Minimal fixtures (fake ids) used by the tests:
 * `contacts.wa_username` is display-only and mutable; usernames are never keys. A visible name proves nothing about identity.
 * Linking rules (`src/lib/contacts/resolve-identity.ts`): phone only → exactly the previous behaviour; BSUID only → the account's contact for that id, or a new phone-less one created atomically (`resolve_bsuid_contact`, advisory-locked, race-safe); phone + BSUID in one event → the phone contact gains the id (one event carrying both is the evidence); the id already owned by a **different** contact → **nothing is merged**, the event goes to the id's contact and a structured `identity_conflict` warning is logged for manual review; a new id that a `system` notice says replaced a known one → attached to that contact, old id kept as history. A last-8-digits match is never evidence for a BSUID.
 
+## 3b. Gradual activation and the pilot controls (added after review)
+
+BSUID handling is **off by default** and is switched on per business number, never globally.
+
+**Switch (server only):** `WHATSAPP_BSUID_PILOT=<account_id>:<phone_number_id>:<waba_id>[,...]`. A number is in scope only if the account id and WABA of its own `whatsapp_config` row, the delivery's `phone_number_id` and the envelope's `entry.id` all match a listed triple. Missing, empty or malformed values mean off; `*`, `all`, two-part or four-part entries enable nothing; names, usernames and partial numbers are never consulted. Nothing is exposed to the browser.
+
+| | Switch OFF (every account today, and Rossy and the others during the pilot) | Switch ON (Keyler only, during the pilot) |
+|---|---|---|
+| Phone sender | exactly as before; any BSUID fields in the event are ignored (no identity row, no username) | as before, plus the BSUID is linked to the contact when the event carries one |
+| BSUID-only sender | dropped as before (`missing_sender_identity`, log now adds `bsuid_pilot: off`) | **stored**: contact + conversation + message, visible in the Inbox |
+| Flows / automations / AI for a phone-less contact | n/a | **not started** ("pilot hold", audited as `automation_skipped`); external `message.received` events still go out |
+| Sending to a phone-less contact | refused (`bsuid_disabled`) | refused unless the operator authorized that exact contact and the sender is a person replying from the Inbox |
+
+**One choke point for sending.** Every sender (Flows, automations, AI, audio engines, public API, reactions, Inbox) obtains its destination from `resolveContactTarget(..., { origin })`. For a BSUID it requires, in order: the switch on for the account's own number; `origin = manual_reply` (only the dashboard composer says so; the public API and everything automatic default to `automated` and are refused); and one atomic `consume_bsuid_send` of an authorization the operator granted to that contact. A refusal throws `BsuidSendBlockedError` (HTTP 403 in the Inbox), writes nothing and calls Meta never. A Meta failure after the authorization was consumed does **not** refund it: authorize again explicitly.
+
+**Who is authorized.** The technical identity is the stored BSUID row of the contact in that account, found from the first inbound message. The operator authorizes the exact `contact_id` (from `06_pilot.sh list`, which shows the creation time, the masked id prefix and the message count so it can be correlated with the practicante's message); a name, a username or the message text never grants anything. `authorize_bsuid_send(account, contact, count 1-3, note)` and `revoke_bsuid_send(account, contact)` exist for the service role and the database operator only; there is no admin screen. Every authorization, consumption, refusal and skipped automation is written to `contact_identity_audit` (insert-only, invisible to clients).
+
+**Enabling and disabling.** Enable = add the triple to `WHATSAPP_BSUID_PILOT` and recreate `app` (done by `03_deploy_image.sh`). Instant kill switch for sending = `revoke_bsuid_send` (no restart). Disable receiving = remove the variable and recreate `app` (≈10-20 s); stored contacts and messages stay. General availability later = add more triples, and a separate decision to allow automatic sends (not part of this change).
+
 ## 4. Migration 077 (`supabase/migrations/077_contact_identities_bsuid.sql`)
 
-Last real migration is 076; 001–076 are untouched. Additive and idempotent: two columns on `contacts`, one unique index, one table, two service-role functions, and `contacts_require_phone_on_write()` relaxed **only** for `phone_optional = true`. No backfill and no UPDATE of existing rows.
+Last real migration is 076; 001–076 are untouched. Additive and idempotent: two columns on `contacts`, one unique index, two tables (`contact_identities`, `contact_identity_audit`), six service-role functions (create/link, audit, authorize, revoke, consume), and `contacts_require_phone_on_write()` relaxed **only** for `phone_optional = true`. No backfill and no UPDATE of existing rows.
 
-Verified on a disposable PostgreSQL 17 restored from the production schema (`qa/bsuid/run-migration-qa.sh`): applies twice, 24 checks pass (existing contacts untouched; the 046 rule still rejects an empty phone for normal contacts; BSUID contact creation and reuse; cross-account and cross-contact guards; conflicts do not merge; RLS; client cannot call the functions or write identities; cascade delete), and 50 concurrent calls from two sessions for one BSUID create exactly one contact.
+Verified on a disposable PostgreSQL 17 restored from the production schema (`qa/bsuid/run-migration-qa.sh`): applies twice, 44 checks pass, including the authorization functions, the audit table, statements the previous image issues, and the atomic consumption (30 concurrent calls, one authorization, exactly one wins) (existing contacts untouched; the 046 rule still rejects an empty phone for normal contacts; BSUID contact creation and reuse; cross-account and cross-contact guards; conflicts do not merge; RLS; client cannot call the functions or write identities; cascade delete), and 50 concurrent calls from two sessions for one BSUID create exactly one contact.
 
 **Compatibility with the image currently in production:** the previous code never reads the new table or columns, inserts contacts with defaults (`phone_optional = false`, so the 046 rule still binds it) and already copes with empty-phone contacts. So the schema can be applied **before** the new image and the old image keeps working on it. Rolling the image back needs no schema change.
 
@@ -61,9 +80,9 @@ Verified on a disposable PostgreSQL 17 restored from the production schema (`qa/
 |---|---|---|
 | Webhook inbound (text, media, interactive, location, reactions) | yes | signature and account resolution unchanged; same path: contact → conversation → message → Flows → automations → AI |
 | Inbox list, thread, sidebar, contact sheet/list, pipelines card | yes | shows name, `@username`, "Number not available"; never the technical id; copy-phone disabled without a phone |
-| Flows: text, image/document, voice note, "audio por producto", buttons, list | yes | `recipient` instead of `to`; one attempt, no prefix variants, `contacts.phone` never touched |
-| Inbox composer and AI auto-reply (`sendMessageToConversation`) | yes | same |
-| Reactions | yes | |
+| Flows: text, image/document, voice note, "audio por producto", buttons, list | addressing yes; **blocked for BSUID contacts during the pilot** | `recipient` instead of `to`; one attempt, no prefix variants, `contacts.phone` never touched; automatic origins are refused until a later decision |
+| Inbox composer (`sendMessageToConversation`, origin `manual_reply`) | yes, after the operator authorizes the contact | one authorized reply at a time; AI auto-reply and the public API are `automated` and refused |
+| Reactions | blocked for BSUID contacts during the pilot | not an authorized reply |
 | Automations (template send) | attempted | template-to-BSUID not verified live, see section 2 |
 | Status webhooks | yes | matched by message id; `recipient_user_id` is never read as a phone |
 | Broadcasts, CSV import/export, manual contact form, public API create, calls / `tel:` | **no, by design** | they are addressed by number; phone-less contacts are skipped from broadcasts, and the contact sheet explains it |
@@ -83,19 +102,18 @@ The 52 discarded events were acknowledged with HTTP 200 and processed afterwards
 
 `src/lib/whatsapp/payload-shape.ts`, one call in the webhook. Active only while `WEBHOOK_SHAPE_LOG_PHONE_NUMBER_IDS` (the number under test) **and** `WEBHOOK_SHAPE_LOG_UNTIL` (an ISO time in the near future) are set. It prints field names and value types (`bsuid-shaped`, `digits`, `string`, ...), never values. Retire it by unsetting both variables; a later PR deletes the file and its call.
 
-## 9. Controlled test (needs authorization, not run)
+## 9. Controlled test (needs authorization, not run) — see the RUNBOOK
 
-1. Set the two variables for the number under test for about one hour.
-2. The practicante sends one text from the account with a username. Read the `[webhook] payload shape` line: confirm `messages[].from_user_id` / `contacts[].user_id` and which of `from` / `wa_id` are absent.
-3. Reply from the inbox once, then trigger a Flow reply. Confirm delivery on the phone and check the logged Meta response. This is the first real proof of `recipient` for text; if Meta rejects it, the error is kept in the thread trace and nothing else changes.
-4. Send a second message and confirm it lands in the same conversation; unset the variables.
+Order: backup and isolated restore check → migration 077 (separate go) → image swap with the switch for Keyler only and the shape diagnostic in the same restart → health and phone-contact regression → the practicante sends a NEW text → verify the fields, the contact and the stored message → the operator authorizes **one** manual reply for that exact contact → one manual reply from the Inbox → confirm delivery → a second text lands in the same conversation → close. The optional four-file Flow is not part of it.
 
 ## 10. Deployment and recovery
 
-See `/opt/backups/wacrm/bsuid-identity/DEPLOY.md` (generated alongside this branch): backup, apply 077 with `psql -1`, build the image from the exact SHA, swap the image, verify, controlled test, and the recovery path. Recovery never restores the database: rolling back means putting the previous image back; the new table and columns stay, inert, so BSUID contacts, their conversations and messages are preserved. If the feature were abandoned for good, the table could be dropped only after exporting `contact_identities`, since dropping it makes those contacts unreachable.
+See `/opt/backups/wacrm/bsuid-identity/RUNBOOK.md` and `DEPLOY.md`: backup near the publication, apply 077 with `psql -1`, build the image from the exact SHA, swap the image, verify, controlled test, recovery. Recovery never restores the database: rolling back means putting the previous image back; the new tables and columns stay, inert, so BSUID contacts, their conversations and messages are preserved. If the feature were abandoned for good, `contact_identities` could be dropped only after exporting it, since dropping it makes those contacts unreachable. Instant containment without a restart: `revoke_bsuid_send` stops every reply to a BSUID contact.
 
 ## 11. Known limits
 
+* During the pilot a phone-less contact gets no automatic reply of any kind (Flows, automations, AI, API) and only one operator-authorized manual reply at a time; lifting that is a separate decision.
+* A BSUID event on a number that is not in the switch is still dropped and lost, exactly as today.
 * Phone-less contacts cannot be broadcast to, imported, exported with a number, or called.
 * A user who later reveals a number keeps their conversation (the phone is recorded on the BSUID contact) unless that number already belongs to another contact, in which case the conflict is only reported.
 * The BSUID format check is `CC.` + 3 to 150 characters of `[A-Za-z0-9._-]`; an id outside that is rejected as `invalid_sender_identity` (loudly) rather than stored. Revisit after the capture in section 9.

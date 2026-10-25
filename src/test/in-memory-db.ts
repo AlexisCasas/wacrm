@@ -27,7 +27,7 @@ export interface InMemoryDb {
 const digits = (v: unknown) => String(v ?? '').replace(/\D/g, '')
 
 export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
-  const tables: Record<string, Row[]> = { contacts: [], contact_identities: [], conversations: [], messages: [], whatsapp_config: [], ...seed }
+  const tables: Record<string, Row[]> = { contacts: [], contact_identities: [], contact_identity_audit: [], conversations: [], messages: [], whatsapp_config: [], ...seed }
   const db: InMemoryDb = { tables, rpcCalls: [], failReads: new Set(), client: null }
   let clock = Date.parse('2026-10-25T12:00:00Z')
   const tick = () => new Date((clock += 1000)).toISOString()
@@ -50,7 +50,6 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
   function builder(table: string) {
     let op: 'select' | 'insert' | 'update' | 'upsert' | 'delete' = 'select'
     let payload: Row | Row[] | null = null
-    let upsertOpts: { onConflict?: string; ignoreDuplicates?: boolean } = {}
     let head = false
     let wantCount = false
     const filters: Array<(r: Row) => boolean> = []
@@ -111,7 +110,7 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
       },
       insert(row: Row | Row[]) { op = 'insert'; payload = row; return api },
       update(row: Row) { op = 'update'; payload = row; return api },
-      upsert(row: Row | Row[], opts?: typeof upsertOpts) { op = 'upsert'; payload = row; upsertOpts = opts ?? {}; return api },
+      upsert(row: Row | Row[]) { op = 'upsert'; payload = row; return api },
       delete() { op = 'delete'; return api },
       eq(c: string, v: unknown) { filters.push((r) => r[c] === v); return api },
       neq(c: string, v: unknown) { filters.push((r) => r[c] !== v); return api },
@@ -138,7 +137,7 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
       const name = String(a.p_name ?? '').trim() || String(a.p_username ?? '').trim() || 'WhatsApp user'
       const contact: Row = { id: randomUUID(), account_id: a.p_account_id, user_id: a.p_owner_user_id, phone: '', phone_optional: true, name, wa_username: a.p_username ?? null, blocked: false, created_at: tick(), updated_at: tick() }
       tables.contacts.push(contact)
-      tables.contact_identities.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: contact.id, kind: 'bsuid', value: a.p_bsuid, superseded_at: null, source: 'webhook' })
+      tables.contact_identities.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: contact.id, kind: 'bsuid', value: a.p_bsuid, superseded_at: null, send_authorized_remaining: 0, source: 'webhook' })
       if (a.p_parent_bsuid) tables.contact_identities.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: contact.id, kind: 'parent_bsuid', value: a.p_parent_bsuid, superseded_at: null, source: 'webhook' })
       return { data: [{ contact_id: contact.id, created: true }], error: null }
     },
@@ -149,13 +148,31 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
       if (a.p_supersedes) for (const i of tables.contact_identities) if (i.account_id === a.p_account_id && i.contact_id === a.p_contact_id && i.kind === 'bsuid' && i.value === a.p_supersedes && !i.superseded_at) i.superseded_at = tick()
       if (!owner) {
         for (const i of tables.contact_identities) if (i.account_id === a.p_account_id && i.contact_id === a.p_contact_id && i.kind === 'bsuid' && !i.superseded_at) i.superseded_at = tick()
-        tables.contact_identities.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: a.p_contact_id, kind: 'bsuid', value: a.p_bsuid, superseded_at: null, source: a.p_supersedes ? 'system_change' : 'webhook' })
+        tables.contact_identities.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: a.p_contact_id, kind: 'bsuid', value: a.p_bsuid, superseded_at: null, send_authorized_remaining: 0, source: a.p_supersedes ? 'system_change' : 'webhook' })
       }
       if (a.p_parent_bsuid && !tables.contact_identities.some((i) => i.account_id === a.p_account_id && i.kind === 'parent_bsuid' && i.value === a.p_parent_bsuid)) {
         tables.contact_identities.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: a.p_contact_id, kind: 'parent_bsuid', value: a.p_parent_bsuid, superseded_at: null, source: 'webhook' })
       }
       if (a.p_username) { const c = tables.contacts.find((x) => x.id === a.p_contact_id); if (c) c.wa_username = String(a.p_username).trim() }
       return { data: [{ outcome: owner ? 'already_linked' : 'linked', owner_contact_id: a.p_contact_id }], error: null }
+    },
+    audit_bsuid_event(a) {
+      tables.contact_identity_audit.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: a.p_contact_id, event: a.p_event, origin: a.p_origin, detail: a.p_detail ?? {}, created_at: tick() })
+      return { data: null, error: null }
+    },
+    authorize_bsuid_send(a) {
+      const i = tables.contact_identities.find((x) => x.account_id === a.p_account_id && x.contact_id === a.p_contact_id && x.kind === 'bsuid' && !x.superseded_at)
+      if (!i) return { data: null, error: { code: '42704', message: 'no active BSUID for this contact in this account' } }
+      i.send_authorized_remaining = Number(a.p_count ?? 1)
+      tables.contact_identity_audit.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: a.p_contact_id, event: 'send_authorized', origin: null, detail: { count: a.p_count ?? 1 }, created_at: tick() })
+      return { data: i.send_authorized_remaining, error: null }
+    },
+    consume_bsuid_send(a) {
+      const i = tables.contact_identities.find((x) => x.account_id === a.p_account_id && x.contact_id === a.p_contact_id && x.kind === 'bsuid' && !x.superseded_at && Number(x.send_authorized_remaining ?? 0) > 0)
+      if (!i) return { data: false, error: null }
+      i.send_authorized_remaining = Number(i.send_authorized_remaining) - 1
+      tables.contact_identity_audit.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: a.p_contact_id, event: 'send_consumed', origin: a.p_origin, detail: { remaining: i.send_authorized_remaining }, created_at: tick() })
+      return { data: true, error: null }
     },
     record_blocked_inbound(a) {
       const c = tables.contacts.find((x) => x.id === a.p_contact_id && x.account_id === a.p_account_id)

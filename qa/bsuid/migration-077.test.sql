@@ -94,3 +94,55 @@ update contacts set blocked=false where id=(select contact_id from r1);
 create temp table dc as select * from resolve_bsuid_contact('b2b2b2b2-0000-4000-8000-00000000000b','bbbbbbbb-0000-4000-8000-000000000002','PE.QA0000000000009',null,null,null);
 delete from contacts where id=(select contact_id from dc);
 select pg_temp.check('deleting a contact deletes its identities', (select count(*) from contact_identities where value='PE.QA0000000000009')=0);
+
+-- 8 pilot send authorization + audit
+create temp table sc as select * from resolve_bsuid_contact('a1a1a1a1-0000-4000-8000-00000000000a','aaaaaaaa-0000-4000-8000-000000000001','PE.QA0000000000050',null,'pilot_user','Pilot');
+select pg_temp.check('new BSUID contact starts with ZERO send authorizations', (select send_authorized_remaining=0 from contact_identities where value='PE.QA0000000000050'));
+select pg_temp.check('consume with no authorization returns false and spends nothing', (select consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select contact_id from sc),'manual_reply')) = false);
+select pg_temp.check('authorize returns the granted count', (select authorize_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select contact_id from sc),1,'qa')) = 1);
+select pg_temp.check('first consume true, second false (a single reply)', (select consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select contact_id from sc),'manual_reply')) and not (select consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select contact_id from sc),'manual_reply')));
+select pg_temp.check('authorizations and consumption are audited', (select count(*) from contact_identity_audit where contact_id=(select contact_id from sc) and event='send_authorized')=1 and (select count(*) from contact_identity_audit where contact_id=(select contact_id from sc) and event='send_consumed')=1);
+do $$ begin
+  begin perform authorize_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select contact_id from sc),4,null); perform pg_temp.check('authorization is capped at 3', false);
+  exception when others then perform pg_temp.check('authorization is capped at 3', sqlstate='22023'); end;
+end $$;
+do $$ begin
+  begin perform authorize_bsuid_send('b2b2b2b2-0000-4000-8000-00000000000b',(select contact_id from sc),1,null); perform pg_temp.check('cannot authorize a contact through another account', false);
+  exception when others then perform pg_temp.check('cannot authorize a contact through another account', sqlstate='42704'); end;
+end $$;
+insert into contacts(account_id,user_id,phone,name) values ('a1a1a1a1-0000-4000-8000-00000000000a','aaaaaaaa-0000-4000-8000-000000000001','+51 900 000 088','Phone Only');
+do $$ begin
+  begin perform authorize_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select id from contacts where name='Phone Only'),1,null); perform pg_temp.check('a phone-only contact has no BSUID to authorize', false);
+  exception when others then perform pg_temp.check('a phone-only contact has no BSUID to authorize', sqlstate in ('42704')); end;
+end $$;
+select pg_temp.check('the other account cannot consume it', (select consume_bsuid_send('b2b2b2b2-0000-4000-8000-00000000000b',(select contact_id from sc),'manual_reply')) = false);
+select authorize_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select contact_id from sc),2,null);
+create temp table rv as select revoke_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select contact_id from sc)) as rows;
+select pg_temp.check('revoke clears the authorization and is audited', (select rows from rv)=1 and (select send_authorized_remaining=0 from contact_identities where value='PE.QA0000000000050') and (select count(*)=1 from contact_identity_audit where event='send_revoked' and contact_id=(select contact_id from sc)));
+select pg_temp.check('a superseded id cannot be consumed', (select count(*) from (select link_contact_bsuid('a1a1a1a1-0000-4000-8000-00000000000a',(select contact_id from sc),'PE.QA0000000000051',null,null,'PE.QA0000000000050')) x)=1 and (select consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select contact_id from sc),'manual_reply')) = false);
+set role authenticated;
+select set_config('request.jwt.claim.sub','aaaaaaaa-0000-4000-8000-000000000001', false);
+do $$ begin
+  begin perform authorize_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select id from contacts limit 1),1,null); perform pg_temp.check('a client cannot authorize sends', false);
+  exception when insufficient_privilege then perform pg_temp.check('a client cannot authorize sends', true); end;
+end $$;
+do $$ begin
+  begin perform consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a',(select id from contacts limit 1),'x'); perform pg_temp.check('a client cannot consume authorizations', false);
+  exception when insufficient_privilege then perform pg_temp.check('a client cannot consume authorizations', true); end;
+end $$;
+select pg_temp.check('a client cannot read the audit trail (RLS, no policy)', (select count(*) from contact_identity_audit)=0);
+do $$ begin
+  begin update contact_identities set send_authorized_remaining=3; perform pg_temp.check('a client cannot raise its own authorization (RLS)', (select count(*) from contact_identities where send_authorized_remaining=3)=0);
+  exception when others then perform pg_temp.check('a client cannot raise its own authorization (RLS)', true); end;
+end $$;
+reset role;
+
+-- 9 previous image against the migrated schema: the statements the old code issues
+select pg_temp.check('old code: merge_duplicate_contacts() still runs and keeps phone-less contacts', (select merge_duplicate_contacts() >= 0) and (select count(*) from contacts where phone_optional and phone='')>=1);
+insert into conversations(account_id,user_id,contact_id) values ('a1a1a1a1-0000-4000-8000-00000000000a','aaaaaaaa-0000-4000-8000-000000000001',(select contact_id from sc));
+select pg_temp.check('old code: a conversation can be created for a phone-less contact', (select count(*) from conversations where contact_id=(select contact_id from sc))=1);
+select record_blocked_inbound((select contact_id from sc),'a1a1a1a1-0000-4000-8000-00000000000a', now());
+select pg_temp.check('old code: record_blocked_inbound works on a phone-less contact', true);
+select pg_temp.check('old code: lookup by phone suffix never returns a phone-less contact', (select count(*) from contacts where account_id='a1a1a1a1-0000-4000-8000-00000000000a' and phone like '%000001' and phone_optional)=0);
+update contacts set phone='+51 900 000 077' where name='Phone A';
+select pg_temp.check('old code: healing a phone number (UPDATE phone) works for a phone contact', (select phone='+51 900 000 077' from contacts where name='Phone A'));

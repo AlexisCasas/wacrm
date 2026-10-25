@@ -6,6 +6,8 @@ import { mirrorInboundMedia } from '@/lib/whatsapp/mirror-inbound-media'
 import { resolveInboundIdentity } from '@/lib/whatsapp/resolve-sender-identity'
 import { resolveInboundContact } from '@/lib/contacts/resolve-identity'
 import { pairContact } from '@/lib/whatsapp/pair-contact'
+import { isBsuidPilotEnabled } from '@/lib/whatsapp/bsuid-pilot'
+import { hasPhone } from '@/lib/contacts/display'
 import { describeShape, shapeLoggingActiveFor } from '@/lib/whatsapp/payload-shape'
 import { findOrCreateConversation } from '@/lib/conversations/find-or-create'
 import { reopenClosedConversation } from '@/lib/conversations/reopen'
@@ -372,7 +374,10 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // read before migration 039 lands would have it undefined,
           // and losing attachments is the failure mode worth avoiding.
           config.mirror_inbound_media !== false,
-          phoneNumberId
+          phoneNumberId,
+          // BSUID switch scope: the config row's WABA and the envelope's own id (see bsuid-pilot.ts).
+          config.waba_id ?? null,
+          entry.id
         )
       }
     }
@@ -642,25 +647,47 @@ async function processMessage(
   // Receiving business number. Used only for the observability log
   // below (never for tenancy/routing — that's already resolved into
   // accountId by the caller).
-  phoneNumberId: string
+  phoneNumberId: string,
+  wabaId: string | null,
+  envelopeWabaId: string | undefined
 ) {
+  // Server-side BSUID switch for THIS number (off unless account + phone_number_id + WABA are all listed). Off = the
+  // behaviour before BSUID support existed: a BSUID is neither stored nor addressed.
+  const bsuidEnabled = isBsuidPilotEnabled({ accountId, wabaId, phoneNumberId, envelopeWabaId })
+
   // Resolve the sender's identity from the documented fields of BOTH the message and its contact entry: the phone
   // (`from`, else `wa_id`) when Meta shows it, otherwise the business-scoped user id (`from_user_id`, else
   // `contacts[].user_id`). Every one of them may be absent (see WhatsAppWebhookContact). This is still the point of no
   // return: nothing below may create a contact, conversation or message without a resolved identity, and the message
   // id is never used as one.
-  const identity = resolveInboundIdentity(message, contact)
-  if (!identity.ok) {
+  const resolved = resolveInboundIdentity(message, contact)
+  // Switch off: ignore every BSUID field so phone senders behave exactly as before and a BSUID-only sender is dropped as before.
+  const identity: typeof resolved =
+    bsuidEnabled || !resolved.ok
+      ? resolved
+      : {
+          ...resolved,
+          bsuid: undefined,
+          parentBsuid: undefined,
+          previousBsuid: undefined,
+          username: undefined,
+          warnings: resolved.warnings.filter((w) => w === 'sender_identity_mismatch'),
+        }
+  if (!identity.ok || (!bsuidEnabled && !identity.phone)) {
     // Presence flags only: never the ids, the phone or the message text.
+    const present = identity.ok
+      ? { from: Boolean(message.from), wa_id: Boolean(contact?.wa_id), from_user_id: Boolean(message.from_user_id), user_id: Boolean(contact?.user_id) }
+      : identity.present
     console.warn('[webhook] inbound message dropped — sender identity unresolved', {
-      reason: identity.reason,
+      reason: identity.ok ? 'missing_sender_identity' : identity.reason,
       message_type: message.type,
       message_id: message.id,
       phone_number_id: phoneNumberId,
-      has_from: identity.present.from,
-      has_wa_id: identity.present.wa_id,
-      has_from_user_id: identity.present.from_user_id,
-      has_contact_user_id: identity.present.user_id,
+      has_from: present.from,
+      has_wa_id: present.wa_id,
+      has_from_user_id: present.from_user_id,
+      has_contact_user_id: present.user_id,
+      bsuid_pilot: bsuidEnabled ? 'on' : 'off',
     })
     return
   }
@@ -912,6 +939,23 @@ async function processMessage(
   // no active flows take the runner's early-exit "no_match" path
   // basically for free (one indexed SELECT for the active run).
   // ============================================================
+  // PILOT HOLD: a contact known only by a WhatsApp user id is stored and visible in the Inbox, but is NOT offered to Flows,
+  // automations or the AI while the pilot lasts (the send gate in recipient.ts would refuse any automatic reply anyway).
+  // Skipping here also stops a run from starting and failing at its first send. The decision is audited.
+  if (bsuidEnabled && !hasPhone(contactRecord)) {
+    await supabaseAdmin()
+      .rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contactRecord.id, p_event: 'automation_skipped', p_origin: 'inbound', p_detail: { reason: 'pilot_hold_phoneless_contact', message_type: message.type } })
+      .then(undefined, () => undefined)
+    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
+      conversation_id: conversation.id,
+      contact_id: contactRecord.id,
+      whatsapp_message_id: message.id,
+      content_type: contentType,
+      text: contentText,
+    })
+    return
+  }
+
   const flowResult = await dispatchInboundToFlows({
     accountId,
     userId: configOwnerUserId,

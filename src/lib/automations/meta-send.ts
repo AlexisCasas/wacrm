@@ -198,7 +198,7 @@ async function sendTemplateViaMeta(
   }
 
   // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
-  const target = await resolveContactTarget(db, input.accountId, contact)
+  const target = await resolveContactTarget(db, input.accountId, contact, { origin: 'automated' })
   const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
