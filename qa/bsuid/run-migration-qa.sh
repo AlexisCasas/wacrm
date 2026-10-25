@@ -5,7 +5,7 @@
 set -uo pipefail
 : "${SCHEMA_DUMP:?set SCHEMA_DUMP to a pg_dump -Fc file of the schema at migration 076}"
 HERE=$(cd "$(dirname "$0")" && pwd); MIG="$HERE/../../supabase/migrations/077_contact_identities_bsuid.sql"
-C=wa-bsuid-qa-pg; W=$(mktemp -d); cp "$SCHEMA_DUMP" "$W/full.dump"; cp "$MIG" "$HERE/migration-077.test.sql" "$W/"
+C=wa-bsuid-qa-pg; W=$(mktemp -d); cp "$SCHEMA_DUMP" "$W/full.dump"; cp "$MIG" "$HERE/migration-077.test.sql" "$HERE/pilot_list.sql" "$W/"
 trap 'docker rm -f $C >/dev/null 2>&1; shred -u "$W/full.dump" 2>/dev/null; rm -rf "$W"' EXIT
 docker rm -f $C >/dev/null 2>&1
 docker run -d --name $C --network none -e POSTGRES_PASSWORD=x -v "$W":/w:ro postgres:17-alpine >/dev/null
@@ -32,3 +32,5 @@ echo "== concurrency: 2 sessions x 15 consume calls with ONE authorization"
 docker exec $C psql -U postgres -d v -Atq -c "select authorize_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a', (select contact_id from contact_identities where value='PE.RACE000000001'), 1, 'race')" >/dev/null
 for s in 1 2; do (for i in $(seq 1 15); do docker exec $C psql -U postgres -d v -Atq -c "select consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a', (select contact_id from contact_identities where value='PE.RACE000000001'), 'manual_reply')" >> "$W/consume.$s" 2>/dev/null; done) & done; wait
 echo "consumed (expected 1): $(docker exec $C psql -U postgres -d v -At -c "select count(*) from contact_identity_audit where event='send_consumed' and contact_id=(select contact_id from contact_identities where value='PE.RACE000000001')")"
+echo "== pilot_list.sql (the operator's read-only query) runs and masks:"
+docker exec $C psql -U postgres -d v -X -P pager=off -v account=a1a1a1a1-0000-4000-8000-00000000000a -v hours=24 -f /w/pilot_list.sql 2>&1 | head -8
