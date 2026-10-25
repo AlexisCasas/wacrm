@@ -1,5 +1,7 @@
 "use client";
 
+import { ContactPhoneLine } from "@/components/contacts/contact-phone-line";
+import { contactLabel, hasPhone } from "@/lib/contacts/display";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
@@ -235,7 +237,7 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated }: Contact
   }, [contact, contactTags, creatingTag, newTagName, newTagColor, onTagsChanged, onTagCreated, tSidebar]);
 
   const handleCopyPhone = useCallback(async () => {
-    if (!contact?.phone) return;
+    if (!contact || !hasPhone(contact)) return;
     await navigator.clipboard.writeText(contact.phone);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -281,7 +283,7 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated }: Contact
     );
   }
 
-  const displayName = contact.name || contact.phone;
+  const displayName = contactLabel(contact);
   const initials = displayName.charAt(0).toUpperCase();
 
   return (
@@ -316,7 +318,7 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated }: Contact
               className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted"
             >
               <Phone className="h-4 w-4 text-muted-foreground" />
-              <span className="flex-1 text-left">{contact.phone}</span>
+              <ContactPhoneLine className="flex-1 text-left" contact={contact} />
               {copied ? (
                 <Check className="h-3 w-3 text-primary" />
               ) : (

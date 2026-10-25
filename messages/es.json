@@ -2525,5 +2525,11 @@
     "classifyHelp": "No puede haber dos audios del producto con la misma finalidad e identificador.",
     "classifyNoCatalog": "Crea antes al menos una finalidad y un identificador.",
     "classifyLoading": "Cargando…"
+  },
+  "ContactIdentity": {
+    "phoneUnavailable": "Número no disponible",
+    "phoneUnavailableHint": "Este usuario de WhatsApp oculta su número de teléfono. Puedes chatear, ejecutar Flows y responderle; las acciones que requieren un número (llamadas, difusiones, exportaciones) no están disponibles para este contacto.",
+    "usernameLabel": "Usuario de WhatsApp",
+    "needsPhone": "Requiere un número de teléfono, que este contacto no comparte."
   }
 }

@@ -1,4 +1,5 @@
 import { normalizePhone } from './phone-utils'
+import { cleanUsername, isValidBsuid, isValidParentBsuid } from './bsuid'
 
 /**
  * Resolve the phone number identifying an inbound WhatsApp message's
@@ -87,3 +88,114 @@ export interface UnresolvedSenderIdentity {
 }
 
 export type SenderIdentityResolution = ResolvedSenderIdentity | UnresolvedSenderIdentity
+
+// ============================================================
+// BSUID-aware resolution (migration 077)
+// ============================================================
+
+/** The fields of one webhook `messages[]` entry that carry identity. All optional on purpose. */
+export interface InboundMessageIdentityFields {
+  from?: string | null
+  from_user_id?: string | null
+  from_parent_user_id?: string | null
+  type?: string
+  system?: { type?: string; previous_user_id?: string | null } | null
+}
+
+/** The paired `contacts[]` entry. Every field is optional per Meta's contract. */
+export interface InboundContactIdentityFields {
+  wa_id?: string | null
+  user_id?: string | null
+  parent_user_id?: string | null
+  profile?: { name?: string | null; username?: string | null } | null
+}
+
+export type InboundIdentity =
+  | {
+      ok: true
+      /** Digits-only phone, when the event carried one. Preferred identity when present. */
+      phone?: string
+      /** Validated BSUID, when the event carried one. */
+      bsuid?: string
+      parentBsuid?: string
+      /** Display only. */
+      username?: string
+      /** Display name from the profile, when present. */
+      name?: string
+      /** BSUID this event says was replaced (system message `user_changed_user_id` / `user_changed_number`). */
+      previousBsuid?: string
+      warnings: Array<'sender_identity_mismatch' | 'bsuid_mismatch' | 'bsuid_ignored_invalid' | 'parent_bsuid_ignored_invalid'>
+    }
+  | {
+      ok: false
+      reason: 'missing_sender_identity' | 'invalid_sender_identity'
+      /** Presence only; never values. */
+      present: { from: boolean; wa_id: boolean; from_user_id: boolean; user_id: boolean }
+    }
+
+/**
+ * Identity of an inbound sender from the documented fields. Rules:
+ *  - a valid phone (`from`, else `wa_id`) wins as the contact's primary identity, exactly as before;
+ *  - the BSUID is read from `messages[].from_user_id` (authoritative for THIS message) and only falls back to
+ *    `contacts[].user_id`; a contact whose own phone contradicts the message's phone is not trusted for it;
+ *  - with no phone, a valid BSUID is enough; an id that is present but malformed is `invalid_sender_identity`
+ *    (distinct from `missing_sender_identity`, where Meta sent neither);
+ *  - the username and profile name are optional and display-only.
+ */
+export function resolveInboundIdentity(
+  message: InboundMessageIdentityFields,
+  contact: InboundContactIdentityFields | null | undefined,
+): InboundIdentity {
+  const phoneRes = resolveSenderIdentity(message.from, contact?.wa_id)
+  const warnings: Array<'sender_identity_mismatch' | 'bsuid_mismatch' | 'bsuid_ignored_invalid' | 'parent_bsuid_ignored_invalid'> = []
+  if (phoneRes.ok && phoneRes.warning) warnings.push(phoneRes.warning)
+
+  // A contact entry whose explicit phone differs from the message's is probably paired by index with another sender.
+  const contactTrusted =
+    !phoneRes.ok || !contact?.wa_id || normalizePhone(contact.wa_id) === phoneRes.phone
+
+  const fromUser = typeof message.from_user_id === 'string' && message.from_user_id ? message.from_user_id : undefined
+  const contactUser = contactTrusted && typeof contact?.user_id === 'string' && contact.user_id ? contact.user_id : undefined
+  if (fromUser && contactUser && fromUser !== contactUser) warnings.push('bsuid_mismatch')
+  const bsuidCandidate = fromUser ?? contactUser
+  let bsuid: string | undefined
+  if (bsuidCandidate !== undefined) {
+    if (isValidBsuid(bsuidCandidate)) bsuid = bsuidCandidate
+    else warnings.push('bsuid_ignored_invalid')
+  }
+
+  const parentCandidate =
+    (typeof message.from_parent_user_id === 'string' && message.from_parent_user_id) ||
+    (contactTrusted && typeof contact?.parent_user_id === 'string' && contact.parent_user_id) ||
+    undefined
+  let parentBsuid: string | undefined
+  if (parentCandidate) {
+    if (isValidParentBsuid(parentCandidate)) parentBsuid = parentCandidate
+    else warnings.push('parent_bsuid_ignored_invalid')
+  }
+
+  if (!phoneRes.ok && !bsuid) {
+    return {
+      ok: false,
+      reason: bsuidCandidate !== undefined ? 'invalid_sender_identity' : 'missing_sender_identity',
+      present: {
+        from: Boolean(message.from),
+        wa_id: Boolean(contact?.wa_id),
+        from_user_id: Boolean(fromUser),
+        user_id: Boolean(contact?.user_id),
+      },
+    }
+  }
+
+  const previous = message.system?.previous_user_id
+  return {
+    ok: true,
+    phone: phoneRes.ok ? phoneRes.phone : undefined,
+    bsuid,
+    parentBsuid,
+    username: contactTrusted ? cleanUsername(contact?.profile?.username) : undefined,
+    name: contactTrusted && typeof contact?.profile?.name === 'string' && contact.profile.name.trim() ? contact.profile.name.trim() : undefined,
+    previousBsuid: isValidBsuid(previous) ? previous : undefined,
+    warnings,
+  }
+}

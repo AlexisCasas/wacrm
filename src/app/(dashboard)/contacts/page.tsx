@@ -1,5 +1,7 @@
 'use client';
 
+import { ContactPhoneLine } from "@/components/contacts/contact-phone-line";
+import { contactLabel } from "@/lib/contacts/display";
 import { useState, useEffect, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
@@ -166,7 +168,7 @@ export default function ContactsPage() {
 
       if (term) {
         const like = `%${term}%`;
-        query = query.or(`name.ilike.${like},phone.ilike.${like},email.ilike.${like}`);
+        query = query.or(`name.ilike.${like},phone.ilike.${like},email.ilike.${like},wa_username.ilike.${like}`);
       }
 
       const { data, count: exactCount, error } = await query;
@@ -611,14 +613,14 @@ export default function ContactsPage() {
                     <Checkbox
                       checked={selected.has(contact.id)}
                       onCheckedChange={() => toggleSelect(contact.id)}
-                      aria-label={`Select ${contact.name || contact.phone}`}
+                      aria-label={`Select ${contactLabel(contact)}`}
                     />
                   </TableCell>
                   <TableCell className="text-foreground font-medium">
                     {contact.name || <span className="text-muted-foreground italic">{t('unnamed')}</span>}
                   </TableCell>
                   <TableCell className="text-muted-foreground font-mono text-xs">
-                    {contact.phone}
+                    <ContactPhoneLine contact={contact} />
                   </TableCell>
                   <TableCell className="text-muted-foreground hidden md:table-cell text-sm">
                     {contact.email || <span className="text-muted-foreground">-</span>}
@@ -788,7 +790,7 @@ export default function ContactsPage() {
           <DialogHeader>
             <DialogTitle className="text-popover-foreground">{t('deleteContactTitle')}</DialogTitle>
             <DialogDescription className="text-muted-foreground">
-              {t('deleteContactDesc', { name: deleteTarget?.name || deleteTarget?.phone || '' })}
+              {t('deleteContactDesc', { name: contactLabel(deleteTarget) || '' })}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="bg-popover border-border">

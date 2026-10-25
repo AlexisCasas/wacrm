@@ -1,5 +1,6 @@
 'use client';
 
+import { hasPhone } from '@/lib/contacts/display';
 import { useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
@@ -212,7 +213,9 @@ export function useBroadcastSending(): UseBroadcastSendingReturn {
       contacts = contacts.filter((c) => !excludedIds.has(c.id));
     }
 
-    return contacts;
+    // Broadcasts are template sends addressed by phone number: a WhatsApp user who hides their number (identified only
+    // by a business-scoped user id) is left out here instead of failing later in the plan.
+    return contacts.filter((c) => hasPhone(c));
   }
 
   /**

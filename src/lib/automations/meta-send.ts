@@ -8,10 +8,8 @@ import {
 } from '@/lib/flows/meta-send'
 import type { MediaKind } from '@/lib/whatsapp/meta-api'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { resolveContactTarget, targetAttempts, type WaTarget } from '@/lib/whatsapp/recipient'
 import {
-  sanitizePhoneForMeta,
-  isValidE164,
-  phoneVariants,
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import {
@@ -195,14 +193,13 @@ async function sendTemplateViaMeta(
     .eq('id', input.contactId)
     .eq('account_id', input.accountId)
     .maybeSingle()
-  if (contactErr || !contact?.phone) {
+  if (contactErr || !contact) {
     throw new Error('contact not found for this account')
   }
 
-  const sanitized = sanitizePhoneForMeta(contact.phone)
-  if (!isValidE164(sanitized)) {
-    throw new Error(`contact phone invalid: ${contact.phone}`)
-  }
+  // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
+  const target = await resolveContactTarget(db, input.accountId, contact)
+  const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
     .from('whatsapp_config')
@@ -223,7 +220,7 @@ async function sendTemplateViaMeta(
     await resolveTemplateRow(db, input.accountId, input.templateName, input.language)
   ).row
 
-  const attempt = async (phone: string): Promise<string> => {
+  const attempt = async (phone: WaTarget): Promise<string> => {
     const r = await sendTemplateMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
@@ -238,8 +235,8 @@ async function sendTemplateViaMeta(
   // Same phone-variant retry as /api/whatsapp/send — Meta sandbox and
   // numbers registered with/without a trunk 0 both require this to
   // reliably land a message.
-  const variants = phoneVariants(sanitized)
-  let workingPhone = sanitized
+  const variants = targetAttempts(target)
+  let workingPhone: WaTarget = sanitized
   let waMessageId = ''
   let lastError: unknown = null
   for (const v of variants) {
@@ -256,7 +253,7 @@ async function sendTemplateViaMeta(
   }
   if (lastError) throw lastError
 
-  if (workingPhone !== sanitized) {
+  if (target.kind === 'phone' && workingPhone !== sanitized) {
     await db.from('contacts').update({ phone: workingPhone }).eq('id', contact.id)
   }
 

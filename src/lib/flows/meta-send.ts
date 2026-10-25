@@ -10,9 +10,6 @@ import {
 import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import {
-  sanitizePhoneForMeta,
-  isValidE164,
-  phoneVariants,
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { resolveOutboundTransport } from '@/lib/whatsapp/send-message'
@@ -21,6 +18,7 @@ import { assertContactCanReceive } from '@/lib/contacts/blocking'
 import { isVoiceNoteUrlForAccount } from '@/lib/media/voice-note-path'
 import { isMediaAudioEnabledForAccount } from './voice-note-capability'
 import { supabaseAdmin } from './admin-client'
+import { resolveContactTarget, targetAttempts, type WaTarget } from '@/lib/whatsapp/recipient'
 
 // ------------------------------------------------------------
 // Flows-side Meta sender (interactive variants).
@@ -101,14 +99,13 @@ export async function engineSendText(
     .eq('id', args.contactId)
     .eq('account_id', args.accountId)
     .maybeSingle()
-  if (contactErr || !contact?.phone) {
+  if (contactErr || !contact) {
     throw new Error('contact not found for this account')
   }
 
-  const sanitized = sanitizePhoneForMeta(contact.phone)
-  if (!isValidE164(sanitized)) {
-    throw new Error(`contact phone invalid: ${contact.phone}`)
-  }
+  // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
+  const target = await resolveContactTarget(db, args.accountId, contact)
+  const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
     .from('whatsapp_config')
@@ -121,7 +118,7 @@ export async function engineSendText(
 
   const accessToken = decrypt(config.access_token)
 
-  const attempt = async (phone: string): Promise<string> => {
+  const attempt = async (phone: WaTarget): Promise<string> => {
     const r = await sendTextMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
@@ -131,8 +128,8 @@ export async function engineSendText(
     return r.messageId
   }
 
-  const variants = phoneVariants(sanitized)
-  let workingPhone = sanitized
+  const variants = targetAttempts(target)
+  let workingPhone: WaTarget = sanitized
   let waMessageId = ''
   let lastError: unknown = null
   for (const v of variants) {
@@ -149,7 +146,7 @@ export async function engineSendText(
   }
   if (lastError) throw lastError
 
-  if (workingPhone !== sanitized) {
+  if (target.kind === 'phone' && workingPhone !== sanitized) {
     await db.from('contacts').update({ phone: workingPhone }).eq('id', contact.id)
   }
 
@@ -332,14 +329,13 @@ export async function engineSendMedia(
     .eq('id', args.contactId)
     .eq('account_id', args.accountId)
     .maybeSingle()
-  if (contactErr || !contact?.phone) {
+  if (contactErr || !contact) {
     throw new Error('contact not found for this account')
   }
 
-  const sanitized = sanitizePhoneForMeta(contact.phone)
-  if (!isValidE164(sanitized)) {
-    throw new Error(`contact phone invalid: ${contact.phone}`)
-  }
+  // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
+  const target = await resolveContactTarget(db, args.accountId, contact)
+  const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
     .from('whatsapp_config')
@@ -352,7 +348,7 @@ export async function engineSendMedia(
 
   const accessToken = decrypt(config.access_token)
 
-  const attempt = async (phone: string): Promise<string> => {
+  const attempt = async (phone: WaTarget): Promise<string> => {
     const r = await sendMediaMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
@@ -366,8 +362,8 @@ export async function engineSendMedia(
     return r.messageId
   }
 
-  const variants = phoneVariants(sanitized)
-  let workingPhone = sanitized
+  const variants = targetAttempts(target)
+  let workingPhone: WaTarget = sanitized
   let waMessageId = ''
   let lastError: unknown = null
   for (const v of variants) {
@@ -384,7 +380,7 @@ export async function engineSendMedia(
   }
   if (lastError) throw lastError
 
-  if (workingPhone !== sanitized) {
+  if (target.kind === 'phone' && workingPhone !== sanitized) {
     await db.from('contacts').update({ phone: workingPhone }).eq('id', contact.id)
   }
 
@@ -567,14 +563,13 @@ async function sendInteractiveViaMeta(
     .eq('id', input.contactId)
     .eq('account_id', input.accountId)
     .maybeSingle()
-  if (contactErr || !contact?.phone) {
+  if (contactErr || !contact) {
     throw new Error('contact not found for this account')
   }
 
-  const sanitized = sanitizePhoneForMeta(contact.phone)
-  if (!isValidE164(sanitized)) {
-    throw new Error(`contact phone invalid: ${contact.phone}`)
-  }
+  // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
+  const target = await resolveContactTarget(db, input.accountId, contact)
+  const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
     .from('whatsapp_config')
@@ -587,7 +582,7 @@ async function sendInteractiveViaMeta(
 
   const accessToken = decrypt(config.access_token)
 
-  const attempt = async (phone: string): Promise<string> => {
+  const attempt = async (phone: WaTarget): Promise<string> => {
     if (input.kind === 'buttons') {
       const r = await sendInteractiveButtons({
         phoneNumberId: config.phone_number_id,
@@ -616,8 +611,8 @@ async function sendInteractiveViaMeta(
   // Same phone-variant retry as automations/meta-send.ts. Numbers
   // registered with/without a trunk 0 + Meta's sandbox quirks all
   // need this to reliably land a message.
-  const variants = phoneVariants(sanitized)
-  let workingPhone = sanitized
+  const variants = targetAttempts(target)
+  let workingPhone: WaTarget = sanitized
   let waMessageId = ''
   let lastError: unknown = null
   for (const v of variants) {
@@ -634,7 +629,7 @@ async function sendInteractiveViaMeta(
   }
   if (lastError) throw lastError
 
-  if (workingPhone !== sanitized) {
+  if (target.kind === 'phone' && workingPhone !== sanitized) {
     await db.from('contacts').update({ phone: workingPhone }).eq('id', contact.id)
   }
 

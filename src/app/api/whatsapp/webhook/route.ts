@@ -3,8 +3,10 @@ import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { mirrorInboundMedia } from '@/lib/whatsapp/mirror-inbound-media'
-import { resolveSenderIdentity } from '@/lib/whatsapp/resolve-sender-identity'
-import { findOrCreateContact } from '@/lib/contacts/find-or-create'
+import { resolveInboundIdentity } from '@/lib/whatsapp/resolve-sender-identity'
+import { resolveInboundContact } from '@/lib/contacts/resolve-identity'
+import { pairContact } from '@/lib/whatsapp/pair-contact'
+import { describeShape, shapeLoggingActiveFor } from '@/lib/whatsapp/payload-shape'
 import { findOrCreateConversation } from '@/lib/conversations/find-or-create'
 import { reopenClosedConversation } from '@/lib/conversations/reopen'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
@@ -39,7 +41,13 @@ function supabaseAdmin() {
 
 interface WhatsAppMessage {
   id: string
-  from: string
+  /** Omitted when the sender enabled usernames and the phone cannot be shown (then `from_user_id` is the identity). */
+  from?: string
+  /** Sender's business-scoped user id (BSUID). */
+  from_user_id?: string
+  from_parent_user_id?: string
+  /** System notices such as `user_changed_number` / `user_changed_user_id`. */
+  system?: { type?: string; previous_user_id?: string; previous_parent_user_id?: string }
   timestamp: string
   type: string
   text?: { body: string }
@@ -74,6 +82,23 @@ interface WhatsAppMessage {
   context?: { id: string }
 }
 
+/** Every field is optional in Meta's contract: a user with a username has no `wa_id`, and no profile at all is possible. */
+interface WhatsAppWebhookContact {
+  profile?: { name?: string; username?: string }
+  wa_id?: string
+  user_id?: string
+  parent_user_id?: string
+}
+
+interface WhatsAppWebhookStatus {
+  id: string
+  status: string
+  timestamp: string
+  /** Omitted when the message went to a BSUID and the phone cannot be shown. */
+  recipient_id?: string
+  recipient_user_id?: string
+}
+
 interface WhatsAppWebhookEntry {
   id: string
   changes: Array<{
@@ -83,17 +108,9 @@ interface WhatsAppWebhookEntry {
         display_phone_number: string
         phone_number_id: string
       }
-      contacts?: Array<{
-        profile: { name: string }
-        wa_id: string
-      }>
+      contacts?: WhatsAppWebhookContact[]
       messages?: WhatsAppMessage[]
-      statuses?: Array<{
-        id: string
-        status: string
-        timestamp: string
-        recipient_id: string
-      }>
+      statuses?: WhatsAppWebhookStatus[]
     }
     field: string
   }>
@@ -279,6 +296,10 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       const value = change.value
+      // Temporary, default-off diagnostic (see payload-shape.ts): key names and value types only.
+      if (shapeLoggingActiveFor(value?.metadata?.phone_number_id)) {
+        console.log('[webhook] payload shape', JSON.stringify({ field: change.field, shape: describeShape(value) }))
+      }
 
       // Handle status updates
       if (value.statuses) {
@@ -288,7 +309,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       // Handle incoming messages
-      if (!value.messages || !value.contacts) continue
+      if (!value.messages) continue
+      const contacts = value.contacts ?? []
 
       const phoneNumberId = value.metadata.phone_number_id
 
@@ -333,7 +355,7 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
 
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
-        const contact = value.contacts[i] || value.contacts[0]
+        const contact = pairContact(message, contacts, i)
 
         await processMessage(
           message,
@@ -399,12 +421,7 @@ function isValidStatusTransition(current: string, incoming: string): boolean {
   return ii > ci
 }
 
-async function handleStatusUpdate(status: {
-  id: string
-  status: string
-  timestamp: string
-  recipient_id: string
-}) {
+async function handleStatusUpdate(status: WhatsAppWebhookStatus) {
   // 1) Mirror onto messages (legacy behavior) — Meta's status values
   //    already match the CHECK constraint on messages.status. No
   //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
@@ -609,7 +626,7 @@ async function handleReaction(
 
 async function processMessage(
   message: WhatsAppMessage,
-  contact: { profile: { name: string }; wa_id: string },
+  contact: WhatsAppWebhookContact | undefined,
   // Tenancy. Resolved from the matched whatsapp_config row; every
   // contact / conversation / message row created downstream is
   // stamped with this so any member of the account can see it.
@@ -627,54 +644,68 @@ async function processMessage(
   // accountId by the caller).
   phoneNumberId: string
 ) {
-  const contactName = contact.profile.name
-
-  // Resolve the sender's identity from BOTH fields Meta's payload
-  // carries: `message.from` (what this code has always used) and
-  // `contact.wa_id` (present in every payload but never consulted
-  // before — see docs/P1_DUPLICATE_CHATS_AUDIT.md section Q). A
-  // `message.from` that arrives empty/unresolved for reasons still
-  // under investigation used to fall through to `normalizePhone('')`
-  // and let `findOrCreateContact` insert a contact with `phone: ''` —
-  // silently, with no log — creating a fresh contact + conversation
-  // for every such message (the "Juor Nuevo" incident). This is the
-  // point of no return: nothing below may create a contact,
-  // conversation, or message without a resolved identity.
-  const identity = resolveSenderIdentity(message.from, contact.wa_id)
+  // Resolve the sender's identity from the documented fields of BOTH the message and its contact entry: the phone
+  // (`from`, else `wa_id`) when Meta shows it, otherwise the business-scoped user id (`from_user_id`, else
+  // `contacts[].user_id`). Every one of them may be absent (see WhatsAppWebhookContact). This is still the point of no
+  // return: nothing below may create a contact, conversation or message without a resolved identity, and the message
+  // id is never used as one.
+  const identity = resolveInboundIdentity(message, contact)
   if (!identity.ok) {
+    // Presence flags only: never the ids, the phone or the message text.
     console.warn('[webhook] inbound message dropped — sender identity unresolved', {
       reason: identity.reason,
       message_type: message.type,
       message_id: message.id,
       phone_number_id: phoneNumberId,
-      has_from: Boolean(message.from),
-      has_wa_id: Boolean(contact.wa_id),
+      has_from: identity.present.from,
+      has_wa_id: identity.present.wa_id,
+      has_from_user_id: identity.present.from_user_id,
+      has_contact_user_id: identity.present.user_id,
     })
     return
   }
-  if (identity.warning) {
-    // Diagnostic only — never gates persistence. See
-    // resolve-sender-identity.ts's file-level comment for why a
-    // disagreeing contact.wa_id must not drop a message that has a
-    // valid message.from.
-    console.warn('[webhook] sender identity mismatch (using message.from; not dropped)', {
-      reason: identity.warning,
-      message_type: message.type,
-      message_id: message.id,
-      phone_number_id: phoneNumberId,
-    })
+  for (const warning of identity.warnings) {
+    // Diagnostic only — never gates persistence. A disagreeing secondary field must not drop a message that has a
+    // valid primary identity (see resolve-sender-identity.ts).
+    console.warn(
+      warning === 'sender_identity_mismatch'
+        ? '[webhook] sender identity mismatch (using message.from; not dropped)'
+        : '[webhook] sender identity warning (not dropped)',
+      {
+        reason: warning,
+        message_type: message.type,
+        message_id: message.id,
+        phone_number_id: phoneNumberId,
+      },
+    )
   }
 
   // Find or create contact
-  const contactOutcome = await findOrCreateContact(
+  const contactOutcome = await resolveInboundContact(
     supabaseAdmin(),
     accountId,
     configOwnerUserId,
-    identity.phone,
-    contactName
+    identity,
+    contact?.profile?.name?.trim() ?? ''
   )
   if (!contactOutcome) return
   const contactRecord = contactOutcome.contact
+  if (contactOutcome.conflict) {
+    console.warn('[webhook] identity_conflict: phone and BSUID of one event belong to different contacts; nothing merged', {
+      account_id: accountId,
+      phone_contact_id: contactOutcome.conflict.phone_contact_id,
+      bsuid_contact_id: contactOutcome.conflict.bsuid_contact_id,
+    })
+  }
+
+  // A pure identity notice (the user changed number / BSUID) updated the link above; it is not customer content, so it
+  // is neither stored nor offered to Flows.
+  if (
+    message.type === 'system' &&
+    (message.system?.type === 'user_changed_user_id' || message.system?.type === 'user_changed_number')
+  ) {
+    return
+  }
 
   // Blocked contact — hard operational stop. Nothing below this point
   // may run: no conversation open/reopen, no message insert, no

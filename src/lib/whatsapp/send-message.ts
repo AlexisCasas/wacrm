@@ -36,12 +36,8 @@ import {
 } from '@/lib/whatsapp/interactive';
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
-import {
-  sanitizePhoneForMeta,
-  isValidE164,
-  phoneVariants,
-  isRecipientNotAllowedError,
-} from '@/lib/whatsapp/phone-utils';
+import { resolveContactTarget, targetAttempts, type ResolvedTarget, type WaTarget } from '@/lib/whatsapp/recipient';
+import { isRecipientNotAllowedError } from '@/lib/whatsapp/phone-utils';
 import type { MessageTemplate } from '@/types';
 import {
   resolveTemplateRow,
@@ -345,7 +341,7 @@ export async function sendMessageToConversation(
   }
 
   const contact = conversation.contact;
-  if (!contact?.phone) {
+  if (!contact) {
     throw new SendMessageError(
       'bad_request',
       'Contact phone number not found',
@@ -353,14 +349,19 @@ export async function sendMessageToConversation(
     );
   }
 
-  const sanitizedPhone = sanitizePhoneForMeta(contact.phone);
-  if (!isValidE164(sanitizedPhone)) {
+  // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
+  let target: ResolvedTarget;
+  try {
+    target = await resolveContactTarget(db, accountId, contact);
+  } catch (err) {
+    const missing = err instanceof Error && err.message === 'contact not found for this account';
     throw new SendMessageError(
       'bad_request',
-      'Invalid phone number format',
+      missing ? 'Contact phone number not found' : 'Invalid phone number format',
       400
     );
   }
+  const sanitizedPhone = target.kind === 'phone' ? target.phone : '';
 
   // WhatsApp config, account-scoped.
   const { data: config, error: configError } = await db
@@ -447,7 +448,7 @@ export async function sendMessageToConversation(
     sendLanguage = resolved.language;
   }
 
-  const attempt = async (phone: string): Promise<string> => {
+  const attempt = async (phone: WaTarget): Promise<string> => {
     if (messageType === 'template') {
       const result = await sendTemplateMessage({
         phoneNumberId: config.phone_number_id,
@@ -518,9 +519,9 @@ export async function sendMessageToConversation(
   // with "recipient not in allowed list"; persist a working variant
   // back to the contact so the next send goes straight through.
   let waMessageId = '';
-  let workingPhone = sanitizedPhone;
+  let workingPhone: WaTarget = sanitizedPhone;
   try {
-    const variants = phoneVariants(sanitizedPhone);
+    const variants = targetAttempts(target);
     let lastError: unknown = null;
 
     for (const variant of variants) {
@@ -536,7 +537,9 @@ export async function sendMessageToConversation(
         }
         lastError = err;
         console.warn(
-          `[send-message] variant "${variant}" rejected by Meta, trying next…`
+          typeof variant === 'string'
+            ? `[send-message] variant "${variant}" rejected by Meta, trying next…`
+            : '[send-message] recipient (BSUID) rejected by Meta'
         );
       }
     }
@@ -549,7 +552,7 @@ export async function sendMessageToConversation(
     throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
   }
 
-  if (workingPhone !== sanitizedPhone) {
+  if (target.kind === 'phone' && workingPhone !== sanitizedPhone) {
     console.log(
       `[send-message] Auto-corrected contact phone: ${sanitizedPhone} → ${workingPhone}`
     );
