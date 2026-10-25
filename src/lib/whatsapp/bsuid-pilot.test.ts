@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { BSUID_PILOT_ENV, isBsuidPilotEnabled, parseBsuidPilot } from './bsuid-pilot'
 
-const ACC = '4d04a2e0-62b8-4508-a046-4b125aa2e8db'
-const OTHER = 'c35b393f-9492-4321-80f2-987766c224d0'
-const PN = '1353857424470328'
-const WABA = '1058892523729962'
+const ACC = 'aaaaaaaa-1111-4111-8111-00000000000a'
+const OTHER = 'bbbbbbbb-2222-4222-8222-00000000000b'
+const PN = '1000000000000001'
+const WABA = '3000000000000001'
 const env = (v?: string) => ({ [BSUID_PILOT_ENV]: v })
 const subject = { accountId: ACC, phoneNumberId: PN, wabaId: WABA }
 
@@ -16,13 +16,13 @@ describe('BSUID pilot switch', () => {
     const on = env(`${ACC}:${PN}:${WABA}`)
     expect(isBsuidPilotEnabled(subject, on)).toBe(true)
     expect(isBsuidPilotEnabled({ ...subject, accountId: OTHER }, on)).toBe(false)
-    expect(isBsuidPilotEnabled({ ...subject, phoneNumberId: '1349097678278530' }, on)).toBe(false)
-    expect(isBsuidPilotEnabled({ ...subject, wabaId: '1066143465793163' }, on)).toBe(false)
+    expect(isBsuidPilotEnabled({ ...subject, phoneNumberId: '2000000000000002' }, on)).toBe(false)
+    expect(isBsuidPilotEnabled({ ...subject, wabaId: '3000000000000002' }, on)).toBe(false)
   })
   it('the envelope WABA must agree with the config row when present', () => {
     const on = env(`${ACC}:${PN}:${WABA}`)
     expect(isBsuidPilotEnabled({ ...subject, envelopeWabaId: WABA }, on)).toBe(true)
-    expect(isBsuidPilotEnabled({ ...subject, envelopeWabaId: '1066143465793163' }, on)).toBe(false)
+    expect(isBsuidPilotEnabled({ ...subject, envelopeWabaId: '3000000000000002' }, on)).toBe(false)
   })
   it('missing pieces never match', () => {
     const on = env(`${ACC}:${PN}:${WABA}`)
@@ -40,9 +40,9 @@ describe('BSUID pilot switch', () => {
     expect(isBsuidPilotEnabled(subject, env(`not-a-uuid:${PN}:${WABA}`))).toBe(false)
   })
   it('is case-insensitive for the account id and supports several numbers', () => {
-    const both = env(`${ACC.toUpperCase()}:${PN}:${WABA},${OTHER}:1349097678278530:1066143465793163`)
+    const both = env(`${ACC.toUpperCase()}:${PN}:${WABA},${OTHER}:2000000000000002:3000000000000002`)
     expect(isBsuidPilotEnabled(subject, both)).toBe(true)
-    expect(isBsuidPilotEnabled({ accountId: OTHER, phoneNumberId: '1349097678278530', wabaId: '1066143465793163' }, both)).toBe(true)
+    expect(isBsuidPilotEnabled({ accountId: OTHER, phoneNumberId: '2000000000000002', wabaId: '3000000000000002' }, both)).toBe(true)
   })
   it('names, usernames and partial numbers play no part (the subject has no such fields)', () => {
     expect(Object.keys(subject).sort()).toEqual(['accountId', 'phoneNumberId', 'wabaId'])
