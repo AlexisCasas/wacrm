@@ -28,6 +28,8 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import { useRef } from "react";
+import { InsertVariableMenu } from "@/components/shared/insert-variable-menu";
 import { useTranslations } from "next-intl";
 import { NODE_META, type BuilderNode } from "../shared";
 
@@ -36,17 +38,33 @@ export function TextRow({
   value,
   onChange,
   rows = 1,
+  variables = false,
+  flowId,
 }: {
   label: string;
   value: string;
   onChange: (v: string) => void;
   rows?: number;
+  /** Show the "Insert variable" picker (multi-line texts that are sent to the customer). */
+  variables?: boolean;
+  flowId?: string;
 }) {
+  const areaRef = useRef<HTMLTextAreaElement>(null);
+  const insert = (token: string) => {
+    const el = areaRef.current;
+    const at = el?.selectionStart ?? value.length;
+    const end = el?.selectionEnd ?? at;
+    onChange(value.slice(0, at) + token + value.slice(end));
+  };
   return (
     <div>
-      <label className="mb-1 block text-xs text-muted-foreground">{label}</label>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <label className="block text-xs text-muted-foreground">{label}</label>
+        {variables && rows > 1 ? <InsertVariableMenu flowId={flowId} onInsert={insert} /> : null}
+      </div>
       {rows > 1 ? (
         <Textarea
+          ref={areaRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           rows={rows}

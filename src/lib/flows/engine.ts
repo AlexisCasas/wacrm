@@ -32,6 +32,7 @@
  *     INSERT raises 23505 and the runner catches & exits.
  */
 
+import { renderTemplate } from "@/lib/variables";
 import { supabaseAdmin } from "./admin-client";
 import {
   engineSendInteractiveButtons,
@@ -859,17 +860,19 @@ export async function evaluateConditionNode(
 }
 
 /**
- * Tiny `{{vars.foo}}` interpolation. Used by send_message + collect_input
- * prompt text so a captured `name` can show up in the next prompt
- * ("Thanks {{vars.name}}, what's your email?"). Missing vars render as
- * empty string — the same behavior as the automations engine.
+ * Renders a flow text through the unified variable contract (`src/lib/variables`): `{{vars.key}}` (compatible), the contact's standard fields
+ * (`{{first_name}}`...) and any custom field of the account. Resolved at SEND time from the run's account and contact, so a field changed by an
+ * earlier node, or while the run was waiting, is what the customer sees. A token that names nothing is left as written (stored text is never
+ * rewritten); a known variable with no value renders empty or as its `{{x | fallback}}`.
  */
-function interpolateVars(template: string, vars: Record<string, unknown>): string {
-  if (!template) return "";
-  return template.replace(/\{\{vars\.([a-zA-Z0-9_]+)\}\}/g, (_, key) => {
-    const v = vars[key];
-    return v === undefined || v === null ? "" : String(v);
-  });
+async function renderFlowText(db: AdminClient, run: FlowRunRow, template: string): Promise<string> {
+  const { text } = await renderTemplate(
+    db,
+    template,
+    { accountId: run.account_id, contactId: run.contact_id, vars: run.vars },
+    { unknown: "keep" },
+  );
+  return text;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -948,7 +951,7 @@ async function executeSetContactField(
     throw new Error(`contact ${run.contact_id} not found for this account`);
   }
 
-  const value = interpolateVars(cfg.value, run.vars);
+  const value = await renderFlowText(db, run, cfg.value);
 
   // Upsert on the table's UNIQUE(contact_id, custom_field_id) so
   // repeated visits to this node overwrite rather than duplicate.
@@ -1146,7 +1149,7 @@ async function advanceFromNodeKey(
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
           flowRunId: run.id,
-          text: interpolateVars(cfg.text, run.vars),
+          text: await renderFlowText(db, run, cfg.text),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "send_message",
@@ -1180,7 +1183,7 @@ async function advanceFromNodeKey(
           kind: cfg.media_type,
           link: cfg.media_url,
           caption: cfg.caption
-            ? interpolateVars(cfg.caption, run.vars)
+            ? await renderFlowText(db, run, cfg.caption)
             : undefined,
           filename: cfg.filename,
           // An audio node is always a native voice note; engineSendMedia
@@ -1247,7 +1250,7 @@ async function advanceFromNodeKey(
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
           flowRunId: run.id,
-          text: interpolateVars(cfg.prompt_text, run.vars),
+          text: await renderFlowText(db, run, cfg.prompt_text),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "collect_input",
@@ -1783,7 +1786,7 @@ async function handleReplyForActiveRun(
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
           flowRunId: run.id,
-          text: interpolateVars(cfg.prompt_text, run.vars),
+          text: await renderFlowText(db, run, cfg.prompt_text),
         });
       } catch (err) {
         await logEvent(db, run.id, "error", currentNode.node_key, {

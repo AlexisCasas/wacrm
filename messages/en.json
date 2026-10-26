@@ -2531,5 +2531,11 @@
     "phoneUnavailableHint": "This WhatsApp user hides their phone number. You can still chat, run Flows and send replies; actions that need a phone number (calls, broadcasts, exports) are not available for them.",
     "usernameLabel": "WhatsApp username",
     "needsPhone": "Needs a phone number, which this contact does not share."
+  },
+  "variables": {
+    "insert": "Insert variable",
+    "groupContact": "Contact",
+    "groupCustom": "Custom fields",
+    "groupFlow": "Flow variables"
   }
 }

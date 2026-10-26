@@ -178,7 +178,10 @@ describe("C: the contact-name lookup is account-scoped — never leaks another a
 
     await dispatch({ kind: "text", text: "hola", meta_message_id: "m1" });
 
+    // Two lookups: the seed at run start and the send-time render of the unified variables. EVERY one carries both keys.
     expect(h.state.contactLookupEqCalls).toEqual([
+      ["id", "ct-1"],
+      ["account_id", "acct-1"],
       ["id", "ct-1"],
       ["account_id", "acct-1"],
     ]);
