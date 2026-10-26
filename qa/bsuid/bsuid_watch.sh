@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # BSUID Flow watch + circuit breaker (read-only except for the breaker). One local log line per run; sends nothing anywhere.
-#   bsuid_watch.sh [--no-kill]
+#   bsuid_watch.sh [--no-kill]        env: WATCH_ACCOUNTS=<account_id>[,<account_id>...]  restrict the watch AND the breaker to those accounts (cron: Rossy only)
+#                                          WATCH_VIA=cron|manual (recorded in the log)
 # For every account whose BSUID Flow master switch is ON it looks at the last 15 minutes and raises:
 #   A1  >= 3 failed flow runs of hidden-number contacts (send_*_failed)              -> ALERT and CIRCUIT BREAKER (master switch off + every authorization disabled)
 #   A2  any duplicate media send to the same hidden-number contact within 10 min     -> ALERT and CIRCUIT BREAKER
@@ -14,8 +15,11 @@ KILL=${WATCH_KILL_CMD:-/opt/backups/wacrm/bsuid-identity/14_flow_pilot_v3.sh kil
 LOCK=${WATCH_LOCK:-/tmp/wacrm-bsuid-watch.lock}; exec 9>"$LOCK"; flock -n 9 || exit 0
 q(){ docker exec -i $CT psql -U postgres -d $DB -X -At -c "$1" </dev/null 2>/dev/null; }
 ts(){ date -u +%FT%TZ; }
+VIA=${WATCH_VIA:-manual}
 ACCS=$(q "select account_id from bsuid_flow_settings where flows_enabled") || true
-[ -n "${ACCS:-}" ] || { echo "$(ts) OK no account has the BSUID Flow switch on" >> "$LOG"; exit 0; }
+# only the accounts named in WATCH_ACCOUNTS are looked at, and only those can ever be switched off by the breaker (UUIDs only: anything else is ignored)
+if [ -n "${WATCH_ACCOUNTS:-}" ]; then ACCS=$(for a in $ACCS; do case ",$WATCH_ACCOUNTS," in *",$a,"*) echo "$a";; esac; done); fi
+[ -n "${ACCS:-}" ] || { echo "$(ts) OK via=$VIA no watched account has the BSUID Flow switch on" >> "$LOG"; exit 0; }
 SUMMARY=""; ALERTS=""
 for A in $ACCS; do
   P=${A:0:8}
@@ -37,5 +41,5 @@ for A in $ACCS; do
     else ALERTS="$ALERTS account=$P:BREAKER_WOULD_TRIP($kill_reason)"; fi
   fi
 done
-if [ -n "$ALERTS" ]; then echo "$(ts) ALERT$ALERTS |$SUMMARY" >> "$LOG"; exit 1; fi
-echo "$(ts) OK$SUMMARY" >> "$LOG"
+if [ -n "$ALERTS" ]; then echo "$(ts) ALERT via=$VIA$ALERTS |$SUMMARY" >> "$LOG"; exit 1; fi
+echo "$(ts) OK via=$VIA$SUMMARY" >> "$LOG"
