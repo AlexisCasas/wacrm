@@ -74,7 +74,7 @@ async function run(req: Request) {
 }
 const text = (extra: Record<string, unknown>, body = 'hola') => ({ id: `wamid.QA${++seq}`, timestamp: '1700000000', type: 'text', text: { body }, ...extra })
 
-beforeEach(() => { vi.restoreAllMocks(); setup() })
+beforeEach(async () => { vi.restoreAllMocks(); setup(); (await import('@/lib/whatsapp/bsuid-flow-auth')).resetBsuidScopeCache() })
 
 describe('webhook: sender without a phone number (BSUID)', () => {
   it('stores the message and creates the contact and the conversation (held back from automation during the pilot)', async () => {
@@ -435,5 +435,110 @@ describe('log hygiene and diagnostic expiry', () => {
     await run(deliver([text({ from: '51900000002' })], [{ wa_id: '51900000002' }], PN_B))
     expect(logged(spies)).not.toContain('payload shape')
     delete process.env.WEBHOOK_SHAPE_LOG_PHONE_NUMBER_IDS; delete process.env.WEBHOOK_SHAPE_LOG_UNTIL
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Phase 3: a phone-less contact is offered ONLY to the flows the database authorizes for it. Everything else stays held.
+// ---------------------------------------------------------------------------------------------------------------------
+describe('webhook: phone-less contact and authorized Flows (phase 3)', () => {
+  const FLOW = 'f1f1f1f1-0000-4000-8000-000000000001'
+  const authorize = (extra: Record<string, unknown> = {}, flowsOn = true) => {
+    h.db.tables.flows = [{ id: FLOW, account_id: ACC_A, status: 'active' }]
+    h.db.tables.bsuid_flow_settings = flowsOn ? [{ account_id: ACC_A, flows_enabled: true }] : []
+    h.db.tables.bsuid_flow_authorizations = [{ id: 'a1', account_id: ACC_A, flow_id: FLOW, contact_id: null, enabled: true, allow_text: true, expires_at: null, ...extra }]
+    h.db.tables.bsuid_pilot_scopes = []
+  }
+  const first = (body = 'hola') => run(deliver([text({ from_user_id: BSUID }, body)], [{ user_id: BSUID, profile: { name: 'Ana' } }]))
+
+  it('an authorized flow is offered the message, restricted to exactly the authorized flow ids', async () => {
+    await first('seed')                                  // creates the contact
+    authorize()
+    h.dispatchInboundToFlows.mockClear().mockResolvedValue({ consumed: true, flow_run_id: 'run-1', outcome: 'started' })
+    await run(deliver([text({ from_user_id: BSUID }, 'info prensa')], [{ user_id: BSUID }]))
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    const arg = h.dispatchInboundToFlows.mock.calls[0][0] as { restrictToFlowIds: string[]; message: { kind: string; text: string }; contactId: string }
+    expect(arg.restrictToFlowIds).toEqual([FLOW])
+    expect(arg.message).toMatchObject({ kind: 'text', text: 'info prensa' })
+    expect(arg.contactId).toBe(h.db.tables.contacts[0].id)
+  })
+  it('automations, the AI and external webhooks stay held even when a flow answers', async () => {
+    await first('seed'); authorize()
+    h.dispatchInboundToFlows.mockClear().mockResolvedValue({ consumed: true, flow_run_id: 'run-1', outcome: 'started' })
+    await run(deliver([text({ from_user_id: BSUID }, 'info')], [{ user_id: BSUID }]))
+    expect(h.runAutomationsForTrigger).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+    expect(h.dispatchWebhookEvent).not.toHaveBeenCalled()
+    const last = h.db.tables.contact_identity_audit.filter((a) => a.event === 'automation_skipped').pop()
+    expect(last?.detail).toMatchObject({ reason: 'pilot_flows_only', flows: 'flow_started' })
+  })
+  it('no authorization (the default) = exactly the previous hold: no Flow is offered', async () => {
+    await first('seed')
+    h.dispatchInboundToFlows.mockClear()
+    await first('otra')
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.db.tables.contact_identity_audit.filter((a) => a.event === 'automation_skipped').pop()?.detail).toMatchObject({ reason: 'pilot_hold_phoneless_contact' })
+  })
+  it('the account master switch off (kill switch) = hold, even with an enabled flow row', async () => {
+    await first('seed'); authorize({}, false)
+    h.dispatchInboundToFlows.mockClear()
+    await first('otra')
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+  it('a canary authorization for ANOTHER contact does not offer flows to this one', async () => {
+    await first('seed'); authorize({ contact_id: 'someone-else' })
+    h.dispatchInboundToFlows.mockClear()
+    await first('otra')
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+  it('a flow that no longer matches (not consumed) is audited as such and nothing else runs', async () => {
+    await first('seed'); authorize()
+    h.dispatchInboundToFlows.mockClear().mockResolvedValue({ consumed: false, outcome: 'no_match' })
+    await first('algo que no activa nada')
+    expect(h.runAutomationsForTrigger).not.toHaveBeenCalled()
+    expect(h.db.tables.contact_identity_audit.filter((a) => a.event === 'automation_skipped').pop()?.detail).toMatchObject({ flows: 'no_flow_matched' })
+  })
+  it('a database error while reading the authorization fails closed (held)', async () => {
+    await first('seed'); authorize()
+    h.db.failReads.add('rpc:bsuid_flow_scope'); h.dispatchInboundToFlows.mockClear()
+    await first('otra')
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+  it('an interactive reply (button / list) is offered to the runner as an interactive reply', async () => {
+    await first('seed'); authorize()
+    h.dispatchInboundToFlows.mockClear().mockResolvedValue({ consumed: true, flow_run_id: 'run-1', outcome: 'advanced' })
+    await run(deliver([{ id: `wamid.QA${++seq}`, timestamp: '1700000000', type: 'interactive', from_user_id: BSUID, interactive: { type: 'button_reply', button_reply: { id: 'btn_tarapoto', title: 'Tarapoto' } } }], [{ user_id: BSUID }]))
+    const arg = h.dispatchInboundToFlows.mock.calls[0][0] as { message: { kind: string; reply_id?: string; reply_title?: string } }
+    expect(arg.message).toMatchObject({ kind: 'interactive_reply', reply_id: 'btn_tarapoto', reply_title: 'Tarapoto' })
+  })
+  it('a replayed delivery does not offer the flow a second time', async () => {
+    await first('seed'); authorize()
+    h.dispatchInboundToFlows.mockClear().mockResolvedValue({ consumed: true, flow_run_id: 'run-1', outcome: 'started' })
+    const req = () => deliver([{ id: 'wamid.REPLAY1', timestamp: '1700000000', type: 'text', text: { body: 'info' }, from_user_id: BSUID }], [{ user_id: BSUID }])
+    await run(req()); await run(req())
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+  })
+  it('phone contacts are untouched: they still reach every flow without a restriction, whether or not the authorization exists', async () => {
+    authorize()
+    await run(deliver([text({ from: '51900000001' }, 'hola')], [{ wa_id: '51900000001', profile: { name: 'Ana' } }]))
+    const arg = h.dispatchInboundToFlows.mock.calls[0][0] as { restrictToFlowIds?: string[] }
+    expect(arg.restrictToFlowIds).toBeUndefined()
+  })
+  it('another account (outside the pilot) with an authorization row still gets nothing for a BSUID', async () => {
+    authorize()
+    h.db.tables.bsuid_flow_authorizations[0].account_id = ACC_B
+    h.dispatchInboundToFlows.mockClear()
+    await run(deliver([text({ from_user_id: BSUID })], [{ user_id: BSUID }], PN_B))
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.db.tables.contacts.filter((c) => c.account_id === ACC_B)).toHaveLength(0)
+  })
+  it('a number switched on ONLY through bsuid_pilot_scopes (no environment variable) receives and is held/offered like the pilot account', async () => {
+    delete process.env[PILOT]
+    h.db.tables.bsuid_pilot_scopes = [{ account_id: ACC_A, phone_number_id: PN_A, waba_id: WABA_A, enabled: true }]
+    const { resetBsuidScopeCache } = await import('@/lib/whatsapp/bsuid-flow-auth')
+    resetBsuidScopeCache()
+    await first('seed')
+    expect(h.db.tables.contacts.filter((c) => c.account_id === ACC_A)).toHaveLength(1)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
   })
 })

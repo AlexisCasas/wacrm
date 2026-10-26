@@ -122,3 +122,25 @@ See `/opt/backups/wacrm/bsuid-identity/RUNBOOK.md` and `DEPLOY.md`: backup near 
 * A user who later reveals a number keeps their conversation (the phone is recorded on the BSUID contact) unless that number already belongs to another contact, in which case the conflict is only reported.
 * The BSUID format check is `CC.` + 3 to 150 characters of `[A-Za-z0-9._-]`; an id outside that is rejected as `invalid_sender_identity` (loudly) rather than stored. Revisit after the capture in section 9.
 * Out of scope on purpose: the `played` status errors and the SAFARI Flow condition.
+
+## Phase 3 — Flows for contacts known only by a WhatsApp user id (migration 078)
+
+Phase 1–2 held every phone-less contact away from Flows, automations and the AI, and refused every automatic send to a BSUID. Phase 3 opens **one** path, closed by default and managed in the database (no restart):
+
+| Piece | What it does |
+|---|---|
+| `bsuid_pilot_scopes` | business numbers (account + phone_number_id + WABA) with BSUID support on, **in addition to** `WHATSAPP_BSUID_PILOT` (the union applies; cached 10 s; a DB error contributes nothing). Rows are created disabled. |
+| `bsuid_flow_settings` | per-account master switch for Flows on BSUID contacts (account kill switch). Default off. |
+| `bsuid_flow_authorizations` | which flow may serve BSUID contacts: whole account or ONE contact (canary), per modality (`text` always on by default; `media`, `buttons`, `list`, `audio` default off), optional expiry, `enabled` default false. Flow and contact must belong to the same account (trigger). |
+| `bsuid_flow_scope(account, contact)` | flows that may **start or continue** for the contact (switch on, authorization enabled and not expired, flow active, contact in scope). |
+| `bsuid_flow_send_check(account, run, contact, modality)` | per-send check: the run must be a real ACTIVE run of that contact and **every flow of its call stack** (root flow, current flow, subflow frames) must be authorized for that modality. Returns `ok` or the reason. |
+
+All three tables and both functions are service_role only (RLS on, no policies, privileges revoked from anon/authenticated). A browser or the public API cannot ask the question or declare the answer.
+
+**Inbound** (`webhook/route.ts`): a phone-less contact is offered only to `dispatchInboundToFlows({ restrictToFlowIds })`. Other flows behave as if absent; an active run of an unauthorized flow is neither advanced nor answered. Automations, tag-triggered sequences, the AI and external webhooks stay held (audited as `automation_skipped` with `reason: pilot_flows_only|pilot_hold_phoneless_contact`).
+
+**Outbound**: the Flows engine passes `flowRunId` to every send helper; `resolveContactTarget` then uses `origin: 'flow'` and asks `bsuid_flow_send_check` **on every message**, so a kill switch, a disabled flow or an expiry stops the very next message of a run in progress (that run then fails with `send_*_failed`; nothing is retried, nothing is re-sent). No manual credit is used. A sender without a run id (AI, automations, public API) stays `automated` and is refused. A contact with a valid phone number never reaches any of this.
+
+**Operating it**: `qa/bsuid/flow_pilot.sh` (`status`, `kill`, `flows`, `authorize`, `disable`, `scope`). `kill <account>` is immediate and asks nothing.
+
+Not covered by phase 3: automations (tag_added etc.), the AI auto-reply, outbound webhooks and campaigns/templates for BSUID contacts — they remain refused/held. Media, buttons, lists and audio are implemented but each stays off until validated on its own.

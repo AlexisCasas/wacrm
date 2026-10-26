@@ -177,6 +177,37 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
       tables.contact_identity_audit.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: a.p_contact_id, event: 'send_consumed', origin: a.p_origin, detail: { remaining: i.send_authorized_remaining }, created_at: tick() })
       return { data: true, error: null }
     },
+    // Mirrors migration 078 (bsuid_flow_scope / bsuid_flow_send_check); the SQL itself is exercised against PostgreSQL by qa/bsuid.
+    bsuid_flow_scope(a) {
+      const settings = (tables.bsuid_flow_settings ?? []).find((x) => x.account_id === a.p_account_id && x.flows_enabled)
+      if (!settings) return { data: [], error: null }
+      const contact = tables.contacts.find((c) => c.id === a.p_contact_id && c.account_id === a.p_account_id)
+      if (!contact) return { data: [], error: null }
+      const ids = (tables.bsuid_flow_authorizations ?? [])
+        .filter((x) => x.account_id === a.p_account_id && x.enabled && (!x.expires_at || new Date(String(x.expires_at)) > new Date()) && (!x.contact_id || x.contact_id === a.p_contact_id))
+        .filter((x) => (tables.flows ?? []).some((f) => f.id === x.flow_id && f.account_id === a.p_account_id && f.status === 'active'))
+        .map((x) => x.flow_id)
+      return { data: [...new Set(ids)], error: null }
+    },
+    bsuid_flow_send_check(a) {
+      const flag: Record<string, string> = { text: 'allow_text', media: 'allow_media', buttons: 'allow_buttons', list: 'allow_list', audio: 'allow_audio' }
+      if (!flag[String(a.p_modality)]) return { data: 'bad_modality', error: null }
+      const run = (tables.flow_runs ?? []).find((r) => r.id === a.p_run_id && r.account_id === a.p_account_id && r.contact_id === a.p_contact_id && r.status === 'active')
+      if (!run) return { data: 'run_invalid', error: null }
+      if (!(tables.bsuid_flow_settings ?? []).some((x) => x.account_id === a.p_account_id && x.flows_enabled)) return { data: 'flows_disabled', error: null }
+      const flows = new Set<string>([String(run.flow_id)])
+      if (run.current_flow_id) flows.add(String(run.current_flow_id))
+      for (const fr of tables.flow_run_subflow_frames ?? []) if (fr.flow_run_id === run.id) flows.add(String(fr.callee_flow_id))
+      for (const f of flows) {
+        const auths = (tables.bsuid_flow_authorizations ?? [])
+          .filter((x) => x.account_id === a.p_account_id && x.flow_id === f && x.enabled && (!x.expires_at || new Date(String(x.expires_at)) > new Date()) && (!x.contact_id || x.contact_id === a.p_contact_id))
+          .sort((x, y) => Number(Boolean(y.contact_id)) - Number(Boolean(x.contact_id)))
+        const auth = auths[0]
+        if (!auth) return { data: 'flow_not_authorized', error: null }
+        if (!auth[flag[String(a.p_modality)]]) return { data: 'modality_not_allowed', error: null }
+      }
+      return { data: 'ok', error: null }
+    },
     record_blocked_inbound(a) {
       const c = tables.contacts.find((x) => x.id === a.p_contact_id && x.account_id === a.p_account_id)
       if (c) c.blocked_inbound_count = Number(c.blocked_inbound_count ?? 0) + 1

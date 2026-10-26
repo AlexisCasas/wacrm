@@ -63,3 +63,19 @@ export function isBsuidPilotEnabled(subject: PilotSubject, env: Record<string, s
 export function accountHasBsuidPilot(accountId: string, env: Record<string, string | undefined> = process.env): boolean {
   return !!accountId && parseBsuidPilot(env[BSUID_PILOT_ENV]).some((s) => s.accountId === accountId.toLowerCase())
 }
+
+/**
+ * Same decision as `isBsuidPilotEnabled`, but the scope list is the union of the environment variable and the enabled rows of
+ * `bsuid_pilot_scopes` (DB-managed, changes take effect within seconds without a restart). A DB error contributes nothing.
+ */
+export function isBsuidPilotEnabledWithScopes(subject: PilotSubject, dbScopes: BsuidPilotScope[], env: Record<string, string | undefined> = process.env): boolean {
+  if (isBsuidPilotEnabled(subject, env)) return true
+  const { accountId, wabaId, phoneNumberId, envelopeWabaId } = subject
+  if (!accountId || !wabaId || !phoneNumberId) return false
+  if (envelopeWabaId !== undefined && envelopeWabaId !== null && String(envelopeWabaId) !== String(wabaId)) return false
+  return dbScopes.some((s) => s.accountId === accountId.toLowerCase() && s.phoneNumberId === String(phoneNumberId) && s.wabaId === String(wabaId))
+}
+
+export function accountInPilotScopes(accountId: string, dbScopes: BsuidPilotScope[], env: Record<string, string | undefined> = process.env): boolean {
+  return accountHasBsuidPilot(accountId, env) || (!!accountId && dbScopes.some((s) => s.accountId === accountId.toLowerCase()))
+}

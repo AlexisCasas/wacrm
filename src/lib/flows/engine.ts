@@ -389,6 +389,7 @@ async function findEntryFlow(
   accountId: string,
   message: ParsedInbound,
   isFirstInbound: boolean,
+  restrictToFlowIds?: string[],
 ): Promise<FlowRow | null> {
   // A tap used to be rejected outright here, on the reasoning that
   // interactive replies are responses to existing prompts. That holds
@@ -411,7 +412,8 @@ async function findEntryFlow(
     .order("created_at", { ascending: true });
   if (error || !flows) return null;
 
-  const typed = flows as FlowRow[];
+  // BSUID contacts (no phone) may only be offered the flows the database authorizes for them; every other flow behaves as if absent.
+  const typed = (flows as FlowRow[]).filter((f) => !restrictToFlowIds || restrictToFlowIds.includes(f.id));
   for (const flow of typed) {
     if (flow.trigger_type === "keyword") {
       const cfg = flow.trigger_config as KeywordTriggerConfig;
@@ -449,6 +451,7 @@ async function sendButtonsAndSuspend(
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
+    flowRunId: run.id,
     bodyText: cfg.text,
     headerText: cfg.header_text,
     footerText: cfg.footer_text,
@@ -485,6 +488,7 @@ async function sendListAndSuspend(
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
+    flowRunId: run.id,
     bodyText: cfg.text,
     buttonLabel: cfg.button_label,
     headerText: cfg.header_text,
@@ -1141,6 +1145,7 @@ async function advanceFromNodeKey(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
+          flowRunId: run.id,
           text: interpolateVars(cfg.text, run.vars),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
@@ -1171,6 +1176,7 @@ async function advanceFromNodeKey(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
+          flowRunId: run.id,
           kind: cfg.media_type,
           link: cfg.media_url,
           caption: cfg.caption
@@ -1240,6 +1246,7 @@ async function advanceFromNodeKey(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
+          flowRunId: run.id,
           text: interpolateVars(cfg.prompt_text, run.vars),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
@@ -1561,6 +1568,10 @@ export async function dispatchInboundToFlows(
     // contact. For new runs, the partial unique index catches duplicate
     // starts at INSERT time.
     if (activeRun) {
+      // Restricted (BSUID) contact: a run of a flow that is not authorized is neither advanced nor answered (the message is held, as before).
+      if (input.restrictToFlowIds && !input.restrictToFlowIds.includes(activeRun.flow_id)) {
+        return { consumed: false, flow_run_id: activeRun.id, outcome: "no_match" };
+      }
       const dupe = await isDuplicateInbound(
         db,
         input.accountId,
@@ -1596,6 +1607,7 @@ export async function dispatchInboundToFlows(
       input.accountId,
       input.message,
       input.isFirstInboundMessage,
+      input.restrictToFlowIds,
     );
     if (!flow || !flow.entry_node_id) {
       return { consumed: false, outcome: "no_match" };
@@ -1770,6 +1782,7 @@ async function handleReplyForActiveRun(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
+          flowRunId: run.id,
           text: interpolateVars(cfg.prompt_text, run.vars),
         });
       } catch (err) {

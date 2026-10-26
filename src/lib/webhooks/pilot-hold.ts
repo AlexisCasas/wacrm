@@ -6,15 +6,16 @@
  * carry the message text and the WhatsApp message id, which embeds the sender's identifier. The reception itself stays recorded
  * internally (message, conversation, `contact_identity_audit`).
  *
- * Only accounts listed in WHATSAPP_BSUID_PILOT can ever be held, so every other account behaves exactly as before and pays no
+ * Only accounts listed in WHATSAPP_BSUID_PILOT or enabled in bsuid_pilot_scopes can ever be held, so every other account behaves exactly as before and pays no
  * extra query. A read error for a pilot account holds (fails closed).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { accountHasBsuidPilot } from '@/lib/whatsapp/bsuid-pilot'
+import { accountInPilotScopes } from '@/lib/whatsapp/bsuid-pilot'
+import { getDbPilotScopes } from '@/lib/whatsapp/bsuid-flow-auth'
 import { hasPhone } from '@/lib/contacts/display'
 
 export async function externalEventsHeldForContact(db: SupabaseClient, accountId: string, contactId: string | null | undefined): Promise<boolean> {
-  if (!accountHasBsuidPilot(accountId)) return false
+  if (!accountInPilotScopes(accountId, await getDbPilotScopes())) return false
   if (!contactId) return true
   const { data, error } = await db.from('contacts').select('phone').eq('id', contactId).eq('account_id', accountId).maybeSingle()
   if (error || !data) return true

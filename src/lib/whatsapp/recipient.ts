@@ -10,7 +10,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { hasMinRole, isAccountRole } from '@/lib/auth/roles'
 import { isValidE164, phoneVariants, sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils'
-import { isBsuidPilotEnabled } from '@/lib/whatsapp/bsuid-pilot'
+import { isBsuidPilotEnabledWithScopes } from '@/lib/whatsapp/bsuid-pilot'
+import { bsuidFlowSendCheck, getDbPilotScopes, type FlowSendModality } from '@/lib/whatsapp/bsuid-flow-auth'
 
 /** Argument accepted by every send function: a digits-only phone (as before) or `{ bsuid }`. */
 export type WaTarget = string | { bsuid: string }
@@ -31,8 +32,12 @@ export function describeTarget(target: ResolvedTarget): 'phone' | 'bsuid' {
   return target.kind
 }
 
-/** Who is asking to send: a person replying from the Inbox, or anything automatic (Flow, automation, AI, API, audio engines). */
-export type SendOrigin = 'manual_reply' | 'automated'
+/**
+ * Who is asking to send: a person replying from the Inbox (`manual_reply`), a Flow run (`flow`, only from the Flows engine, only with the id of its own
+ * ACTIVE run, and only while the DB authorization of migration 078 allows that flow, contact and modality), or anything else automatic
+ * (automation, AI, public API: `automated`, always refused for a BSUID during the pilot).
+ */
+export type SendOrigin = 'manual_reply' | 'automated' | 'flow'
 
 /**
  * The signed-in person behind a `manual_reply`. ONLY the dashboard send route creates one, from the `requireRole('agent')` context
@@ -41,7 +46,7 @@ export type SendOrigin = 'manual_reply' | 'automated'
  */
 export interface ManualSendActor { userId: string }
 
-export type BsuidSendBlockCode = 'bsuid_disabled' | 'bsuid_automated_blocked' | 'bsuid_not_authorized' | 'bsuid_check_failed'
+export type BsuidSendBlockCode = 'bsuid_disabled' | 'bsuid_automated_blocked' | 'bsuid_not_authorized' | 'bsuid_check_failed' | 'bsuid_flow_not_authorized'
 
 /** Raised instead of sending when the BSUID pilot rules do not allow this message. Nothing was sent and nothing was stored. */
 export class BsuidSendBlockedError extends Error {
@@ -70,7 +75,7 @@ export async function resolveContactTarget(
   db: SupabaseClient,
   accountId: string,
   contact: { id: string; phone?: string | null },
-  opts: { origin: SendOrigin; actor?: ManualSendActor },
+  opts: { origin: SendOrigin; actor?: ManualSendActor; flowRun?: { id: string; modality: FlowSendModality } },
 ): Promise<ResolvedTarget> {
   const sanitized = sanitizePhoneForMeta(contact.phone ?? '')
   if (sanitized && isValidE164(sanitized)) return { kind: 'phone', phone: sanitized }
@@ -92,10 +97,10 @@ export async function resolveContactTarget(
   // consume_bsuid_send / audit_bsuid_event are EXECUTE-able by service_role only (migration 077 revokes them from anon/authenticated on purpose:
   // an agent's own session must never be able to mint or spend a send credit by itself). The Inbox calls this with the agent's RLS client, so the
   // privileged calls below ALWAYS go through the server-side service-role client — after the caller has been verified again here.
-  const block = async (code: BsuidSendBlockCode): Promise<never> => {
+  const block = async (code: BsuidSendBlockCode, reason?: string): Promise<never> => {
     console.warn('[send] BSUID send blocked', { code, origin: opts.origin, account_id: accountId })
     try {
-      await supabaseAdmin().rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contact.id, p_event: 'send_blocked', p_origin: opts.origin, p_detail: { code } })
+      await supabaseAdmin().rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contact.id, p_event: 'send_blocked', p_origin: opts.origin, p_detail: reason ? { code, reason } : { code } })
     } catch { /* the block already holds; the audit is best effort */ }
     throw new BsuidSendBlockedError(code)
   }
@@ -106,7 +111,16 @@ export async function resolveContactTarget(
     .eq('account_id', accountId)
     .maybeSingle()
   const cfg = config as { phone_number_id?: string; waba_id?: string } | null
-  if (configError || !cfg || !isBsuidPilotEnabled({ accountId, phoneNumberId: cfg.phone_number_id, wabaId: cfg.waba_id })) return block('bsuid_disabled')
+  if (configError || !cfg || !isBsuidPilotEnabledWithScopes({ accountId, phoneNumberId: cfg.phone_number_id, wabaId: cfg.waba_id }, await getDbPilotScopes())) return block('bsuid_disabled')
+  if (opts.origin === 'flow') {
+    // A Flow run: no manual credit is used. The run must be a real ACTIVE run of THIS contact and every flow of its call stack must be
+    // authorized for this contact and this modality (bsuid_flow_send_check, evaluated on every send, so the kill switch acts at once).
+    if (!opts.flowRun?.id) return block('bsuid_automated_blocked')
+    const verdict = await bsuidFlowSendCheck(accountId, opts.flowRun.id, contact.id, opts.flowRun.modality)
+    if (verdict === 'check_failed') return block('bsuid_check_failed')
+    if (verdict !== 'ok') return block('bsuid_flow_not_authorized', verdict)
+    return { kind: 'bsuid', bsuid }
+  }
   if (opts.origin !== 'manual_reply') return block('bsuid_automated_blocked')
   // A manual reply must carry the verified person; a bare `origin: 'manual_reply'` from any other code path is not enough.
   if (!opts.actor?.userId) return block('bsuid_automated_blocked')

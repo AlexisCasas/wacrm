@@ -8,7 +8,8 @@ import { resolveInboundContact } from '@/lib/contacts/resolve-identity'
 import { pairContact } from '@/lib/whatsapp/pair-contact'
 import { messageRef } from '@/lib/whatsapp/message-ref'
 import { auditExternalEventHeld, externalEventsHeldForContact } from '@/lib/webhooks/pilot-hold'
-import { isBsuidPilotEnabled } from '@/lib/whatsapp/bsuid-pilot'
+import { isBsuidPilotEnabledWithScopes } from '@/lib/whatsapp/bsuid-pilot'
+import { bsuidFlowScope, getDbPilotScopes } from '@/lib/whatsapp/bsuid-flow-auth'
 import { hasPhone } from '@/lib/contacts/display'
 import { describeShape, shapeLoggingActiveFor } from '@/lib/whatsapp/payload-shape'
 import { findOrCreateConversation } from '@/lib/conversations/find-or-create'
@@ -657,7 +658,7 @@ async function processMessage(
 ) {
   // Server-side BSUID switch for THIS number (off unless account + phone_number_id + WABA are all listed). Off = the
   // behaviour before BSUID support existed: a BSUID is neither stored nor addressed.
-  const bsuidEnabled = isBsuidPilotEnabled({ accountId, wabaId, phoneNumberId, envelopeWabaId })
+  const bsuidEnabled = isBsuidPilotEnabledWithScopes({ accountId, wabaId, phoneNumberId, envelopeWabaId }, await getDbPilotScopes())
 
   // Resolve the sender's identity from the documented fields of BOTH the message and its contact entry: the phone
   // (`from`, else `wa_id`) when Meta shows it, otherwise the business-scoped user id (`from_user_id`, else
@@ -949,12 +950,42 @@ async function processMessage(
   // no active flows take the runner's early-exit "no_match" path
   // basically for free (one indexed SELECT for the active run).
   // ============================================================
-  // PILOT HOLD: a contact known only by a WhatsApp user id is stored and visible in the Inbox, but is NOT offered to Flows,
-  // automations or the AI while the pilot lasts (the send gate in recipient.ts would refuse any automatic reply anyway).
-  // Skipping here also stops a run from starting and failing at its first send. The decision is audited.
+  // The message offered to the Flow runner (identical for phone and phone-less contacts).
+  const flowInboundMessage =
+    interactiveReplyId
+      ? {
+          kind: 'interactive_reply' as const,
+          reply_id: interactiveReplyId,
+          reply_title: contentText ?? '',
+          meta_message_id: message.id,
+        }
+      : {
+          kind: 'text' as const,
+          text: contentText ?? message.text?.body ?? '',
+          meta_message_id: message.id,
+        }
+
+  // PILOT HOLD (phase 3): a contact known only by a WhatsApp user id is stored and visible in the Inbox. It is offered ONLY to the Flows
+  // the database authorizes for it (bsuid_flow_scope: account switch on, flow enabled, not expired, this contact or the whole account).
+  // Automations, tags-triggered sequences and the AI stay held, and so do external webhooks. With no authorized flow (the default) this is
+  // exactly the previous hold. Every decision is audited. The send side re-checks the authorization on every message of the run.
   if (bsuidEnabled && !hasPhone(contactRecord)) {
+    const allowedFlows = await bsuidFlowScope(accountId, contactRecord.id)
+    let flowOutcome = 'not_offered'
+    if (allowedFlows.length > 0) {
+      const heldResult = await dispatchInboundToFlows({
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+        message: flowInboundMessage,
+        isFirstInboundMessage,
+        restrictToFlowIds: allowedFlows,
+      })
+      flowOutcome = heldResult.consumed ? `flow_${heldResult.outcome ?? 'consumed'}` : 'no_flow_matched'
+    }
     await supabaseAdmin()
-      .rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contactRecord.id, p_event: 'automation_skipped', p_origin: 'inbound', p_detail: { reason: 'pilot_hold_phoneless_contact', message_type: message.type } })
+      .rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contactRecord.id, p_event: 'automation_skipped', p_origin: 'inbound', p_detail: { reason: allowedFlows.length > 0 ? 'pilot_flows_only' : 'pilot_hold_phoneless_contact', message_type: message.type, flows: flowOutcome } })
       .then(undefined, () => undefined)
     // External endpoints get nothing for a phone-less contact during the pilot; the reception stays recorded internally.
     await auditExternalEventHeld(supabaseAdmin(), accountId, contactRecord.id, 'message.received')
@@ -966,19 +997,7 @@ async function processMessage(
     userId: configOwnerUserId,
     contactId: contactRecord.id,
     conversationId: conversation.id,
-    message:
-      interactiveReplyId
-        ? {
-            kind: 'interactive_reply',
-            reply_id: interactiveReplyId,
-            reply_title: contentText ?? '',
-            meta_message_id: message.id,
-          }
-        : {
-            kind: 'text',
-            text: contentText ?? message.text?.body ?? '',
-            meta_message_id: message.id,
-          },
+    message: flowInboundMessage,
     isFirstInboundMessage,
   })
   const flowConsumed = flowResult.consumed

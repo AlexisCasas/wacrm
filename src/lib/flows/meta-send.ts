@@ -19,6 +19,12 @@ import { isVoiceNoteUrlForAccount } from '@/lib/media/voice-note-path'
 import { isMediaAudioEnabledForAccount } from './voice-note-capability'
 import { supabaseAdmin } from './admin-client'
 import { resolveContactTarget, targetAttempts, type WaTarget } from '@/lib/whatsapp/recipient'
+import type { FlowSendModality } from '@/lib/whatsapp/bsuid-flow-auth'
+
+/** A send made by a Flow run says so (and which run); anything else stays `automated`, which a BSUID contact refuses. */
+function flowOrAutomated(flowRunId: string | undefined, modality: FlowSendModality) {
+  return flowRunId ? ({ origin: 'flow', flowRun: { id: flowRunId, modality } } as const) : ({ origin: 'automated' } as const)
+}
 
 // ------------------------------------------------------------
 // Flows-side Meta sender (interactive variants).
@@ -47,6 +53,9 @@ interface SendTextEngineArgs {
   conversationId: string
   contactId: string
   text: string
+  /** The Flow run that sends this message. Set ONLY by the Flows engine; it is what lets a phone-less (BSUID) contact be served, and it is
+   *  re-checked against the database (an active run of this contact whose whole flow stack is authorized) on every send. */
+  flowRunId?: string
   /** Marks the persisted message row `ai_generated = true` so the inbox
    *  badges it as an AI reply. Only the auto-reply bot sets this;
    *  deterministic Flow/automation sends leave it false. */
@@ -104,7 +113,7 @@ export async function engineSendText(
   }
 
   // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
-  const target = await resolveContactTarget(db, args.accountId, contact, { origin: 'automated' })
+  const target = await resolveContactTarget(db, args.accountId, contact, flowOrAutomated(args.flowRunId, 'text'))
   const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
@@ -239,6 +248,7 @@ interface SendMediaEngineArgs {
   userId: string
   conversationId: string
   contactId: string
+  flowRunId?: string
   kind: MediaKind
   /** Public URL Meta fetches at send time — also the canonical asset
    *  reference persisted regardless of transport (see the ManyChat
@@ -334,7 +344,7 @@ export async function engineSendMedia(
   }
 
   // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
-  const target = await resolveContactTarget(db, args.accountId, contact, { origin: 'automated' })
+  const target = await resolveContactTarget(db, args.accountId, contact, flowOrAutomated(args.flowRunId, args.kind === 'audio' ? 'audio' : 'media'))
   const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
@@ -495,6 +505,7 @@ interface SendInteractiveButtonsEngineArgs {
   userId: string
   conversationId: string
   contactId: string
+  flowRunId?: string
   bodyText: string
   buttons: InteractiveButton[]
   headerText?: string
@@ -506,6 +517,7 @@ interface SendInteractiveListEngineArgs {
   userId: string
   conversationId: string
   contactId: string
+  flowRunId?: string
   bodyText: string
   buttonLabel: string
   sections: InteractiveListSection[]
@@ -568,7 +580,7 @@ async function sendInteractiveViaMeta(
   }
 
   // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
-  const target = await resolveContactTarget(db, input.accountId, contact, { origin: 'automated' })
+  const target = await resolveContactTarget(db, input.accountId, contact, flowOrAutomated(input.flowRunId, input.kind === 'list' ? 'list' : 'buttons'))
   const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db

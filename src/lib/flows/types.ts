@@ -534,6 +534,12 @@ export interface DispatchInboundInput {
   contactId: string;
   conversationId: string;
   message: ParsedInbound;
+  /**
+   * Set ONLY by the webhook, for a contact known only by a WhatsApp user id (BSUID): the ids of the flows the database authorizes for that
+   * contact (bsuid_flow_scope). Every other flow is treated as absent, and an active run of a flow outside this list is neither advanced
+   * nor answered. Undefined (every phone contact) = unchanged behavior.
+   */
+  restrictToFlowIds?: string[];
 }
 
 export interface DispatchInboundResult {

@@ -4,8 +4,8 @@
 # Never touches a real database: the container has no network and is removed at the end.
 set -uo pipefail
 : "${SCHEMA_DUMP:?set SCHEMA_DUMP to a pg_dump -Fc file of the schema at migration 076}"
-HERE=$(cd "$(dirname "$0")" && pwd); MIG="$HERE/../../supabase/migrations/077_contact_identities_bsuid.sql"
-C=wa-bsuid-qa-pg; W=$(mktemp -d); cp "$SCHEMA_DUMP" "$W/full.dump"; cp "$MIG" "$HERE/migration-077.test.sql" "$HERE/pilot_list.sql" "$W/"
+HERE=$(cd "$(dirname "$0")" && pwd); MIG="$HERE/../../supabase/migrations/077_contact_identities_bsuid.sql"; MIG78="$HERE/../../supabase/migrations/078_bsuid_flow_authorizations.sql"
+C=wa-bsuid-qa-pg; W=$(mktemp -d); cp "$SCHEMA_DUMP" "$W/full.dump"; cp "$HERE/flow_pilot.sh" "$W/"; cp "$MIG" "$MIG78" "$HERE/migration-077.test.sql" "$HERE/migration-078.test.sql" "$HERE/pilot_list.sql" "$W/"
 trap 'docker rm -f $C >/dev/null 2>&1; shred -u "$W/full.dump" 2>/dev/null; rm -rf "$W"' EXIT
 docker rm -f $C >/dev/null 2>&1
 docker run -d --name $C --network none -e POSTGRES_PASSWORD=x -v "$W":/w:ro postgres:17-alpine >/dev/null
@@ -41,3 +41,20 @@ PC=$(docker exec $C psql -U postgres -d v -At -c "select id from contacts where 
 printf "  phone-less, own account: %s (expected 1)\n" "$(docker exec $C psql -U postgres -d v -At -c "$(printf "$VQ" "$RC" a1a1a1a1-0000-4000-8000-00000000000a)")"
 printf "  phone contact: %s (expected 0)\n" "$(docker exec $C psql -U postgres -d v -At -c "$(printf "$VQ" "$PC" a1a1a1a1-0000-4000-8000-00000000000a)")"
 printf "  phone-less, OTHER account id: %s (expected 0)\n" "$(docker exec $C psql -U postgres -d v -At -c "$(printf "$VQ" "$RC" b2b2b2b2-0000-4000-8000-00000000000b)")"
+
+echo "== apply 078 (1st) and (2nd, idempotency), then its checks"
+docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/078_bsuid_flow_authorizations.sql" && echo "078 applied"
+docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/078_bsuid_flow_authorizations.sql" && echo "078 applied again"
+docker exec -i $C psql -U postgres -d v -X -q -f /w/migration-078.test.sql 2>&1 | grep -E "PASS|FAIL|ERROR"
+
+echo "== operator script flow_pilot.sh against the disposable database"
+FP() { FLOW_PILOT_CONTAINER=$C FLOW_PILOT_DB=v FLOW_PILOT_LOG=$W/fp.log bash "$W/flow_pilot.sh" "$@"; }
+QA_A=a1a1a1a1-0000-4000-8000-00000000000a; QA_F1=f1f1f1f1-0000-4000-8000-000000000001
+docker exec $C psql -U postgres -d v -Atq -c "delete from bsuid_flow_authorizations; delete from bsuid_flow_settings; delete from bsuid_pilot_scopes"
+FP status >/dev/null 2>&1 && echo "PASS status runs" || echo "FAIL status"
+echo "not typed" | FP authorize $QA_A $QA_F1 >/dev/null 2>&1; echo "authorizations after an UNCONFIRMED authorize (expected 0): $(docker exec $C psql -U postgres -d v -At -c 'select count(*) from bsuid_flow_authorizations')"
+printf 'AUTHORIZE %s\n' "${QA_F1:0:8}" | FP authorize $QA_A $QA_F1 --hours 2 >/dev/null 2>&1; echo "authorizations after a CONFIRMED authorize (expected 1, enabled, text only, expiring): $(docker exec $C psql -U postgres -d v -At -c "select count(*)||' '||bool_and(enabled)||' '||bool_and(allow_text and not allow_media and not allow_audio)||' '||bool_and(expires_at is not null) from bsuid_flow_authorizations")"
+FP flows $QA_A on >/dev/null 2>&1; echo "master switch (expected t): $(docker exec $C psql -U postgres -d v -At -c "select flows_enabled from bsuid_flow_settings where account_id='$QA_A'")"
+echo "flow of ANOTHER account is refused (expected 1 line 'not an ACTIVE flow'): $(echo x | FP authorize b2b2b2b2-0000-4000-8000-00000000000b $QA_F1 2>&1 | grep -c 'not an ACTIVE flow')"
+FP kill $QA_A >/dev/null 2>&1; echo "after kill (expected f and 0 enabled): $(docker exec $C psql -U postgres -d v -At -c "select (select flows_enabled from bsuid_flow_settings where account_id='$QA_A')||' '||(select count(*) from bsuid_flow_authorizations where enabled)")"
+echo "scope with a triple that is not in whatsapp_config is refused (expected 1): $(FP scope $QA_A 1111111111 2222222222 off 2>&1 | grep -c 'not in whatsapp_config')"
