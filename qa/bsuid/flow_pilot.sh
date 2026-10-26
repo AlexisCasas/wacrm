@@ -6,6 +6,11 @@
 #   authorize <account_id> <flow_id> [--contact <contact_id>] [--media] [--buttons] [--list] [--audio] [--hours N]
 #                                            enable ONE flow (text always; other modalities only if named); asks you to type the confirmation
 #   disable <account_id> <flow_id> [--contact <contact_id>]   switch one authorization off (no confirmation asked)
+#   list <account_id> [hours]                read-only: hidden-number contacts created in the last N hours (default 24): full contact id, username, first message time, flow runs; no technical ids of the user
+#   safe-flows <account_id>                  read-only: which ACTIVE flows are eligible for the BSUID rollout (only start/end, send_message, delay <= 10 min in total, send_media image|document,
+#                                            set_contact_field; at least one send) and why each other flow is not (set_tag, subflow, buttons/list/audio, conditions, long waits...)
+#   batch <account_id> <count> [--media]     authorize the next <count> ELIGIBLE flows (not yet authorized) for the whole account, text (+ media with --media); typed confirmation;
+#                                            the account master switch is NOT touched (turn it on with `flows`)
 #   endruns <account_id> <contact_id>        end the ACTIVE flow runs of ONE contact (e.g. when a canary test is over), so no deferred step is left to fail later;
 #                                            asks you to type the confirmation; the run is closed as completed with end_reason canary_closed_by_operator
 #   scope <account_id> <phone_number_id> <waba_id> on|off     number-level BSUID support (union with WHATSAPP_BSUID_PILOT); must match whatsapp_config
@@ -17,6 +22,21 @@ UUID='^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; DIG='^[0-
 psqlq(){ docker exec -i ${FLOW_PILOT_CONTAINER:-supabase-db} psql -U postgres -d ${FLOW_PILOT_DB:-postgres} -X -P pager=off "$@" </dev/null; }
 say(){ printf '%s %s\n' "$(date -u +%FT%TZ)" "$*" | tee -a "$LOG"; }
 need_uuid(){ [[ "${1:-}" =~ $UUID ]] || { echo "not a UUID: ${1:-}"; exit 1; }; }
+
+# eligibility of a flow for the BSUID rollout (shared by safe-flows and batch)
+ELIG_SQL="with f as (select id, name from flows where account_id='%ACC%' and status='active'),
+ n as (select f.id fid, n.node_type, n.config from f join flow_nodes n on n.flow_id=f.id),
+ x as (select f.id, f.name,
+   (select count(*) from n where fid=f.id and node_type in ('send_message','send_media')) sends,
+   (select count(*) from n where fid=f.id and node_type not in ('start','end','send_message','delay','send_media','set_contact_field')) bad_nodes,
+   (select string_agg(distinct node_type, ',') from n where fid=f.id and node_type not in ('start','end','send_message','delay','send_media','set_contact_field')) bad_types,
+   (select count(*) from n where fid=f.id and node_type='send_media' and coalesce(config->>'media_type','') not in ('image','document')) bad_media,
+   (select coalesce(sum(case when config->>'unit'='hours' then (config->>'amount')::numeric*3600 when config->>'unit'='minutes' then (config->>'amount')::numeric*60 when config->>'unit'='days' then (config->>'amount')::numeric*86400 else coalesce((config->>'seconds')::numeric,0) end),0) from n where fid=f.id and node_type='delay') delay_s,
+   (select count(*) from n where fid=f.id and node_type='send_media') media,
+   exists (select 1 from bsuid_flow_authorizations a where a.flow_id=f.id and a.account_id='%ACC%') authorized
+  from f)
+select id, name, sends, media, delay_s, authorized,
+ case when sends=0 then 'no sends' when bad_nodes>0 then 'node types: '||bad_types when bad_media>0 then 'media type not image/document' when delay_s>600 then 'waits longer than 10 minutes' else 'eligible' end as verdict from x"
 cmd=${1:-}; shift || true
 case "$cmd" in
   status)
@@ -50,6 +70,18 @@ case "$cmd" in
     COND=$([ -n "$C" ] && echo "contact_id='$C'" || echo "true")
     N=$(psqlq -At -c "with u as (update bsuid_flow_authorizations set enabled=false where account_id='$A' and flow_id='$F' and $COND returning 1) select count(*) from u")
     say "DISABLED flow ${F:0:8} account ${A:0:8} rows=$N" ;;
+  list) A=${1:-}; H=${2:-24}; need_uuid "$A"; [[ "$H" =~ ^[0-9]{1,3}$ ]] || exit 1
+    psqlq -c "select c.id as contact_id, to_char(c.created_at at time zone 'utc','MM-DD HH24:MI') as created_utc, coalesce('@'||c.wa_username,'-') as username, left(c.name,1)||'***' as name_masked, (select count(*) from messages m join conversations cv on cv.id=m.conversation_id where cv.contact_id=c.id and m.sender_type='customer') as customer_msgs, (select count(*) from flow_runs r where r.contact_id=c.id) as flow_runs from contacts c where c.account_id='$A' and c.phone_optional and c.created_at > now() - interval '$H hours' order by c.created_at desc limit 50" ;;
+  safe-flows) A=${1:-}; need_uuid "$A"
+    psqlq -c "select left(id::text,8) as flow, name, sends, media, delay_s::int as delay_s, case when authorized then 'yes' else 'no' end as authorized, verdict from (${ELIG_SQL//%ACC%/$A}) v order by (verdict='eligible') desc, name" ;;
+  batch) A=${1:-}; K=${2:-}; M=false; shift 2 || true; need_uuid "$A"; [[ "$K" =~ ^[0-9]{1,3}$ ]] && [ "$K" -ge 1 ] || { echo "count 1-999"; exit 1; }
+    while [ $# -gt 0 ]; do case "$1" in --media) M=true; shift;; *) echo "unknown $1"; exit 1;; esac; done
+    LIST=$(psqlq -At -c "select id from (${ELIG_SQL//%ACC%/$A}) v where verdict='eligible' and not authorized order by name limit $K")
+    N=$(printf '%s\n' "$LIST" | grep -c . || true); [ "$N" -ge 1 ] || { echo "no eligible flow left to authorize"; exit 0; }
+    echo "$N flow(s) would be authorized for the WHOLE account (text$([ $M = true ] && echo ' + media')):"; psqlq -At -c "select '  '||left(id::text,8)||'  '||name from flows where id in ($(printf '%s\n' "$LIST" | sed "s/.*/'&'/" | paste -sd, -)) order by name"
+    read -r -p "Type BATCH $N to enable them: " ANS; [ "$ANS" = "BATCH $N" ] || { echo "not confirmed; nothing changed"; exit 1; }
+    psqlq -At -c "insert into bsuid_flow_authorizations(account_id,flow_id,contact_id,enabled,allow_text,allow_media,note) select '$A', id, null, true, true, $M, 'flow_pilot.sh batch' from flows where id in ($(printf '%s\n' "$LIST" | sed "s/.*/'&'/" | paste -sd, -)) on conflict do nothing" >/dev/null
+    say "BATCH account ${A:0:8} authorized=$N media=$M"; echo "Remember: the account master switch must be on (flows $A on)." ;;
   endruns) A=${1:-}; C=${2:-}; need_uuid "$A"; need_uuid "$C"
     N=$(psqlq -At -c "select count(*) from flow_runs where account_id='$A' and contact_id='$C' and status='active'")
     [ "$N" != 0 ] || { echo "no active run for that contact; nothing to do"; exit 0; }
@@ -63,5 +95,5 @@ case "$cmd" in
     V=$([ "$S" = on ] && echo true || echo false)
     psqlq -At -c "insert into bsuid_pilot_scopes(account_id,phone_number_id,waba_id,enabled,note) values ('$A','$P','$W',$V,'flow_pilot.sh') on conflict (account_id,phone_number_id,waba_id) do update set enabled=$V, updated_at=now()" >/dev/null
     say "SCOPE account ${A:0:8} number ${P} -> $S" ;;
-  *) sed -n '2,16p' "$0"; exit 1 ;;
+  *) sed -n '2,22p' "$0"; exit 1 ;;
 esac

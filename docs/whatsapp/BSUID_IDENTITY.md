@@ -158,3 +158,12 @@ is another contact. What stays held for such a contact: Flows (unless a flow is 
 
 Switching it off (`... scope ... off`) returns reception to the previous behavior (a BSUID-only event is dropped with the legacy reason); nothing already stored is touched.
 `qa/bsuid/flow_pilot.sh endruns <account> <contact>` closes the active (deferred) flow runs of ONE contact so a finished canary leaves no step that is certain to fail later.
+
+## Phase 4B preparation — Rossy's flows (audit of the 71 active flows, 2026-10-26)
+70 product flows share one shape: `start` → 1–2 `set_contact_field` → 5 `send_message` + 1–4 `send_media` (images only) separated by `delay` nodes of 3 s (15–21 s in total) → `end`; one flow ("TEST - Disparo
+seguimiento durable") has a `set_tag` and no sends. No buttons, lists, conditions, subflows, documents or audio, and no wait longer than 21 s: a run finishes in well under a minute inside one request.
+`flow_pilot.sh safe-flows <account>` lists them with an eligibility verdict (allowed node types, media image|document, delays ≤ 10 min in total, at least one send); `batch <account> <n> [--media]` authorizes the
+next n eligible flows for the whole account. `src/lib/flows/bsuid-rossy.engine.test.ts` runs a flow of exactly this shape through the REAL runner for a phone-less contact (synthetic).
+
+Known defect, independent of BSUID: 44 of these flows greet with `Hola estimado {{first_name}} 🤗`, but the runner only interpolates `{{vars.<key>}}`; 194 of the 652 greetings Rossy sent in the last 24 h carry the literal `{{first_name}}`.
+Hidden-number customers will see the same text. It is NOT fixed in the BSUID image (it changes customer-facing text for every account); a separate, optional commit/branch carries the fix.
