@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildCatalog, flowVarKeys, fieldSlug, hasPlaceholders, renderTemplate, renderWithData, type VariableData } from "./index";
+import { LEGACY_IMPORT_TOKEN, buildCatalog, flowVarKeys, fieldSlug, hasPlaceholders, renderTemplate, renderWithData, type VariableData } from "./index";
 import { createInMemoryDb } from "@/test/in-memory-db";
 
 const F_PROD = "11111111-1111-4111-8111-111111111111";
@@ -84,11 +84,16 @@ describe("missing values, defaults and unknown tokens", () => {
   });
   it("unknown tokens: `keep` leaves them as written (flows), `empty` removes them (automations)", () => {
     expect(renderWithData("a {{cuf_14160052}} b", data(), { unknown: "keep" }).text).toBe("a {{cuf_14160052}} b");
-    expect(renderWithData("a {{cuf_14160052}} b", data(), { unknown: "empty" }).text).toBe("a  b");
+    expect(renderWithData("a {{cuf_14160052}} b", data(), { unknown: "empty" }).text).toBe("a b");
   });
-  it("Meta positional placeholders and non-token braces are never touched", () => {
+  it("Meta positional placeholders and non-token braces are never touched, even when unknown tokens render empty", () => {
     const t = "Pedido {{1}} {{ 2 }} {{no valido}} {x}";
     expect(renderWithData(t, data(), { unknown: "keep" }).text).toBe("Pedido {{1}} {{ 2 }} {{no valido}} {x}");
+    expect(renderWithData(t, data(), { unknown: "empty" }).text).toBe("Pedido {{1}} {{ 2 }} {{no valido}} {x}");
+  });
+  it("keepUnknown: only the legacy import shape survives as written; any other unknown token renders nothing", () => {
+    const r = renderWithData("a {{cuf_14160052}} b {{otra_cosa}} c", data(), { unknown: "empty", keepUnknown: LEGACY_IMPORT_TOKEN });
+    expect(r.text).toBe("a {{cuf_14160052}} b c");
   });
   it("a value containing a placeholder is not expanded again (single pass)", () => {
     const d = data({ contact: { name: "{{email}} X" } });
@@ -157,5 +162,62 @@ describe("catalog for the picker", () => {
   it("an ambiguous slug offers no alias; the inserted token is always the stable one", () => {
     const f = [...data().fields, { id: "77777777-7777-4777-8777-777777777777", field_name: "PRODUCTO" }];
     expect(buildCatalog(f).filter((e) => e.group === "custom" && /producto/i.test(e.label)).every((e) => e.alias === undefined)).toBe(true);
+  });
+});
+
+describe("empty values never leave gaps or raw tokens", () => {
+  const noName = data({ contact: { name: "", email: null, company: null, phone: "" }, vars: {} });
+  it("a contact without a name: the greeting closes up instead of 'Hola estimado  🤗'", () => {
+    expect(renderWithData("Hola estimado {{first_name}} 🤗", noName).text).toBe("Hola estimado 🤗");
+    expect(renderWithData("Hola {{first_name}}, ¿en qué te ayudo?", noName).text).toBe("Hola, ¿en qué te ayudo?");
+    expect(renderWithData("{{first_name}} te saluda", noName).text).toBe("te saluda");
+    expect(renderWithData("Línea 1\n{{first_name}} línea 2", noName).text).toBe("Línea 1\nlínea 2");
+    expect(renderWithData("Hola {{first_name}}!", noName).text).toBe("Hola!");
+  });
+  it("an explicit fallback is used instead: {{first_name | estimado cliente}}", () => {
+    expect(renderWithData("Hola {{first_name | estimado cliente}} 🤗", noName).text).toBe("Hola estimado cliente 🤗");
+  });
+  it("a first word that is only symbols or digits is not used as a first name", () => {
+    expect(renderWithData("Hola {{first_name}} 🤗", data({ contact: { name: "🎨🔧 Luis" } })).text).toBe("Hola 🤗");
+    expect(renderWithData("Hola {{first_name}} 🤗", data({ contact: { name: "Luismi...🎨" } })).text).toBe("Hola Luismi...🎨 🤗");
+    expect(renderWithData("{{full_name}}", data({ contact: { name: "🎨🔧 Luis" } })).text).toBe("🎨🔧 Luis");
+  });
+  it("several empty values in a row do not stack spaces; text without variables is never touched", () => {
+    expect(renderWithData("A {{first_name}} {{email}} {{company}} B", noName).text).toBe("A B");
+    expect(renderWithData("Texto  con  dos  espacios {1}", noName).text).toBe("Texto  con  dos  espacios {1}");
+    expect(renderWithData("Hola  {{first_name}}  fin", data()).text).toBe("Hola  Angelo  fin");
+  });
+  it("no raw {{token}} survives for a known variable, in any of its forms", () => {
+    const out = renderWithData("{{first_name}}|{{vars.nada}}|{{custom:" + F_PROD + "}}|{{producto}}|{{precio}}", { ...noName, customValues: {} }).text;
+    expect(out).not.toMatch(/\{\{/);
+  });
+});
+
+describe("aliases: legacy references mapped to a field by data (no field name in code)", () => {
+  const withAlias = (aliases: unknown) => data({ fields: data().fields.map((f) => (f.id === F_CITY ? { ...f, field_options: { aliases } } : f)) });
+  it("{{cuf_14160052}} renders the field that lists it as an alias, whatever the field is called", () => {
+    expect(renderWithData("Ya le indico {{cuf_14160052}} 😊", withAlias(["cuf_14160052"])).text).toBe("Ya le indico Lima 😊");
+    expect(renderWithData("{{CUF_14160052}}", withAlias(["cuf_14160052"])).text).toBe("Lima");
+  });
+  it("without a mapping the legacy reference stays as written in flows (stored text unchanged) and is reported", () => {
+    const r = renderWithData("Ya le indico {{cuf_14160052}} 😊", data(), { unknown: "keep" });
+    expect(r.text).toBe("Ya le indico {{cuf_14160052}} 😊");
+    expect(r.warnings).toEqual([{ token: "cuf_14160052", reason: "unknown_variable" }]);
+  });
+  it("an alias cannot shadow a standard field; the same alias on two fields is ambiguous; malformed alias data is ignored", () => {
+    expect(renderWithData("{{email}}", withAlias(["email"])).text).toBe("a@x.test");
+    const two = data({ fields: data().fields.map((f) => ({ ...f, field_options: { aliases: ["dup"] } })) });
+    expect(renderWithData("[{{dup|?}}]", two).text).toBe("[?]");
+    expect(renderWithData("{{cuf_1|x}}", withAlias("cuf_1")).text).toBe("x");
+    expect(renderWithData("{{cuf_1|x}}", withAlias([1, null, {}])).text).toBe("x");
+  });
+  it("an alias works through the loader (field_options is read from the account's own field definitions)", async () => {
+    const mem = createInMemoryDb({
+      contacts: [{ id: "c1", account_id: "A", name: "Ana Pérez" }],
+      custom_fields: [{ id: F_CITY, account_id: "A", field_name: "Destino", field_options: { aliases: ["cuf_14160052"] } }],
+      contact_custom_values: [{ contact_id: "c1", custom_field_id: F_CITY, value: "Tarapoto" }],
+    });
+    expect((await renderTemplate(mem.client as never, "Ya le indico {{cuf_14160052}}", { accountId: "A", contactId: "c1" })).text).toBe("Ya le indico Tarapoto");
+    expect((await renderTemplate(mem.client as never, "Ya le indico {{cuf_14160052|-}}", { accountId: "B", contactId: "c1" })).text).toBe("Ya le indico -");
   });
 });

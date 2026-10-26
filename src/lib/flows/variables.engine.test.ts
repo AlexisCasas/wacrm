@@ -22,7 +22,6 @@ import { resetBsuidScopeCache } from "@/lib/whatsapp/bsuid-flow-auth";
 
 const ACC = "c35b393f-aaaa-4bbb-8ccc-00000000c35b";
 const FLOW = "b303ca23-0000-4000-8000-00000000b303";
-const OTHER_FLOW = "99999999-0000-4000-8000-000000000099";
 const F1 = "d08e0270-1ab4-4e52-bb1b-03b24e2d227c";
 const F2 = "f037f018-87d9-4995-bbc7-5409b536f739";
 const BSUID = "PE.ROSSYQA0000000001";
@@ -103,7 +102,7 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs(); vi.restoreAllMocks(); 
 const texts = () => h.sendTextMessage.mock.calls.map((c) => (c[0] as { text: string }).text);
 
 describe("unified variables in a running flow (hidden-number contact)", () => {
-  it("resolves standard fields, custom fields (by slug and by stable id), flow vars, fallbacks; leaves {{1}} and unknown tokens as written", async () => {
+  it("resolves standard fields, custom fields (by slug and by stable id), flow vars, fallbacks; leaves {{1}} and the legacy cuf_ reference as written", async () => {
     setup(); await say("amoladora total", "wamid.IN1", [FLOW]);
     expect(texts()[0]).toBe("Hola Ana, el producto Prensa de banco SAFARI cuesta S/ 110. Tu ciudad: por confirmar. Estable: Prensa de banco SAFARI. Antiguo: Ana María Pérez Quispe. Num: {{1}} Sin definir: {{cuf_14160052}}");
   });
@@ -132,6 +131,30 @@ describe("unified variables in a running flow (hidden-number contact)", () => {
     mem.table("contact_custom_values").push({ contact_id: "ct-x", custom_field_id: "ffffffff-0000-4000-8000-00000000ffff", value: "Secreta" });
     const { renderTemplate } = await import("@/lib/variables");
     const r = await renderTemplate(mem.client as never, "{{first_name}} {{email}} {{ciudad|-}}", { accountId: ACC, contactId: "ct-x" });
-    expect(r.text).toBe("  -");
+    expect(r.text).toBe("-");
+  });
+  it("ACCEPTANCE: name + product + price configured in the message become the contact's stored values (field written by an earlier node)", async () => {
+    setup(); await say("amoladora total", "wamid.IN1", [FLOW]);
+    expect(texts()[0]).toContain("Hola Ana, el producto Prensa de banco SAFARI cuesta S/ 110.");
+  });
+  it("a contact with NO name: no double spaces, no raw token; the flow still runs and every message is sent", async () => {
+    setup(); mem.table("contacts")[0].name = "";
+    await say("amoladora total", "wamid.IN1", [FLOW]);
+    expect(texts()).toHaveLength(2);
+    expect(texts()[1]).toBe("| | | [] | [ana@example.test] | [Ferretería Ana]".replace(/^\| \| \| /, "| | | "));
+    for (const t of texts()) { expect(t).not.toMatch(/ {2}/); }
+    expect(texts()[0].startsWith("Hola, el producto")).toBe(true);
+  });
+  it("a renamed custom field keeps working by its stable id; the old friendly name stops matching and renders nothing", async () => {
+    setup(); mem.table("custom_fields").find((f) => f.id === F2)!.field_name = "Equipo";
+    await say("amoladora total", "wamid.IN1", [FLOW]);
+    expect(texts()[0]).toContain("Estable: Prensa de banco SAFARI");
+    expect(texts()[0]).toContain("el producto cuesta S/ 110"); // {{producto}} no longer exists -> not guessed, renders nothing (no raw braces)
+    expect(texts()[0]).not.toContain("{{producto}}");
+  });
+  it("a legacy reference mapped by data ({{cuf_14160052}} -> field_options.aliases) resolves; a field name is never needed in code", async () => {
+    setup(); mem.table("custom_fields").find((f) => f.id === F1)!.field_options = { aliases: ["cuf_14160052"] };
+    await say("amoladora total", "wamid.IN1", [FLOW]);
+    expect(texts()[0]).toContain("Sin definir: S/ 110");
   });
 });

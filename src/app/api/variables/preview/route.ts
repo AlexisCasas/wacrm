@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { requireRole, toErrorResponse } from "@/lib/auth/account";
-import { renderTemplate } from "@/lib/variables";
+import { LEGACY_IMPORT_TOKEN, renderTemplate } from "@/lib/variables";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -23,7 +23,7 @@ export async function POST(req: NextRequest) {
       ctx.supabase,
       body.template,
       { accountId: ctx.accountId, contactId: body.contact_id },
-      { unknown: "keep" },
+      { unknown: "empty", keepUnknown: LEGACY_IMPORT_TOKEN },
     );
     return NextResponse.json({ text, warnings });
   } catch (err) {

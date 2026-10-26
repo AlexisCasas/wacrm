@@ -9,6 +9,7 @@
  *   Custom fields, STABLE reference             custom:<field uuid>   (also accepted: custom.<uuid>); survives renaming the field
  *   Custom fields, friendly reference           custom.<slug>         slug of the field name: "Producto" -> producto, "Ciudad de envío" -> ciudad_de_envio
  *   Bare name                                   <slug>                same as custom.<slug>, only when it is not a reserved standard name
+ *   Alias                                       <alias>               any string in the field's `field_options.aliases` (legacy references from imports); checked before the slug
  *
  * Reserved standard names always win; a custom field called "Email" is reached with `custom.email` or its id. Two fields with the same slug are
  * ambiguous: the friendly form renders as missing (never as a guess) and the id form must be used.
@@ -31,6 +32,11 @@ export interface CustomFieldDef {
   id: string;
   field_name: string;
   field_type?: string | null;
+  /**
+   * `field_options.aliases`: extra references that resolve to this field (e.g. an id carried over from an import such as `cuf_14160052`).
+   * Data, not code: an owner maps a legacy reference to a field by editing the field, no field name is known to the engine.
+   */
+  field_options?: { aliases?: unknown } | null;
 }
 
 export interface VariableData {
@@ -44,9 +50,13 @@ export interface VariableData {
 }
 
 export type Unresolved = "empty" | "keep";
+/** Reference format carried over from an import (ManyChat custom user fields): `cuf_<digits>`. Not a field name; just the shape of the old id. */
+export const LEGACY_IMPORT_TOKEN = /^cuf_\d+$/i;
 export interface RenderOptions {
-  /** What to do with a token that does not name any known variable. `keep` leaves it as written (flows: stored text never changes). */
+  /** What to do with a token that does not name any known variable: `empty` renders nothing (default), `keep` leaves it as written. */
   unknown?: Unresolved;
+  /** Unknown tokens matching this are left as written even when `unknown` is `empty`: stored legacy references stay visible until an owner maps them. */
+  keepUnknown?: RegExp;
 }
 export interface RenderWarning {
   token: string;
@@ -86,6 +96,11 @@ export function templateNeeds(template: string): { contact: boolean; custom: boo
   return needs;
 }
 
+function aliasesOf(f: CustomFieldDef): string[] {
+  const a = f.field_options?.aliases;
+  return Array.isArray(a) ? a.filter((x): x is string => typeof x === "string").map((x) => x.trim().toLowerCase()) : [];
+}
+
 function cleanValue(raw: unknown, fieldType?: string | null): string {
   if (raw === undefined || raw === null) return "";
   let s = String(raw).trim();
@@ -102,8 +117,11 @@ function standardValue(field: StandardField, contact: ContactData | null, vars: 
     case "full_name":
     case "name":
       return full;
-    case "first_name":
-      return full.split(" ")[0] ?? "";
+    case "first_name": {
+      // A profile name can start with symbols or digits only ("🎨🔧", "..."): not something to greet by.
+      const first = full.split(" ")[0] ?? "";
+      return /\p{L}/u.test(first) ? first : "";
+    }
     case "last_name":
       return full.includes(" ") ? full.slice(full.indexOf(" ") + 1) : "";
     case "phone":
@@ -136,6 +154,9 @@ function resolveToken(token: string, data: VariableData): Lookup {
     if (!def) return { found: false, reason: "unknown_variable" };
     return { found: true, value: cleanValue(data.customValues[def.id], def.field_type) };
   }
+  const aliased = data.fields.filter((f) => aliasesOf(f).includes(token.toLowerCase()));
+  if (aliased.length === 1) return { found: true, value: cleanValue(data.customValues[aliased[0].id], aliased[0].field_type) };
+  if (aliased.length > 1) return { found: false, reason: "ambiguous_field" };
   const slug = token.startsWith("custom.") ? token.slice(7) : token;
   if (!slug || slug.includes(".") || slug.includes(":")) return { found: false, reason: "unknown_variable" };
   const matches = data.fields.filter((f) => fieldSlug(f.field_name) === slug.toLowerCase());
@@ -152,23 +173,37 @@ export function renderWithData(template: string, data: VariableData, options: Re
   if (!template) return { text: "", warnings: [] };
   const warnings: RenderWarning[] = [];
   const unknown = options.unknown ?? "empty";
-  const text = template.replace(TOKEN_RE, (whole, token: string, fallback: string | undefined) => {
+  let out = "";
+  let cursor = 0;
+  for (const m of template.matchAll(TOKEN_RE)) {
+    const whole = m[0];
+    const token = m[1];
+    const fb = m[2] === undefined ? undefined : m[2].trim();
+    const start = m.index ?? 0;
+    out += template.slice(cursor, start);
+    cursor = start + whole.length;
     const r = resolveToken(token, data);
-    const fb = fallback === undefined ? undefined : fallback.trim();
+    let value: string;
     if (!r.found) {
-      if (r.reason === "ambiguous_field") {
-        warnings.push({ token, reason: r.reason });
-        return fb ?? "";
-      }
       warnings.push({ token, reason: r.reason });
-      if (fb !== undefined) return fb;
-      return unknown === "keep" ? whole : "";
-    }
-    if (r.value === "") {
+      // `{{1}}`-style tokens are Meta template positions, never ours: always left as written.
+      const kept = unknown === "keep" || /^\d+$/.test(token) || (options.keepUnknown?.test(token) ?? false);
+      value = fb !== undefined ? fb : r.reason === "ambiguous_field" || !kept ? "" : whole;
+    } else if (r.value === "") {
       warnings.push({ token, reason: "missing_value" });
-      return fb ?? "";
+      value = fb ?? "";
+    } else {
+      value = r.value;
     }
-    return r.value;
-  });
-  return { text, warnings };
+    if (value === "") {
+      // Nothing is rendered here: do not leave the gap it would make ("Hola estimado  🤗", "Hola , bienvenido", " hola" at a line start).
+      const next = template.slice(cursor);
+      const atLineStart = out === "" || out.endsWith("\n");
+      if ((/[ \t]$/.test(out) || atLineStart) && /^[ \t]/.test(next)) cursor += 1;
+      else if (/[ \t]$/.test(out) && /^[,.;:!?)\]¡¿]/.test(next)) out = out.replace(/[ \t]+$/, "");
+    }
+    out += value;
+  }
+  out += template.slice(cursor);
+  return { text: out, warnings };
 }

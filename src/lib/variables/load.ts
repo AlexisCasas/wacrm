@@ -42,7 +42,7 @@ export async function loadVariableData(db: Db, scope: RenderScope, needs: { cont
   if (needs.custom) {
     const { data: defs } = await db
       .from("custom_fields")
-      .select("id, field_name, field_type")
+      .select("id, field_name, field_type, field_options")
       .eq("account_id", scope.accountId)
       .order("created_at", { ascending: true });
     fields = ((defs as CustomFieldDef[] | null) ?? []).filter((f) => f && f.id && typeof f.field_name === "string");

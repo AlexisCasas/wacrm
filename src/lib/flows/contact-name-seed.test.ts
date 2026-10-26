@@ -166,7 +166,7 @@ describe("B: missing / empty name degrades to an empty string, never breaks the 
 
     expect((h.state.insertedRun!.vars as Record<string, unknown>).contact_name).toBe("");
     expect(engineSendText).toHaveBeenCalledWith(
-      expect.objectContaining({ text: "Hola estimado  🤗" }),
+      expect.objectContaining({ text: "Hola estimado 🤗" }),
     );
   });
 });

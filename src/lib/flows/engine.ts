@@ -32,7 +32,7 @@
  *     INSERT raises 23505 and the runner catches & exits.
  */
 
-import { renderTemplate } from "@/lib/variables";
+import { LEGACY_IMPORT_TOKEN, renderTemplate } from "@/lib/variables";
 import { supabaseAdmin } from "./admin-client";
 import {
   engineSendInteractiveButtons,
@@ -862,15 +862,16 @@ export async function evaluateConditionNode(
 /**
  * Renders a flow text through the unified variable contract (`src/lib/variables`): `{{vars.key}}` (compatible), the contact's standard fields
  * (`{{first_name}}`...) and any custom field of the account. Resolved at SEND time from the run's account and contact, so a field changed by an
- * earlier node, or while the run was waiting, is what the customer sees. A token that names nothing is left as written (stored text is never
- * rewritten); a known variable with no value renders empty or as its `{{x | fallback}}`.
+ * earlier node, or while the run was waiting, is what the customer sees. A token that names nothing renders empty (no raw braces reach the customer), except a legacy import
+ * reference (`cuf_<digits>`), which stays as written until an owner maps it with `field_options.aliases`; a known variable with no value renders
+ * empty or as its `{{x | fallback}}`, closing the gap it leaves.
  */
 async function renderFlowText(db: AdminClient, run: FlowRunRow, template: string): Promise<string> {
   const { text } = await renderTemplate(
     db,
     template,
     { accountId: run.account_id, contactId: run.contact_id, vars: run.vars },
-    { unknown: "keep" },
+    { unknown: "empty", keepUnknown: LEGACY_IMPORT_TOKEN },
   );
   return text;
 }
