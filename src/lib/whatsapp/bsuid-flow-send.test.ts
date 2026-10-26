@@ -258,3 +258,35 @@ describe('manual replies on an account switched on only through the database sco
     expect(credit()).toBe(1)
   })
 })
+
+describe('volume ceilings for automatic sends to hidden-number contacts (migration 079)', () => {
+  const sendN = async (n: number) => { for (let i = 0; i < n; i++) await engineSendText({ ...base, text: `m${i}` }) }
+  it('a contact that has already received the per-hour ceiling of bot messages is refused; sends resume as the hour rolls', async () => {
+    world(); h.db.tables.bsuid_flow_settings[0].max_contact_sends_per_hour = 4
+    const old = new Date(h.db.now() - 2 * 3_600_000).toISOString()
+    await sendN(4)
+    expect(h.db.tables.messages.filter((m) => m.sender_type === 'bot')).toHaveLength(4)
+    await expect(engineSendText({ ...base, text: 'one too many' })).rejects.toBeInstanceOf(BsuidSendBlockedError)
+    expect(calls).toHaveLength(4)
+    expect(audit('send_blocked').some((a) => JSON.stringify(a.detail).includes('rate_limited_contact'))).toBe(true)
+    for (const m of h.db.tables.messages) m.created_at = old                     // an hour later
+    await engineSendText({ ...base, text: 'again' })
+    expect(calls).toHaveLength(5)
+  })
+  it('the account-wide ceiling refuses every hidden-number contact of the account, never a contact with a phone', async () => {
+    world(); h.db.tables.bsuid_flow_settings[0].max_account_sends_per_hour = 3
+    await sendN(3)
+    await expect(engineSendText({ ...base, text: 'x' })).rejects.toBeInstanceOf(BsuidSendBlockedError)
+    expect(audit('send_blocked').some((a) => JSON.stringify(a.detail).includes('rate_limited_account'))).toBe(true)
+    h.db.tables.contacts[0].phone = '51900000001'; h.db.tables.contacts[0].phone_optional = false      // now a phone contact
+    const before = calls.length
+    await engineSendText({ ...base, text: 'phone contact is not limited' })
+    expect(calls.length).toBe(before + 1); expect(calls[calls.length - 1].to).toBe('51900000001')
+  })
+  it('manual (agent) replies do not count towards the ceilings', async () => {
+    world(); h.db.tables.bsuid_flow_settings[0].max_contact_sends_per_hour = 2
+    h.db.tables.messages.push(...Array.from({ length: 10 }, (_, i) => ({ id: `ag${i}`, conversation_id: 'conv-1', sender_type: 'agent', created_at: new Date(h.db.now()).toISOString() })))
+    await sendN(2)
+    expect(calls).toHaveLength(2)
+  })
+})

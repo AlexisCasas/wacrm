@@ -76,7 +76,12 @@ function setup(o: { phone?: string; auth?: Row | null; master?: boolean; scope?:
       if (!t("bsuid_flow_settings").some((s) => s.account_id === a.p_account_id && s.flows_enabled)) return { data: "flows_disabled", error: null };
       const auth = t("bsuid_flow_authorizations").find((x) => x.account_id === a.p_account_id && x.flow_id === run.flow_id && x.enabled && (!x.contact_id || x.contact_id === a.p_contact_id));
       if (!auth) return { data: "flow_not_authorized", error: null };
-      return { data: auth[flag[String(a.p_modality)]] ? "ok" : "modality_not_allowed", error: null };
+      if (!auth[flag[String(a.p_modality)]]) return { data: "modality_not_allowed", error: null };
+      // migration 079: per-contact ceiling over the bot messages already stored for this contact's conversations
+      const cap = Number((t("bsuid_flow_settings").find((x) => x.account_id === a.p_account_id) ?? {}).max_contact_sends_per_hour ?? 60);
+      const convs = new Set(t("conversations").filter((c) => c.contact_id === a.p_contact_id).map((c) => c.id));
+      if (t("messages").filter((m) => m.sender_type === "bot" && convs.has(m.conversation_id)).length >= cap) return { data: "rate_limited_contact", error: null };
+      return { data: "ok", error: null };
     },
   } });
   h.db = mem.client;
@@ -167,6 +172,20 @@ describe("a hidden-number customer runs a Rossy-shaped product flow (synthetic)"
     expect(h.sendMediaMessage).toHaveBeenCalledTimes(1);
     expect(h.sendTextMessage).toHaveBeenCalledTimes(2);
     expect(mem.table("flow_runs")[0].status).toBe("failed");
+  });
+  it("volume ceiling reached mid-run: the sends already made stay, the next one is refused, the run ends failed and nothing else goes out", async () => {
+    setup(); mem.table("bsuid_flow_settings")[0].max_contact_sends_per_hour = 3;
+    await say();
+    expect(h.sendTextMessage.mock.calls.length + h.sendMediaMessage.mock.calls.length).toBe(3);
+    expect(mem.table("flow_runs")[0].status).toBe("failed");
+    expect(mem.table("contact_identity_audit").some((a) => a.event === "send_blocked" && JSON.stringify(a.detail).includes("rate_limited_contact"))).toBe(true);
+  });
+  it("a document node of an authorized flow also goes by BSUID (Rossy has none today; the path is the same as the image)", async () => {
+    setup(); mem.table("flow_nodes").splice(0, mem.table("flow_nodes").length, ...nodes.filter((n) => n.node_key !== "img").map((n) => n.node_key === "d2" ? { ...n, config: { seconds: 3, next_node_key: "doc" } } : n), N("doc", "send_media", { caption: "Ficha", filename: "ficha.pdf", media_url: "https://cdn.example.test/ficha.pdf", media_type: "document", next_node_key: "d3" }));
+    await say();
+    expect(dests(h.sendMediaMessage)).toEqual([{ bsuid: BSUID }]);
+    expect((h.sendMediaMessage.mock.calls[0][0] as { kind?: string }).kind).toBe("document");
+    expect(mem.table("flow_runs")[0].status).toBe("completed");
   });
   it("a switched-off number (scope disabled) refuses every send even with a valid authorization", async () => {
     setup({ scope: false }); await say("amoladora total", "wamid.IN1", [FLOW]);

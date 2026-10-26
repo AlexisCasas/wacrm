@@ -4,8 +4,8 @@
 # Never touches a real database: the container has no network and is removed at the end.
 set -uo pipefail
 : "${SCHEMA_DUMP:?set SCHEMA_DUMP to a pg_dump -Fc file of the schema at migration 076}"
-HERE=$(cd "$(dirname "$0")" && pwd); MIG="$HERE/../../supabase/migrations/077_contact_identities_bsuid.sql"; MIG78="$HERE/../../supabase/migrations/078_bsuid_flow_authorizations.sql"
-C=wa-bsuid-qa-pg; W=$(mktemp -d); cp "$SCHEMA_DUMP" "$W/full.dump"; cp "$HERE/flow_pilot.sh" "$W/"; cp "$MIG" "$MIG78" "$HERE/migration-077.test.sql" "$HERE/migration-078.test.sql" "$HERE/pilot_list.sql" "$W/"
+HERE=$(cd "$(dirname "$0")" && pwd); MIG="$HERE/../../supabase/migrations/077_contact_identities_bsuid.sql"; MIG78="$HERE/../../supabase/migrations/078_bsuid_flow_authorizations.sql"; MIG79="$HERE/../../supabase/migrations/079_bsuid_flow_volume_caps.sql"
+C=wa-bsuid-qa-pg; W=$(mktemp -d); cp "$SCHEMA_DUMP" "$W/full.dump"; cp "$HERE/flow_pilot.sh" "$HERE/bsuid_watch.sh" "$W/"; cp "$MIG79" "$HERE/migration-079.test.sql" "$W/"; cp "$MIG" "$MIG78" "$HERE/migration-077.test.sql" "$HERE/migration-078.test.sql" "$HERE/pilot_list.sql" "$W/"
 trap 'docker rm -f $C >/dev/null 2>&1; shred -u "$W/full.dump" 2>/dev/null; rm -rf "$W"' EXIT
 docker rm -f $C >/dev/null 2>&1
 docker run -d --name $C --network none -e POSTGRES_PASSWORD=x -v "$W":/w:ro postgres:17-alpine >/dev/null
@@ -46,6 +46,10 @@ echo "== apply 078 (1st) and (2nd, idempotency), then its checks"
 docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/078_bsuid_flow_authorizations.sql" && echo "078 applied"
 docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/078_bsuid_flow_authorizations.sql" && echo "078 applied again"
 docker exec -i $C psql -U postgres -d v -X -q -f /w/migration-078.test.sql 2>&1 | grep -E "PASS|FAIL|ERROR"
+echo "== apply 079 (1st) and (2nd, idempotency), then its checks"
+docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/079_bsuid_flow_volume_caps.sql" && echo "079 applied"
+docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/079_bsuid_flow_volume_caps.sql" && echo "079 applied again"
+docker exec -i $C psql -U postgres -d v -X -q -f /w/migration-079.test.sql 2>&1 | grep -E "PASS|FAIL|ERROR"
 
 echo "== operator script flow_pilot.sh against the disposable database"
 FP() { FLOW_PILOT_CONTAINER=$C FLOW_PILOT_DB=v FLOW_PILOT_LOG=$W/fp.log bash "$W/flow_pilot.sh" "$@"; }
@@ -79,3 +83,17 @@ V=$(FP safe-flows $QA_A 2>&1); echo "eligible: $(echo "$V" | grep 'QA simple pro
 echo "wrong confirmation changes nothing (expected 0): $(echo nope | FP batch $QA_A 5 >/dev/null 2>&1; docker exec $C psql -U postgres -d v -At -c 'select count(*) from bsuid_flow_authorizations')"
 printf 'BATCH 1\n' | FP batch $QA_A 5 --media >/dev/null 2>&1; echo "after a confirmed batch (expected 1 row, the simple flow only, enabled, media on, whole account): $(docker exec $C psql -U postgres -d v -At -c "select count(*)||' '||bool_and(flow_id='f4f4f4f4-0000-4000-8000-000000000004')||' '||bool_and(enabled and allow_media and contact_id is null) from bsuid_flow_authorizations")"
 echo "a second batch finds nothing new (expected 1 line): $(echo x | FP batch $QA_A 5 2>&1 | grep -c 'no eligible flow left')"
+
+echo "== bsuid_watch.sh: alerts and the circuit breaker (disposable database)"
+WATCH() { WATCH_CONTAINER=$C WATCH_DB=v WATCH_LOG=$W/watch.log WATCH_LOCK=$W/watch.lock WATCH_KILL_CMD="bash $W/flow_pilot.sh kill" FLOW_PILOT_CONTAINER=$C FLOW_PILOT_DB=v FLOW_PILOT_LOG=$W/fp.log bash "$W/bsuid_watch.sh" "$@"; }
+docker exec $C psql -U postgres -d v -Atq -c "delete from flow_runs where account_id='$QA_A'; delete from messages where conversation_id in (select id from conversations where account_id='$QA_A'); delete from contact_identity_audit where account_id='$QA_A'; delete from bsuid_flow_authorizations; insert into bsuid_flow_settings(account_id,flows_enabled) values ('$QA_A',true) on conflict (account_id) do update set flows_enabled=true, max_account_sends_per_hour=1200; insert into bsuid_flow_authorizations(account_id,flow_id,enabled) values ('$QA_A','f4f4f4f4-0000-4000-8000-000000000004',true)"
+WC=$(docker exec $C psql -U postgres -d v -Atq -c "select contact_id from resolve_bsuid_contact('$QA_A','aaaaaaaa-0000-4000-8000-000000000001','PE.W4QA00000000001',null,'w1','W1')")
+docker exec $C psql -U postgres -d v -Atq -c "insert into conversations(account_id,user_id,contact_id) values ('$QA_A','aaaaaaaa-0000-4000-8000-000000000001','$WC') on conflict do nothing"
+WATCH; echo "quiet: exit $? and log says OK: $(tail -1 $W/watch.log | grep -c ' OK ')"
+FR(){ docker exec $C psql -U postgres -d v -Atq -c "insert into flow_runs(flow_id,user_id,account_id,contact_id,status,end_reason,ended_at) select 'f4f4f4f4-0000-4000-8000-000000000004','aaaaaaaa-0000-4000-8000-000000000001','$QA_A',contact_id,'failed','send_media_failed',now() from (select '$WC'::uuid contact_id from generate_series(1,$1)) g"; }
+FR 2; WATCH; echo "2 failed runs: ALERT-free (expected exit 0): $?  master still on: $(docker exec $C psql -U postgres -d v -At -c "select flows_enabled from bsuid_flow_settings where account_id='$QA_A'")"
+FR 1; WATCH --no-kill; R=$?; echo "3 failed runs with --no-kill: exit $R (expected 1), would-trip logged: $(tail -1 $W/watch.log | grep -c BREAKER_WOULD_TRIP), master still on: $(docker exec $C psql -U postgres -d v -At -c "select flows_enabled from bsuid_flow_settings where account_id='$QA_A'")"
+WATCH; R=$?; echo "3 failed runs, breaker armed: exit $R (expected 1); log: $(tail -1 $W/watch.log | grep -c BREAKER_TRIPPED) tripped; master now: $(docker exec $C psql -U postgres -d v -At -c "select flows_enabled from bsuid_flow_settings where account_id='$QA_A'") (expected f); enabled authorizations: $(docker exec $C psql -U postgres -d v -At -c "select count(*) from bsuid_flow_authorizations where enabled") (expected 0); contact still there: $(docker exec $C psql -U postgres -d v -At -c "select count(*) from contacts where id='$WC'")"
+WATCH; echo "after the breaker (switch off) the watch has nothing to watch: $(tail -1 $W/watch.log | grep -c 'no account has')"
+docker exec $C psql -U postgres -d v -Atq -c "delete from flow_runs where account_id='$QA_A'; update bsuid_flow_settings set flows_enabled=true where account_id='$QA_A'; insert into messages(conversation_id,sender_type,content_text,media_url,created_at) select id,'bot','img','https://cdn.test/a.jpg',now() from conversations where contact_id='$WC' union all select id,'bot','img','https://cdn.test/a.jpg',now() from conversations where contact_id='$WC'"
+WATCH; R=$?; echo "duplicate media within 10 min: exit $R (expected 1), A2 raised: $(tail -1 $W/watch.log | grep -c 'A2(duplicate_media=1)'), breaker: $(tail -1 $W/watch.log | grep -c BREAKER_TRIPPED)"

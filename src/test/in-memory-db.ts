@@ -22,14 +22,16 @@ export interface InMemoryDb {
   /** Make the next read of `table` fail (infrastructure error). */
   failReads: Set<string>
   client: unknown
+  /** The database's virtual clock (ms): rows are stamped from it, so time-window logic (migration 079) is relative to it. */
+  now: () => number
 }
 
 const digits = (v: unknown) => String(v ?? '').replace(/\D/g, '')
 
 export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
   const tables: Record<string, Row[]> = { contacts: [], contact_identities: [], contact_identity_audit: [], conversations: [], messages: [], whatsapp_config: [], ...seed }
-  const db: InMemoryDb = { tables, rpcCalls: [], failReads: new Set(), client: null }
   let clock = Date.parse('2026-10-25T12:00:00Z')
+  const db: InMemoryDb = { tables, rpcCalls: [], failReads: new Set(), client: null, now: () => clock }
   const tick = () => new Date((clock += 1000)).toISOString()
 
   function violatesUnique(table: string, row: Row, ignoreId?: unknown): boolean {
@@ -206,6 +208,14 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
         if (!auth) return { data: 'flow_not_authorized', error: null }
         if (!auth[flag[String(a.p_modality)]]) return { data: 'modality_not_allowed', error: null }
       }
+      // migration 079: volume ceilings (bot messages of the last hour)
+      const st = (tables.bsuid_flow_settings ?? []).find((x) => x.account_id === a.p_account_id)
+      const hourAgo = clock - 3_600_000     // the database's own virtual clock (rows are stamped by tick())
+      const recentBot = (convIds: Set<unknown>) => (tables.messages ?? []).filter((m) => m.sender_type === 'bot' && convIds.has(m.conversation_id) && (!m.created_at || new Date(String(m.created_at)).getTime() > hourAgo)).length
+      const convOf = (pred: (c: Row) => boolean) => new Set((tables.conversations ?? []).filter(pred).map((c) => c.id))
+      if (recentBot(convOf((c) => c.contact_id === a.p_contact_id)) >= Number(st?.max_contact_sends_per_hour ?? 60)) return { data: 'rate_limited_contact', error: null }
+      const hidden = new Set(tables.contacts.filter((c) => c.account_id === a.p_account_id && c.phone_optional).map((c) => c.id))
+      if (recentBot(convOf((c) => hidden.has(c.contact_id))) >= Number(st?.max_account_sends_per_hour ?? 1200)) return { data: 'rate_limited_account', error: null }
       return { data: 'ok', error: null }
     },
     record_blocked_inbound(a) {

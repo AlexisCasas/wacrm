@@ -167,3 +167,12 @@ next n eligible flows for the whole account. `src/lib/flows/bsuid-rossy.engine.t
 
 Known defect, independent of BSUID: 44 of these flows greet with `Hola estimado {{first_name}} 🤗`, but the runner only interpolates `{{vars.<key>}}`; 194 of the 652 greetings Rossy sent in the last 24 h carry the literal `{{first_name}}`.
 Hidden-number customers will see the same text. It is NOT fixed in the BSUID image (it changes customer-facing text for every account); a separate, optional commit/branch carries the fix.
+
+## Phase 4B — automatic Flows for a whole account (Rossy) — database-only activation
+
+No new image is needed: the phase 4A image already carries the per-send authorization (`origin: 'flow'` + `bsuid_flow_send_check`), the restricted dispatcher and the automation guard. Phase 4B adds only:
+- **Migration 079**: volume ceilings in `bsuid_flow_settings` (`max_contact_sends_per_hour` default 60, `max_account_sends_per_hour` default 1200; bot messages of the last hour; only hidden-number contacts; refusal reasons `rate_limited_contact|account`) by replacing `bsuid_flow_send_check`. Same privileges (service_role only).
+- **`qa/bsuid/bsuid_watch.sh`** (every 5 min): A1 ≥3 failed runs, A2 duplicate media to a contact, A3 ceiling refusals, A4 >80% of the account ceiling. A1/A2 trip a CIRCUIT BREAKER that switches the BSUID Flow feature OFF for the account (master switch + all authorizations); reception, contacts and messages are untouched.
+- **`flow_pilot.sh`**: `safe-flows`, `batch`, `list`, `endruns` (see the header of the script).
+
+Authorization is per account and flow (`contact_id IS NULL`), so ANY hidden-number contact of the account may run an authorized flow; it is checked when the flow starts (webhook scope), before every send and therefore at every resumption (`bsuid_flow_send_check`). The kill switch and the ceilings act on the very next message of runs in progress.
