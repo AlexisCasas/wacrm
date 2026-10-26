@@ -36,7 +36,7 @@ import {
 } from '@/lib/whatsapp/interactive';
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
-import { BsuidSendBlockedError, resolveContactTarget, targetAttempts, type ResolvedTarget, type SendOrigin, type WaTarget } from '@/lib/whatsapp/recipient';
+import { BsuidSendBlockedError, resolveContactTarget, targetAttempts, type ManualSendActor, type ResolvedTarget, type SendOrigin, type WaTarget } from '@/lib/whatsapp/recipient';
 import { isRecipientNotAllowedError } from '@/lib/whatsapp/phone-utils';
 import type { MessageTemplate } from '@/types';
 import {
@@ -106,6 +106,11 @@ export interface SendMessageParams {
    * public API, is `automated` (the default) and cannot reach a contact known only by a WhatsApp user id during the pilot.
    */
   origin?: SendOrigin;
+  /**
+   * The signed-in person behind a `manual_reply`, set ONLY by the dashboard route from its `requireRole('agent')` context. Required for
+   * a BSUID-only contact; ignored otherwise. Never read from a request body.
+   */
+  actor?: ManualSendActor;
 }
 
 export interface SendMessageResult {
@@ -282,6 +287,7 @@ export async function sendMessageToConversation(
     replyToMessageId,
     voiceNote,
     origin = 'automated',
+    actor,
   } = params;
 
   if (!conversationId) {
@@ -358,7 +364,7 @@ export async function sendMessageToConversation(
   // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
   let target: ResolvedTarget;
   try {
-    target = await resolveContactTarget(db, accountId, contact, { origin });
+    target = await resolveContactTarget(db, accountId, contact, { origin, actor });
   } catch (err) {
     if (err instanceof BsuidSendBlockedError) {
       throw new SendMessageError('bsuid_send_blocked', `This contact can only be reached by a WhatsApp user id and sending to it is restricted (${err.code}).`, 403);

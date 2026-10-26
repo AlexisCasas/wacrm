@@ -170,6 +170,7 @@ export async function POST(request: Request) {
         voiceNote: voice_note === true,
         // A signed-in person using the dashboard composer.
         origin: 'manual_reply',
+        actor: { userId },
       })
 
       return NextResponse.json({

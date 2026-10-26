@@ -7,6 +7,8 @@
  * A BSUID is sent once, as is: no prefix variants, and `contacts.phone` is never modified because of it.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { hasMinRole, isAccountRole } from '@/lib/auth/roles'
 import { isValidE164, phoneVariants, sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils'
 import { isBsuidPilotEnabled } from '@/lib/whatsapp/bsuid-pilot'
 
@@ -31,6 +33,13 @@ export function describeTarget(target: ResolvedTarget): 'phone' | 'bsuid' {
 
 /** Who is asking to send: a person replying from the Inbox, or anything automatic (Flow, automation, AI, API, audio engines). */
 export type SendOrigin = 'manual_reply' | 'automated'
+
+/**
+ * The signed-in person behind a `manual_reply`. ONLY the dashboard send route creates one, from the `requireRole('agent')` context
+ * (never from the request body). Without it a `manual_reply` is refused, so nothing else (Flow, automation, AI, public API) can
+ * pass itself off as a person replying from the Inbox.
+ */
+export interface ManualSendActor { userId: string }
 
 export type BsuidSendBlockCode = 'bsuid_disabled' | 'bsuid_automated_blocked' | 'bsuid_not_authorized' | 'bsuid_check_failed'
 
@@ -61,7 +70,7 @@ export async function resolveContactTarget(
   db: SupabaseClient,
   accountId: string,
   contact: { id: string; phone?: string | null },
-  opts: { origin: SendOrigin },
+  opts: { origin: SendOrigin; actor?: ManualSendActor },
 ): Promise<ResolvedTarget> {
   const sanitized = sanitizePhoneForMeta(contact.phone ?? '')
   if (sanitized && isValidE164(sanitized)) return { kind: 'phone', phone: sanitized }
@@ -80,10 +89,13 @@ export async function resolveContactTarget(
     throw new Error(`contact phone invalid: ${contact.phone}`)
   }
 
+  // consume_bsuid_send / audit_bsuid_event are EXECUTE-able by service_role only (migration 077 revokes them from anon/authenticated on purpose:
+  // an agent's own session must never be able to mint or spend a send credit by itself). The Inbox calls this with the agent's RLS client, so the
+  // privileged calls below ALWAYS go through the server-side service-role client — after the caller has been verified again here.
   const block = async (code: BsuidSendBlockCode): Promise<never> => {
     console.warn('[send] BSUID send blocked', { code, origin: opts.origin, account_id: accountId })
     try {
-      await db.rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contact.id, p_event: 'send_blocked', p_origin: opts.origin, p_detail: { code } })
+      await supabaseAdmin().rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contact.id, p_event: 'send_blocked', p_origin: opts.origin, p_detail: { code } })
     } catch { /* the block already holds; the audit is best effort */ }
     throw new BsuidSendBlockedError(code)
   }
@@ -96,8 +108,23 @@ export async function resolveContactTarget(
   const cfg = config as { phone_number_id?: string; waba_id?: string } | null
   if (configError || !cfg || !isBsuidPilotEnabled({ accountId, phoneNumberId: cfg.phone_number_id, wabaId: cfg.waba_id })) return block('bsuid_disabled')
   if (opts.origin !== 'manual_reply') return block('bsuid_automated_blocked')
+  // A manual reply must carry the verified person; a bare `origin: 'manual_reply'` from any other code path is not enough.
+  if (!opts.actor?.userId) return block('bsuid_automated_blocked')
 
-  const { data: allowed, error: consumeError } = await db.rpc('consume_bsuid_send', { p_account_id: accountId, p_contact_id: contact.id, p_origin: opts.origin })
+  // Re-verify, with the privileged client, that this person is an agent (or above) of THIS account and that the contact is in it.
+  // Any read error fails closed.
+  const admin = supabaseAdmin()
+  const [profileRes, ownedRes] = await Promise.all([
+    admin.from('profiles').select('account_id, account_role').eq('user_id', opts.actor.userId).maybeSingle(),
+    admin.from('contacts').select('id').eq('id', contact.id).eq('account_id', accountId).maybeSingle(),
+  ])
+  if (profileRes.error || ownedRes.error) return block('bsuid_check_failed')
+  const profile = profileRes.data as { account_id?: string; account_role?: string } | null
+  if (!profile || profile.account_id !== accountId || !isAccountRole(profile.account_role) || !hasMinRole(profile.account_role, 'agent') || !ownedRes.data) {
+    return block('bsuid_not_authorized')
+  }
+
+  const { data: allowed, error: consumeError } = await admin.rpc('consume_bsuid_send', { p_account_id: accountId, p_contact_id: contact.id, p_origin: opts.origin })
   if (consumeError) return block('bsuid_check_failed')
   if (allowed !== true) return block('bsuid_not_authorized')
   return { kind: 'bsuid', bsuid }

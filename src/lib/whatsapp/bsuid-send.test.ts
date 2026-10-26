@@ -47,14 +47,28 @@ function world(opts: { phone?: string; bsuid?: string; blocked?: boolean; author
   h.db.tables.contacts.push(contact)
   if (opts.bsuid) h.db.tables.contact_identities.push({ id: 'i1', account_id: ACC, contact_id: 'contact-1', kind: 'bsuid', value: opts.bsuid, superseded_at: null, send_authorized_remaining: opts.authorized ?? 0 })
   h.db.tables.conversations.push({ id: 'conv-1', account_id: ACC, user_id: 'owner', contact_id: 'contact-1', status: 'open' })
+  seedAgent()
   return contact
 }
 const base = { accountId: ACC, userId: 'owner', conversationId: 'conv-1', contactId: 'contact-1' }
 const remaining = () => h.db.tables.contact_identities[0]?.send_authorized_remaining
 const audit = (event: string) => h.db.tables.contact_identity_audit.filter((a) => a.event === event)
-const manual = { origin: 'manual_reply' as const }
+const AGENT = 'agent-user-1'
+const manual = { origin: 'manual_reply' as const, actor: { userId: AGENT } }
+// A signed-in user's client as PostgREST gives it: migration 077 REVOKEs these functions from anon/authenticated and GRANTs them to service_role only,
+// so through this client they fail exactly like production did (HTTP 403, 42501). The earlier tests used one client for both roles and could not see it.
+const SERVICE_ROLE_ONLY = new Set(['consume_bsuid_send', 'authorize_bsuid_send', 'revoke_bsuid_send', 'audit_bsuid_event', 'resolve_bsuid_contact', 'link_contact_bsuid'])
+let deniedForUser: string[]
+function userSession() {
+  const real = h.db.client as unknown as { from: (t: string) => unknown; rpc: (n: string, a: Record<string, unknown>) => Promise<unknown>; storage: unknown }
+  return { ...real, from: real.from, storage: real.storage, rpc: async (name: string, args: Record<string, unknown>) => {
+    if (SERVICE_ROLE_ONLY.has(name)) { deniedForUser.push(name); return { data: null, error: { code: '42501', message: `permission denied for function ${name}` } } }
+    return real.rpc(name, args)
+  } }
+}
+function seedAgent(role = 'agent', account = ACC, userId = AGENT) { h.db.tables.profiles = [...(h.db.tables.profiles ?? []), { id: `p-${userId}`, user_id: userId, account_id: account, account_role: role }] }
 
-beforeEach(() => { vi.restoreAllMocks(); vi.spyOn(console, 'warn').mockImplementation(() => {}); vi.spyOn(console, 'error').mockImplementation(() => {}); vi.spyOn(console, 'log').mockImplementation(() => {}); stubMeta() })
+beforeEach(() => { deniedForUser = []; vi.restoreAllMocks(); vi.spyOn(console, 'warn').mockImplementation(() => {}); vi.spyOn(console, 'error').mockImplementation(() => {}); vi.spyOn(console, 'log').mockImplementation(() => {}); stubMeta() })
 afterEach(() => { vi.unstubAllGlobals(); delete process.env[PILOT]; delete process.env.FLOW_MEDIA_AUDIO_SCOPE })
 
 describe('Meta request addressing', () => {
@@ -82,7 +96,7 @@ describe('Meta request addressing', () => {
 
 
 describe('resolveContactTarget', () => {
-  const resolve = (origin: 'manual_reply' | 'automated', account = ACC, phone = '') => resolveContactTarget(h.db.client as never, account, { id: 'contact-1', phone }, { origin })
+  const resolve = (origin: 'manual_reply' | 'automated', account = ACC, phone = '') => resolveContactTarget(userSession() as never, account, { id: 'contact-1', phone }, origin === 'manual_reply' ? manual : { origin })
 
   it('a valid phone wins, needs no pilot, costs no extra query and ignores the origin', async () => {
     world({ phone: PHONE, bsuid: BSUID, pilot: false })
@@ -194,7 +208,7 @@ describe('Flows, automations, AI and audio engines: a BSUID contact is never rea
 
 describe('inbox (the only path that may reach a BSUID during the pilot)', () => {
   const send = (extra: Record<string, unknown> = {}, text = 'Respuesta') =>
-    sendMessageToConversation(h.db.client as never, ACC, { conversationId: 'conv-1', messageType: 'text', contentText: text, ...extra } as never)
+    sendMessageToConversation(userSession() as never, ACC, { conversationId: 'conv-1', messageType: 'text', contentText: text, ...extra } as never)
 
   it('an authorized manual reply goes to the BSUID with `recipient`, is stored in the same conversation, and uses up the authorization', async () => {
     world({ bsuid: BSUID, authorized: 1 })
@@ -217,8 +231,8 @@ describe('inbox (the only path that may reach a BSUID during the pilot)', () => 
   it('image, voice note and text all use `recipient` when the operator grants three replies', async () => {
     world({ bsuid: BSUID, authorized: 3 })
     await send(manual)
-    await sendMessageToConversation(h.db.client as never, ACC, { conversationId: 'conv-1', messageType: 'image', mediaUrl: 'https://cdn.test/a.png', origin: 'manual_reply' } as never)
-    await sendMessageToConversation(h.db.client as never, ACC, { conversationId: 'conv-1', messageType: 'audio', mediaUrl: 'https://cdn.test/a.ogg', voiceNote: true, origin: 'manual_reply' } as never)
+    await sendMessageToConversation(userSession() as never, ACC, { conversationId: 'conv-1', messageType: 'image', mediaUrl: 'https://cdn.test/a.png', ...manual } as never)
+    await sendMessageToConversation(userSession() as never, ACC, { conversationId: 'conv-1', messageType: 'audio', mediaUrl: 'https://cdn.test/a.ogg', voiceNote: true, ...manual } as never)
     expect(calls.map((c) => c.type)).toEqual(['text', 'image', 'audio'])
     expect(calls.every((c) => c.recipient === BSUID && !('to' in c))).toBe(true)
   })
@@ -266,5 +280,120 @@ describe('inbox (the only path that may reach a BSUID during the pilot)', () => 
     world({})
     await expect(send(manual)).rejects.toMatchObject({ status: 400 })
     expect(calls).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------------------------------------------------
+// P0 hotfix: a manual reply from the Inbox runs under the AGENT's session (RLS client), which cannot execute the service-role-only
+// functions. The credit must be spent, and the block audited, by the server's privileged client — after the caller is verified again.
+// ---------------------------------------------------------------------------------------------------------------------
+describe('manual reply from the Inbox under an authenticated agent session (hotfix bsuid_check_failed)', () => {
+  const send = (extra: Record<string, unknown> = {}, client: unknown = userSession()) =>
+    sendMessageToConversation(client as never, ACC, { conversationId: 'conv-1', messageType: 'text', contentText: 'Hola', ...extra } as never)
+
+  it('A. an agent of Keyler with 1 credit: the credit is consumed atomically and Meta gets exactly one request with `recipient`', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    const out = await send(manual)
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ messaging_product: 'whatsapp', recipient_type: 'individual', recipient: BSUID, type: 'text' })
+    expect(JSON.stringify(out)).toContain('wamid.OUT1')
+    expect(remaining()).toBe(0)
+    expect(audit('send_consumed')).toHaveLength(1)
+    expect(deniedForUser).toEqual([]) // the agent's own session never tried to run a privileged function
+  })
+  it('B. a second attempt with 0 credits is blocked and Meta is not called', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    await send(manual)
+    await expect(send(manual)).rejects.toMatchObject({ code: 'bsuid_send_blocked', status: 403, message: expect.stringContaining('bsuid_not_authorized') })
+    expect(calls).toHaveLength(1)
+    expect(audit('send_blocked')).toHaveLength(1) // the block IS audited even though the caller was an RLS client
+  })
+  it('C. a viewer (below agent) is blocked: no credit spent, no Meta call', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    h.db.tables.profiles = [{ id: 'pv', user_id: AGENT, account_id: ACC, account_role: 'viewer' }]
+    await expect(send(manual)).rejects.toMatchObject({ status: 403, message: expect.stringContaining('bsuid_not_authorized') })
+    expect(calls).toHaveLength(0); expect(remaining()).toBe(1)
+  })
+  it('C2. a user with no profile row, or an unknown role, is blocked', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    h.db.tables.profiles = []
+    await expect(send(manual)).rejects.toMatchObject({ status: 403 })
+    h.db.tables.profiles = [{ id: 'px', user_id: AGENT, account_id: ACC, account_role: 'superuser' }]
+    await expect(send(manual)).rejects.toMatchObject({ status: 403 })
+    expect(calls).toHaveLength(0); expect(remaining()).toBe(1)
+  })
+  it('C3. `manual_reply` WITHOUT the verified actor (what a Flow, automation, AI or API path would have to forge) is blocked', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    await expect(send({ origin: 'manual_reply' })).rejects.toMatchObject({ status: 403, message: expect.stringContaining('bsuid_automated_blocked') })
+    expect(calls).toHaveLength(0); expect(remaining()).toBe(1)
+  })
+  it('D. an agent of ANOTHER account, or a contact of another account, is blocked and spends nothing', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    h.db.tables.profiles = [{ id: 'po', user_id: AGENT, account_id: OTHER_ACC, account_role: 'admin' }]
+    await expect(send(manual)).rejects.toMatchObject({ status: 403 })
+    // a Keyler agent asking for the same contact id inside ANOTHER account's context: the contact is not in that account
+    h.db.tables.profiles = [{ id: 'pk', user_id: AGENT, account_id: OTHER_ACC, account_role: 'agent' }]
+    h.db.tables.whatsapp_config.push({ id: 'cfg2', account_id: OTHER_ACC, user_id: 'o2', phone_number_id: 'pn2', waba_id: 'w2', access_token: 'enc', status: 'connected' })
+    process.env[PILOT] = `${ACC}:${PN}:${WABA},${OTHER_ACC}:pn2:w2`
+    await expect(resolveContactTarget(userSession() as never, OTHER_ACC, { id: 'contact-1', phone: '' }, manual)).rejects.toBeInstanceOf(Error)
+    expect(calls).toHaveLength(0); expect(remaining()).toBe(1)
+  })
+  it('E. Rossy (account outside the pilot): a phone contact behaves as before; a BSUID-only contact stays disabled', async () => {
+    world({ phone: PHONE, pilot: false })
+    await send(manual); await send()
+    expect(calls.every((c) => c.to === PHONE && !('recipient' in c))).toBe(true)
+    world({ bsuid: BSUID, authorized: 1, pilot: false })
+    await expect(send(manual)).rejects.toMatchObject({ status: 403, message: expect.stringContaining('bsuid_disabled') })
+    expect(remaining()).toBe(1)
+  })
+  it('F. Flows / automations (engine senders) can never spend the credit, even for the right contact', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    await expect(engineSendText({ ...base, accountId: ACC, text: 'x' } as never)).rejects.toBeInstanceOf(BsuidSendBlockedError)
+    expect(calls).toHaveLength(0); expect(remaining()).toBe(1)
+  })
+  it('G. if the privileged consume call itself errors, the send fails CLOSED: no Meta call, nothing stored, credit untouched', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    h.db.failReads.add('rpc:consume_bsuid_send')
+    await expect(send(manual)).rejects.toMatchObject({ status: 403, message: expect.stringContaining('bsuid_check_failed') })
+    expect(calls).toHaveLength(0); expect(h.db.tables.messages).toHaveLength(0); expect(remaining()).toBe(1)
+  })
+  it('G2. if the membership / ownership read fails, it fails closed too', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    h.db.failReads.add('profiles')
+    await expect(send(manual)).rejects.toMatchObject({ status: 403, message: expect.stringContaining('bsuid_check_failed') })
+    expect(calls).toHaveLength(0); expect(remaining()).toBe(1)
+  })
+  it('H. a Meta error is not retried and the credit is not refunded', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    metaMode = 'not_allowed'
+    await expect(send(manual)).rejects.toMatchObject({ status: 502 })
+    expect(calls).toHaveLength(1); expect(remaining()).toBe(0)
+    metaMode = 'ok'
+    await expect(send(manual)).rejects.toMatchObject({ status: 403 })
+    expect(calls).toHaveLength(1)
+  })
+  it('I. the traditional phone send is unchanged: `to`, no `recipient`, no credit logic, no privileged call', async () => {
+    world({ phone: PHONE })
+    await send(manual)
+    expect(calls[0]).toMatchObject({ to: PHONE }); expect('recipient' in calls[0]).toBe(false)
+    expect(h.db.rpcCalls.filter((r) => r.name === 'consume_bsuid_send')).toHaveLength(0)
+  })
+  it('J. the BSUID goes in `recipient` only, never as a phone `to` and never with a phone-looking value', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    await send(manual)
+    expect(calls[0].recipient).toBe(BSUID)
+    expect('to' in calls[0]).toBe(false)
+    expect(String(calls[0].recipient)).not.toMatch(/^\d+$/)
+  })
+  it('K. a blocked or failed send is an error to the caller (403/502) and stores NO message, so it can never look like a delivered reply', async () => {
+    world({ bsuid: BSUID, authorized: 0 })
+    await expect(send(manual)).rejects.toMatchObject({ status: 403 })
+    expect(h.db.tables.messages).toHaveLength(0)
+  })
+  it('the privileged client is the one that spends the credit (the agent session is denied the function, as in production)', async () => {
+    world({ bsuid: BSUID, authorized: 1 })
+    const session = userSession() as unknown as { rpc: (n: string, a: Record<string, unknown>) => Promise<{ error: { code: string } | null }> }
+    expect((await session.rpc('consume_bsuid_send', { p_account_id: ACC, p_contact_id: 'contact-1', p_origin: 'manual_reply' })).error?.code).toBe('42501')
+    expect(remaining()).toBe(1)
   })
 })

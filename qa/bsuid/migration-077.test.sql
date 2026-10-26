@@ -146,3 +146,38 @@ select pg_temp.check('old code: record_blocked_inbound works on a phone-less con
 select pg_temp.check('old code: lookup by phone suffix never returns a phone-less contact', (select count(*) from contacts where account_id='a1a1a1a1-0000-4000-8000-00000000000a' and phone like '%000001' and phone_optional)=0);
 update contacts set phone='+51 900 000 077' where name='Phone A';
 select pg_temp.check('old code: healing a phone number (UPDATE phone) works for a phone contact', (select phone='+51 900 000 077' from contacts where name='Phone A'));
+
+-- 10 hotfix bsuid_check_failed: the Inbox runs as the agent (role authenticated) and must NOT be able to run the privileged functions itself,
+--    while the server's service_role client must be able to run exactly the sequence the hotfix issues (verify agent -> consume -> audit the block).
+select contact_id as hf_contact from r1 \gset
+select set_config('hf.contact', :'hf_contact', false);
+select pg_temp.check('fixture: agent of account A has a profile with role owner/agent in account A', (select count(*) from profiles where user_id='aaaaaaaa-0000-4000-8000-000000000001' and account_id='a1a1a1a1-0000-4000-8000-00000000000a')=1);
+select set_config('request.jwt.claim.sub','aaaaaaaa-0000-4000-8000-000000000001', false);
+set role authenticated;
+do $$ begin
+  begin perform audit_bsuid_event('a1a1a1a1-0000-4000-8000-00000000000a', current_setting('hf.contact')::uuid, 'send_blocked', 'manual_reply', '{}'::jsonb); perform pg_temp.check('HOTFIX: an agent session cannot write the block audit itself', false);
+  exception when insufficient_privilege then perform pg_temp.check('HOTFIX: an agent session cannot write the block audit itself (42501, the 403 seen in production)', true); end;
+end $$;
+do $$ begin
+  begin perform consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a', current_setting('hf.contact')::uuid, 'manual_reply'); perform pg_temp.check('HOTFIX: an agent session cannot consume the credit itself', false);
+  exception when insufficient_privilege then perform pg_temp.check('HOTFIX: an agent session cannot consume the credit itself (42501)', true); end;
+end $$;
+select pg_temp.check('HOTFIX: the agent session CAN read its own account''s active BSUID identity (the resolver''s read path works under RLS)', (select count(*) from contact_identities where contact_id=:'hf_contact'::uuid and kind='bsuid' and superseded_at is null)=1);
+reset role;
+select set_config('request.jwt.claim.sub','bbbbbbbb-0000-4000-8000-000000000002', false);
+set role authenticated;
+select pg_temp.check('HOTFIX: an agent of ANOTHER account cannot read that identity (RLS)', (select count(*) from contact_identities where contact_id=:'hf_contact'::uuid)=0);
+reset role;
+set role service_role;
+select authorize_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a', :'hf_contact'::uuid, 1, 'hotfix qa') as hf_auth \gset
+select pg_temp.check('HOTFIX: service_role grants exactly 1 credit', :hf_auth = 1);
+select pg_temp.check('HOTFIX: service_role verifies the agent (profile with min role agent in THIS account) and the contact''s ownership',
+  (select count(*) from profiles where user_id='aaaaaaaa-0000-4000-8000-000000000001' and account_id='a1a1a1a1-0000-4000-8000-00000000000a' and account_role in ('owner','admin','agent'))=1
+  and (select count(*) from contacts where id=:'hf_contact'::uuid and account_id='a1a1a1a1-0000-4000-8000-00000000000a')=1
+  and (select count(*) from contacts where id=:'hf_contact'::uuid and account_id='b2b2b2b2-0000-4000-8000-00000000000b')=0);
+select consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a', :'hf_contact'::uuid, 'manual_reply') as hf_c1 \gset
+select consume_bsuid_send('a1a1a1a1-0000-4000-8000-00000000000a', :'hf_contact'::uuid, 'manual_reply') as hf_c2 \gset
+select pg_temp.check('HOTFIX: service_role consumes the credit exactly once (true, then false)', :'hf_c1' = 't' and :'hf_c2' = 'f');
+select audit_bsuid_event('a1a1a1a1-0000-4000-8000-00000000000a', :'hf_contact'::uuid, 'send_blocked', 'manual_reply', '{"code":"bsuid_not_authorized"}'::jsonb);
+select pg_temp.check('HOTFIX: service_role writes the block audit; consumed and blocked events are both recorded', (select count(*) from contact_identity_audit where contact_id=:'hf_contact'::uuid and event='send_consumed')=1 and (select count(*) from contact_identity_audit where contact_id=:'hf_contact'::uuid and event='send_blocked')>=1);
+reset role;
