@@ -196,11 +196,18 @@ export function renderWithData(template: string, data: VariableData, options: Re
       value = r.value;
     }
     if (value === "") {
-      // Nothing is rendered here: do not leave the gap it would make ("Hola estimado  🤗", "Hola , bienvenido", " hola" at a line start).
-      const next = template.slice(cursor);
+      // Nothing is rendered here: do not leave the gap it would make ("Hola estimado  🤗", "Hola , bienvenido", "¿, aún…", "**").
+      let next = template.slice(cursor);
+      const mark = /[*_~]$/.exec(out)?.[0];
+      if (mark && next.startsWith(mark)) {          // "*{{first_name}}*" with no name: drop the empty bold/italic pair
+        out = out.slice(0, -1);
+        cursor += 1;
+        next = template.slice(cursor);
+      }
       const atLineStart = out === "" || out.endsWith("\n");
-      if ((/[ \t]$/.test(out) || atLineStart) && /^[ \t]/.test(next)) cursor += 1;
-      else if (/[ \t]$/.test(out) && /^[,.;:!?)\]¡¿]/.test(next)) out = out.replace(/[ \t]+$/, "");
+      if ((atLineStart || /[¿¡(\[]$/.test(out)) && /^[,;:]/.test(next)) cursor += /^[,;:][ \t]*/.exec(next)![0].length;
+      else if ((/[ \t]$/.test(out) || atLineStart) && /^[ \t]/.test(next)) cursor += 1;
+      else if (/[ \t]$/.test(out) && (/^[,.;:!?)\]¡¿]/.test(next) || next === "" || next.startsWith("\n"))) out = out.replace(/[ \t]+$/, "");
     }
     out += value;
   }

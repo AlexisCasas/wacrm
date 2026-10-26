@@ -221,3 +221,33 @@ describe("aliases: legacy references mapped to a field by data (no field name in
     expect((await renderTemplate(mem.client as never, "Ya le indico {{cuf_14160052|-}}", { accountId: "B", contactId: "c1" })).text).toBe("Ya le indico -");
   });
 });
+
+describe("common messages with an empty name (punctuation and spacing)", () => {
+  const none = data({ contact: { name: "", email: null, company: null, phone: "" }, vars: {} });
+  const cases: [string, string][] = [
+    ["Hola {{first_name}} 🤗", "Hola 🤗"],
+    ["Hola estimado {{first_name}} 🤗", "Hola estimado 🤗"],
+    ["Hola {{first_name}}, bienvenido a Keyler", "Hola, bienvenido a Keyler"],
+    ["Hola {{first_name}}. ¿En qué le puedo ayudar?", "Hola. ¿En qué le puedo ayudar?"],
+    ["¡Hola {{first_name}}!", "¡Hola!"],
+    ["Buenos días {{first_name}}:\nTenemos stock", "Buenos días:\nTenemos stock"],
+    ["Estimado(a) {{first_name}}:", "Estimado(a):"],
+    ["¿{{first_name}}, aún está interesado?", "¿aún está interesado?"],
+    ["({{first_name}}, cliente)", "(cliente)"],
+    ["Hola {{first_name}} {{last_name}}, gracias", "Hola, gracias"],
+    ["*{{first_name}}*, gracias por escribir", "gracias por escribir"],
+    ["Gracias, {{first_name}}", "Gracias,"],
+    ["{{first_name}}", ""],
+    ["Hola {{first_name | amigo}}, bienvenido", "Hola amigo, bienvenido"],
+  ];
+  for (const [input, expected] of cases) {
+    it(JSON.stringify(input), () => {
+      const out = renderWithData(input, none).text;
+      expect(out).toBe(expected);
+      expect(out).not.toMatch(/ {2}| ,| \.|\{\{/);
+    });
+  }
+  it("with a name the same messages are exactly the plain substitution", () => {
+    expect(renderWithData("¡Hola {{first_name}}! ¿{{first_name}}, aún interesado?", data()).text).toBe("¡Hola Angelo! ¿Angelo, aún interesado?");
+  });
+});
