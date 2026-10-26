@@ -6,6 +6,8 @@
 #   authorize <account_id> <flow_id> [--contact <contact_id>] [--media] [--buttons] [--list] [--audio] [--hours N]
 #                                            enable ONE flow (text always; other modalities only if named); asks you to type the confirmation
 #   disable <account_id> <flow_id> [--contact <contact_id>]   switch one authorization off (no confirmation asked)
+#   agents-reply <account_id> on|off [--cap N]  human agents may answer hidden-number customers of the account WITHOUT a per-contact credit (migration 080; only manual replies by a verified
+#                                            agent, only with an active BSUID, only inside WhatsApp's 24 h window, at most N agent messages per contact per hour, default 60). `off` asks nothing.
 #   list <account_id> [hours]                read-only: hidden-number contacts created in the last N hours (default 24): full contact id, username, first message time, flow runs; no technical ids of the user
 #   safe-flows <account_id>                  read-only: which ACTIVE flows are eligible for the BSUID rollout (only start/end, send_message, delay <= 10 min in total, send_media image|document,
 #                                            set_contact_field; at least one send) and why each other flow is not (set_tag, subflow, buttons/list/audio, conditions, long waits...)
@@ -40,7 +42,7 @@ select id, name, sends, media, delay_s, authorized,
 cmd=${1:-}; shift || true
 case "$cmd" in
   status)
-    psqlq -c "select left(account_id::text,8)||'…' as account, phone_number_id, waba_id, enabled, note from bsuid_pilot_scopes order by 1"
+    psqlq -c "select left(account_id::text,8)||'…' as account, phone_number_id, waba_id, enabled, agents_reply_without_credit as agents_no_credit, max_agent_replies_per_contact_hour as agent_cap, note from bsuid_pilot_scopes order by 1"
     psqlq -c "select left(account_id::text,8)||'…' as account, flows_enabled, updated_at from bsuid_flow_settings order by 1"
     psqlq -c "select left(a.account_id::text,8)||'…' as account, left(a.flow_id::text,8)||'…' as flow, f.name, a.enabled, case when a.contact_id is null then 'whole account' else 'contact '||left(a.contact_id::text,8)||'…' end as scope, concat_ws(',', case when a.allow_text then 'text' end, case when a.allow_media then 'media' end, case when a.allow_buttons then 'buttons' end, case when a.allow_list then 'list' end, case when a.allow_audio then 'audio' end) as modalities, a.expires_at from bsuid_flow_authorizations a join flows f on f.id=a.flow_id order by 1,3"
     psqlq -c "select left(r.account_id::text,8)||'…' as account, r.status, count(*) from flow_runs r join contacts c on c.id=r.contact_id where c.phone_optional and r.started_at > now() - interval '24 hours' group by 1,2 order by 1,2" ;;
@@ -70,6 +72,13 @@ case "$cmd" in
     COND=$([ -n "$C" ] && echo "contact_id='$C'" || echo "true")
     N=$(psqlq -At -c "with u as (update bsuid_flow_authorizations set enabled=false where account_id='$A' and flow_id='$F' and $COND returning 1) select count(*) from u")
     say "DISABLED flow ${F:0:8} account ${A:0:8} rows=$N" ;;
+  agents-reply) A=${1:-}; S=${2:-}; CAP=""; shift 2 || true; need_uuid "$A"; [[ "$S" == on || "$S" == off ]] || { echo "on|off"; exit 1; }
+    while [ $# -gt 0 ]; do case "$1" in --cap) CAP=${2:-}; [[ "$CAP" =~ ^[0-9]{1,4}$ ]] && [ "$CAP" -ge 1 ] || exit 1; shift 2;; *) echo "unknown $1"; exit 1;; esac; done
+    OK=$(psqlq -At -c "select count(*) from bsuid_pilot_scopes s join whatsapp_config w on w.account_id=s.account_id and w.phone_number_id=s.phone_number_id and w.waba_id=s.waba_id where s.account_id='$A' and s.enabled"); [ "$OK" = 1 ] || { echo "that account has no ENABLED BSUID scope matching its own WhatsApp number; nothing changed"; exit 1; }
+    if [ "$S" = on ]; then read -r -p "Type AGENTS ${A:0:8} to let human agents reply to hidden-number customers without a credit: " ANS; [ "$ANS" = "AGENTS ${A:0:8}" ] || { echo "not confirmed; nothing changed"; exit 1; }; fi
+    V=$([ "$S" = on ] && echo true || echo false)
+    psqlq -At -c "update bsuid_pilot_scopes set agents_reply_without_credit=$V${CAP:+, max_agent_replies_per_contact_hour=$CAP}, updated_at=now() where account_id='$A' and enabled" >/dev/null
+    say "AGENT REPLIES WITHOUT CREDIT account ${A:0:8} -> $S${CAP:+ (cap $CAP per contact per hour)}" ;;
   list) A=${1:-}; H=${2:-24}; need_uuid "$A"; [[ "$H" =~ ^[0-9]{1,3}$ ]] || exit 1
     psqlq -c "select c.id as contact_id, to_char(c.created_at at time zone 'utc','MM-DD HH24:MI') as created_utc, coalesce('@'||c.wa_username,'-') as username, left(c.name,1)||'***' as name_masked, (select count(*) from messages m join conversations cv on cv.id=m.conversation_id where cv.contact_id=c.id and m.sender_type='customer') as customer_msgs, (select count(*) from flow_runs r where r.contact_id=c.id) as flow_runs from contacts c where c.account_id='$A' and c.phone_optional and c.created_at > now() - interval '$H hours' order by c.created_at desc limit 50" ;;
   safe-flows) A=${1:-}; need_uuid "$A"
@@ -95,5 +104,5 @@ case "$cmd" in
     V=$([ "$S" = on ] && echo true || echo false)
     psqlq -At -c "insert into bsuid_pilot_scopes(account_id,phone_number_id,waba_id,enabled,note) values ('$A','$P','$W',$V,'flow_pilot.sh') on conflict (account_id,phone_number_id,waba_id) do update set enabled=$V, updated_at=now()" >/dev/null
     say "SCOPE account ${A:0:8} number ${P} -> $S" ;;
-  *) sed -n '2,22p' "$0"; exit 1 ;;
+  *) sed -n '2,24p' "$0"; exit 1 ;;
 esac

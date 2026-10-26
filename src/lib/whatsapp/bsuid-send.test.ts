@@ -9,6 +9,7 @@ vi.mock('@/lib/whatsapp/encryption', () => ({ decrypt: () => 'plain-token', encr
 vi.mock('@/lib/media/voice-note-path', async (orig) => ({ ...(await orig<object>()), isVoiceNoteUrlForAccount: () => true }))
 
 import { createInMemoryDb } from '@/test/in-memory-db'
+import { resetBsuidScopeCache } from './bsuid-flow-auth'
 import { BsuidSendBlockedError, resolveContactTarget } from './recipient'
 import { sendInteractiveButtons, sendInteractiveList, sendMediaMessage, sendReactionMessage, sendTemplateMessage, sendTextMessage } from './meta-api'
 import { engineSendInteractiveButtons, engineSendInteractiveList, engineSendMedia, engineSendText } from '@/lib/flows/meta-send'
@@ -395,5 +396,96 @@ describe('manual reply from the Inbox under an authenticated agent session (hotf
     const session = userSession() as unknown as { rpc: (n: string, a: Record<string, unknown>) => Promise<{ error: { code: string } | null }> }
     expect((await session.rpc('consume_bsuid_send', { p_account_id: ACC, p_contact_id: 'contact-1', p_origin: 'manual_reply' })).error?.code).toBe('42501')
     expect(remaining()).toBe(1)
+  })
+})
+
+
+// ---------------------------------------------------------------------------------------------------------------------
+// P0 incident (2026-10-26): human agents must be able to answer hidden-number customers of an account that has switched on
+// bsuid_pilot_scopes.agents_reply_without_credit (migration 080), WITHOUT a credit — and only through a verified agent / manual_reply.
+// ---------------------------------------------------------------------------------------------------------------------
+describe('agent replies without credit (per-number policy, migration 080)', () => {
+  const OLD = 'bbbbbbbb-0000-4000-8000-00000000000b'
+  const mk = (o: { policy?: boolean; env?: boolean; lastCustomerHoursAgo?: number | null; role?: string; phone?: string; superseded?: boolean; bsuid?: boolean } = {}) => {
+    world({ bsuid: o.bsuid === false ? undefined : BSUID, phone: o.phone, pilot: o.env === true, role: o.role } as never)
+    h.db.tables.bsuid_pilot_scopes = o.env === true ? [] : [{ account_id: ACC, phone_number_id: PN, waba_id: WABA, enabled: true, agents_reply_without_credit: o.policy ?? true, max_agent_replies_per_contact_hour: 60 }]
+    resetBsuidScopeCache()
+    if (o.superseded) h.db.tables.contact_identities[0].superseded_at = '2026-10-26T00:00:00Z'
+    if (o.lastCustomerHoursAgo !== null) h.db.tables.messages.push({ id: 'cm1', conversation_id: 'conv-1', sender_type: 'customer', created_at: new Date(h.db.now() - (o.lastCustomerHoursAgo ?? 0.2) * 3_600_000).toISOString() })
+    if (o.role) h.db.tables.profiles = [{ id: 'pv', user_id: AGENT, account_id: ACC, account_role: o.role }]
+  }
+  const reply = (text = 'Sí estimado', extra: Record<string, unknown> = {}) =>
+    sendMessageToConversation(userSession() as never, ACC, { conversationId: 'conv-1', messageType: 'text', contentText: text, ...manual, ...extra } as never)
+
+  it('THE INCIDENT: an agent answers a hidden-number customer with no credit; it goes to Meta by `recipient`, is stored, and no credit is spent', async () => {
+    mk()
+    const out = await reply('Sí estimado')
+    expect(calls).toHaveLength(1)
+    expect(calls[0]).toMatchObject({ messaging_product: 'whatsapp', recipient: BSUID, type: 'text' })
+    expect('to' in calls[0]).toBe(false)
+    expect(JSON.stringify(out)).toContain('wamid.OUT1')
+    expect(h.db.tables.messages.filter((m) => m.content_text === 'Sí estimado')).toHaveLength(1)
+    expect(remaining()).toBe(0)
+    expect(audit('send_consumed')).toHaveLength(0)
+    expect(audit('send_policy_allowed')).toHaveLength(1)
+  })
+  it('several replies in a row are allowed (a real conversation), each audited', async () => {
+    mk(); await reply('uno'); await reply('dos'); await reply('tres')
+    expect(calls).toHaveLength(3); expect(audit('send_policy_allowed')).toHaveLength(3)
+  })
+  it('closed by default: with the policy off (Keyler: credit-based pilot) the same reply is refused, and a granted credit still works', async () => {
+    mk({ policy: false })
+    await expect(reply()).rejects.toMatchObject({ status: 403, message: expect.stringContaining('bsuid_not_authorized') })
+    expect(calls).toHaveLength(0)
+    h.db.tables.contact_identities[0].send_authorized_remaining = 1
+    await reply('with a credit'); expect(calls).toHaveLength(1); expect(remaining()).toBe(0)
+  })
+  it('an account in the pilot only through the ENVIRONMENT variable (no DB scope row) keeps the credit rule', async () => {
+    mk({ env: true })
+    await expect(reply()).rejects.toMatchObject({ status: 403 })
+    expect(calls).toHaveLength(0)
+  })
+  it('the 24-hour customer-service window: refused when the customer wrote more than 24 h ago or never', async () => {
+    mk({ lastCustomerHoursAgo: 25 }); await expect(reply()).rejects.toMatchObject({ status: 403 })
+    mk({ lastCustomerHoursAgo: null }); await expect(reply()).rejects.toMatchObject({ status: 403 })
+    expect(calls).toHaveLength(0)
+  })
+  it('a viewer, a user of another account and a call without the verified actor are refused even with the policy on', async () => {
+    mk({ role: 'viewer' }); await expect(reply()).rejects.toMatchObject({ status: 403 })
+    mk(); h.db.tables.profiles = [{ id: 'po', user_id: AGENT, account_id: OLD, account_role: 'admin' }]; await expect(reply()).rejects.toMatchObject({ status: 403 })
+    mk(); await expect(reply('x', { actor: undefined })).rejects.toMatchObject({ status: 403 })
+    expect(calls).toHaveLength(0)
+  })
+  it('the public API, the AI and automations cannot use it: their origin is `automated` (the default), refused before any credit or policy is consulted', async () => {
+    mk()
+    await expect(reply('x', { origin: 'automated', actor: undefined })).rejects.toMatchObject({ status: 403 })
+    expect(calls).toHaveLength(0)
+    expect(h.db.rpcCalls.filter((r) => r.name === 'consume_bsuid_send')).toHaveLength(0)
+  })
+  it('a contact whose BSUID was replaced: the reply goes to the NEW active id; a contact with no active id is refused', async () => {
+    mk()
+    h.db.tables.contact_identities[0].superseded_at = '2026-10-26T00:00:00Z'
+    h.db.tables.contact_identities.push({ id: 'i2', account_id: ACC, contact_id: 'contact-1', kind: 'bsuid', value: 'PE.NEW0000000000009', superseded_at: null, send_authorized_remaining: 0 })
+    await reply(); expect(calls[0].recipient).toBe('PE.NEW0000000000009')
+    mk({ superseded: true }); await expect(reply()).rejects.toMatchObject({ status: 400 })   // no active id and no phone: nothing to address (same as before)
+  })
+  it('a contact that had a PHONE and later received a BSUID keeps the phone route: no policy, no credit, no `recipient`', async () => {
+    mk({ phone: PHONE })
+    await reply('hola'); expect(calls[0]).toMatchObject({ to: PHONE }); expect('recipient' in calls[0]).toBe(false)
+    expect(h.db.rpcCalls.filter((r) => r.name === 'consume_bsuid_send')).toHaveLength(0)
+  })
+  it('the per-contact hourly cap of agent replies refuses the excess', async () => {
+    mk(); h.db.tables.bsuid_pilot_scopes[0].max_agent_replies_per_contact_hour = 2
+    await reply('1'); await reply('2')
+    await expect(reply('3')).rejects.toMatchObject({ status: 403 })
+    expect(calls).toHaveLength(2)
+  })
+  it('a Meta error is not retried and spends nothing; switching the policy off (kill switch) refuses at once', async () => {
+    mk(); metaMode = 'not_allowed'
+    await expect(reply()).rejects.toMatchObject({ status: 502 })
+    expect(calls).toHaveLength(1); expect(remaining()).toBe(0)
+    metaMode = 'ok'; h.db.tables.bsuid_pilot_scopes[0].agents_reply_without_credit = false
+    await expect(reply()).rejects.toMatchObject({ status: 403 })
+    expect(calls).toHaveLength(1)
   })
 })

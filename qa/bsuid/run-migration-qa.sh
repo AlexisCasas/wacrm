@@ -4,8 +4,8 @@
 # Never touches a real database: the container has no network and is removed at the end.
 set -uo pipefail
 : "${SCHEMA_DUMP:?set SCHEMA_DUMP to a pg_dump -Fc file of the schema at migration 076}"
-HERE=$(cd "$(dirname "$0")" && pwd); MIG="$HERE/../../supabase/migrations/077_contact_identities_bsuid.sql"; MIG78="$HERE/../../supabase/migrations/078_bsuid_flow_authorizations.sql"; MIG79="$HERE/../../supabase/migrations/079_bsuid_flow_volume_caps.sql"
-C=wa-bsuid-qa-pg; W=$(mktemp -d); cp "$SCHEMA_DUMP" "$W/full.dump"; cp "$HERE/flow_pilot.sh" "$HERE/bsuid_watch.sh" "$W/"; cp "$MIG79" "$HERE/migration-079.test.sql" "$W/"; cp "$MIG" "$MIG78" "$HERE/migration-077.test.sql" "$HERE/migration-078.test.sql" "$HERE/pilot_list.sql" "$W/"
+HERE=$(cd "$(dirname "$0")" && pwd); MIG="$HERE/../../supabase/migrations/077_contact_identities_bsuid.sql"; MIG78="$HERE/../../supabase/migrations/078_bsuid_flow_authorizations.sql"; MIG79="$HERE/../../supabase/migrations/079_bsuid_flow_volume_caps.sql"; MIG80="$HERE/../../supabase/migrations/080_bsuid_agent_replies_policy.sql"
+C=wa-bsuid-qa-pg; W=$(mktemp -d); cp "$SCHEMA_DUMP" "$W/full.dump"; cp "$HERE/flow_pilot.sh" "$HERE/bsuid_watch.sh" "$W/"; cp "$MIG79" "$HERE/migration-079.test.sql" "$MIG80" "$HERE/migration-080.test.sql" "$W/"; cp "$MIG" "$MIG78" "$HERE/migration-077.test.sql" "$HERE/migration-078.test.sql" "$HERE/pilot_list.sql" "$W/"
 trap 'docker rm -f $C >/dev/null 2>&1; shred -u "$W/full.dump" 2>/dev/null; rm -rf "$W"' EXIT
 docker rm -f $C >/dev/null 2>&1
 docker run -d --name $C --network none -e POSTGRES_PASSWORD=x -v "$W":/w:ro postgres:17-alpine >/dev/null
@@ -50,6 +50,10 @@ echo "== apply 079 (1st) and (2nd, idempotency), then its checks"
 docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/079_bsuid_flow_volume_caps.sql" && echo "079 applied"
 docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/079_bsuid_flow_volume_caps.sql" && echo "079 applied again"
 docker exec -i $C psql -U postgres -d v -X -q -f /w/migration-079.test.sql 2>&1 | grep -E "PASS|FAIL|ERROR"
+echo "== apply 080 (1st) and (2nd, idempotency), then its checks"
+docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/080_bsuid_agent_replies_policy.sql" && echo "080 applied"
+docker exec -i $C psql -U postgres -d v -X -v ON_ERROR_STOP=1 -q < "$W/080_bsuid_agent_replies_policy.sql" && echo "080 applied again"
+docker exec -i $C psql -U postgres -d v -X -q -f /w/migration-080.test.sql 2>&1 | grep -E "PASS|FAIL|ERROR"
 
 echo "== operator script flow_pilot.sh against the disposable database"
 FP() { FLOW_PILOT_CONTAINER=$C FLOW_PILOT_DB=v FLOW_PILOT_LOG=$W/fp.log bash "$W/flow_pilot.sh" "$@"; }

@@ -290,3 +290,16 @@ describe('volume ceilings for automatic sends to hidden-number contacts (migrati
     expect(calls).toHaveLength(2)
   })
 })
+
+describe('flows and the agent-reply policy (migration 080)', () => {
+  it('the policy does not authorize Flows, and Flows do not need the policy', async () => {
+    world({ env: false, dbScope: true })
+    h.db.tables.bsuid_pilot_scopes[0].agents_reply_without_credit = false
+    await engineSendText({ ...base, text: 'flow text' })              // authorized flow, policy off: works
+    expect(calls).toHaveLength(1)
+    setAuth({ enabled: false })
+    h.db.tables.bsuid_pilot_scopes[0].agents_reply_without_credit = true
+    await expect(engineSendText({ ...base, text: 'x' })).rejects.toBeInstanceOf(BsuidSendBlockedError)   // policy on does NOT authorize a flow
+    expect(calls).toHaveLength(1)
+  })
+})

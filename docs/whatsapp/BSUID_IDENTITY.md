@@ -176,3 +176,11 @@ No new image is needed: the phase 4A image already carries the per-send authoriz
 - **`flow_pilot.sh`**: `safe-flows`, `batch`, `list`, `endruns` (see the header of the script).
 
 Authorization is per account and flow (`contact_id IS NULL`), so ANY hidden-number contact of the account may run an authorized flow; it is checked when the flow starts (webhook scope), before every send and therefore at every resumption (`bsuid_flow_send_check`). The kill switch and the ceilings act on the very next message of runs in progress.
+
+## Incident 2026-10-26 — agents could not answer hidden-number customers (migration 080)
+Real customers started writing to Rossy with hidden numbers (8 contacts in 2 hours; all 8 completed their automatic Flow, 59 messages delivered/read). When a customer then asked a question, the agent's manual reply was refused
+(`bsuid_not_authorized`, 15 attempts on 3 contacts): a manual reply to a BSUID needs one operator credit, a rule designed for a pilot with a single test contact. The refusal happens before any request to Meta; nothing was stored or sent.
+
+Fix: an explicit, per-number, closed-by-default policy `bsuid_pilot_scopes.agents_reply_without_credit`. When on, `consume_bsuid_send` lets a MANUAL reply through without a credit if the contact has an active BSUID, the customer wrote within 24 h
+and fewer than `max_agent_replies_per_contact_hour` (60) agent messages went to that contact in the last hour; every use is audited (`send_policy_allowed`). The application still verifies the authenticated agent (role, account, contact)
+before calling it, and Flows / automations / the AI / the public API never reach it. Accounts that do not switch it on (Keyler) keep the credit rule. Switch: `flow_pilot.sh agents-reply <account> on|off [--cap N]`.

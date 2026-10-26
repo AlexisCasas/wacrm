@@ -173,6 +173,22 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
       return { data: i.send_authorized_remaining, error: null }
     },
     consume_bsuid_send(a) {
+      // migration 080: per-number policy "agents reply without credit" (manual replies only, active BSUID, 24 h window, hourly cap per contact)
+      if (a.p_origin === 'manual_reply') {
+        const cfg = (tables.whatsapp_config ?? []).find((w) => w.account_id === a.p_account_id)
+        const scope = cfg && (tables.bsuid_pilot_scopes ?? []).find((x) => x.account_id === a.p_account_id && x.phone_number_id === cfg.phone_number_id && x.waba_id === cfg.waba_id && x.enabled && x.agents_reply_without_credit)
+        if (scope) {
+          const active = tables.contact_identities.some((x) => x.account_id === a.p_account_id && x.contact_id === a.p_contact_id && x.kind === 'bsuid' && !x.superseded_at)
+          const convs = new Set((tables.conversations ?? []).filter((c) => c.account_id === a.p_account_id && c.contact_id === a.p_contact_id).map((c) => c.id))
+          const at = (m: Row) => new Date(String(m.created_at)).getTime()
+          const inWindow = (tables.messages ?? []).some((m) => m.sender_type === 'customer' && convs.has(m.conversation_id) && at(m) > clock - 24 * 3_600_000)
+          const agentLastHour = (tables.messages ?? []).filter((m) => m.sender_type === 'agent' && convs.has(m.conversation_id) && at(m) > clock - 3_600_000).length
+          if (active && inWindow && agentLastHour < Number(scope.max_agent_replies_per_contact_hour ?? 60)) {
+            tables.contact_identity_audit.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: a.p_contact_id, event: 'send_policy_allowed', origin: a.p_origin, detail: { policy: 'agents_reply_without_credit' }, created_at: tick() })
+            return { data: true, error: null }
+          }
+        }
+      }
       const i = tables.contact_identities.find((x) => x.account_id === a.p_account_id && x.contact_id === a.p_contact_id && x.kind === 'bsuid' && !x.superseded_at && Number(x.send_authorized_remaining ?? 0) > 0)
       if (!i) return { data: false, error: null }
       i.send_authorized_remaining = Number(i.send_authorized_remaining) - 1
