@@ -6,6 +6,8 @@
 #   authorize <account_id> <flow_id> [--contact <contact_id>] [--media] [--buttons] [--list] [--audio] [--hours N]
 #                                            enable ONE flow (text always; other modalities only if named); asks you to type the confirmation
 #   disable <account_id> <flow_id> [--contact <contact_id>]   switch one authorization off (no confirmation asked)
+#   endruns <account_id> <contact_id>        end the ACTIVE flow runs of ONE contact (e.g. when a canary test is over), so no deferred step is left to fail later;
+#                                            asks you to type the confirmation; the run is closed as completed with end_reason canary_closed_by_operator
 #   scope <account_id> <phone_number_id> <waba_id> on|off     number-level BSUID support (union with WHATSAPP_BSUID_PILOT); must match whatsapp_config
 # Everything is logged to auto/pause/flow_pilot.log. Prints no phone numbers.
 set -euo pipefail
@@ -48,11 +50,18 @@ case "$cmd" in
     COND=$([ -n "$C" ] && echo "contact_id='$C'" || echo "true")
     N=$(psqlq -At -c "with u as (update bsuid_flow_authorizations set enabled=false where account_id='$A' and flow_id='$F' and $COND returning 1) select count(*) from u")
     say "DISABLED flow ${F:0:8} account ${A:0:8} rows=$N" ;;
+  endruns) A=${1:-}; C=${2:-}; need_uuid "$A"; need_uuid "$C"
+    N=$(psqlq -At -c "select count(*) from flow_runs where account_id='$A' and contact_id='$C' and status='active'")
+    [ "$N" != 0 ] || { echo "no active run for that contact; nothing to do"; exit 0; }
+    echo "active run(s) of contact ${C:0:8}…: $N (flow: $(psqlq -At -c "select string_agg(distinct f.name, ', ') from flow_runs r join flows f on f.id=r.flow_id where r.account_id='$A' and r.contact_id='$C' and r.status='active'"))"
+    read -r -p "Type END ${C:0:8} to close them: " ANS; [ "$ANS" = "END ${C:0:8}" ] || { echo "not confirmed; nothing changed"; exit 1; }
+    R=$(psqlq -At -c "with u as (update flow_runs set status='completed', end_reason='canary_closed_by_operator', ended_at=now(), wait_until=null, wait_node_key=null, wait_claim_token=null, wait_claimed_at=null where account_id='$A' and contact_id='$C' and status='active' returning 1) select count(*) from u")
+    say "ENDRUNS account ${A:0:8} contact ${C:0:8}… closed=$R" ;;
   scope) A=${1:-}; P=${2:-}; W=${3:-}; S=${4:-}; need_uuid "$A"; [[ "$P" =~ $DIG && "$W" =~ $DIG ]] || { echo "numeric ids"; exit 1; }; [[ "$S" == on || "$S" == off ]] || exit 1
     OK=$(psqlq -At -c "select count(*) from whatsapp_config where account_id='$A' and phone_number_id='$P' and waba_id='$W'"); [ "$OK" = 1 ] || { echo "that account/number/WABA triple is not in whatsapp_config; nothing changed"; exit 1; }
     if [ "$S" = on ]; then read -r -p "Type SCOPE ${A:0:8} to switch BSUID support ON for that number: " ANS; [ "$ANS" = "SCOPE ${A:0:8}" ] || { echo "not confirmed; nothing changed"; exit 1; }; fi
     V=$([ "$S" = on ] && echo true || echo false)
     psqlq -At -c "insert into bsuid_pilot_scopes(account_id,phone_number_id,waba_id,enabled,note) values ('$A','$P','$W',$V,'flow_pilot.sh') on conflict (account_id,phone_number_id,waba_id) do update set enabled=$V, updated_at=now()" >/dev/null
     say "SCOPE account ${A:0:8} number ${P} -> $S" ;;
-  *) sed -n '2,13p' "$0"; exit 1 ;;
+  *) sed -n '2,16p' "$0"; exit 1 ;;
 esac

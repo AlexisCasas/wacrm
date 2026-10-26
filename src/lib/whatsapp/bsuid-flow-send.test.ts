@@ -236,3 +236,25 @@ describe('fail closed, errors and retries', () => {
     expect(before()).toBeGreaterThan(0)
   })
 })
+
+describe('manual replies on an account switched on only through the database scope (phase 4A)', () => {
+  const manual = { origin: 'manual_reply' as const, actor: { userId: 'agent-1' } }
+  const resolve = () => resolveContactTarget(h.db.client as never, ACC, { id: CONTACT, phone: '' }, manual)
+  it('without a credit the reply is refused, with the credit it goes to the BSUID once, and the next one is refused again', async () => {
+    world({ env: false, dbScope: true })
+    h.db.tables.profiles.push({ id: 'p1', user_id: 'agent-1', account_id: ACC, account_role: 'agent' })
+    await expect(resolve()).rejects.toBeInstanceOf(BsuidSendBlockedError)
+    h.db.tables.contact_identities[0].send_authorized_remaining = 1
+    expect(await resolve()).toEqual({ kind: 'bsuid', bsuid: BSUID })
+    expect(credit()).toBe(0)
+    await expect(resolve()).rejects.toBeInstanceOf(BsuidSendBlockedError)
+  })
+  it('switching the scope off blocks manual replies as well (credit untouched)', async () => {
+    world({ env: false, dbScope: true })
+    h.db.tables.profiles.push({ id: 'p1', user_id: 'agent-1', account_id: ACC, account_role: 'agent' })
+    h.db.tables.contact_identities[0].send_authorized_remaining = 1
+    h.db.tables.bsuid_pilot_scopes[0].enabled = false; resetBsuidScopeCache()
+    await expect(resolve()).rejects.toBeInstanceOf(BsuidSendBlockedError)
+    expect(credit()).toBe(1)
+  })
+})

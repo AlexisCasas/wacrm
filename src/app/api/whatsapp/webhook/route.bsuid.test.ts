@@ -542,3 +542,99 @@ describe('webhook: phone-less contact and authorized Flows (phase 3)', () => {
     expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
   })
 })
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Phase 4A: general RECEPTION for a second account (Rossy-like = account B) switched on ONLY through bsuid_pilot_scopes (no restart, no
+// environment change), while account A keeps its environment switch. Reception only: Flows / automations / AI / external webhooks stay held.
+// ---------------------------------------------------------------------------------------------------------------------
+describe('webhook: phase 4A — reception enabled through the database scope', () => {
+  const scopeB = (enabled = true) => { h.db.tables.bsuid_pilot_scopes = [{ account_id: ACC_B, phone_number_id: PN_B, waba_id: WABA_B, enabled }] }
+  const deliverB = (messages: Record<string, unknown>[], contacts: Record<string, unknown>[]) => run(deliver(messages, contacts, PN_B))
+  beforeEach(async () => { scopeB(); (await import('@/lib/whatsapp/bsuid-flow-auth')).resetBsuidScopeCache() })
+
+  it('a message from a hidden-number customer is stored: contact (phone_optional, no phone), identity, username, conversation, message', async () => {
+    await deliverB([text({ from_user_id: BSUID }, 'hola, precio?')], [{ user_id: BSUID, profile: { name: 'Ana', username: 'ana.pe' } }])
+    const c = h.db.tables.contacts.filter((x) => x.account_id === ACC_B)
+    expect(c).toHaveLength(1)
+    expect(c[0]).toMatchObject({ phone: '', phone_optional: true, wa_username: 'ana.pe', name: 'Ana' })
+    expect(h.db.tables.contact_identities.filter((i) => i.account_id === ACC_B && i.kind === 'bsuid' && i.value === BSUID)).toHaveLength(1)
+    expect(h.db.tables.conversations.filter((x) => x.account_id === ACC_B)).toHaveLength(1)
+    expect(h.db.tables.messages.filter((m) => m.content_text === 'hola, precio?')).toHaveLength(1)
+  })
+  it('every customer is covered: many different hidden-number senders each get their own contact and conversation', async () => {
+    const ids = Array.from({ length: 6 }, (_, i) => `PE.ROSSYQA00000000${i + 1}`)
+    await deliverB(ids.map((id, i) => text({ from_user_id: id }, `msg ${i}`)), ids.map((id) => ({ user_id: id })))
+    expect(h.db.tables.contacts.filter((x) => x.account_id === ACC_B)).toHaveLength(6)
+    expect(new Set(h.db.tables.conversations.filter((x) => x.account_id === ACC_B).map((x) => x.contact_id)).size).toBe(6)
+    expect(h.db.tables.messages).toHaveLength(6)
+  })
+  it('a returning customer lands in the SAME contact and conversation; a changed username updates the label, not the identity', async () => {
+    await deliverB([text({ from_user_id: BSUID }, 'uno')], [{ user_id: BSUID, profile: { username: 'ana.pe' } }])
+    await deliverB([text({ from_user_id: BSUID }, 'dos')], [{ user_id: BSUID, profile: { username: 'ana.nueva' } }])
+    expect(h.db.tables.contacts.filter((x) => x.account_id === ACC_B)).toHaveLength(1)
+    expect(h.db.tables.conversations.filter((x) => x.account_id === ACC_B)).toHaveLength(1)
+    expect(h.db.tables.contacts.find((x) => x.account_id === ACC_B)?.wa_username).toBe('ana.nueva')
+    expect(h.db.tables.messages).toHaveLength(2)
+  })
+  it('a replayed delivery is stored exactly once', async () => {
+    const req = () => deliver([{ id: 'wamid.ROSSYREPLAY', timestamp: '1700000000', type: 'text', text: { body: 'x' }, from_user_id: BSUID }], [{ user_id: BSUID }], PN_B)
+    await run(req()); await run(req())
+    expect(h.db.tables.messages.filter((m) => m.message_id?.toString().includes('ROSSYREPLAY') || m.content_text === 'x')).toHaveLength(1)
+  })
+  it('the SAME BSUID in the two accounts is two different contacts (no sharing across accounts or portfolios)', async () => {
+    await run(deliver([text({ from_user_id: BSUID }, 'a')], [{ user_id: BSUID }], PN_A))
+    await deliverB([text({ from_user_id: BSUID }, 'b')], [{ user_id: BSUID }])
+    const a = h.db.tables.contacts.filter((x) => x.account_id === ACC_A), b = h.db.tables.contacts.filter((x) => x.account_id === ACC_B)
+    expect(a).toHaveLength(1); expect(b).toHaveLength(1); expect(a[0].id).not.toBe(b[0].id)
+  })
+  it('reception only: no Flow, automation, AI or external webhook is triggered for the hidden-number customer', async () => {
+    await deliverB([text({ from_user_id: BSUID }, 'hola')], [{ user_id: BSUID }])
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+    expect(h.runAutomationsForTrigger).not.toHaveBeenCalled()
+    expect(h.dispatchInboundToAiReply).not.toHaveBeenCalled()
+    expect(h.dispatchWebhookEvent).not.toHaveBeenCalled()
+    expect(h.db.tables.contact_identity_audit.some((a) => a.event === 'automation_skipped' && (a.detail as { reason?: string }).reason === 'pilot_hold_phoneless_contact')).toBe(true)
+  })
+  it('even a Flow authorization row does nothing while the account master switch is absent (closed by default)', async () => {
+    h.db.tables.flows = [{ id: 'f1', account_id: ACC_B, status: 'active' }]
+    h.db.tables.bsuid_flow_authorizations = [{ id: 'a1', account_id: ACC_B, flow_id: 'f1', contact_id: null, enabled: true, allow_text: true }]
+    await deliverB([text({ from_user_id: BSUID }, 'hola')], [{ user_id: BSUID }])
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+  it('phone customers of the same account are untouched: flows and automations run exactly as before, with no restriction', async () => {
+    await deliverB([text({ from: '51900000001' }, 'hola')], [{ wa_id: '51900000001', profile: { name: 'Luis' } }])
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    expect((h.dispatchInboundToFlows.mock.calls[0][0] as { restrictToFlowIds?: string[] }).restrictToFlowIds).toBeUndefined()
+    expect(h.runAutomationsForTrigger).toHaveBeenCalled()
+  })
+  it('a phone customer whose event also carries a BSUID is still a phone contact (not held)', async () => {
+    await deliverB([text({ from: '51900000002', from_user_id: BSUID }, 'hola')], [{ wa_id: '51900000002', user_id: BSUID, profile: { name: 'Luis' } }])
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+  })
+  it('SWITCH OFF (kill switch): reception returns to the previous behavior and NOTHING already stored is lost', async () => {
+    await deliverB([text({ from_user_id: BSUID }, 'antes')], [{ user_id: BSUID }])
+    const before = { contacts: h.db.tables.contacts.length, messages: h.db.tables.messages.length, identities: h.db.tables.contact_identities.length, conversations: h.db.tables.conversations.length }
+    scopeB(false); (await import('@/lib/whatsapp/bsuid-flow-auth')).resetBsuidScopeCache()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await deliverB([text({ from_user_id: 'PE.ROSSYQA99999999' }, 'despues')], [{ user_id: 'PE.ROSSYQA99999999' }])
+    expect(h.db.tables.contacts).toHaveLength(before.contacts)
+    expect(h.db.tables.messages).toHaveLength(before.messages)
+    expect(h.db.tables.contact_identities).toHaveLength(before.identities)
+    expect(h.db.tables.conversations).toHaveLength(before.conversations)
+    expect(h.db.tables.contacts.find((x) => x.account_id === ACC_B)).toMatchObject({ phone_optional: true })   // the earlier contact is intact
+  })
+  it('a read error on the scope table fails closed: the BSUID event is dropped like before, phone events keep working', async () => {
+    h.db.failReads.add('bsuid_pilot_scopes'); (await import('@/lib/whatsapp/bsuid-flow-auth')).resetBsuidScopeCache()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await deliverB([text({ from_user_id: BSUID }, 'x')], [{ user_id: BSUID }])
+    expect(h.db.tables.contacts.filter((x) => x.account_id === ACC_B)).toHaveLength(0)
+    await deliverB([text({ from: '51900000003' }, 'ok')], [{ wa_id: '51900000003' }])
+    expect(h.db.tables.contacts.filter((x) => x.account_id === ACC_B && x.phone)).toHaveLength(1)
+  })
+  it('a scope whose WABA differs from the number\'s configuration does not switch the number on', async () => {
+    h.db.tables.bsuid_pilot_scopes = [{ account_id: ACC_B, phone_number_id: PN_B, waba_id: '9999999999', enabled: true }]; (await import('@/lib/whatsapp/bsuid-flow-auth')).resetBsuidScopeCache()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await deliverB([text({ from_user_id: BSUID }, 'x')], [{ user_id: BSUID }])
+    expect(h.db.tables.contacts.filter((x) => x.account_id === ACC_B)).toHaveLength(0)
+  })
+})

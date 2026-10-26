@@ -29,6 +29,9 @@ import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 import { classifyMetaSendError } from '@/lib/whatsapp/meta-error-classify'
 import { MAX_META_RATE_LIMIT_RETRIES, metaRateLimitDelayMs } from './meta-retry-backoff'
 import { resolveOutboundTransport } from '@/lib/whatsapp/send-message'
+import { hasPhone } from '@/lib/contacts/display'
+import { accountInPilotScopes } from '@/lib/whatsapp/bsuid-pilot'
+import { getDbPilotScopes } from '@/lib/whatsapp/bsuid-flow-auth'
 
 /**
  * The 5 step types that can ever reach Meta and thus ever throw a
@@ -238,7 +241,7 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
     if (input.contactId) {
       const { data: owned, error: ownErr } = await db
         .from('contacts')
-        .select('id, blocked')
+        .select('id, blocked, phone')
         .eq('id', input.contactId)
         .eq('account_id', input.accountId)
         .maybeSingle()
@@ -254,6 +257,14 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
       // before any automation lookup, so a blocked contact costs one
       // query and nothing else.
       if (owned.blocked) return
+      // BSUID pilot: a contact known only by a WhatsApp user id never starts an automation (their sends are refused anyway, so the run
+      // would only park a wait row and fail later). Accounts outside the pilot are not touched. The decision is audited.
+      if (!hasPhone(owned as { phone?: string | null }) && accountInPilotScopes(input.accountId, await getDbPilotScopes())) {
+        await db
+          .rpc('audit_bsuid_event', { p_account_id: input.accountId, p_contact_id: input.contactId, p_event: 'automation_skipped', p_origin: 'automation', p_detail: { reason: 'pilot_hold_phoneless_contact', trigger: input.triggerType } })
+          .then(undefined, () => undefined)
+        return
+      }
     }
 
     const { data: automations, error } = await db

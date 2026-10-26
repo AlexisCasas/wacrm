@@ -144,3 +144,17 @@ All three tables and both functions are service_role only (RLS on, no policies, 
 **Operating it**: `qa/bsuid/flow_pilot.sh` (`status`, `kill`, `flows`, `authorize`, `disable`, `scope`). `kill <account>` is immediate and asks nothing.
 
 Not covered by phase 3: automations (tag_added etc.), the AI auto-reply, outbound webhooks and campaigns/templates for BSUID contacts — they remain refused/held. Media, buttons, lists and audio are implemented but each stays off until validated on its own.
+
+## Phase 4A — general reception for a second account (Rossy) — no restart
+
+Reception (identity, contact, conversation, message) is controlled by **the number switch**, not by the Flow authorizations of migration 078:
+the switch is the union of `WHATSAPP_BSUID_PILOT` (environment, needs a restart) and the enabled rows of `bsuid_pilot_scopes` (database, effective within ~10 s).
+A Flow authorization alone never turns reception on; `bsuid_flow_settings` / `bsuid_flow_authorizations` only decide which flows may serve an already-received contact.
+
+Switching a number on through the database (`qa/bsuid/flow_pilot.sh scope <account> <phone_number_id> <waba_id> on`) therefore needs no image change. With it on, EVERY hidden-number customer of that number is
+recognized: `resolve_bsuid_contact` per (account, BSUID) → contact (`phone = ''`, `phone_optional = true`, username as display label) → conversation → message stored once (wamid idempotency). The same BSUID in another account
+is another contact. What stays held for such a contact: Flows (unless a flow is authorized for it), automations (new in this phase: `runAutomationsForTrigger` skips phone-less contacts of pilot accounts, audited), AI, outbound webhooks and campaigns
+(broadcasts take explicit phone numbers and drop recipients without one). Manual replies need the operator credit exactly as before.
+
+Switching it off (`... scope ... off`) returns reception to the previous behavior (a BSUID-only event is dropped with the legacy reason); nothing already stored is touched.
+`qa/bsuid/flow_pilot.sh endruns <account> <contact>` closes the active (deferred) flow runs of ONE contact so a finished canary leaves no step that is certain to fail later.
