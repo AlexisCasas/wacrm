@@ -11,7 +11,7 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { hasMinRole, isAccountRole } from '@/lib/auth/roles'
 import { isValidE164, phoneVariants, sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils'
 import { isBsuidPilotEnabledWithScopes } from '@/lib/whatsapp/bsuid-pilot'
-import { bsuidFlowSendCheck, getDbPilotScopes, type FlowSendModality } from '@/lib/whatsapp/bsuid-flow-auth'
+import { checkBsuidFlowEligibility, getDbPilotScopes, type FlowSendModality } from '@/lib/whatsapp/bsuid-flow-auth'
 
 /** Argument accepted by every send function: a digits-only phone (as before) or `{ bsuid }`. */
 export type WaTarget = string | { bsuid: string }
@@ -38,6 +38,7 @@ export function describeTarget(target: ResolvedTarget): 'phone' | 'bsuid' {
  * (automation, AI, public API: `automated`, always refused for a BSUID during the pilot).
  */
 export type SendOrigin = 'manual_reply' | 'automated' | 'flow'
+export type RecipientPreflightOrigin = 'flow_preflight'
 
 /**
  * The signed-in person behind a `manual_reply`. ONLY the dashboard send route creates one, from the `requireRole('agent')` context
@@ -57,6 +58,10 @@ export class BsuidSendBlockedError extends Error {
     this.code = code
   }
 }
+export class ContactRecipientUnavailableError extends Error {
+  readonly code = 'contact_recipient_unavailable' as const
+  constructor() { super('contact not found for this account'); this.name = 'ContactRecipientUnavailableError' }
+}
 
 /**
  * Decide the destination of an outbound message for a contact. EVERY sender goes through here (Flows, automations, AI,
@@ -75,7 +80,7 @@ export async function resolveContactTarget(
   db: SupabaseClient,
   accountId: string,
   contact: { id: string; phone?: string | null },
-  opts: { origin: SendOrigin; actor?: ManualSendActor; flowRun?: { id: string; modality: FlowSendModality } },
+  opts: { origin: SendOrigin; actor?: ManualSendActor; flowRun?: { id: string; modality: FlowSendModality } } | { origin: RecipientPreflightOrigin; flowId: string },
 ): Promise<ResolvedTarget> {
   const sanitized = sanitizePhoneForMeta(contact.phone ?? '')
   if (sanitized && isValidE164(sanitized)) return { kind: 'phone', phone: sanitized }
@@ -90,7 +95,10 @@ export async function resolveContactTarget(
     .maybeSingle()
   const bsuid = !error && data && typeof (data as { value?: unknown }).value === 'string' ? (data as { value: string }).value : ''
   if (!bsuid) {
-    if (!sanitized) throw new Error('contact not found for this account')
+    // A manual Flow preflight reports every unusable recipient identity
+    // (empty OR malformed phone, with no BSUID) as a controlled outcome.
+    // Real send paths preserve their historic malformed-phone error.
+    if (!sanitized || opts.origin === 'flow_preflight') throw new ContactRecipientUnavailableError()
     throw new Error(`contact phone invalid: ${contact.phone}`)
   }
 
@@ -99,7 +107,7 @@ export async function resolveContactTarget(
   // privileged calls below ALWAYS go through the server-side service-role client — after the caller has been verified again here.
   const block = async (code: BsuidSendBlockCode, reason?: string): Promise<never> => {
     console.warn('[send] BSUID send blocked', { code, origin: opts.origin, account_id: accountId })
-    try {
+    if (opts.origin !== 'flow_preflight') try {
       await supabaseAdmin().rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contact.id, p_event: 'send_blocked', p_origin: opts.origin, p_detail: reason ? { code, reason } : { code } })
     } catch { /* the block already holds; the audit is best effort */ }
     throw new BsuidSendBlockedError(code)
@@ -112,11 +120,17 @@ export async function resolveContactTarget(
     .maybeSingle()
   const cfg = config as { phone_number_id?: string; waba_id?: string } | null
   if (configError || !cfg || !isBsuidPilotEnabledWithScopes({ accountId, phoneNumberId: cfg.phone_number_id, wabaId: cfg.waba_id }, await getDbPilotScopes())) return block('bsuid_disabled')
+  if (opts.origin === 'flow_preflight') {
+    const verdict = await checkBsuidFlowEligibility({ accountId, flowId: opts.flowId, contactId: contact.id })
+    if (verdict === 'check_failed') return block('bsuid_check_failed')
+    if (verdict !== 'ok') return block('bsuid_flow_not_authorized', verdict)
+    return { kind: 'bsuid', bsuid }
+  }
   if (opts.origin === 'flow') {
     // A Flow run: no manual credit is used. The run must be a real ACTIVE run of THIS contact and every flow of its call stack must be
     // authorized for this contact and this modality (bsuid_flow_send_check, evaluated on every send, so the kill switch acts at once).
     if (!opts.flowRun?.id) return block('bsuid_automated_blocked')
-    const verdict = await bsuidFlowSendCheck(accountId, opts.flowRun.id, contact.id, opts.flowRun.modality)
+    const verdict = await checkBsuidFlowEligibility({ accountId, flowRunId: opts.flowRun.id, contactId: contact.id, modality: opts.flowRun.modality })
     if (verdict === 'check_failed') return block('bsuid_check_failed')
     if (verdict !== 'ok') return block('bsuid_flow_not_authorized', verdict)
     return { kind: 'bsuid', bsuid }

@@ -145,6 +145,10 @@ export async function POST(
         { error: "This contact is blocked", code: "contact_blocked" },
         { status: 409 },
       )
+    case "bsuid_flow_not_authorized":
+      return NextResponse.json({ error: "This contact is not authorized to receive this Flow by WhatsApp user id", code: "bsuid_flow_not_authorized" }, { status: 409 })
+    case "contact_recipient_unavailable":
+      return NextResponse.json({ error: "This contact has no usable WhatsApp identity", code: "contact_recipient_unavailable" }, { status: 409 })
     case "run_failed_immediately":
       // The run exists (flow_run_id below) and is kept as-is for audit
       // — never re-thrown, retried, or deleted here. Deliberately no

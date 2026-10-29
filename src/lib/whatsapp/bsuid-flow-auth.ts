@@ -11,6 +11,7 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import type { BsuidPilotScope } from '@/lib/whatsapp/bsuid-pilot'
 
 export type FlowSendModality = 'text' | 'media' | 'buttons' | 'list' | 'audio'
+export type BsuidFlowEligibilityVerdict = 'ok' | 'flow_not_authorized' | 'check_failed' | string
 
 const SCOPE_TTL_MS = 10_000
 let scopeCache: { at: number; scopes: BsuidPilotScope[] } | null = null
@@ -45,13 +46,33 @@ export async function bsuidFlowScope(accountId: string, contactId: string): Prom
   }
 }
 
-/** 'ok', or the reason the send is refused ('check_failed' when the database could not answer). */
-export async function bsuidFlowSendCheck(accountId: string, runId: string, contactId: string, modality: FlowSendModality): Promise<string> {
+/**
+ * Single application entry point for preflight and per-send BSUID Flow
+ * eligibility. Preflight intentionally validates only the root Flow's
+ * general DB scope (contact, enabled state, expiry and root-flow eligibility)
+ * because no run or call stack exists yet. Every real send re-validates the
+ * active run, modality, subflow stack, kill switch and volume limits through
+ * `bsuid_flow_send_check`; preflight never substitutes for that defense.
+ */
+export async function checkBsuidFlowEligibility(args:
+  | { accountId: string; contactId: string; flowId: string }
+  | { accountId: string; contactId: string; flowRunId: string; modality: FlowSendModality },
+): Promise<BsuidFlowEligibilityVerdict> {
   try {
-    const { data, error } = await supabaseAdmin().rpc('bsuid_flow_send_check', { p_account_id: accountId, p_run_id: runId, p_contact_id: contactId, p_modality: modality })
+    if ('flowId' in args) {
+      const { data, error } = await supabaseAdmin().rpc('bsuid_flow_scope', { p_account_id: args.accountId, p_contact_id: args.contactId })
+      if (error || !Array.isArray(data)) return 'check_failed'
+      return data.some((id) => id === args.flowId) ? 'ok' : 'flow_not_authorized'
+    }
+    const { data, error } = await supabaseAdmin().rpc('bsuid_flow_send_check', { p_account_id: args.accountId, p_run_id: args.flowRunId, p_contact_id: args.contactId, p_modality: args.modality })
     if (error || typeof data !== 'string') return 'check_failed'
     return data
   } catch {
     return 'check_failed'
   }
+}
+
+/** @deprecated Prefer `checkBsuidFlowEligibility` so preflight and sends share a policy entry point. */
+export async function bsuidFlowSendCheck(accountId: string, runId: string, contactId: string, modality: FlowSendModality): Promise<string> {
+  return checkBsuidFlowEligibility({ accountId, flowRunId: runId, contactId, modality })
 }

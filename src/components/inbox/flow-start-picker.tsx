@@ -110,6 +110,10 @@ export function FlowStartPicker({
           // a contact that got blocked meanwhile. Never confirm as if
           // it started.
           toast.error(t("errorContactBlocked"));
+        } else if (data.code === "bsuid_flow_not_authorized") {
+          toast.error(t("errorBsuidFlowNotAuthorized"));
+        } else if (data.code === "contact_recipient_unavailable") {
+          toast.error(t("errorContactRecipientUnavailable"));
         } else if (data.code === "flow_failed_immediately") {
           // P1 bug #2 — the run WAS created and DID run (it's kept for
           // audit server-side), but it ended in status='failed' before

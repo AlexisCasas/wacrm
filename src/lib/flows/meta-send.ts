@@ -89,7 +89,7 @@ interface SendTextEngineArgs {
  */
 export async function engineSendText(
   args: SendTextEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   // MUST run before the transport branch below — the ManyChat path
   // has its own send call that never touches the Meta-only contact
   // lookup further down, so checking blocked status after resolving
@@ -181,7 +181,7 @@ export async function engineSendText(
     })
     .eq('id', args.conversationId)
 
-  return { whatsapp_message_id: waMessageId }
+  return { whatsapp_message_id: waMessageId, recipient_kind: target.kind }
 }
 
 /**
@@ -198,7 +198,7 @@ export async function engineSendText(
  */
 async function sendTextViaManyChat(
   args: SendTextEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   const db = supabaseAdmin()
 
   let whatsappMessageId: string
@@ -296,7 +296,7 @@ interface SendMediaEngineArgs {
  */
 export async function engineSendMedia(
   args: SendMediaEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   // Same ordering requirement as engineSendText above — must run
   // before the ManyChat-vs-Meta branch, not after.
   await assertContactCanReceive(supabaseAdmin(), args.accountId, args.contactId)
@@ -425,7 +425,7 @@ export async function engineSendMedia(
     })
     .eq('id', args.conversationId)
 
-  return { whatsapp_message_id: waMessageId }
+  return { whatsapp_message_id: waMessageId, recipient_kind: target.kind }
 }
 
 /**
@@ -447,7 +447,7 @@ export async function engineSendMedia(
  */
 async function sendMediaViaManyChatBridge(
   args: SendMediaEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   if (!args.manychatBridgeFlowNs) {
     throw new Error(
       '[flows] send_media has no manychat_bridge_flow_ns configured — cannot send media while this account is bridged through ManyChat. This send was NOT attempted via Meta. Set a temporary ManyChat bridge Flow ns on this node, or wait for the Meta cutover.',
@@ -538,7 +538,7 @@ interface SendInteractiveListEngineArgs {
  */
 export async function engineSendInteractiveButtons(
   args: SendInteractiveButtonsEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   return sendInteractiveViaMeta({ ...args, kind: 'buttons' })
 }
 
@@ -548,7 +548,7 @@ export async function engineSendInteractiveButtons(
  */
 export async function engineSendInteractiveList(
   args: SendInteractiveListEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   return sendInteractiveViaMeta({ ...args, kind: 'list' })
 }
 
@@ -558,7 +558,7 @@ type SendInput =
 
 async function sendInteractiveViaMeta(
   input: SendInput,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   const db = supabaseAdmin()
 
   // Interactive messages have no ManyChat bridge (Meta-only), but the
@@ -696,5 +696,5 @@ async function sendInteractiveViaMeta(
     })
     .eq('id', input.conversationId)
 
-  return { whatsapp_message_id: waMessageId }
+  return { whatsapp_message_id: waMessageId, recipient_kind: target.kind }
 }

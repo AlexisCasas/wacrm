@@ -38,6 +38,12 @@ const h = vi.hoisted(() => ({
     forceFinalStatusLookupError: false,
   },
 }));
+const recipient = vi.hoisted(() => {
+  class BsuidSendBlockedError extends Error { constructor(readonly code: string) { super(code) } }
+  class ContactRecipientUnavailableError extends Error { constructor() { super('contact not found for this account') } }
+  return { BsuidSendBlockedError, ContactRecipientUnavailableError, resolveContactTarget: vi.fn() };
+});
+vi.mock("@/lib/whatsapp/recipient", () => recipient);
 
 vi.mock("./admin-client", () => {
   const { state } = h;
@@ -260,6 +266,8 @@ beforeEach(() => {
   // later test if a scenario ever calls engineSendText more than once.
   vi.mocked(engineSendText).mockReset();
   vi.mocked(engineSendText).mockResolvedValue({ whatsapp_message_id: "m1" });
+  recipient.resolveContactTarget.mockReset();
+  recipient.resolveContactTarget.mockResolvedValue({ kind: "phone", phone: "51900000001" });
 });
 
 describe("startFlowManually", () => {
@@ -277,6 +285,43 @@ describe("startFlowManually", () => {
     expect(result.outcome).toBe("started");
     expect(h.state.flowRuns).toHaveLength(1);
     expect(h.state.flowRuns[0].status).toBe("completed"); // end node terminates immediately
+  });
+
+  it("starts for a named contact with a valid phone recipient", async () => {
+    seedFlow(); seedConversationAndContact(); h.state.contacts[0].phone = "51900000001";
+    const result = await startFlowManually({ accountId: ACCOUNT, initiatedByUserId: AGENT_USER, flowId: "flow-1", conversationId: CONVERSATION });
+    expect(result.outcome).toBe("started"); expect(h.state.flowRuns).toHaveLength(1);
+    expect(recipient.resolveContactTarget).toHaveBeenCalledWith(expect.anything(), ACCOUNT, expect.objectContaining({ phone: "51900000001" }), { origin: "flow_preflight", flowId: "flow-1" });
+  });
+
+  it("starts for a contact displayed by its valid phone number", async () => {
+    seedFlow(); seedConversationAndContact(); h.state.contacts[0].name = "51900000001"; h.state.contacts[0].phone = "51900000001";
+    const result = await startFlowManually({ accountId: ACCOUNT, initiatedByUserId: AGENT_USER, flowId: "flow-1", conversationId: CONVERSATION });
+    expect(result.outcome).toBe("started"); expect(h.state.flowRuns).toHaveLength(1);
+  });
+
+  it("starts for a contact whose authorized recipient resolves to BSUID", async () => {
+    seedFlow(); seedConversationAndContact();
+    recipient.resolveContactTarget.mockResolvedValueOnce({ kind: "bsuid", bsuid: "PE.authorized" });
+    const result = await startFlowManually({ accountId: ACCOUNT, initiatedByUserId: AGENT_USER, flowId: "flow-1", conversationId: CONVERSATION });
+    expect(result.outcome).toBe("started"); expect(h.state.flowRuns).toHaveLength(1);
+  });
+
+  it("does not create a run or events when BSUID preflight denies the Flow", async () => {
+    seedFlow(); seedConversationAndContact();
+    recipient.resolveContactTarget.mockRejectedValueOnce(new recipient.BsuidSendBlockedError("bsuid_flow_not_authorized"));
+    const result = await startFlowManually({ accountId: ACCOUNT, initiatedByUserId: AGENT_USER, flowId: "flow-1", conversationId: CONVERSATION });
+    expect(result).toEqual({ outcome: "bsuid_flow_not_authorized" });
+    expect(h.state.flowRuns).toHaveLength(0); expect(h.state.flowRunEvents).toHaveLength(0);
+  });
+
+  it("does not create a run when no phone or BSUID identity is usable", async () => {
+    seedFlow(); seedConversationAndContact();
+    h.state.contacts[0].phone = "000";
+    recipient.resolveContactTarget.mockRejectedValueOnce(new recipient.ContactRecipientUnavailableError());
+    const result = await startFlowManually({ accountId: ACCOUNT, initiatedByUserId: AGENT_USER, flowId: "flow-1", conversationId: CONVERSATION });
+    expect(result).toEqual({ outcome: "contact_recipient_unavailable" });
+    expect(h.state.flowRuns).toHaveLength(0); expect(h.state.flowRunEvents).toHaveLength(0); expect(h.state.execCountCalls).toHaveLength(0);
   });
 
   it("B. active manual-trigger flow -> also works", async () => {
@@ -597,6 +642,15 @@ describe("startFlowManually — first-advance outcome", () => {
     expect(result.outcome).toBe("started");
     expect(h.state.flowRuns).toHaveLength(1);
     expect(h.state.flowRuns[0].status).toBe("completed");
+  });
+
+  it("records recipient_kind without recording a phone in Flow send events", async () => {
+    seedSendThenEndFlow(); seedConversationAndContact();
+    vi.mocked(engineSendText).mockResolvedValueOnce({ whatsapp_message_id: "m1", recipient_kind: "bsuid" });
+    await startFlowManually({ accountId: ACCOUNT, initiatedByUserId: AGENT_USER, flowId: "flow-1", conversationId: CONVERSATION });
+    const sent = h.state.flowRunEvents.find((event) => event.event_type === "message_sent");
+    expect(sent?.payload).toMatchObject({ recipient_kind: "bsuid" });
+    expect(JSON.stringify(sent?.payload)).not.toContain("51900000001");
   });
 
   it("2. engineSendText throws on the first node -> run is left failed, outcome is 'run_failed_immediately', exactly one run persists", async () => {

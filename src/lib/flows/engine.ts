@@ -67,6 +67,7 @@ import {
 } from "@/lib/flows/customer-reply-condition";
 import { isSubflowExecutionEnabledForAccount, type OnCustomerReply } from "@/lib/flows/subflow-execution-capability";
 import { ContactBlockedError } from "@/lib/contacts/blocking";
+import { BsuidSendBlockedError, ContactRecipientUnavailableError, resolveContactTarget } from "@/lib/whatsapp/recipient";
 import { executeSendProductAudios } from "@/lib/flows/product-audios";
 import {
   type CollectInputNodeConfig,
@@ -447,7 +448,7 @@ async function sendButtonsAndSuspend(
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendButtonsNodeConfig;
-  const { whatsapp_message_id } = await engineSendInteractiveButtons({
+  const { whatsapp_message_id, recipient_kind } = await engineSendInteractiveButtons({
     accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
@@ -461,6 +462,7 @@ async function sendButtonsAndSuspend(
   await logEvent(db, run.id, "message_sent", node.node_key, {
     node_type: "send_buttons",
     whatsapp_message_id,
+    ...(recipient_kind ? { recipient_kind } : {}),
   });
   // Look up our internal message id so we can stash it on the run.
   // Cheap — indexed on `messages.message_id`.
@@ -484,7 +486,7 @@ async function sendListAndSuspend(
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendListNodeConfig;
-  const { whatsapp_message_id } = await engineSendInteractiveList({
+  const { whatsapp_message_id, recipient_kind } = await engineSendInteractiveList({
     accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
@@ -506,6 +508,7 @@ async function sendListAndSuspend(
   await logEvent(db, run.id, "message_sent", node.node_key, {
     node_type: "send_list",
     whatsapp_message_id,
+    ...(recipient_kind ? { recipient_kind } : {}),
   });
   const { data: msg } = await db
     .from("messages")
@@ -1144,7 +1147,7 @@ async function advanceFromNodeKey(
     if (node.node_type === "send_message") {
       const cfg = node.config as unknown as SendMessageNodeConfig;
       try {
-        const { whatsapp_message_id } = await engineSendText({
+        const { whatsapp_message_id, recipient_kind } = await engineSendText({
           accountId: run.account_id,
     userId: run.user_id,
           conversationId: run.conversation_id!,
@@ -1155,6 +1158,7 @@ async function advanceFromNodeKey(
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "send_message",
           whatsapp_message_id,
+          ...(recipient_kind ? { recipient_kind } : {}),
         });
         if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
@@ -1175,7 +1179,7 @@ async function advanceFromNodeKey(
     if (node.node_type === "send_media") {
       const cfg = node.config as unknown as SendMediaNodeConfig;
       try {
-        const { whatsapp_message_id } = await engineSendMedia({
+        const { whatsapp_message_id, recipient_kind } = await engineSendMedia({
           accountId: run.account_id,
     userId: run.user_id,
           conversationId: run.conversation_id!,
@@ -1201,6 +1205,7 @@ async function advanceFromNodeKey(
           media_type: cfg.media_type,
           ...(cfg.media_type === "audio" ? { voice: true } : {}),
           whatsapp_message_id,
+          ...(recipient_kind ? { recipient_kind } : {}),
         });
         if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
@@ -1245,7 +1250,7 @@ async function advanceFromNodeKey(
       // wake us up via handleReplyForActiveRun's collect_input branch.
       const cfg = node.config as unknown as CollectInputNodeConfig;
       try {
-        const { whatsapp_message_id } = await engineSendText({
+        const { whatsapp_message_id, recipient_kind } = await engineSendText({
           accountId: run.account_id,
     userId: run.user_id,
           conversationId: run.conversation_id!,
@@ -1256,6 +1261,7 @@ async function advanceFromNodeKey(
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "collect_input",
           whatsapp_message_id,
+          ...(recipient_kind ? { recipient_kind } : {}),
         });
         const { data: msg } = await db
           .from("messages")
@@ -1987,6 +1993,8 @@ export type StartFlowManuallyResult =
   | { outcome: "conversation_not_found" }
   | { outcome: "contact_not_found" }
   | { outcome: "contact_blocked" }
+  | { outcome: "bsuid_flow_not_authorized" }
+  | { outcome: "contact_recipient_unavailable" }
   | {
       outcome: "active_flow_exists";
       active_flow_run_id?: string;
@@ -2047,7 +2055,7 @@ export async function startFlowManually(
   // against a stale/forged conversation row), never trust the id alone.
   const { data: contactData, error: contactErr } = await db
     .from("contacts")
-    .select("id, blocked")
+    .select("id, blocked, phone")
     .eq("id", conversation.contact_id)
     .eq("account_id", accountId)
     .maybeSingle();
@@ -2058,13 +2066,22 @@ export async function startFlowManually(
   if (!contactData) {
     return { outcome: "contact_not_found" };
   }
-  const typedContact = contactData as { id: string; blocked: boolean };
+  const typedContact = contactData as { id: string; blocked: boolean; phone: string | null };
   // A blocked contact must never get a Flow started for them manually,
   // even from a stale Inbox tab that still shows the picker.
   if (typedContact.blocked) {
     return { outcome: "contact_blocked" };
   }
   const contactId = typedContact.id;
+  try {
+    await resolveContactTarget(db, accountId, typedContact, { origin: "flow_preflight", flowId: flow.id });
+  } catch (err) {
+    if (err instanceof ContactRecipientUnavailableError) return { outcome: "contact_recipient_unavailable" };
+    if (err instanceof BsuidSendBlockedError && (err.code === "bsuid_flow_not_authorized" || err.code === "bsuid_disabled")) return { outcome: "bsuid_flow_not_authorized" };
+    const message = err instanceof Error ? err.message : "recipient preflight failed";
+    console.error("[flows] startFlowManually recipient preflight error:", message);
+    return { outcome: "error", message };
+  }
 
   // Never auto-replace an active run. Pre-check gives a clean,
   // informative conflict in the common case; the DB's partial unique

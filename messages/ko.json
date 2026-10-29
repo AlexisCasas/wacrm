@@ -201,6 +201,8 @@
       "errorActiveFlow": "이 연락처에는 이미 활성 Flow가 있습니다: {flowName}.",
       "errorServiceWindow": "24시간 서비스 윈도우 밖에서는 Flow를 시작할 수 없습니다.",
       "errorContactBlocked": "이 연락처는 차단되었습니다. Flow를 시작하려면 먼저 차단을 해제하세요.",
+      "errorBsuidFlowNotAuthorized": "이 연락처는 아직 Flow를 시작할 준비가 되지 않았습니다. WhatsApp 번호 동기화를 기다리거나 권한을 확인하세요.",
+      "errorContactRecipientUnavailable": "이 연락처에는 아직 Flow를 시작할 수 있는 WhatsApp ID가 없습니다.",
       "errorGeneric": "Flow를 시작하지 못했습니다. 다시 시도해 주세요."
     },
     "sessionTimer": {

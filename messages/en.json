@@ -303,6 +303,8 @@
       "errorActiveFlow": "This contact already has an active Flow: {flowName}.",
       "errorServiceWindow": "A Flow can't be started outside the 24-hour service window.",
       "errorContactBlocked": "This contact is blocked. Unblock them first to start a Flow.",
+      "errorBsuidFlowNotAuthorized": "This contact is not ready to start the Flow yet. Wait for their WhatsApp number to sync or review their authorization.",
+      "errorContactRecipientUnavailable": "This contact does not yet have a WhatsApp identity available to start the Flow.",
       "errorFailedImmediately": "The Flow couldn't be started. Check the contact's details or the Flow's configuration and try again.",
       "errorGeneric": "Couldn't start the flow. Please try again."
     },

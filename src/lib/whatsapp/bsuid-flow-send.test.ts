@@ -9,8 +9,8 @@ vi.mock('@/lib/media/voice-note-path', async (orig) => ({ ...(await orig<object>
 vi.mock('@/lib/whatsapp/encryption', () => ({ decrypt: () => 'plain-token', encrypt: (v: string) => v, isLegacyFormat: () => false }))
 
 import { createInMemoryDb } from '@/test/in-memory-db'
-import { BsuidSendBlockedError, resolveContactTarget } from './recipient'
-import { resetBsuidScopeCache } from './bsuid-flow-auth'
+import { BsuidSendBlockedError, ContactRecipientUnavailableError, resolveContactTarget } from './recipient'
+import { checkBsuidFlowEligibility, resetBsuidScopeCache } from './bsuid-flow-auth'
 import { engineSendInteractiveButtons, engineSendInteractiveList, engineSendMedia, engineSendText } from '@/lib/flows/meta-send'
 import { engineSendText as automationSendText } from '@/lib/automations/meta-send'
 
@@ -64,6 +64,35 @@ beforeEach(() => { process.env.FLOW_MEDIA_AUDIO_SCOPE = 'all'; vi.restoreAllMock
 afterEach(() => { vi.unstubAllGlobals(); delete process.env[PILOT]; delete process.env.FLOW_MEDIA_AUDIO_SCOPE })
 
 describe('authorized Flow → BSUID by `recipient`', () => {
+  it('preflights a valid phone directly, whether the UI displays a name or the number itself', async () => {
+    world()
+    await expect(resolveContactTarget(h.db.client as never, ACC, { id: CONTACT, phone: '51900000001' }, { origin: 'flow_preflight', flowId: FLOW }))
+      .resolves.toEqual({ kind: 'phone', phone: '51900000001' })
+  })
+  it('preflights an authorized BSUID Flow through the central policy without creating an audit event', async () => {
+    world()
+    await expect(resolveContactTarget(h.db.client as never, ACC, { id: CONTACT, phone: '' }, { origin: 'flow_preflight', flowId: FLOW })).resolves.toEqual({ kind: 'bsuid', bsuid: BSUID })
+    expect(await checkBsuidFlowEligibility({ accountId: ACC, contactId: CONTACT, flowId: FLOW })).toBe('ok')
+    expect(audit('send_blocked')).toHaveLength(0)
+  })
+  it('rejects expired BSUID authorization during preflight without creating an audit event', async () => {
+    world({ auth: { expires_at: '2020-01-01T00:00:00Z' } })
+    await expect(resolveContactTarget(h.db.client as never, ACC, { id: CONTACT, phone: '' }, { origin: 'flow_preflight', flowId: FLOW })).rejects.toMatchObject({ code: 'bsuid_flow_not_authorized' })
+    expect(audit('send_blocked')).toHaveLength(0)
+  })
+  it('keeps missing identity distinct from BSUID authorization', async () => {
+    world(); h.db.tables.contact_identities = []
+    await expect(resolveContactTarget(h.db.client as never, ACC, { id: CONTACT, phone: '' }, { origin: 'flow_preflight', flowId: FLOW })).rejects.toBeInstanceOf(ContactRecipientUnavailableError)
+  })
+  it('treats a malformed phone without a BSUID as unavailable only during preflight', async () => {
+    world(); h.db.tables.contact_identities = []
+    await expect(resolveContactTarget(h.db.client as never, ACC, { id: CONTACT, phone: '000' }, { origin: 'flow_preflight', flowId: FLOW })).rejects.toBeInstanceOf(ContactRecipientUnavailableError)
+    await expect(resolveContactTarget(h.db.client as never, ACC, { id: CONTACT, phone: '000' }, { origin: 'automated' })).rejects.toThrow('contact phone invalid')
+  })
+  it('falls back from a malformed phone to an authorized BSUID during preflight', async () => {
+    world()
+    await expect(resolveContactTarget(h.db.client as never, ACC, { id: CONTACT, phone: '000' }, { origin: 'flow_preflight', flowId: FLOW })).resolves.toEqual({ kind: 'bsuid', bsuid: BSUID })
+  })
   it('a text node of an authorized flow reaches the BSUID, never a phone, and spends no manual credit', async () => {
     world()
     await engineSendText({ ...base, text: 'Hola Ana' })

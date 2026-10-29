@@ -161,6 +161,16 @@ describe("POST /api/flows/[id]/start — tenancy", () => {
     expect(res.status).toBe(409)
     expect(json.code).toBe("contact_blocked")
   })
+  it("409s with the specific BSUID preflight code without a flow run", async () => {
+    startFlowManually.mockResolvedValue({ outcome: "bsuid_flow_not_authorized" })
+    const res = await post(); const json = await res.json()
+    expect(res.status).toBe(409); expect(json.code).toBe("bsuid_flow_not_authorized"); expect(json).not.toHaveProperty("flow_run_id")
+  })
+  it("409s when no recipient identity is available", async () => {
+    startFlowManually.mockResolvedValue({ outcome: "contact_recipient_unavailable" })
+    const res = await post(); const json = await res.json()
+    expect(res.status).toBe(409); expect(json.code).toBe("contact_recipient_unavailable")
+  })
 })
 
 // P1 bug #2 — the run was created and executed, but its first advance
