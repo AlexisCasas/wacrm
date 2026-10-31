@@ -33,9 +33,25 @@ function setup() {
 }
 const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
 
+// Both dropdowns are the themed Select (not a native <select>): open the list, then press the option by its visible name.
+async function choose(id: string, name: string) {
+  const press = (el: Element) => {
+    fireEvent.pointerDown(el, { pointerType: "mouse", button: 0 });
+    fireEvent.mouseDown(el, { button: 0 });
+    fireEvent.pointerUp(el, { pointerType: "mouse", button: 0 });
+    fireEvent.mouseUp(el, { button: 0 });
+    fireEvent.click(el, { button: 0 });
+  };
+  press(document.getElementById(id)!);
+  const option = await screen.findByRole("option", { name });
+  await new Promise((r) => setTimeout(r, 300)); // base-ui ignores an item press that follows the open too closely
+  press(option);
+}
+const pickSeller = (name = sellers[0].name) => choose("order-seller", name);
+
 async function reachPreview() {
   await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
-  fireEvent.change(document.getElementById("order-seller")!, { target: { value: sellers[0].id } });
+  await pickSeller();
   fireEvent.click(screen.getByText("review"));
   await screen.findByTestId("order-preview");
 }
@@ -60,11 +76,25 @@ describe("ConfirmOrderDialog", () => {
     expect(value("order-quantity")).toBe("1");
   });
 
+  it("both dropdowns are the themed Select: the department can be chosen and cleared, the list opens from the keyboard", async () => {
+    setup();
+    await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
+    const dept = document.getElementById("order-department")!;
+    expect(dept.tagName).toBe("BUTTON"); // not a native <select>, whose popup ignores the light/dark theme
+    expect(document.querySelector("select")).toBeNull();
+    await choose("order-department", "Lima");
+    expect(dept.textContent).toContain("Lima");
+    await choose("order-department", "departmentPlaceholder");
+    expect(dept.textContent).not.toContain("Lima");
+    fireEvent.keyDown(document.getElementById("order-seller")!, { key: "ArrowDown" });
+    expect(await screen.findByRole("option", { name: sellers[0].name })).toBeTruthy();
+  });
+
   it("cannot review until the seller is chosen and required fields are valid", async () => {
     setup();
     await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
     expect(screen.getByText("review").closest("button")).toBeDisabled();
-    fireEvent.change(document.getElementById("order-seller")!, { target: { value: sellers[0].id } });
+    await pickSeller();
     expect(screen.getByText("review").closest("button")).not.toBeDisabled();
     fireEvent.change(document.getElementById("order-price")!, { target: { value: "0" } });
     expect(screen.getByText("review").closest("button")).toBeDisabled();
