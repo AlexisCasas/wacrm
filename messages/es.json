@@ -106,6 +106,7 @@
     "sessionExpired": "Tu sesión expiró. Inicia sesión de nuevo.",
     "genericLogin": "No se pudo iniciar sesión. Verifica tus datos e intenta de nuevo.",
     "genericSignup": "No se pudo crear la cuenta. Intenta de nuevo.",
+    "emailDeliveryUnavailable": "No pudimos enviar el correo de verificación, así que la cuenta no se creó. Avisa al administrador; volver a intentarlo no lo resolverá.",
     "genericPasswordReset": "No se pudo enviar el enlace. Intenta de nuevo.",
     "generic": "Ocurrió un error. Intenta de nuevo."
   },

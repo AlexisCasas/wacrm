@@ -106,6 +106,7 @@
     "sessionExpired": "Your session expired. Please sign in again.",
     "genericLogin": "Couldn't sign in. Check your details and try again.",
     "genericSignup": "Couldn't create the account. Please try again.",
+    "emailDeliveryUnavailable": "We couldn't send the verification email, so the account was not created. Let the administrator know; trying again won't fix it.",
     "genericPasswordReset": "Couldn't send the link. Please try again.",
     "generic": "Something went wrong. Please try again."
   },

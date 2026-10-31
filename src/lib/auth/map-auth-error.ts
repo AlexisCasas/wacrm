@@ -67,16 +67,17 @@ export function mapAuthError(
   t: (key: string) => string,
   context: AuthErrorContext,
 ): string {
+  const err = (error ?? {}) as AuthErrorLike;
+
   if (error) {
     // Technical detail stays in the console/server logs — never the
-    // user-facing string returned below.
-    console.error(
-      `[auth:${context}]`,
-      error instanceof Error ? error.message : error,
-    );
+    // user-facing string returned below. Only the stable code and HTTP
+    // status are logged: the raw message can echo request data.
+    console.error(`[auth:${context}]`, {
+      code: err.code ?? null,
+      status: err.status ?? null,
+    });
   }
-
-  const err = (error ?? {}) as AuthErrorLike;
 
   if (err.code && CODE_TO_KEY[err.code]) {
     return t(CODE_TO_KEY[err.code]);
@@ -84,6 +85,14 @@ export function mapAuthError(
 
   if (err.status === 429) {
     return t('rateLimited');
+  }
+
+  // GoTrue answers 500 `unexpected_failure` when the account was
+  // rejected because the verification email could not be sent (SMTP
+  // unreachable or misconfigured). Retrying cannot help the visitor, so
+  // say what happened instead of the generic "try again".
+  if (context === 'signup' && typeof err.status === 'number' && err.status >= 500) {
+    return t('emailDeliveryUnavailable');
   }
 
   const message =
