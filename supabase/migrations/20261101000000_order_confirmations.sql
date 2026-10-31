@@ -112,10 +112,38 @@ CREATE TABLE public.order_confirmation_deliveries (
 );
 
 -- Frozen fields: an order is a record of what was confirmed. Only delivery bookkeeping may change.
+--   * Business fields and snapshots (names, prices, ...) never change.
+--   * References (contact, conversation, seller, deal) may only go from a value to NULL: that is exactly what ON DELETE SET NULL does when the
+--     referenced row is deleted, and the snapshots keep the order readable. A reference can never be re-pointed or filled in afterwards.
+--   * On INSERT every reference must belong to the order's account, and the seller name must be the seller's name (create_order_confirmation
+--     checks this too; the trigger covers any other writer).
 CREATE FUNCTION public.order_confirmations_freeze()
 RETURNS trigger LANGUAGE plpgsql SET search_path = public AS $$
 BEGIN
-  IF NEW.account_id IS DISTINCT FROM OLD.account_id
+  IF TG_OP = 'INSERT' THEN
+    IF NEW.contact_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM contacts c WHERE c.id = NEW.contact_id AND c.account_id = NEW.account_id) THEN
+      RAISE EXCEPTION 'reference from another account (contact)';
+    END IF;
+    IF NEW.conversation_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM conversations v WHERE v.id = NEW.conversation_id AND v.account_id = NEW.account_id) THEN
+      RAISE EXCEPTION 'reference from another account (conversation)';
+    END IF;
+    IF NEW.deal_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM deals d WHERE d.id = NEW.deal_id AND d.account_id = NEW.account_id) THEN
+      RAISE EXCEPTION 'reference from another account (deal)';
+    END IF;
+    IF NEW.seller_id IS NOT NULL THEN
+      IF NOT EXISTS (SELECT 1 FROM order_sellers s WHERE s.id = NEW.seller_id AND s.account_id = NEW.account_id) THEN
+        RAISE EXCEPTION 'reference from another account (seller)';
+      END IF;
+      IF NEW.seller_name IS DISTINCT FROM (SELECT s.name FROM order_sellers s WHERE s.id = NEW.seller_id) THEN
+        RAISE EXCEPTION 'seller name differs from the referenced seller';
+      END IF;
+    END IF;
+    RETURN NEW;
+  END IF;
+
+  IF NEW.id IS DISTINCT FROM OLD.id
+     OR NEW.created_at IS DISTINCT FROM OLD.created_at
+     OR NEW.account_id IS DISTINCT FROM OLD.account_id
      OR NEW.confirmed_at IS DISTINCT FROM OLD.confirmed_at
      OR NEW.customer_name IS DISTINCT FROM OLD.customer_name
      OR NEW.dni IS DISTINCT FROM OLD.dni
@@ -131,7 +159,12 @@ BEGIN
      OR NEW.department IS DISTINCT FROM OLD.department
      OR NEW.confirmed_by_name IS DISTINCT FROM OLD.confirmed_by_name
      OR NEW.request_key IS DISTINCT FROM OLD.request_key
-     OR (NEW.confirmed_by IS DISTINCT FROM OLD.confirmed_by AND NOT (NEW.confirmed_by IS NULL AND OLD.confirmed_by IS NOT NULL))
+     -- References: only value -> NULL.
+     OR (NEW.confirmed_by IS DISTINCT FROM OLD.confirmed_by AND NEW.confirmed_by IS NOT NULL)
+     OR (NEW.contact_id IS DISTINCT FROM OLD.contact_id AND NEW.contact_id IS NOT NULL)
+     OR (NEW.conversation_id IS DISTINCT FROM OLD.conversation_id AND NEW.conversation_id IS NOT NULL)
+     OR (NEW.seller_id IS DISTINCT FROM OLD.seller_id AND NEW.seller_id IS NOT NULL)
+     OR (NEW.deal_id IS DISTINCT FROM OLD.deal_id AND NEW.deal_id IS NOT NULL)
   THEN
     RAISE EXCEPTION 'a confirmed order is immutable';
   END IF;
@@ -140,7 +173,7 @@ BEGIN
 END;
 $$;
 
-CREATE TRIGGER order_confirmations_freeze BEFORE UPDATE ON public.order_confirmations
+CREATE TRIGGER order_confirmations_freeze BEFORE INSERT OR UPDATE ON public.order_confirmations
   FOR EACH ROW EXECUTE FUNCTION public.order_confirmations_freeze();
 
 -- ---------------------------------------------------------------

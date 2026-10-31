@@ -131,6 +131,80 @@ BEGIN
   IF (SELECT delivery_status FROM order_confirmations WHERE id = o) <> 'dead' THEN RAISE EXCEPTION 'expired lease at max attempts should be dead'; END IF;
 END $$;
 
+-- References: the order keeps pointing at what it was confirmed for. The only change allowed is non-NULL -> NULL (what ON DELETE SET NULL does),
+-- the business snapshots (customer_name, seller_name, ...) survive it, and a reference can neither be re-pointed nor restored afterwards.
+DO $$
+DECLARE
+  ua UUID := pg_temp.v('ua')::uuid; aa UUID := pg_temp.v('aa')::uuid; ab UUID := pg_temp.v('ab')::uuid;
+  ca2 UUID; va2 UUID; vb UUID; sa2 UUID; dA UUID; dB UUID; pA UUID; pB UUID; stA UUID; stB UUID; o UUID; o2 UUID; r order_confirmations;
+BEGIN
+  INSERT INTO contacts (user_id, account_id, phone, name) VALUES (ua, aa, '51900000003', 'Synthetic A2') RETURNING id INTO ca2;
+  INSERT INTO conversations (user_id, account_id, contact_id) VALUES (ua, aa, ca2) RETURNING id INTO va2;
+  INSERT INTO conversations (user_id, account_id, contact_id) VALUES (pg_temp.v('ub')::uuid, ab, pg_temp.v('cb')::uuid) RETURNING id INTO vb;
+  INSERT INTO order_sellers (account_id, name, name_key) VALUES (aa, 'Vendedor Dos', 'vendedor dos') RETURNING id INTO sa2;
+  INSERT INTO pipelines (user_id, account_id, name) VALUES (ua, aa, 'pA') RETURNING id INTO pA;
+  INSERT INTO pipelines (user_id, account_id, name) VALUES (pg_temp.v('ub')::uuid, ab, 'pB') RETURNING id INTO pB;
+  INSERT INTO pipeline_stages (pipeline_id, name) VALUES (pA, 's') RETURNING id INTO stA;
+  INSERT INTO pipeline_stages (pipeline_id, name) VALUES (pB, 's') RETURNING id INTO stB;
+  INSERT INTO deals (user_id, account_id, pipeline_id, stage_id, title) VALUES (ua, aa, pA, stA, 'dA') RETURNING id INTO dA;
+  INSERT INTO deals (user_id, account_id, pipeline_id, stage_id, title) VALUES (pg_temp.v('ub')::uuid, ab, pB, stB, 'dB') RETURNING id INTO dB;
+
+  SELECT order_id INTO o FROM create_order_confirmation(aa, ca2, va2, ua, 'Asesor A', 'key-ref-1', sa2, pg_temp.f());
+
+  -- Re-pointing any reference is refused, in the same account or across accounts, and a NULL reference cannot be filled in.
+  BEGIN UPDATE order_confirmations SET contact_id = pg_temp.v('ca')::uuid WHERE id = o; RAISE EXCEPTION 'contact re-pointed (same account)';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'contact re-pointed%' THEN RAISE; END IF; END;
+  BEGIN UPDATE order_confirmations SET contact_id = pg_temp.v('cb')::uuid WHERE id = o; RAISE EXCEPTION 'contact re-pointed (other account)';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'contact re-pointed%' THEN RAISE; END IF; END;
+  BEGIN UPDATE order_confirmations SET conversation_id = pg_temp.v('va')::uuid WHERE id = o; RAISE EXCEPTION 'conversation re-pointed';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'conversation re-pointed%' THEN RAISE; END IF; END;
+  BEGIN UPDATE order_confirmations SET seller_id = pg_temp.v('sa')::uuid WHERE id = o; RAISE EXCEPTION 'seller re-pointed (same account)';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'seller re-pointed%' THEN RAISE; END IF; END;
+  BEGIN UPDATE order_confirmations SET seller_id = pg_temp.v('sb')::uuid WHERE id = o; RAISE EXCEPTION 'seller re-pointed (other account)';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'seller re-pointed%' THEN RAISE; END IF; END;
+  BEGIN UPDATE order_confirmations SET deal_id = dA WHERE id = o; RAISE EXCEPTION 'deal linked after the fact';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'deal linked%' THEN RAISE; END IF; END;
+  BEGIN UPDATE order_confirmations SET id = gen_random_uuid() WHERE id = o; RAISE EXCEPTION 'id changed';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'id changed%' THEN RAISE; END IF; END;
+  BEGIN UPDATE order_confirmations SET created_at = created_at - INTERVAL '1 day' WHERE id = o; RAISE EXCEPTION 'created_at changed';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'created_at changed%' THEN RAISE; END IF; END;
+
+  -- A direct insert (bypassing create_order_confirmation) cannot reference another account's contact, conversation, seller or deal,
+  -- nor carry a seller name that is not the seller's name.
+  BEGIN INSERT INTO order_confirmations (account_id, contact_id, confirmed_by_name, request_key, seller_id, seller_name, customer_name, phone, product, quantity, price, destination)
+        VALUES (aa, pg_temp.v('cb')::uuid, 'x', 'direct-1', sa2, 'Vendedor Dos', 'n', 'p', 'p', 1, 1, 'd'); RAISE EXCEPTION 'cross-account contact inserted';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'cross-account%' THEN RAISE; END IF; END;
+  BEGIN INSERT INTO order_confirmations (account_id, conversation_id, confirmed_by_name, request_key, seller_id, seller_name, customer_name, phone, product, quantity, price, destination)
+        VALUES (aa, vb, 'x', 'direct-2', sa2, 'Vendedor Dos', 'n', 'p', 'p', 1, 1, 'd'); RAISE EXCEPTION 'cross-account conversation inserted';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'cross-account%' THEN RAISE; END IF; END;
+  BEGIN INSERT INTO order_confirmations (account_id, confirmed_by_name, request_key, seller_id, seller_name, customer_name, phone, product, quantity, price, destination)
+        VALUES (aa, 'x', 'direct-3', pg_temp.v('sb')::uuid, 'Vendedor B', 'n', 'p', 'p', 1, 1, 'd'); RAISE EXCEPTION 'cross-account seller inserted';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'cross-account%' THEN RAISE; END IF; END;
+  BEGIN INSERT INTO order_confirmations (account_id, deal_id, confirmed_by_name, request_key, seller_id, seller_name, customer_name, phone, product, quantity, price, destination)
+        VALUES (aa, dB, 'x', 'direct-4', sa2, 'Vendedor Dos', 'n', 'p', 'p', 1, 1, 'd'); RAISE EXCEPTION 'cross-account deal inserted';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'cross-account%' THEN RAISE; END IF; END;
+  BEGIN INSERT INTO order_confirmations (account_id, confirmed_by_name, request_key, seller_id, seller_name, customer_name, phone, product, quantity, price, destination)
+        VALUES (aa, 'x', 'direct-5', sa2, 'Otro nombre', 'n', 'p', 'p', 1, 1, 'd'); RAISE EXCEPTION 'seller name mismatch inserted';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'seller name mismatch%' THEN RAISE; END IF; END;
+  -- A same-account deal is a legitimate reference at insert time.
+  INSERT INTO order_confirmations (account_id, deal_id, confirmed_by_name, request_key, seller_id, seller_name, customer_name, phone, product, quantity, price, destination)
+    VALUES (aa, dA, 'x', 'direct-ok', sa2, 'Vendedor Dos', 'n', 'p', 'p', 1, 1, 'd') RETURNING id INTO o2;
+
+  -- What the foreign keys do: deleting the referenced rows sets the references to NULL; every snapshot stays; a NULL cannot be refilled.
+  DELETE FROM deals WHERE id = dA;
+  DELETE FROM order_sellers WHERE id = sa2;
+  DELETE FROM contacts WHERE id = ca2;      -- also removes the conversation
+  SELECT * INTO r FROM order_confirmations WHERE id = o;
+  IF r.contact_id IS NOT NULL OR r.conversation_id IS NOT NULL OR r.seller_id IS NOT NULL THEN RAISE EXCEPTION 'references should have become NULL'; END IF;
+  IF r.customer_name <> 'Cliente Sintetico' OR r.seller_name <> 'Vendedor Dos' OR r.phone <> '51900000001' OR r.price <> 150.50
+     OR r.confirmed_by_name <> 'Asesor A' OR r.product <> 'Nivel laser' THEN RAISE EXCEPTION 'snapshots must survive the NULLing'; END IF;
+  IF (SELECT deal_id FROM order_confirmations WHERE id = o2) IS NOT NULL THEN RAISE EXCEPTION 'deal reference should have become NULL'; END IF;
+  BEGIN UPDATE order_confirmations SET contact_id = pg_temp.v('ca')::uuid WHERE id = o; RAISE EXCEPTION 'NULL contact refilled';
+  EXCEPTION WHEN raise_exception THEN IF SQLERRM LIKE 'NULL contact refilled%' THEN RAISE; END IF; END;
+  -- Delivery bookkeeping keeps working on an order whose references are gone.
+  UPDATE order_confirmations SET last_error_code = 'noop' WHERE id = o;
+END $$;
+
 -- RLS: a member sees only their account; writes and the worker functions are closed to signed-in users.
 DO $$
 DECLARE n INTEGER;
