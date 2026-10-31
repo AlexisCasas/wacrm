@@ -16,6 +16,7 @@ Los PRs 1 a 3 están apilados (cada uno contiene los anteriores); fusionar en or
 
 ## Despliegue (todo apagado por defecto)
 
+0. (Opcional, requiere permiso `workflow`) añadir a `.github/workflows/migrations.yml`, tras «Verify the resulting schema», el paso `supabase db query --local --file supabase/ci/verify-order-confirmations.sql`.
 1. **InkaClick** (otro proyecto Supabase, lo aplica quien lo administra): backup, migración `20261101010000_wacrm_confirmed_orders.sql`, `supabase functions deploy wacrm-confirmed-orders`, secreto `WACRM_ORDERS_TOKEN` (distinto del de ManyChat). La migración solo añade 2 columnas nulas, un índice único parcial, 1 tabla de auditoría y 1 función; ManyChat no se toca.
 2. **WACRM**, mismo procedimiento que F1: backup + `docker save` de la imagen anterior, aplicar `20261101000000_order_confirmations.sql` **antes** de la imagen, construir y recrear `app`. La imagen anterior sigue funcionando con el esquema nuevo (solo tablas nuevas).
 3. Con todo apagado nada cambia: sin vendedores el botón no aparece; sin `INKACLICK_ORDERS_ENABLED=true` el cron no envía.
