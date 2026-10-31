@@ -14,4 +14,4 @@ SELECT name, account_role FROM order_seller_candidates(:acc::uuid) ORDER BY acco
 \echo '== 6. no seller leaks across accounts (expect 0)'
 SELECT count(*) FROM order_seller_candidates(:acc::uuid) c WHERE NOT EXISTS (SELECT 1 FROM profiles p WHERE p.user_id = c.user_id AND p.account_id = :acc::uuid);
 \echo '== 7. orders by delivery state (expect only held; zero sending/sent)'
-SELECT d.delivery_status, count(*) FROM order_confirmation_deliveries d GROUP BY 1 ORDER BY 1;
+SELECT delivery_status, count(*) FROM order_confirmations GROUP BY 1 ORDER BY 1;
