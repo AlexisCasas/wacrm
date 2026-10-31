@@ -17,6 +17,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PERU_DEPARTMENTS, validateOrderInput } from "@/lib/orders/fields";
 import { buildPrefill, type OrderFormValues } from "@/lib/orders/prefill";
 
@@ -25,6 +26,12 @@ export interface OrderSeller {
   id: string;
   name: string;
 }
+
+/** Sentinel for "nothing chosen": the Select cannot hold an empty-string item, the form state still uses "". */
+const NONE = "__none__";
+// Theme tokens (not the browser's native popup) so the trigger and the list follow data-mode light/dark; the list sits above the dialog (z-50).
+const SELECT_TRIGGER = "w-full bg-background text-foreground";
+const SELECT_CONTENT = "bg-popover text-popover-foreground";
 
 interface Props {
   open: boolean;
@@ -183,37 +190,37 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
               <Label htmlFor="order-department">
                 {t("department")} <span className="text-muted-foreground">({t("optional")})</span>
               </Label>
-              <select
-                id="order-department"
-                className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm"
-                value={values.department}
-                onChange={(e) => set("department", e.target.value)}
-              >
-                <option value="">{t("departmentPlaceholder")}</option>
-                {PERU_DEPARTMENTS.map((d) => (
-                  <option key={d} value={d}>
-                    {d}
-                  </option>
-                ))}
-              </select>
+              <Select value={values.department || NONE} onValueChange={(v) => set("department", !v || v === NONE ? "" : v)}>
+                <SelectTrigger id="order-department" className={SELECT_TRIGGER}>
+                  <SelectValue>{values.department || <span className="text-muted-foreground">{t("departmentPlaceholder")}</span>}</SelectValue>
+                </SelectTrigger>
+                <SelectContent className={SELECT_CONTENT} alignItemWithTrigger={false}>
+                  <SelectItem value={NONE}>{t("departmentPlaceholder")}</SelectItem>
+                  {PERU_DEPARTMENTS.map((d) => (
+                    <SelectItem key={d} value={d}>
+                      {d}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               {err("department") ? <p className="text-xs text-destructive">{err("department")}</p> : null}
             </div>
 
             <div className="grid gap-1">
               <Label htmlFor="order-seller">{t("seller")}</Label>
-              <select
-                id="order-seller"
-                className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm"
-                value={sellerId}
-                onChange={(e) => setSellerId(e.target.value)}
-              >
-                <option value="">{t("sellerPlaceholder")}</option>
-                {sellers.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
-              </select>
+              <Select value={sellerId || NONE} onValueChange={(v) => setSellerId(!v || v === NONE ? "" : v)}>
+                <SelectTrigger id="order-seller" className={SELECT_TRIGGER}>
+                  <SelectValue>{sellerName || <span className="text-muted-foreground">{t("sellerPlaceholder")}</span>}</SelectValue>
+                </SelectTrigger>
+                <SelectContent className={SELECT_CONTENT} alignItemWithTrigger={false}>
+                  <SelectItem value={NONE}>{t("sellerPlaceholder")}</SelectItem>
+                  {sellers.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {s.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
             <DialogFooter>
