@@ -11,8 +11,9 @@ interface Props {
   conversationId?: string | null;
 }
 
-// Shown only where the feature is set up: the account must have at least one active seller (the catalogue is the opt-in), so accounts that never
-// configured "Confirmar pedido" see no new button. A failed lookup also hides it rather than offering an action that cannot complete.
+// Shown only where the feature has been switched on for the account (`confirm_enabled`, off by default and separate from the InkaClick delivery
+// switch) AND there is someone to choose as seller. The roster is the account's real members, so every other account sees no new button, however
+// many members it has. A failed lookup also hides it rather than offering an action that cannot complete.
 export function ConfirmOrderButton({ contact, conversationId }: Props) {
   const t = useTranslations("Orders");
   const [sellers, setSellers] = useState<OrderSeller[] | null>(null);
@@ -24,8 +25,8 @@ export function ConfirmOrderButton({ contact, conversationId }: Props) {
       try {
         const res = await fetch("/api/orders/sellers");
         if (!res.ok) return;
-        const body = (await res.json()) as { sellers?: OrderSeller[] };
-        if (!cancelled) setSellers(body.sellers ?? []);
+        const body = (await res.json()) as { enabled?: boolean; sellers?: OrderSeller[] };
+        if (!cancelled) setSellers(body.enabled === true ? (body.sellers ?? []) : []);
       } catch {
         /* hidden */
       }

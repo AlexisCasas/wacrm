@@ -20,6 +20,7 @@ import {
 import { PERU_DEPARTMENTS, validateOrderInput } from "@/lib/orders/fields";
 import { buildPrefill, type OrderFormValues } from "@/lib/orders/prefill";
 
+/** A member of the account who can be the commercial seller. `id` is the member's user id (stable across renames). */
 export interface OrderSeller {
   id: string;
   name: string;
@@ -112,7 +113,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
         body: JSON.stringify({
           ...values,
           request_key: requestKey.current,
-          seller_id: sellerId,
+          seller_user_id: sellerId,
           contact_id: contact.id,
           conversation_id: conversationId ?? undefined,
         }),

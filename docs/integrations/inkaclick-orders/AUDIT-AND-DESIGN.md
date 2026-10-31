@@ -87,6 +87,6 @@ Inbox → botón → formulario precargado (contacto + campos personalizados) �
 1. Ubicación del receptor: edge function nueva (recomendada) frente a ruta Vercel (requiere el código).
 2. Cuenta del piloto: la cuenta de pruebas (decidido); la operativa queda para después.
 3. Obligatorios: DNI y Departamento opcionales; Destino y Vendedor obligatorios.
-4. Catálogo de vendedores: lista final de los 4 vendedores históricos (la cuenta tiene un solo perfil).
+4. Vendedores: **resuelto** — todo miembro real de la cuenta es elegible, sin catálogo (ver `SELLERS-FROM-MEMBERS.md`).
 5. Reutilizar `descripcion_pedido_url` para texto libre.
 6. Migración aditiva en InkaClick por quien administre ese proyecto.

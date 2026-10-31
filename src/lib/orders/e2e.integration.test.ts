@@ -15,7 +15,7 @@ let ACCOUNT = ''
 let USER = ''
 let CONTACT = ''
 let CONVERSATION = ''
-let SELLER = ''
+let SELLER = ''   // the commercial seller: a different member of the same account
 
 vi.mock('@/lib/auth/account', () => ({
   requireRole: async () => ({
@@ -27,7 +27,7 @@ vi.mock('@/lib/auth/account', () => ({
 }))
 
 const order = (key: string, over: Record<string, unknown> = {}) => ({
-  request_key: key, seller_id: SELLER, contact_id: CONTACT, conversation_id: CONVERSATION, customer_name: 'Cliente Sintetico', phone: '900000011',
+  request_key: key, seller_user_id: SELLER, contact_id: CONTACT, conversation_id: CONVERSATION, customer_name: 'Cliente Sintetico', phone: '900000011',
   product: 'Nivel laser', quantity: 2, price: '150,5', destination: 'Arequipa', department: 'arequipa', order_description: 'color rojo https://example.invalid/f.jpg',
   dni: '12345678', ...over,
 })
@@ -71,8 +71,12 @@ describe.skipIf(!E2E)('Confirmar pedido: WACRM -> outbox -> InkaClick (isolated 
     ACCOUNT = sql('wacrm', `select account_id from profiles where user_id='${USER}'`)
     CONTACT = sql('wacrm', `insert into contacts (user_id, account_id, phone, name) values ('${USER}', '${ACCOUNT}', '51900000011', 'Cliente Sintetico') returning id`).split('\n')[0]
     CONVERSATION = sql('wacrm', `insert into conversations (user_id, account_id, contact_id) values ('${USER}', '${ACCOUNT}', '${CONTACT}') returning id`).split('\n')[0]
-    SELLER = sql('wacrm', `insert into order_sellers (account_id, name, name_key) values ('${ACCOUNT}', 'Vendedor QA', 'vendedor qa') returning id`).split('\n')[0]
-    sql('wacrm', `insert into order_integration_settings (account_id, enabled) values ('${ACCOUNT}', true)`)
+    sql('wacrm', `update profiles set full_name='Titular QA' where user_id='${USER}'`)
+    // The seller is just another member: sign up, then join the account (what redeem_invitation does). No catalogue, no seeding of sellers.
+    SELLER = sql('wacrm', `insert into auth.users (id, email) values (gen_random_uuid(), 'qa-seller-' || substr(gen_random_uuid()::text,1,8) || '@example.invalid') returning id`).split('\n')[0]
+    sql('wacrm', `update profiles set account_id='${ACCOUNT}', account_role='agent', full_name='Vendedor QA' where user_id='${SELLER}'`)
+    // Feature ON and delivery ON for this account (two independent switches).
+    sql('wacrm', `insert into order_integration_settings (account_id, enabled, confirm_enabled) values ('${ACCOUNT}', true, true)`)
   })
 
   it('1. creates an order from the form endpoint and stores it in the outbox (pending, nothing sent yet)', async () => {
@@ -84,6 +88,7 @@ describe.skipIf(!E2E)('Confirmar pedido: WACRM -> outbox -> InkaClick (isolated 
     expect(inkaRows()).toBe(0)
     // Seller (commercial) and the person who pressed the button are different things.
     expect(sql('wacrm', `select confirmed_by_name||'|'||seller_name||'|'||price||'|'||department||'|'||agency from order_confirmations where id='${first}'`)).toBe('Asesor QA|Vendedor QA|150.50|Arequipa|Shalom')
+    expect(sql('wacrm', `select (confirmed_by='${USER}')||'|'||(seller_user_id='${SELLER}')||'|'||(seller_id is null) from order_confirmations where id='${first}'`)).toBe('true|true|true')
   })
 
   it('2. a double submit with the same request_key is the same order', async () => {
@@ -185,6 +190,43 @@ describe.skipIf(!E2E)('Confirmar pedido: WACRM -> outbox -> InkaClick (isolated 
       expect(status(r.body.order_id)).toBe('pending|0|')
     } finally {
       process.env.INKACLICK_ORDERS_ENABLED = 'true'
+    }
+  })
+
+  it('12. the selector lists the real members of the account (owner included), from the profiles, and only when the feature is on', async () => {
+    const { GET } = await import('@/app/api/orders/sellers/route')
+    const body = await (await GET()).json()
+    expect(body.enabled).toBe(true)
+    expect(body.sellers.map((s: { name: string }) => s.name).sort()).toEqual(['Titular QA', 'Vendedor QA'])
+    expect(body.sellers.find((s: { name: string }) => s.name === 'Vendedor QA').id).toBe(SELLER)
+    // A rename reaches the selector immediately and leaves the orders already confirmed alone.
+    sql('wacrm', `update profiles set full_name='Vendedor QA Renombrado' where user_id='${SELLER}'`)
+    expect((await (await GET()).json()).sellers.map((s: { name: string }) => s.name)).toContain('Vendedor QA Renombrado')
+    expect(sql('wacrm', `select count(*) from order_confirmations where seller_name='Vendedor QA'`)).not.toBe('0')
+    expect(sql('wacrm', `select count(*) from order_confirmations where seller_name='Vendedor QA Renombrado'`)).toBe('0')
+    sql('wacrm', `update profiles set full_name='Vendedor QA' where user_id='${SELLER}'`)
+  })
+
+  it('13. with the feature switched off the account gets no roster and cannot confirm, even with delivery on; delivery-off + feature-on still holds', async () => {
+    sql('wacrm', `update order_integration_settings set confirm_enabled=false where account_id='${ACCOUNT}'`)
+    try {
+      const { GET } = await import('@/app/api/orders/sellers/route')
+      expect(await (await GET()).json()).toEqual({ enabled: false, sellers: [] })
+      const before = sql('wacrm', `select count(*) from order_confirmations`)
+      const r = await confirm(order('qa-order-off'))
+      expect(r.status).toBe(403)
+      expect(r.body).toEqual({ error: 'feature_disabled' })
+      expect(sql('wacrm', `select count(*) from order_confirmations`)).toBe(before)
+    } finally {
+      sql('wacrm', `update order_integration_settings set confirm_enabled=true where account_id='${ACCOUNT}'`)
+    }
+    sql('wacrm', `update order_integration_settings set enabled=false where account_id='${ACCOUNT}'`)
+    try {
+      const r = await confirm(order('qa-order-pilot'))
+      expect(r.status).toBe(201)
+      expect(r.body.delivery_status).toBe('held')
+    } finally {
+      sql('wacrm', `update order_integration_settings set enabled=true where account_id='${ACCOUNT}'`)
     }
   })
 
