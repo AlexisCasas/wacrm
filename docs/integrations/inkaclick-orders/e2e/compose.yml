@@ -1,0 +1,29 @@
+name: inka-e2e
+services:
+  db:
+    image: supabase/postgres:17.6.1.136
+    environment: { POSTGRES_PASSWORD: "${PGPASS}" }
+    healthcheck: { test: ["CMD-SHELL", "pg_isready -U postgres -h localhost"], interval: 3s, retries: 30 }
+  rest:
+    image: postgrest/postgrest:v14.17
+    environment:
+      PGRST_DB_URI: "postgres://authenticator:${PGPASS}@db:5432/postgres"
+      PGRST_DB_SCHEMAS: public
+      PGRST_DB_ANON_ROLE: anon
+      PGRST_JWT_SECRET: "${JWT_SECRET}"
+    depends_on: { db: { condition: service_healthy } }
+  edge:
+    image: supabase/edge-runtime:v1.74.0
+    command: ["start", "--main-service", "/home/deno/functions/main", "-p", "9000"]
+    volumes: ["./functions:/home/deno/functions:ro"]
+    environment:
+      JWT_SECRET: "${JWT_SECRET}"
+      NO_VERIFY_JWT_FUNCTIONS: "wacrm-confirmed-orders"
+      SUPABASE_URL: http://gw:8000
+      SUPABASE_SERVICE_ROLE_KEY: "${SERVICE_KEY}"
+      WACRM_ORDERS_TOKEN: "${WACRM_TOKEN}"
+  gw:
+    image: public.ecr.aws/supabase/kong:2.8.1
+    volumes: ["./kong.yml:/kong.yml:ro"]
+    environment: { KONG_DATABASE: "off", KONG_DECLARATIVE_CONFIG: /kong.yml, KONG_DNS_ORDER: "LAST,A,CNAME", KONG_PROXY_LISTEN: "0.0.0.0:8000" }
+    depends_on: [rest, edge]

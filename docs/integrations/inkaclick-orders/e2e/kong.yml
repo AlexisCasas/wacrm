@@ -1,0 +1,8 @@
+_format_version: "2.1"
+services:
+  - name: rest
+    url: http://rest:3000/
+    routes: [{ name: rest, paths: [/rest/v1/], strip_path: true }]
+  - name: functions
+    url: http://edge:9000/
+    routes: [{ name: functions, paths: [/functions/v1/], strip_path: true }]
