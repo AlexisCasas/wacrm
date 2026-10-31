@@ -18,7 +18,9 @@ docker run -d --name qa-pg --network qa-net --memory 2g -e POSTGRES_PASSWORD=$PW
 until docker exec qa-pg pg_isready -U postgres -q 2>/dev/null; do sleep 2; done; sleep 6
 docker exec qa-pg psql -U supabase_admin -d postgres -qc "CREATE DATABASE wacrm" -c "CREATE DATABASE inka" -c "ALTER ROLE authenticator WITH LOGIN PASSWORD '$PW'"
 docker exec -i qa-pg pg_restore -s -U supabase_admin -d wacrm --no-owner < "$WACRM_SCHEMA_DUMP" 2>/dev/null || true
-docker exec -i qa-pg psql -U supabase_admin -d wacrm -v ON_ERROR_STOP=1 -q < "$REPO/supabase/migrations/20261101000000_order_confirmations.sql"
+for m in 20261101000000_order_confirmations 20261102000000_order_sellers_from_members; do
+  docker exec -i qa-pg psql -U supabase_admin -d wacrm -v ON_ERROR_STOP=1 -q < "$REPO/supabase/migrations/$m.sql"
+done
 for f in supabase/tests/00_replica_confirmed_orders.sql supabase/migrations/20261101010000_wacrm_confirmed_orders.sql; do
   docker exec -i qa-pg psql -U supabase_admin -d inka -v ON_ERROR_STOP=1 -q < "$INKACLICK_REPO/$f" >/dev/null
 done

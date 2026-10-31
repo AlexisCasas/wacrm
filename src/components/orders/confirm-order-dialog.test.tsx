@@ -90,7 +90,7 @@ describe("ConfirmOrderDialog", () => {
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const body = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body);
-    expect(body).toMatchObject({ request_key: "key-1", seller_id: sellers[0].id, contact_id: contact.id, product: "Nivel laser" });
+    expect(body).toMatchObject({ request_key: "key-1", seller_user_id: sellers[0].id, contact_id: contact.id, product: "Nivel laser" });
     expect(toast.success).toHaveBeenCalledTimes(1);
   });
 

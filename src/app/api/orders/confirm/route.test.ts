@@ -16,7 +16,7 @@ vi.mock('@/lib/rate-limit', () => ({ checkRateLimit: () => ({ success: true }), 
 
 import { POST } from './route'
 
-const valid = { request_key: 'form-1', seller_id: SELLER, contact_id: CONTACT, customer_name: 'Cliente Sintetico', phone: '900000001', product: 'Nivel laser', quantity: 1, price: '99.9', destination: 'Arequipa' }
+const valid = { request_key: 'form-1', seller_user_id: SELLER, contact_id: CONTACT, customer_name: 'Cliente Sintetico', phone: '900000001', product: 'Nivel laser', quantity: 1, price: '99.9', destination: 'Arequipa' }
 const post = (body: unknown) => POST(new Request('http://x/api/orders/confirm', { method: 'POST', body: JSON.stringify(body) }))
 
 beforeEach(() => {
@@ -60,7 +60,7 @@ describe('POST /api/orders/confirm', () => {
 
   it('request_key and seller are mandatory', async () => {
     expect((await post({ ...valid, request_key: '' })).status).toBe(400)
-    expect((await post({ ...valid, seller_id: 'nope' })).status).toBe(400)
+    expect((await post({ ...valid, seller_user_id: 'nope' })).status).toBe(400)
     expect(rpc).not.toHaveBeenCalled()
   })
 
@@ -69,6 +69,33 @@ describe('POST /api/orders/confirm', () => {
     const res = await post(valid)
     expect(res.status).toBe(422)
     expect(await res.json()).toEqual({ error: 'invalid_reference' })
+  })
+
+  it('refuses with 403 when the feature is off for the account or the confirmer lacks the role (SQL second layer)', async () => {
+    rpc.mockResolvedValue({ data: null, error: { message: 'feature_disabled', code: '42501' } })
+    const off = await post(valid)
+    expect(off.status).toBe(403)
+    expect(await off.json()).toEqual({ error: 'feature_disabled' })
+    rpc.mockResolvedValue({ data: null, error: { message: 'actor_not_allowed', code: '42501' } })
+    const role = await post(valid)
+    expect(role.status).toBe(403)
+    expect(await role.json()).toEqual({ error: 'forbidden' })
+  })
+
+  it('a seller who is not a member of the account is a 422 that reveals nothing', async () => {
+    rpc.mockResolvedValue({ data: null, error: { message: 'seller is not a member of the account', code: 'P0001' } })
+    const res = await post(valid)
+    expect(res.status).toBe(422)
+    expect(await res.json()).toEqual({ error: 'invalid_reference' })
+  })
+
+  it('the seller may be a different person from the confirmer: both ids travel separately', async () => {
+    rpc.mockResolvedValue({ data: [{ order_id: 'o-3', created: true }], error: null })
+    await post(valid)
+    const args = rpc.mock.calls[0][1]
+    expect(args.p_actor).toBe(USER)
+    expect(args.p_seller).toBe(SELLER)
+    expect(args.p_actor).not.toBe(args.p_seller)
   })
 
   it('warns about a malformed DNI but still creates the order', async () => {
