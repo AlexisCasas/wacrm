@@ -1,44 +1,46 @@
 # WACRM → InkaClick: pedidos confirmados (auditoría y diseño)
 
 Estado: borrador para conformidad. Sin migraciones, sin despliegue, sin envíos reales.
-Auditoría de solo lectura del 2026-10-31 (Supabase `sbbxcunexmjxtzdelypv` y VPS WACRM).
+Auditoría de solo lectura del 2026-10-31 (base de datos de InkaClick y servidor de WACRM). Los identificadores de proyectos y cuentas y las cifras absolutas de negocio se omiten a propósito: este repositorio es público.
 
 ## A. Auditoría de arquitectura real
 
 ### Lo que NO se pudo verificar
 - El código del receptor `/api/webhooks/manychat/confirmed-orders` (Vercel `inkaclick-api`) **no está** en el repo `InkaClick-Saas` (solo un front Vite con datos de ejemplo, sin `supabase/`), ni en la VPS, ni en las 9 edge functions desplegadas. Su contrato (validaciones, auth, parseo) se infiere de los datos, no del código.
 
-### InkaClick (Supabase `sbbxcunexmjxtzdelypv`)
-- `confirmed_orders`: 4.054 filas, todas `source='manychat'`, `agencia='Shalom'`. RLS activa; escritura solo con service role (el receptor).
-- `manychat_webhook_events`: 4.416 eventos, todos `processed`, `token_valid=true`, `request_headers` siempre nulo. 426 eventos sin pedido (duplicados ignorados), 1 pedido con 2 eventos.
+### InkaClick (base de datos de producción)
+- `confirmed_orders`: miles de filas, todas `source='manychat'`, `agencia='Shalom'`. RLS activa; escritura solo con service role (el receptor).
+- `manychat_webhook_events`: algo más eventos que pedidos, todos `processed`, `token_valid=true`, `request_headers` siempre nulo. Cerca del 10 % de los eventos no genera pedido (duplicados ignorados); casi todos los pedidos tienen un único evento.
 - Payload ManyChat: 26 claves, **todas string** (incluidas `precio` y `cantidad_productos`), con `fecha`, `fecha_hora`, `manychat_contact_id`, `switch_*`, etc.
-- `idempotency_key` del evento = SHA-256 hex de 64 caracteres. `duplicate_key` del pedido = `<prefijo>_<manychat_contact_id>_<fecha_hora ISO -05:00>` (36–39 caracteres). Índice **no único**; 0 grupos duplicados en 4.020 filas con clave (34 filas sin clave). Depende del ID de contacto de ManyChat: no sirve tal cual para WACRM.
-- `fecha_registro` es nulo en las 4.054 filas; la fecha real vive en `fecha_text`/`fecha_hora_text` (texto) y `created_at`.
+- `idempotency_key` del evento = SHA-256 hex de 64 caracteres. `duplicate_key` del pedido = `<prefijo>_<manychat_contact_id>_<fecha_hora ISO -05:00>` (36–39 caracteres). Índice **no único**; 0 grupos duplicados entre las filas con clave (menos del 1 % de las filas no tiene clave). Depende del ID de contacto de ManyChat: no sirve tal cual para WACRM.
+- `fecha_registro` es nulo en todas las filas; la fecha real vive en `fecha_text`/`fecha_hora_text` (texto) y `created_at`.
 - Triggers sobre `confirmed_orders` (afectan a cualquier INSERT de WACRM):
   - `recalculate_confirmed_order_payments`: `pago_restante = precio - pago_inicial` → **`precio` es el TOTAL del pedido**, no unitario. Si `pago_restante = 0` fuerza `estado_pedido='Pagado'`. Un `precio = 0` marcaría el pedido como pagado (existe al menos un `precio` 0,00).
-  - `sync_confirmed_order_paid_status`: pone `'pagado'` en minúscula. Estados reales hoy: `procesado` 4.004, `pagado` 37, `Pedido confirmado` 13.
+  - `sync_confirmed_order_paid_status`: pone `'pagado'` en minúscula. Estados reales hoy: `procesado` (≈99 %), y una minoría en `pagado` o `Pedido confirmado`.
   - `sync_confirmed_orders_telefono_normalized`: normaliza a `51XXXXXXXXX`.
   - `sync_customer_from_confirmed_order` (SECURITY DEFINER): crea/actualiza `customers` solo si el teléfono normalizado cumple `^51[0-9]{9}$`; el DNI solo si tiene 8 dígitos.
 - Procesos posteriores: no hay trigger ni cron que envíe WhatsApp al insertar. `send-confirmed-order-whatsapp` lo dispara el operador desde la UI de InkaClick (imagen de embalaje + plantilla) y cambia `estado_pedido` a `procesado`/`pagado`. Los crons (`notify-destination-vouchers`, `sync-shalom-statuses`) actúan sobre vouchers y Shalom. **Un pedido de WACRM no envía mensajes al cliente al crearse.**
 - Fuera de alcance y sin tocar: ManyChat, el webhook actual, columnas de productos adicionales, pagos y logística.
 
 ### Perfil de datos (aprobación de campos obligatorios)
-| Campo | Evidencia en 4.054 pedidos | Propuesta |
-|---|---|---|
-| DNI | 15 vacíos (0,4 %), 116 con formato no de 8 dígitos (2,9 %) | Opcional, con aviso |
-| Departamento | No existe en InkaClick | Opcional |
-| Destino | 5 vacíos (0,1 %), 1.997 valores distintos | Obligatorio, texto libre |
-| Vendedor | 3.386 nulos (83 %); valores: Lindey, Nando, Keyler Ortega, Jhon | Obligatorio en WACRM, selector |
-| Cantidad | 34 nulos; 3.979 son 1 | Obligatoria, entero ≥ 1 |
-| Precio | 0 nulos; máx. 2.100,00; media 151,48 | Obligatorio, > 0, `numeric(12,2)` |
-| Producto | 829 valores distintos (multilínea) | Obligatorio, texto libre con sugerencias |
-| Descripción | `descripcion_pedido_url`: 2.108 texto libre (media 22 car.), 1.244 URL, 702 vacíos | Reutilizar la columna; ya admite texto libre |
-| Teléfono | 3.883 `51+9`, 126 de 9 dígitos, 44 otros | Texto, validar a `51XXXXXXXXX` |
+Porcentajes sobre los pedidos históricos de ManyChat (los valores absolutos se omiten).
 
-### WACRM (cuenta `keyler.ortega@unmsm.edu.pe`, `account_id = 4d04a2e0-62b8-4508-a046-4b125aa2e8db`)
-- 5 contactos; campos existentes: `Producto`, `Precio`, `Destino` (todos `text`). Faltan DNI, Cantidad, Descripción de pedido, Agencia, Vendedor, Departamento. Un solo perfil en la cuenta.
+| Campo | Evidencia | Propuesta |
+|---|---|---|
+| DNI | ≈0,4 % vacío, ≈2,9 % con formato distinto de 8 dígitos | Opcional, con aviso |
+| Departamento | No existe en InkaClick | Opcional |
+| Destino | ≈0,1 % vacío; texto libre de cardinalidad muy alta | Obligatorio, texto libre |
+| Vendedor | Nulo en ≈83 % del histórico; solo 4 valores distintos | Obligatorio en WACRM, selector |
+| Cantidad | Nulo en <1 %; ≈98 % es 1 | Obligatoria, entero ≥ 1 |
+| Precio | Sin nulos; existen valores 0,00 | Obligatorio, > 0, `numeric(12,2)` |
+| Producto | Cientos de valores distintos (multilínea) | Obligatorio, texto libre con sugerencias |
+| Descripción | `descripcion_pedido_url`: ≈52 % texto libre (≈22 caracteres de media), ≈31 % URL, ≈17 % vacío | Reutilizar la columna; ya admite texto libre |
+| Teléfono | ≈96 % `51` + 9 dígitos, ≈3 % de 9 dígitos, ≈1 % otros | Texto, validar a `51XXXXXXXXX` |
+
+### WACRM (cuenta piloto)
+- Cuenta de pruebas con pocos contactos; campos existentes: `Producto`, `Precio`, `Destino` (todos `text`). Faltan DNI, Cantidad, Descripción de pedido, Agencia, Vendedor, Departamento. Un solo perfil en la cuenta.
 - `custom_fields`/`contact_custom_values` guardan un único valor por contacto: no sirven como historial de ventas. `deals` (valor/moneda/asignado) no modela un pedido congelado.
-- La cuenta operativa con tráfico real es otra (`c35b393f…`, corp.lortegdelperu): confirmar si el piloto es en la de Keyler.
+- Existe otra cuenta, la operativa con tráfico real, con un conjunto de campos distinto; el piloto se hace en la cuenta de pruebas.
 
 ## B. Mapeo de los 13 campos
 
@@ -83,8 +85,8 @@ Inbox → botón → formulario precargado (contacto + campos personalizados) �
 
 ## G. Decisiones pendientes (conformidad)
 1. Ubicación del receptor: edge function nueva (recomendada) frente a ruta Vercel (requiere el código).
-2. Cuenta del piloto: Keyler (5 contactos) o la operativa.
+2. Cuenta del piloto: la cuenta de pruebas (decidido); la operativa queda para después.
 3. Obligatorios: DNI y Departamento opcionales; Destino y Vendedor obligatorios.
-4. Catálogo de vendedores: Lindey, Nando, Keyler Ortega, Jhon (la cuenta tiene un solo perfil).
+4. Catálogo de vendedores: lista final de los 4 vendedores históricos (la cuenta tiene un solo perfil).
 5. Reutilizar `descripcion_pedido_url` para texto libre.
 6. Migración aditiva en InkaClick por quien administre ese proyecto.
