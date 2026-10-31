@@ -22,8 +22,9 @@ export async function POST(request: Request) {
 
     const requestKey = typeof body.request_key === 'string' ? body.request_key.trim() : ''
     if (!requestKey || requestKey.length > 100) return NextResponse.json({ error: 'request_key is required' }, { status: 400 })
-    const sellerId = typeof body.seller_id === 'string' && UUID.test(body.seller_id) ? body.seller_id : null
-    if (!sellerId) return NextResponse.json({ error: 'seller_id is required' }, { status: 400, statusText: 'seller_required' })
+    // The seller is a member of the account, identified by user id; it is NOT necessarily the person pressing the button.
+    const sellerUserId = typeof body.seller_user_id === 'string' && UUID.test(body.seller_user_id) ? body.seller_user_id : null
+    if (!sellerUserId) return NextResponse.json({ error: 'seller_user_id is required' }, { status: 400 })
     const contactId = typeof body.contact_id === 'string' && UUID.test(body.contact_id) ? body.contact_id : null
     const conversationId = typeof body.conversation_id === 'string' && UUID.test(body.conversation_id) ? body.conversation_id : null
 
@@ -44,12 +45,17 @@ export async function POST(request: Request) {
       p_actor: userId,
       p_actor_name: actorName,
       p_request_key: requestKey,
-      p_seller: sellerId,
+      p_seller: sellerUserId,
       p_fields: validation.value,
     })
     if (error) {
+      // Switched off for this account, or the confirmer lacks the role (also enforced here, in SQL, as a second layer).
+      if (error.code === '42501') {
+        const off = error.message === 'feature_disabled'
+        return NextResponse.json({ error: off ? 'feature_disabled' : 'forbidden' }, { status: 403 })
+      }
       // Ownership / seller violations are the caller's mistake (and must not reveal other accounts); everything else is ours.
-      const client = /does not belong|not an active seller/.test(error.message)
+      const client = /does not belong|not a member/.test(error.message)
       if (!client) console.error('[orders] create failed:', error.code)
       return NextResponse.json({ error: client ? 'invalid_reference' : 'Could not confirm the order' }, { status: client ? 422 : 500 })
     }
