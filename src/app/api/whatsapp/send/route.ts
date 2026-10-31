@@ -171,6 +171,7 @@ export async function POST(request: Request) {
         // A signed-in person using the dashboard composer.
         origin: 'manual_reply',
         actor: { userId },
+        senderId: userId,
       })
 
       return NextResponse.json({

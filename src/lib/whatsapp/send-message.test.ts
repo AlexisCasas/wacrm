@@ -323,6 +323,23 @@ const TEMPLATE_ROW = {
 };
 
 describe('sendMessageToConversation — template persistence (#483)', () => {
+  const manualSendVariants: Array<Omit<SendMessageParams, 'conversationId' | 'senderId'>> = [
+    { messageType: 'text', contentText: 'Hello' },
+    { messageType: 'image', mediaUrl: 'https://x/picture.jpg' },
+    { messageType: 'interactive', interactivePayload: { kind: 'buttons', body: 'Choose', buttons: [{ id: 'yes', title: 'Yes' }] } },
+    { messageType: 'template', templateName: 'order_update', templateParams: ['A123', 'Friday'] },
+  ];
+
+  it.each(manualSendVariants)('persists the authenticated author for a $messageType manual send', async (params) => {
+    const captured: CapturedWrites = {};
+    await sendMessageToConversation(sendPathDb([TEMPLATE_ROW], captured), 'acct-1', {
+      conversationId: 'cv-1',
+      senderId: 'agent-1',
+      ...params,
+    });
+    expect(captured.message?.sender_id).toBe('agent-1');
+  });
+
   it('stores the substituted body when the caller sends no text', async () => {
     const captured: CapturedWrites = {};
     const result = await sendMessageToConversation(

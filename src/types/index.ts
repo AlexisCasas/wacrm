@@ -237,6 +237,9 @@ export interface Message {
   conversation_id: string;
   sender_type: SenderType;
   sender_id?: string;
+  /** Immutable display data captured for an authenticated manual send. */
+  sender_name_snapshot?: string | null;
+  sender_avatar_url_snapshot?: string | null;
   content_type: ContentType;
   content_text?: string;
   media_url?: string;

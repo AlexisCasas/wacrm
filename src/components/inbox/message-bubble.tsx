@@ -24,6 +24,8 @@ import {
 } from "./message-media";
 import { InteractivePreview } from "@/components/interactive/interactive-preview";
 import { useTranslations } from "next-intl";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface MessageBubbleProps {
   message: Message;
@@ -40,6 +42,11 @@ interface MessageBubbleProps {
   onOpenMedia?: (messageId: string) => void;
   /** Opens the quoted parent in the existing gallery when it is viewable. */
   onOpenReplyMedia?: (messageId: string) => void;
+  author?: { fullName: string; avatarUrl?: string | null } | null;
+}
+
+function initials(name: string) {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase() || "?";
 }
 
 function StatusIcon({ status }: { status: Message["status"] }) {
@@ -225,11 +232,13 @@ export function MessageBubble({
   onToggleReaction,
   onOpenMedia,
   onOpenReplyMedia,
+  author,
 }: MessageBubbleProps) {
   const t = useTranslations("Inbox.bubble");
 
   const isAgent = message.sender_type === "agent" || message.sender_type === "bot";
   const time = format(new Date(message.created_at), "HH:mm");
+  const authorName = author?.fullName ?? "Asesor no identificado";
 
   // Row alignment + width cap are owned by <MessageActions> so its hover
   // group matches the bubble's content area, not the full row.
@@ -240,6 +249,7 @@ export function MessageBubble({
         isAgent ? "items-end" : "items-start",
       )}
     >
+      <div className={cn("flex items-end gap-2", isAgent ? "flex-row-reverse" : "flex-row")}>
       <div
         className={cn(
           "relative rounded-2xl px-3 py-2",
@@ -294,6 +304,22 @@ export function MessageBubble({
           </span>
           {isAgent && <StatusIcon status={message.status} />}
         </div>
+      </div>
+      {message.sender_type === "agent" && (
+        <Tooltip>
+          <TooltipTrigger
+            aria-label={`Autor: ${authorName}`}
+            title={authorName}
+            className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-foreground"
+          >
+            <Avatar size="sm">
+              {author?.avatarUrl && <AvatarImage src={author.avatarUrl} alt="" />}
+              <AvatarFallback>{initials(authorName)}</AvatarFallback>
+            </Avatar>
+          </TooltipTrigger>
+          <TooltipContent side="left">{authorName}</TooltipContent>
+        </Tooltip>
+      )}
       </div>
       {reactions && reactions.length > 0 && onToggleReaction && (
         <MessageReactions

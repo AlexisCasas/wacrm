@@ -111,6 +111,8 @@ export interface SendMessageParams {
    * a BSUID-only contact; ignored otherwise. Never read from a request body.
    */
   actor?: ManualSendActor;
+  /** Authenticated dashboard user who authored this manual send. */
+  senderId?: string | null;
 }
 
 export interface SendMessageResult {
@@ -288,6 +290,7 @@ export async function sendMessageToConversation(
     voiceNote,
     origin = 'automated',
     actor,
+    senderId,
   } = params;
 
   if (!conversationId) {
@@ -349,6 +352,7 @@ export async function sendMessageToConversation(
       messageType,
       contentText,
       replyToMessageId,
+      senderId,
     });
   }
 
@@ -603,6 +607,7 @@ export async function sendMessageToConversation(
     .insert({
       conversation_id: conversationId,
       sender_type: 'agent',
+      sender_id: senderId ?? null,
       content_type: messageType,
       content_text: persistedText,
       media_url: mediaUrl || null,
@@ -693,6 +698,7 @@ interface ManyChatSendArgs {
   messageType: string;
   contentText?: string | null;
   replyToMessageId?: string | null;
+  senderId?: string | null;
 }
 
 async function sendViaManyChat(
@@ -746,6 +752,7 @@ async function sendViaManyChat(
     .insert({
       conversation_id: conversationId,
       sender_type: 'agent',
+      sender_id: args.senderId ?? null,
       content_type: 'text',
       content_text: contentText,
       message_id: messageId,
