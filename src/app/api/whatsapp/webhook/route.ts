@@ -3,8 +3,15 @@ import { createClient } from '@supabase/supabase-js'
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption'
 import { getMediaUrl, downloadMedia } from '@/lib/whatsapp/meta-api'
 import { mirrorInboundMedia } from '@/lib/whatsapp/mirror-inbound-media'
-import { resolveSenderIdentity } from '@/lib/whatsapp/resolve-sender-identity'
-import { findOrCreateContact } from '@/lib/contacts/find-or-create'
+import { resolveInboundIdentity } from '@/lib/whatsapp/resolve-sender-identity'
+import { resolveInboundContact } from '@/lib/contacts/resolve-identity'
+import { pairContact } from '@/lib/whatsapp/pair-contact'
+import { messageRef } from '@/lib/whatsapp/message-ref'
+import { auditExternalEventHeld, externalEventsHeldForContact } from '@/lib/webhooks/pilot-hold'
+import { isBsuidPilotEnabledWithScopes } from '@/lib/whatsapp/bsuid-pilot'
+import { bsuidFlowScope, getDbPilotScopes } from '@/lib/whatsapp/bsuid-flow-auth'
+import { hasPhone } from '@/lib/contacts/display'
+import { describeShape, shapeLoggingActiveFor } from '@/lib/whatsapp/payload-shape'
 import { findOrCreateConversation } from '@/lib/conversations/find-or-create'
 import { reopenClosedConversation } from '@/lib/conversations/reopen'
 import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
@@ -39,7 +46,13 @@ function supabaseAdmin() {
 
 interface WhatsAppMessage {
   id: string
-  from: string
+  /** Omitted when the sender enabled usernames and the phone cannot be shown (then `from_user_id` is the identity). */
+  from?: string
+  /** Sender's business-scoped user id (BSUID). */
+  from_user_id?: string
+  from_parent_user_id?: string
+  /** System notices such as `user_changed_number` / `user_changed_user_id`. */
+  system?: { type?: string; previous_user_id?: string; previous_parent_user_id?: string }
   timestamp: string
   type: string
   text?: { body: string }
@@ -74,6 +87,23 @@ interface WhatsAppMessage {
   context?: { id: string }
 }
 
+/** Every field is optional in Meta's contract: a user with a username has no `wa_id`, and no profile at all is possible. */
+interface WhatsAppWebhookContact {
+  profile?: { name?: string; username?: string }
+  wa_id?: string
+  user_id?: string
+  parent_user_id?: string
+}
+
+interface WhatsAppWebhookStatus {
+  id: string
+  status: string
+  timestamp: string
+  /** Omitted when the message went to a BSUID and the phone cannot be shown. */
+  recipient_id?: string
+  recipient_user_id?: string
+}
+
 interface WhatsAppWebhookEntry {
   id: string
   changes: Array<{
@@ -83,17 +113,9 @@ interface WhatsAppWebhookEntry {
         display_phone_number: string
         phone_number_id: string
       }
-      contacts?: Array<{
-        profile: { name: string }
-        wa_id: string
-      }>
+      contacts?: WhatsAppWebhookContact[]
       messages?: WhatsAppMessage[]
-      statuses?: Array<{
-        id: string
-        status: string
-        timestamp: string
-        recipient_id: string
-      }>
+      statuses?: WhatsAppWebhookStatus[]
     }
     field: string
   }>
@@ -279,6 +301,10 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       const value = change.value
+      // Temporary, default-off diagnostic (see payload-shape.ts): key names and value types only.
+      if (shapeLoggingActiveFor(value?.metadata?.phone_number_id)) {
+        console.log('[webhook] payload shape', JSON.stringify({ field: change.field, shape: describeShape(value) }))
+      }
 
       // Handle status updates
       if (value.statuses) {
@@ -288,7 +314,8 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
       }
 
       // Handle incoming messages
-      if (!value.messages || !value.contacts) continue
+      if (!value.messages) continue
+      const contacts = value.contacts ?? []
 
       const phoneNumberId = value.metadata.phone_number_id
 
@@ -333,7 +360,7 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
 
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
-        const contact = value.contacts[i] || value.contacts[0]
+        const contact = pairContact(message, contacts, i)
 
         await processMessage(
           message,
@@ -350,7 +377,10 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
           // read before migration 039 lands would have it undefined,
           // and losing attachments is the failure mode worth avoiding.
           config.mirror_inbound_media !== false,
-          phoneNumberId
+          phoneNumberId,
+          // BSUID switch scope: the config row's WABA and the envelope's own id (see bsuid-pilot.ts).
+          config.waba_id ?? null,
+          entry.id
         )
       }
     }
@@ -399,12 +429,7 @@ function isValidStatusTransition(current: string, incoming: string): boolean {
   return ii > ci
 }
 
-async function handleStatusUpdate(status: {
-  id: string
-  status: string
-  timestamp: string
-  recipient_id: string
-}) {
+async function handleStatusUpdate(status: WhatsAppWebhookStatus) {
   // 1) Mirror onto messages (legacy behavior) — Meta's status values
   //    already match the CHECK constraint on messages.status. No
   //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
@@ -464,15 +489,17 @@ async function handleStatusUpdate(status: {
   //    the owning account for delivery.
   const { data: msgRow } = await supabaseAdmin()
     .from('messages')
-    .select('conversation_id, conversations(account_id)')
+    .select('conversation_id, conversations(account_id, contact_id)')
     .eq('message_id', status.id)
     .limit(1)
     .maybeSingle()
 
   if (msgRow) {
-    const conv = msgRow.conversations as { account_id: string } | null
+    const conv = msgRow.conversations as { account_id: string; contact_id?: string } | null
     const accountId = conv?.account_id
-    if (accountId) {
+    if (accountId && (await externalEventsHeldForContact(supabaseAdmin(), accountId, conv?.contact_id))) {
+      await auditExternalEventHeld(supabaseAdmin(), accountId, conv?.contact_id, 'message.status_updated')
+    } else if (accountId) {
       await dispatchWebhookEvent(
         supabaseAdmin(),
         accountId,
@@ -609,7 +636,7 @@ async function handleReaction(
 
 async function processMessage(
   message: WhatsAppMessage,
-  contact: { profile: { name: string }; wa_id: string },
+  contact: WhatsAppWebhookContact | undefined,
   // Tenancy. Resolved from the matched whatsapp_config row; every
   // contact / conversation / message row created downstream is
   // stamped with this so any member of the account can see it.
@@ -625,56 +652,93 @@ async function processMessage(
   // Receiving business number. Used only for the observability log
   // below (never for tenancy/routing — that's already resolved into
   // accountId by the caller).
-  phoneNumberId: string
+  phoneNumberId: string,
+  wabaId: string | null,
+  envelopeWabaId: string | undefined
 ) {
-  const contactName = contact.profile.name
+  // Server-side BSUID switch for THIS number (off unless account + phone_number_id + WABA are all listed). Off = the
+  // behaviour before BSUID support existed: a BSUID is neither stored nor addressed.
+  const bsuidEnabled = isBsuidPilotEnabledWithScopes({ accountId, wabaId, phoneNumberId, envelopeWabaId }, await getDbPilotScopes())
 
-  // Resolve the sender's identity from BOTH fields Meta's payload
-  // carries: `message.from` (what this code has always used) and
-  // `contact.wa_id` (present in every payload but never consulted
-  // before — see docs/P1_DUPLICATE_CHATS_AUDIT.md section Q). A
-  // `message.from` that arrives empty/unresolved for reasons still
-  // under investigation used to fall through to `normalizePhone('')`
-  // and let `findOrCreateContact` insert a contact with `phone: ''` —
-  // silently, with no log — creating a fresh contact + conversation
-  // for every such message (the "Juor Nuevo" incident). This is the
-  // point of no return: nothing below may create a contact,
-  // conversation, or message without a resolved identity.
-  const identity = resolveSenderIdentity(message.from, contact.wa_id)
-  if (!identity.ok) {
+  // Resolve the sender's identity from the documented fields of BOTH the message and its contact entry: the phone
+  // (`from`, else `wa_id`) when Meta shows it, otherwise the business-scoped user id (`from_user_id`, else
+  // `contacts[].user_id`). Every one of them may be absent (see WhatsAppWebhookContact). This is still the point of no
+  // return: nothing below may create a contact, conversation or message without a resolved identity, and the message
+  // id is never used as one.
+  const resolved = resolveInboundIdentity(message, contact)
+  // Switch off: ignore every BSUID field so phone senders behave exactly as before and a BSUID-only sender is dropped as before.
+  const identity: typeof resolved =
+    bsuidEnabled || !resolved.ok
+      ? resolved
+      : {
+          ...resolved,
+          bsuid: undefined,
+          parentBsuid: undefined,
+          previousBsuid: undefined,
+          username: undefined,
+          warnings: resolved.warnings.filter((w) => w === 'sender_identity_mismatch'),
+        }
+  if (!identity.ok || (!bsuidEnabled && !identity.phone)) {
+    // Presence flags only: never the ids, the phone or the message text.
+    const present = identity.ok
+      ? { from: Boolean(message.from), wa_id: Boolean(contact?.wa_id), from_user_id: Boolean(message.from_user_id), user_id: Boolean(contact?.user_id) }
+      : identity.present
     console.warn('[webhook] inbound message dropped — sender identity unresolved', {
-      reason: identity.reason,
+      reason: identity.ok ? 'missing_sender_identity' : identity.reason,
       message_type: message.type,
-      message_id: message.id,
+      // The WhatsApp message id embeds the sender's identifier, so an unresolved sender gets a short digest instead.
+      message_ref: messageRef(message.id),
       phone_number_id: phoneNumberId,
-      has_from: Boolean(message.from),
-      has_wa_id: Boolean(contact.wa_id),
+      has_from: present.from,
+      has_wa_id: present.wa_id,
+      has_from_user_id: present.from_user_id,
+      has_contact_user_id: present.user_id,
+      bsuid_pilot: bsuidEnabled ? 'on' : 'off',
     })
     return
   }
-  if (identity.warning) {
-    // Diagnostic only — never gates persistence. See
-    // resolve-sender-identity.ts's file-level comment for why a
-    // disagreeing contact.wa_id must not drop a message that has a
-    // valid message.from.
-    console.warn('[webhook] sender identity mismatch (using message.from; not dropped)', {
-      reason: identity.warning,
-      message_type: message.type,
-      message_id: message.id,
-      phone_number_id: phoneNumberId,
-    })
+  for (const warning of identity.warnings) {
+    // Diagnostic only — never gates persistence. A disagreeing secondary field must not drop a message that has a
+    // valid primary identity (see resolve-sender-identity.ts).
+    console.warn(
+      warning === 'sender_identity_mismatch'
+        ? '[webhook] sender identity mismatch (using message.from; not dropped)'
+        : '[webhook] sender identity warning (not dropped)',
+      {
+        reason: warning,
+        message_type: message.type,
+        ...(warning === 'sender_identity_mismatch' ? { message_id: message.id } : { message_ref: messageRef(message.id) }),
+        phone_number_id: phoneNumberId,
+      },
+    )
   }
 
   // Find or create contact
-  const contactOutcome = await findOrCreateContact(
+  const contactOutcome = await resolveInboundContact(
     supabaseAdmin(),
     accountId,
     configOwnerUserId,
-    identity.phone,
-    contactName
+    identity,
+    contact?.profile?.name?.trim() ?? ''
   )
   if (!contactOutcome) return
   const contactRecord = contactOutcome.contact
+  if (contactOutcome.conflict) {
+    console.warn('[webhook] identity_conflict: phone and BSUID of one event belong to different contacts; nothing merged', {
+      account_id: accountId,
+      phone_contact_id: contactOutcome.conflict.phone_contact_id,
+      bsuid_contact_id: contactOutcome.conflict.bsuid_contact_id,
+    })
+  }
+
+  // A pure identity notice (the user changed number / BSUID) updated the link above; it is not customer content, so it
+  // is neither stored nor offered to Flows.
+  if (
+    message.type === 'system' &&
+    (message.system?.type === 'user_changed_user_id' || message.system?.type === 'user_changed_number')
+  ) {
+    return
+  }
 
   // Blocked contact — hard operational stop. Nothing below this point
   // may run: no conversation open/reopen, no message insert, no
@@ -708,10 +772,15 @@ async function processMessage(
   // a reaction still fires the event, and a subscriber always sees the
   // thread open before its first message.received.
   if (convResult.created) {
-    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'conversation.created', {
-      conversation_id: conversation.id,
-      contact_id: contactRecord.id,
-    })
+    if (bsuidEnabled && !hasPhone(contactRecord)) {
+      // Pilot hold: nothing about a phone-less contact goes to external endpoints (see webhooks/pilot-hold.ts).
+      await auditExternalEventHeld(supabaseAdmin(), accountId, contactRecord.id, 'conversation.created')
+    } else {
+      await dispatchWebhookEvent(supabaseAdmin(), accountId, 'conversation.created', {
+        conversation_id: conversation.id,
+        contact_id: contactRecord.id,
+      })
+    }
   }
 
   // Reactions short-circuit here — they aren't messages. We never insert
@@ -827,7 +896,7 @@ async function processMessage(
   if (!insertedRows || insertedRows.length === 0) {
     console.info(
       '[webhook] duplicate inbound message ignored (idempotent replay):',
-      message.id
+      hasPhone(contactRecord) ? message.id : messageRef(message.id)
     )
     return
   }
@@ -881,24 +950,54 @@ async function processMessage(
   // no active flows take the runner's early-exit "no_match" path
   // basically for free (one indexed SELECT for the active run).
   // ============================================================
+  // The message offered to the Flow runner (identical for phone and phone-less contacts).
+  const flowInboundMessage =
+    interactiveReplyId
+      ? {
+          kind: 'interactive_reply' as const,
+          reply_id: interactiveReplyId,
+          reply_title: contentText ?? '',
+          meta_message_id: message.id,
+        }
+      : {
+          kind: 'text' as const,
+          text: contentText ?? message.text?.body ?? '',
+          meta_message_id: message.id,
+        }
+
+  // PILOT HOLD (phase 3): a contact known only by a WhatsApp user id is stored and visible in the Inbox. It is offered ONLY to the Flows
+  // the database authorizes for it (bsuid_flow_scope: account switch on, flow enabled, not expired, this contact or the whole account).
+  // Automations, tags-triggered sequences and the AI stay held, and so do external webhooks. With no authorized flow (the default) this is
+  // exactly the previous hold. Every decision is audited. The send side re-checks the authorization on every message of the run.
+  if (bsuidEnabled && !hasPhone(contactRecord)) {
+    const allowedFlows = await bsuidFlowScope(accountId, contactRecord.id)
+    let flowOutcome = 'not_offered'
+    if (allowedFlows.length > 0) {
+      const heldResult = await dispatchInboundToFlows({
+        accountId,
+        userId: configOwnerUserId,
+        contactId: contactRecord.id,
+        conversationId: conversation.id,
+        message: flowInboundMessage,
+        isFirstInboundMessage,
+        restrictToFlowIds: allowedFlows,
+      })
+      flowOutcome = heldResult.consumed ? `flow_${heldResult.outcome ?? 'consumed'}` : 'no_flow_matched'
+    }
+    await supabaseAdmin()
+      .rpc('audit_bsuid_event', { p_account_id: accountId, p_contact_id: contactRecord.id, p_event: 'automation_skipped', p_origin: 'inbound', p_detail: { reason: allowedFlows.length > 0 ? 'pilot_flows_only' : 'pilot_hold_phoneless_contact', message_type: message.type, flows: flowOutcome } })
+      .then(undefined, () => undefined)
+    // External endpoints get nothing for a phone-less contact during the pilot; the reception stays recorded internally.
+    await auditExternalEventHeld(supabaseAdmin(), accountId, contactRecord.id, 'message.received')
+    return
+  }
+
   const flowResult = await dispatchInboundToFlows({
     accountId,
     userId: configOwnerUserId,
     contactId: contactRecord.id,
     conversationId: conversation.id,
-    message:
-      interactiveReplyId
-        ? {
-            kind: 'interactive_reply',
-            reply_id: interactiveReplyId,
-            reply_title: contentText ?? '',
-            meta_message_id: message.id,
-          }
-        : {
-            kind: 'text',
-            text: contentText ?? message.text?.body ?? '',
-            meta_message_id: message.id,
-          },
+    message: flowInboundMessage,
     isFirstInboundMessage,
   })
   const flowConsumed = flowResult.consumed

@@ -1,3 +1,4 @@
+import { renderTemplate } from '@/lib/variables'
 import type {
   Automation,
   AutomationLogStepResult,
@@ -29,6 +30,9 @@ import { isDeliverableUrl } from '@/lib/webhooks/ssrf'
 import { classifyMetaSendError } from '@/lib/whatsapp/meta-error-classify'
 import { MAX_META_RATE_LIMIT_RETRIES, metaRateLimitDelayMs } from './meta-retry-backoff'
 import { resolveOutboundTransport } from '@/lib/whatsapp/send-message'
+import { hasPhone } from '@/lib/contacts/display'
+import { accountInPilotScopes } from '@/lib/whatsapp/bsuid-pilot'
+import { getDbPilotScopes } from '@/lib/whatsapp/bsuid-flow-auth'
 
 /**
  * The 5 step types that can ever reach Meta and thus ever throw a
@@ -238,7 +242,7 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
     if (input.contactId) {
       const { data: owned, error: ownErr } = await db
         .from('contacts')
-        .select('id, blocked')
+        .select('id, blocked, phone')
         .eq('id', input.contactId)
         .eq('account_id', input.accountId)
         .maybeSingle()
@@ -254,6 +258,14 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
       // before any automation lookup, so a blocked contact costs one
       // query and nothing else.
       if (owned.blocked) return
+      // BSUID pilot: a contact known only by a WhatsApp user id never starts an automation (their sends are refused anyway, so the run
+      // would only park a wait row and fail later). Accounts outside the pilot are not touched. The decision is audited.
+      if (!hasPhone(owned as { phone?: string | null }) && accountInPilotScopes(input.accountId, await getDbPilotScopes())) {
+        await db
+          .rpc('audit_bsuid_event', { p_account_id: input.accountId, p_contact_id: input.contactId, p_event: 'automation_skipped', p_origin: 'automation', p_detail: { reason: 'pilot_hold_phoneless_contact', trigger: input.triggerType } })
+          .then(undefined, () => undefined)
+        return
+      }
     }
 
     const { data: automations, error } = await db
@@ -1318,7 +1330,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
     case 'send_message': {
       const cfg = step.step_config as SendMessageStepConfig
       if (!args.contactId) throw new Error('send_message needs a contact')
-      const text = interpolate(cfg.text, args)
+      const text = (await interpolate(cfg.text, args))
       if (!text.trim()) throw new Error('send_message has empty text')
       const conversationId = await resolveConversationId(args)
       const { whatsapp_message_id } = await engineSendText({
@@ -1484,7 +1496,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (!args.contactId) throw new Error('update_contact_field needs a contact')
       // Resolve workflow variables ({{ vars.* }}, {{ message.text }}) so custom
       // values can be populated dynamically from the triggering context.
-      const value = interpolate(cfg.value, args)
+      const value = (await interpolate(cfg.value, args))
 
       // Custom fields are encoded as `custom:<custom_field_id>`; anything else
       // is a built-in contact column.
@@ -1551,7 +1563,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         pipeline_id: cfg.pipeline_id,
         stage_id: cfg.stage_id,
         contact_id: args.contactId,
-        title: interpolate(cfg.title, args),
+        title: (await interpolate(cfg.title, args)),
         value: cfg.value ?? 0,
         currency: acct?.default_currency ?? 'USD',
         status: 'open',
@@ -1569,7 +1581,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       if (!(await isDeliverableUrl(cfg.url))) {
         throw new Error('send_webhook: destination not allowed')
       }
-      const body = cfg.body_template ? interpolate(cfg.body_template, args) : JSON.stringify(args.context)
+      const body = cfg.body_template ? (await interpolate(cfg.body_template, args)) : JSON.stringify(args.context)
       const res = await fetch(cfg.url, {
         method: 'POST',
         headers: { 'content-type': 'application/json', ...(cfg.headers ?? {}) },
@@ -1765,13 +1777,21 @@ function waitMs(cfg: WaitStepConfig): number {
   return Math.max(1_000, cfg.amount * unitMs)
 }
 
-function interpolate(s: string, args: ExecuteArgs): string {
-  return s.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (_, key) => {
-    const [ns, prop] = String(key).split('.')
-    if (ns === 'message' && prop === 'text') return String(args.context.message_text ?? '')
-    if (ns === 'vars' && prop) return String(args.context.vars?.[prop] ?? '')
-    return ''
-  })
+async function interpolate(s: string, args: ExecuteArgs): Promise<string> {
+  // Same contract as flows (src/lib/variables) plus the automation context: {{message.text}} and {{vars.x}}. Unknown tokens render empty,
+  // as this engine always did.
+  const { text } = await renderTemplate(
+    supabaseAdmin(),
+    s,
+    {
+      accountId: args.automation.account_id,
+      contactId: args.contactId,
+      vars: (args.context.vars ?? {}) as Record<string, unknown>,
+      extra: { "message.text": String(args.context.message_text ?? "") },
+    },
+    { unknown: "empty" },
+  )
+  return text
 }
 
 async function appendResults(

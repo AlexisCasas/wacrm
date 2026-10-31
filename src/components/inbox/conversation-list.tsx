@@ -1,5 +1,6 @@
 "use client";
 
+import { contactLabel, contactSearchText } from "@/lib/contacts/display";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -205,7 +206,7 @@ export function ConversationList({
       const q = search.toLowerCase();
       result = result.filter((c) => {
         const name = c.contact?.name?.toLowerCase() ?? "";
-        const phone = c.contact?.phone?.toLowerCase() ?? "";
+        const phone = contactSearchText(c.contact);
         const lastMsg = c.last_message_text?.toLowerCase() ?? "";
         return name.includes(q) || phone.includes(q) || lastMsg.includes(q);
       });
@@ -461,7 +462,7 @@ function ConversationItem({
   t,
 }: ConversationItemProps) {
   const contact = conversation.contact;
-  const displayName = contact?.name || contact?.phone || t("unknown");
+  const displayName = contactLabel(contact, t("unknown"));
   const initials = displayName.charAt(0).toUpperCase();
   const dateFnsLocale = useDateFnsLocale();
 

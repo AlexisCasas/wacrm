@@ -10,9 +10,6 @@ import {
 import type { InteractiveMessagePayload } from '@/lib/whatsapp/interactive'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import {
-  sanitizePhoneForMeta,
-  isValidE164,
-  phoneVariants,
   isRecipientNotAllowedError,
 } from '@/lib/whatsapp/phone-utils'
 import { resolveOutboundTransport } from '@/lib/whatsapp/send-message'
@@ -21,6 +18,13 @@ import { assertContactCanReceive } from '@/lib/contacts/blocking'
 import { isVoiceNoteUrlForAccount } from '@/lib/media/voice-note-path'
 import { isMediaAudioEnabledForAccount } from './voice-note-capability'
 import { supabaseAdmin } from './admin-client'
+import { resolveContactTarget, targetAttempts, type WaTarget } from '@/lib/whatsapp/recipient'
+import type { FlowSendModality } from '@/lib/whatsapp/bsuid-flow-auth'
+
+/** A send made by a Flow run says so (and which run); anything else stays `automated`, which a BSUID contact refuses. */
+function flowOrAutomated(flowRunId: string | undefined, modality: FlowSendModality) {
+  return flowRunId ? ({ origin: 'flow', flowRun: { id: flowRunId, modality } } as const) : ({ origin: 'automated' } as const)
+}
 
 // ------------------------------------------------------------
 // Flows-side Meta sender (interactive variants).
@@ -49,6 +53,9 @@ interface SendTextEngineArgs {
   conversationId: string
   contactId: string
   text: string
+  /** The Flow run that sends this message. Set ONLY by the Flows engine; it is what lets a phone-less (BSUID) contact be served, and it is
+   *  re-checked against the database (an active run of this contact whose whole flow stack is authorized) on every send. */
+  flowRunId?: string
   /** Marks the persisted message row `ai_generated = true` so the inbox
    *  badges it as an AI reply. Only the auto-reply bot sets this;
    *  deterministic Flow/automation sends leave it false. */
@@ -82,7 +89,7 @@ interface SendTextEngineArgs {
  */
 export async function engineSendText(
   args: SendTextEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   // MUST run before the transport branch below — the ManyChat path
   // has its own send call that never touches the Meta-only contact
   // lookup further down, so checking blocked status after resolving
@@ -101,14 +108,13 @@ export async function engineSendText(
     .eq('id', args.contactId)
     .eq('account_id', args.accountId)
     .maybeSingle()
-  if (contactErr || !contact?.phone) {
+  if (contactErr || !contact) {
     throw new Error('contact not found for this account')
   }
 
-  const sanitized = sanitizePhoneForMeta(contact.phone)
-  if (!isValidE164(sanitized)) {
-    throw new Error(`contact phone invalid: ${contact.phone}`)
-  }
+  // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
+  const target = await resolveContactTarget(db, args.accountId, contact, flowOrAutomated(args.flowRunId, 'text'))
+  const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
     .from('whatsapp_config')
@@ -121,7 +127,7 @@ export async function engineSendText(
 
   const accessToken = decrypt(config.access_token)
 
-  const attempt = async (phone: string): Promise<string> => {
+  const attempt = async (phone: WaTarget): Promise<string> => {
     const r = await sendTextMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
@@ -131,8 +137,8 @@ export async function engineSendText(
     return r.messageId
   }
 
-  const variants = phoneVariants(sanitized)
-  let workingPhone = sanitized
+  const variants = targetAttempts(target)
+  let workingPhone: WaTarget = sanitized
   let waMessageId = ''
   let lastError: unknown = null
   for (const v of variants) {
@@ -149,7 +155,7 @@ export async function engineSendText(
   }
   if (lastError) throw lastError
 
-  if (workingPhone !== sanitized) {
+  if (target.kind === 'phone' && workingPhone !== sanitized) {
     await db.from('contacts').update({ phone: workingPhone }).eq('id', contact.id)
   }
 
@@ -175,7 +181,7 @@ export async function engineSendText(
     })
     .eq('id', args.conversationId)
 
-  return { whatsapp_message_id: waMessageId }
+  return { whatsapp_message_id: waMessageId, recipient_kind: target.kind }
 }
 
 /**
@@ -192,7 +198,7 @@ export async function engineSendText(
  */
 async function sendTextViaManyChat(
   args: SendTextEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   const db = supabaseAdmin()
 
   let whatsappMessageId: string
@@ -242,6 +248,7 @@ interface SendMediaEngineArgs {
   userId: string
   conversationId: string
   contactId: string
+  flowRunId?: string
   kind: MediaKind
   /** Public URL Meta fetches at send time — also the canonical asset
    *  reference persisted regardless of transport (see the ManyChat
@@ -289,7 +296,7 @@ interface SendMediaEngineArgs {
  */
 export async function engineSendMedia(
   args: SendMediaEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   // Same ordering requirement as engineSendText above — must run
   // before the ManyChat-vs-Meta branch, not after.
   await assertContactCanReceive(supabaseAdmin(), args.accountId, args.contactId)
@@ -332,14 +339,13 @@ export async function engineSendMedia(
     .eq('id', args.contactId)
     .eq('account_id', args.accountId)
     .maybeSingle()
-  if (contactErr || !contact?.phone) {
+  if (contactErr || !contact) {
     throw new Error('contact not found for this account')
   }
 
-  const sanitized = sanitizePhoneForMeta(contact.phone)
-  if (!isValidE164(sanitized)) {
-    throw new Error(`contact phone invalid: ${contact.phone}`)
-  }
+  // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
+  const target = await resolveContactTarget(db, args.accountId, contact, flowOrAutomated(args.flowRunId, args.kind === 'audio' ? 'audio' : 'media'))
+  const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
     .from('whatsapp_config')
@@ -352,7 +358,7 @@ export async function engineSendMedia(
 
   const accessToken = decrypt(config.access_token)
 
-  const attempt = async (phone: string): Promise<string> => {
+  const attempt = async (phone: WaTarget): Promise<string> => {
     const r = await sendMediaMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
@@ -366,8 +372,8 @@ export async function engineSendMedia(
     return r.messageId
   }
 
-  const variants = phoneVariants(sanitized)
-  let workingPhone = sanitized
+  const variants = targetAttempts(target)
+  let workingPhone: WaTarget = sanitized
   let waMessageId = ''
   let lastError: unknown = null
   for (const v of variants) {
@@ -384,7 +390,7 @@ export async function engineSendMedia(
   }
   if (lastError) throw lastError
 
-  if (workingPhone !== sanitized) {
+  if (target.kind === 'phone' && workingPhone !== sanitized) {
     await db.from('contacts').update({ phone: workingPhone }).eq('id', contact.id)
   }
 
@@ -419,7 +425,7 @@ export async function engineSendMedia(
     })
     .eq('id', args.conversationId)
 
-  return { whatsapp_message_id: waMessageId }
+  return { whatsapp_message_id: waMessageId, recipient_kind: target.kind }
 }
 
 /**
@@ -441,7 +447,7 @@ export async function engineSendMedia(
  */
 async function sendMediaViaManyChatBridge(
   args: SendMediaEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   if (!args.manychatBridgeFlowNs) {
     throw new Error(
       '[flows] send_media has no manychat_bridge_flow_ns configured — cannot send media while this account is bridged through ManyChat. This send was NOT attempted via Meta. Set a temporary ManyChat bridge Flow ns on this node, or wait for the Meta cutover.',
@@ -499,6 +505,7 @@ interface SendInteractiveButtonsEngineArgs {
   userId: string
   conversationId: string
   contactId: string
+  flowRunId?: string
   bodyText: string
   buttons: InteractiveButton[]
   headerText?: string
@@ -510,6 +517,7 @@ interface SendInteractiveListEngineArgs {
   userId: string
   conversationId: string
   contactId: string
+  flowRunId?: string
   bodyText: string
   buttonLabel: string
   sections: InteractiveListSection[]
@@ -530,7 +538,7 @@ interface SendInteractiveListEngineArgs {
  */
 export async function engineSendInteractiveButtons(
   args: SendInteractiveButtonsEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   return sendInteractiveViaMeta({ ...args, kind: 'buttons' })
 }
 
@@ -540,7 +548,7 @@ export async function engineSendInteractiveButtons(
  */
 export async function engineSendInteractiveList(
   args: SendInteractiveListEngineArgs,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   return sendInteractiveViaMeta({ ...args, kind: 'list' })
 }
 
@@ -550,7 +558,7 @@ type SendInput =
 
 async function sendInteractiveViaMeta(
   input: SendInput,
-): Promise<{ whatsapp_message_id: string }> {
+): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   const db = supabaseAdmin()
 
   // Interactive messages have no ManyChat bridge (Meta-only), but the
@@ -567,14 +575,13 @@ async function sendInteractiveViaMeta(
     .eq('id', input.contactId)
     .eq('account_id', input.accountId)
     .maybeSingle()
-  if (contactErr || !contact?.phone) {
+  if (contactErr || !contact) {
     throw new Error('contact not found for this account')
   }
 
-  const sanitized = sanitizePhoneForMeta(contact.phone)
-  if (!isValidE164(sanitized)) {
-    throw new Error(`contact phone invalid: ${contact.phone}`)
-  }
+  // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
+  const target = await resolveContactTarget(db, input.accountId, contact, flowOrAutomated(input.flowRunId, input.kind === 'list' ? 'list' : 'buttons'))
+  const sanitized = target.kind === 'phone' ? target.phone : ''
 
   const { data: config, error: configErr } = await db
     .from('whatsapp_config')
@@ -587,7 +594,7 @@ async function sendInteractiveViaMeta(
 
   const accessToken = decrypt(config.access_token)
 
-  const attempt = async (phone: string): Promise<string> => {
+  const attempt = async (phone: WaTarget): Promise<string> => {
     if (input.kind === 'buttons') {
       const r = await sendInteractiveButtons({
         phoneNumberId: config.phone_number_id,
@@ -616,8 +623,8 @@ async function sendInteractiveViaMeta(
   // Same phone-variant retry as automations/meta-send.ts. Numbers
   // registered with/without a trunk 0 + Meta's sandbox quirks all
   // need this to reliably land a message.
-  const variants = phoneVariants(sanitized)
-  let workingPhone = sanitized
+  const variants = targetAttempts(target)
+  let workingPhone: WaTarget = sanitized
   let waMessageId = ''
   let lastError: unknown = null
   for (const v of variants) {
@@ -634,7 +641,7 @@ async function sendInteractiveViaMeta(
   }
   if (lastError) throw lastError
 
-  if (workingPhone !== sanitized) {
+  if (target.kind === 'phone' && workingPhone !== sanitized) {
     await db.from('contacts').update({ phone: workingPhone }).eq('id', contact.id)
   }
 
@@ -689,5 +696,5 @@ async function sendInteractiveViaMeta(
     })
     .eq('id', input.conversationId)
 
-  return { whatsapp_message_id: waMessageId }
+  return { whatsapp_message_id: waMessageId, recipient_kind: target.kind }
 }

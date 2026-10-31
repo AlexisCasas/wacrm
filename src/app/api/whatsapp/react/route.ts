@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
 import { sendReactionMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
-import { sanitizePhoneForMeta } from '@/lib/whatsapp/phone-utils';
+import { BsuidSendBlockedError, resolveContactTarget } from '@/lib/whatsapp/recipient';
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -66,7 +66,7 @@ export async function POST(request: Request) {
 
     const { data: conversation, error: convError } = await supabase
       .from('conversations')
-      .select('id, account_id, contact:contacts(phone)')
+      .select('id, account_id, contact:contacts(id, phone)')
       .eq('id', targetMessage.conversation_id)
       .eq('account_id', accountId)
       .maybeSingle();
@@ -81,7 +81,22 @@ export async function POST(request: Request) {
     const contact = Array.isArray(conversation.contact)
       ? conversation.contact[0]
       : conversation.contact;
-    if (!contact?.phone) {
+    if (!contact) {
+      return NextResponse.json(
+        { error: 'Contact phone number not found' },
+        { status: 400 },
+      );
+    }
+
+    // A valid phone as before; otherwise the contact's BSUID (users who hide their number).
+    let target: Awaited<ReturnType<typeof resolveContactTarget>>;
+    try {
+      target = await resolveContactTarget(supabase, accountId, contact, { origin: 'automated' });
+    } catch (err) {
+      // Reactions are not an authorized pilot reply: a contact reachable only by a WhatsApp user id is refused.
+      if (err instanceof BsuidSendBlockedError) {
+        return NextResponse.json({ error: 'Sending to this contact is restricted' }, { status: 403 });
+      }
       return NextResponse.json(
         { error: 'Contact phone number not found' },
         { status: 400 },
@@ -103,13 +118,12 @@ export async function POST(request: Request) {
     }
 
     const accessToken = decrypt(config.access_token);
-    const sanitizedPhone = sanitizePhoneForMeta(contact.phone);
 
     try {
       await sendReactionMessage({
         phoneNumberId: config.phone_number_id,
         accessToken,
-        to: sanitizedPhone,
+        to: target.kind === 'phone' ? target.phone : { bsuid: target.bsuid },
         targetMessageId: targetMessage.message_id,
         emoji,
       });

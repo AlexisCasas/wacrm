@@ -86,6 +86,7 @@ export function NodeConfigForm({
             value={(cfg as { text?: string }).text ?? ""}
             onChange={(v) => onUpdateConfig({ text: v })}
             rows={6}
+            variables
           />
           <NextNodeRow
             value={(cfg as { next_node_key?: string }).next_node_key ?? ""}
@@ -151,6 +152,7 @@ export function NodeConfigForm({
             value={(cfg as { prompt_text?: string }).prompt_text ?? ""}
             onChange={(v) => onUpdateConfig({ prompt_text: v })}
             rows={2}
+            variables
           />
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">

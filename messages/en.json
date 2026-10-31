@@ -303,6 +303,8 @@
       "errorActiveFlow": "This contact already has an active Flow: {flowName}.",
       "errorServiceWindow": "A Flow can't be started outside the 24-hour service window.",
       "errorContactBlocked": "This contact is blocked. Unblock them first to start a Flow.",
+      "errorBsuidFlowNotAuthorized": "This contact is not ready to start the Flow yet. Wait for their WhatsApp number to sync or review their authorization.",
+      "errorContactRecipientUnavailable": "This contact does not yet have a WhatsApp identity available to start the Flow.",
       "errorFailedImmediately": "The Flow couldn't be started. Check the contact's details or the Flow's configuration and try again.",
       "errorGeneric": "Couldn't start the flow. Please try again."
     },
@@ -2525,5 +2527,17 @@
     "classifyHelp": "Two audios of the product cannot have the same purpose and identifier.",
     "classifyNoCatalog": "Create at least one purpose and one identifier first.",
     "classifyLoading": "Loading…"
+  },
+  "ContactIdentity": {
+    "phoneUnavailable": "Number not available",
+    "phoneUnavailableHint": "This WhatsApp user hides their phone number. You can still chat, run Flows and send replies; actions that need a phone number (calls, broadcasts, exports) are not available for them.",
+    "usernameLabel": "WhatsApp username",
+    "needsPhone": "Needs a phone number, which this contact does not share."
+  },
+  "variables": {
+    "insert": "Insert variable",
+    "groupContact": "Contact",
+    "groupCustom": "Custom fields",
+    "groupFlow": "Flow variables"
   }
 }

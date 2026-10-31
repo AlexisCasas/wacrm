@@ -32,6 +32,7 @@
  *     INSERT raises 23505 and the runner catches & exits.
  */
 
+import { LEGACY_IMPORT_TOKEN, renderTemplate } from "@/lib/variables";
 import { supabaseAdmin } from "./admin-client";
 import {
   engineSendInteractiveButtons,
@@ -66,6 +67,7 @@ import {
 } from "@/lib/flows/customer-reply-condition";
 import { isSubflowExecutionEnabledForAccount, type OnCustomerReply } from "@/lib/flows/subflow-execution-capability";
 import { ContactBlockedError } from "@/lib/contacts/blocking";
+import { BsuidSendBlockedError, ContactRecipientUnavailableError, resolveContactTarget } from "@/lib/whatsapp/recipient";
 import { executeSendProductAudios } from "@/lib/flows/product-audios";
 import {
   type CollectInputNodeConfig,
@@ -389,6 +391,7 @@ async function findEntryFlow(
   accountId: string,
   message: ParsedInbound,
   isFirstInbound: boolean,
+  restrictToFlowIds?: string[],
 ): Promise<FlowRow | null> {
   // A tap used to be rejected outright here, on the reasoning that
   // interactive replies are responses to existing prompts. That holds
@@ -411,7 +414,8 @@ async function findEntryFlow(
     .order("created_at", { ascending: true });
   if (error || !flows) return null;
 
-  const typed = flows as FlowRow[];
+  // BSUID contacts (no phone) may only be offered the flows the database authorizes for them; every other flow behaves as if absent.
+  const typed = (flows as FlowRow[]).filter((f) => !restrictToFlowIds || restrictToFlowIds.includes(f.id));
   for (const flow of typed) {
     if (flow.trigger_type === "keyword") {
       const cfg = flow.trigger_config as KeywordTriggerConfig;
@@ -444,11 +448,12 @@ async function sendButtonsAndSuspend(
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendButtonsNodeConfig;
-  const { whatsapp_message_id } = await engineSendInteractiveButtons({
+  const { whatsapp_message_id, recipient_kind } = await engineSendInteractiveButtons({
     accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
+    flowRunId: run.id,
     bodyText: cfg.text,
     headerText: cfg.header_text,
     footerText: cfg.footer_text,
@@ -457,6 +462,7 @@ async function sendButtonsAndSuspend(
   await logEvent(db, run.id, "message_sent", node.node_key, {
     node_type: "send_buttons",
     whatsapp_message_id,
+    ...(recipient_kind ? { recipient_kind } : {}),
   });
   // Look up our internal message id so we can stash it on the run.
   // Cheap — indexed on `messages.message_id`.
@@ -480,11 +486,12 @@ async function sendListAndSuspend(
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendListNodeConfig;
-  const { whatsapp_message_id } = await engineSendInteractiveList({
+  const { whatsapp_message_id, recipient_kind } = await engineSendInteractiveList({
     accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
     contactId: run.contact_id!,
+    flowRunId: run.id,
     bodyText: cfg.text,
     buttonLabel: cfg.button_label,
     headerText: cfg.header_text,
@@ -501,6 +508,7 @@ async function sendListAndSuspend(
   await logEvent(db, run.id, "message_sent", node.node_key, {
     node_type: "send_list",
     whatsapp_message_id,
+    ...(recipient_kind ? { recipient_kind } : {}),
   });
   const { data: msg } = await db
     .from("messages")
@@ -855,17 +863,20 @@ export async function evaluateConditionNode(
 }
 
 /**
- * Tiny `{{vars.foo}}` interpolation. Used by send_message + collect_input
- * prompt text so a captured `name` can show up in the next prompt
- * ("Thanks {{vars.name}}, what's your email?"). Missing vars render as
- * empty string — the same behavior as the automations engine.
+ * Renders a flow text through the unified variable contract (`src/lib/variables`): `{{vars.key}}` (compatible), the contact's standard fields
+ * (`{{first_name}}`...) and any custom field of the account. Resolved at SEND time from the run's account and contact, so a field changed by an
+ * earlier node, or while the run was waiting, is what the customer sees. A token that names nothing renders empty (no raw braces reach the customer), except a legacy import
+ * reference (`cuf_<digits>`), which stays as written until an owner maps it with `field_options.aliases`; a known variable with no value renders
+ * empty or as its `{{x | fallback}}`, closing the gap it leaves.
  */
-function interpolateVars(template: string, vars: Record<string, unknown>): string {
-  if (!template) return "";
-  return template.replace(/\{\{vars\.([a-zA-Z0-9_]+)\}\}/g, (_, key) => {
-    const v = vars[key];
-    return v === undefined || v === null ? "" : String(v);
-  });
+async function renderFlowText(db: AdminClient, run: FlowRunRow, template: string): Promise<string> {
+  const { text } = await renderTemplate(
+    db,
+    template,
+    { accountId: run.account_id, contactId: run.contact_id, vars: run.vars },
+    { unknown: "empty", keepUnknown: LEGACY_IMPORT_TOKEN },
+  );
+  return text;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -944,7 +955,7 @@ async function executeSetContactField(
     throw new Error(`contact ${run.contact_id} not found for this account`);
   }
 
-  const value = interpolateVars(cfg.value, run.vars);
+  const value = await renderFlowText(db, run, cfg.value);
 
   // Upsert on the table's UNIQUE(contact_id, custom_field_id) so
   // repeated visits to this node overwrite rather than duplicate.
@@ -1136,16 +1147,18 @@ async function advanceFromNodeKey(
     if (node.node_type === "send_message") {
       const cfg = node.config as unknown as SendMessageNodeConfig;
       try {
-        const { whatsapp_message_id } = await engineSendText({
+        const { whatsapp_message_id, recipient_kind } = await engineSendText({
           accountId: run.account_id,
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
-          text: interpolateVars(cfg.text, run.vars),
+          flowRunId: run.id,
+          text: await renderFlowText(db, run, cfg.text),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "send_message",
           whatsapp_message_id,
+          ...(recipient_kind ? { recipient_kind } : {}),
         });
         if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
@@ -1166,15 +1179,16 @@ async function advanceFromNodeKey(
     if (node.node_type === "send_media") {
       const cfg = node.config as unknown as SendMediaNodeConfig;
       try {
-        const { whatsapp_message_id } = await engineSendMedia({
+        const { whatsapp_message_id, recipient_kind } = await engineSendMedia({
           accountId: run.account_id,
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
+          flowRunId: run.id,
           kind: cfg.media_type,
           link: cfg.media_url,
           caption: cfg.caption
-            ? interpolateVars(cfg.caption, run.vars)
+            ? await renderFlowText(db, run, cfg.caption)
             : undefined,
           filename: cfg.filename,
           // An audio node is always a native voice note; engineSendMedia
@@ -1191,6 +1205,7 @@ async function advanceFromNodeKey(
           media_type: cfg.media_type,
           ...(cfg.media_type === "audio" ? { voice: true } : {}),
           whatsapp_message_id,
+          ...(recipient_kind ? { recipient_kind } : {}),
         });
         if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
@@ -1235,16 +1250,18 @@ async function advanceFromNodeKey(
       // wake us up via handleReplyForActiveRun's collect_input branch.
       const cfg = node.config as unknown as CollectInputNodeConfig;
       try {
-        const { whatsapp_message_id } = await engineSendText({
+        const { whatsapp_message_id, recipient_kind } = await engineSendText({
           accountId: run.account_id,
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
-          text: interpolateVars(cfg.prompt_text, run.vars),
+          flowRunId: run.id,
+          text: await renderFlowText(db, run, cfg.prompt_text),
         });
         await logEvent(db, run.id, "message_sent", node.node_key, {
           node_type: "collect_input",
           whatsapp_message_id,
+          ...(recipient_kind ? { recipient_kind } : {}),
         });
         const { data: msg } = await db
           .from("messages")
@@ -1561,6 +1578,10 @@ export async function dispatchInboundToFlows(
     // contact. For new runs, the partial unique index catches duplicate
     // starts at INSERT time.
     if (activeRun) {
+      // Restricted (BSUID) contact: a run of a flow that is not authorized is neither advanced nor answered (the message is held, as before).
+      if (input.restrictToFlowIds && !input.restrictToFlowIds.includes(activeRun.flow_id)) {
+        return { consumed: false, flow_run_id: activeRun.id, outcome: "no_match" };
+      }
       const dupe = await isDuplicateInbound(
         db,
         input.accountId,
@@ -1596,6 +1617,7 @@ export async function dispatchInboundToFlows(
       input.accountId,
       input.message,
       input.isFirstInboundMessage,
+      input.restrictToFlowIds,
     );
     if (!flow || !flow.entry_node_id) {
       return { consumed: false, outcome: "no_match" };
@@ -1770,7 +1792,8 @@ async function handleReplyForActiveRun(
     userId: run.user_id,
           conversationId: run.conversation_id!,
           contactId: run.contact_id!,
-          text: interpolateVars(cfg.prompt_text, run.vars),
+          flowRunId: run.id,
+          text: await renderFlowText(db, run, cfg.prompt_text),
         });
       } catch (err) {
         await logEvent(db, run.id, "error", currentNode.node_key, {
@@ -1970,6 +1993,8 @@ export type StartFlowManuallyResult =
   | { outcome: "conversation_not_found" }
   | { outcome: "contact_not_found" }
   | { outcome: "contact_blocked" }
+  | { outcome: "bsuid_flow_not_authorized" }
+  | { outcome: "contact_recipient_unavailable" }
   | {
       outcome: "active_flow_exists";
       active_flow_run_id?: string;
@@ -2030,7 +2055,7 @@ export async function startFlowManually(
   // against a stale/forged conversation row), never trust the id alone.
   const { data: contactData, error: contactErr } = await db
     .from("contacts")
-    .select("id, blocked")
+    .select("id, blocked, phone")
     .eq("id", conversation.contact_id)
     .eq("account_id", accountId)
     .maybeSingle();
@@ -2041,13 +2066,22 @@ export async function startFlowManually(
   if (!contactData) {
     return { outcome: "contact_not_found" };
   }
-  const typedContact = contactData as { id: string; blocked: boolean };
+  const typedContact = contactData as { id: string; blocked: boolean; phone: string | null };
   // A blocked contact must never get a Flow started for them manually,
   // even from a stale Inbox tab that still shows the picker.
   if (typedContact.blocked) {
     return { outcome: "contact_blocked" };
   }
   const contactId = typedContact.id;
+  try {
+    await resolveContactTarget(db, accountId, typedContact, { origin: "flow_preflight", flowId: flow.id });
+  } catch (err) {
+    if (err instanceof ContactRecipientUnavailableError) return { outcome: "contact_recipient_unavailable" };
+    if (err instanceof BsuidSendBlockedError && (err.code === "bsuid_flow_not_authorized" || err.code === "bsuid_disabled")) return { outcome: "bsuid_flow_not_authorized" };
+    const message = err instanceof Error ? err.message : "recipient preflight failed";
+    console.error("[flows] startFlowManually recipient preflight error:", message);
+    return { outcome: "error", message };
+  }
 
   // Never auto-replace an active run. Pre-check gives a clean,
   // informative conflict in the common case; the DB's partial unique

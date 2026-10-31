@@ -344,7 +344,7 @@ export async function getSubscribedApps(
 export interface SendTextMessageArgs {
   phoneNumberId: string
   accessToken: string
-  to: string
+  to: WaTarget
   text: string
   /** Meta's message_id of the message being replied to. Adds a `context` field
    *  so WhatsApp renders the new message as a reply with a quote preview. */
@@ -363,7 +363,7 @@ export async function sendTextMessage(
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
-    to,
+    ...recipientFields(to),
     type: 'text',
     text: { body: text },
   }
@@ -390,7 +390,7 @@ export type MediaKind = 'image' | 'video' | 'document' | 'audio'
 export interface SendMediaMessageArgs {
   phoneNumberId: string
   accessToken: string
-  to: string
+  to: WaTarget
   kind: MediaKind
   /** Public URL Meta fetches at send time. */
   link: string
@@ -449,7 +449,7 @@ export async function sendMediaMessage(
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
-    to,
+    ...recipientFields(to),
     type: kind,
     [kind]: media,
   }
@@ -471,6 +471,7 @@ export async function sendMediaMessage(
 }
 
 import type { MessageTemplate } from '@/types'
+import { recipientFields, type WaTarget } from './recipient'
 import {
   buildSendComponents,
   type SendTimeParams,
@@ -479,7 +480,7 @@ import {
 export interface SendTemplateMessageArgs {
   phoneNumberId: string
   accessToken: string
-  to: string
+  to: WaTarget
   templateName: string
   language?: string
   /**
@@ -565,7 +566,7 @@ export async function sendTemplateMessage(
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
-    to,
+    ...recipientFields(to),
     type: 'template',
     template: templatePayload,
   }
@@ -811,7 +812,7 @@ export async function deleteMessageTemplate(
 export interface SendReactionMessageArgs {
   phoneNumberId: string
   accessToken: string
-  to: string
+  to: WaTarget
   /** Meta's message_id of the message being reacted to. */
   targetMessageId: string
   /** Single emoji, or empty string to remove an existing reaction. */
@@ -836,7 +837,7 @@ export async function sendReactionMessage(
     body: JSON.stringify({
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
-      to,
+      ...recipientFields(to),
       type: 'reaction',
       reaction: { message_id: targetMessageId, emoji },
     }),
@@ -887,7 +888,7 @@ export interface InteractiveButton {
 export interface SendInteractiveButtonsArgs {
   phoneNumberId: string
   accessToken: string
-  to: string
+  to: WaTarget
   /** The body text — what the customer reads above the buttons. */
   bodyText: string
   /** Optional plain-text header (≤ 60 chars). */
@@ -956,7 +957,7 @@ export async function sendInteractiveButtons(
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
-    to,
+    ...recipientFields(to),
     type: 'interactive',
     interactive,
   }
@@ -996,7 +997,7 @@ export interface InteractiveListSection {
 export interface SendInteractiveListArgs {
   phoneNumberId: string
   accessToken: string
-  to: string
+  to: WaTarget
   bodyText: string
   /** Label of the tap-to-expand button on the message bubble. */
   buttonLabel: string
@@ -1088,7 +1089,7 @@ export async function sendInteractiveList(
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
-    to,
+    ...recipientFields(to),
     type: 'interactive',
     interactive,
   }

@@ -36,12 +36,8 @@ import {
 } from '@/lib/whatsapp/interactive';
 import { decrypt, encrypt, isLegacyFormat } from '@/lib/whatsapp/encryption';
 import { supabaseAdmin } from '@/lib/flows/admin-client';
-import {
-  sanitizePhoneForMeta,
-  isValidE164,
-  phoneVariants,
-  isRecipientNotAllowedError,
-} from '@/lib/whatsapp/phone-utils';
+import { BsuidSendBlockedError, resolveContactTarget, targetAttempts, type ManualSendActor, type ResolvedTarget, type SendOrigin, type WaTarget } from '@/lib/whatsapp/recipient';
+import { isRecipientNotAllowedError } from '@/lib/whatsapp/phone-utils';
 import type { MessageTemplate } from '@/types';
 import {
   resolveTemplateRow,
@@ -105,6 +101,16 @@ export interface SendMessageParams {
    * document send was marked as a voice note.
    */
   voiceNote?: boolean;
+  /**
+   * Who is sending. Only the dashboard's own composer (a signed-in person) says `manual_reply`; anything else, including the
+   * public API, is `automated` (the default) and cannot reach a contact known only by a WhatsApp user id during the pilot.
+   */
+  origin?: SendOrigin;
+  /**
+   * The signed-in person behind a `manual_reply`, set ONLY by the dashboard route from its `requireRole('agent')` context. Required for
+   * a BSUID-only contact; ignored otherwise. Never read from a request body.
+   */
+  actor?: ManualSendActor;
   /** Authenticated dashboard user who authored this manual send. */
   senderId?: string | null;
 }
@@ -282,6 +288,8 @@ export async function sendMessageToConversation(
     interactivePayload,
     replyToMessageId,
     voiceNote,
+    origin = 'automated',
+    actor,
     senderId,
   } = params;
 
@@ -349,7 +357,7 @@ export async function sendMessageToConversation(
   }
 
   const contact = conversation.contact;
-  if (!contact?.phone) {
+  if (!contact) {
     throw new SendMessageError(
       'bad_request',
       'Contact phone number not found',
@@ -357,14 +365,22 @@ export async function sendMessageToConversation(
     );
   }
 
-  const sanitizedPhone = sanitizePhoneForMeta(contact.phone);
-  if (!isValidE164(sanitizedPhone)) {
+  // A valid phone as before; otherwise the contact's BSUID (WhatsApp users who hide their number).
+  let target: ResolvedTarget;
+  try {
+    target = await resolveContactTarget(db, accountId, contact, { origin, actor });
+  } catch (err) {
+    if (err instanceof BsuidSendBlockedError) {
+      throw new SendMessageError('bsuid_send_blocked', `This contact can only be reached by a WhatsApp user id and sending to it is restricted (${err.code}).`, 403);
+    }
+    const missing = err instanceof Error && err.message === 'contact not found for this account';
     throw new SendMessageError(
       'bad_request',
-      'Invalid phone number format',
+      missing ? 'Contact phone number not found' : 'Invalid phone number format',
       400
     );
   }
+  const sanitizedPhone = target.kind === 'phone' ? target.phone : '';
 
   // WhatsApp config, account-scoped.
   const { data: config, error: configError } = await db
@@ -451,7 +467,7 @@ export async function sendMessageToConversation(
     sendLanguage = resolved.language;
   }
 
-  const attempt = async (phone: string): Promise<string> => {
+  const attempt = async (phone: WaTarget): Promise<string> => {
     if (messageType === 'template') {
       const result = await sendTemplateMessage({
         phoneNumberId: config.phone_number_id,
@@ -522,9 +538,9 @@ export async function sendMessageToConversation(
   // with "recipient not in allowed list"; persist a working variant
   // back to the contact so the next send goes straight through.
   let waMessageId = '';
-  let workingPhone = sanitizedPhone;
+  let workingPhone: WaTarget = sanitizedPhone;
   try {
-    const variants = phoneVariants(sanitizedPhone);
+    const variants = targetAttempts(target);
     let lastError: unknown = null;
 
     for (const variant of variants) {
@@ -540,7 +556,9 @@ export async function sendMessageToConversation(
         }
         lastError = err;
         console.warn(
-          `[send-message] variant "${variant}" rejected by Meta, trying next…`
+          typeof variant === 'string'
+            ? `[send-message] variant "${variant}" rejected by Meta, trying next…`
+            : '[send-message] recipient (BSUID) rejected by Meta'
         );
       }
     }
@@ -553,7 +571,7 @@ export async function sendMessageToConversation(
     throw new SendMessageError('meta_error', `Meta API error: ${message}`, 502);
   }
 
-  if (workingPhone !== sanitizedPhone) {
+  if (target.kind === 'phone' && workingPhone !== sanitizedPhone) {
     console.log(
       `[send-message] Auto-corrected contact phone: ${sanitizedPhone} → ${workingPhone}`
     );

@@ -317,3 +317,52 @@ describe("dispatchInboundToFlows — entry triggers (#490)", () => {
     expect(startedRuns()).toHaveLength(1);
   });
 });
+
+// ============================================================
+// BSUID phase 3: a phone-less contact is offered ONLY the flows the database authorizes (restrictToFlowIds).
+// ============================================================
+describe("restrictToFlowIds (contacts known only by a WhatsApp user id)", () => {
+  const OTHER_FLOW = { ...KEYWORD_FLOW, id: "flow-0", created_at: "2025-12-01T00:00:00Z" }
+  const text = (t: string): ParsedInbound => ({ kind: "text", text: t, meta_message_id: "m1" })
+  const run = (extra: Record<string, unknown>) =>
+    dispatchInboundToFlows({ accountId: "acct-1", userId: "u-1", contactId: "ct-1", conversationId: "cv-1", message: text("order status"), isFirstInboundMessage: false, ...extra } as never)
+
+  it("with no restriction the earliest matching flow wins, as before", async () => {
+    h.state.flows = [OTHER_FLOW, KEYWORD_FLOW]
+    await run({})
+    expect(startedRuns()[0].row.flow_id).toBe("flow-0")
+  })
+  it("a flow outside the authorized list behaves as if it did not exist: the authorized one starts instead", async () => {
+    h.state.flows = [OTHER_FLOW, KEYWORD_FLOW]
+    const r = await run({ restrictToFlowIds: ["flow-1"] })
+    expect(r.consumed).toBe(true)
+    expect(startedRuns()).toHaveLength(1)
+    expect(startedRuns()[0].row.flow_id).toBe("flow-1")
+  })
+  it("when the only matching flow is not authorized nothing starts and nothing is sent", async () => {
+    h.state.flows = [KEYWORD_FLOW]
+    const r = await run({ restrictToFlowIds: ["flow-9"] })
+    expect(r).toMatchObject({ consumed: false, outcome: "no_match" })
+    expect(startedRuns()).toHaveLength(0)
+    expect(engineSendText).not.toHaveBeenCalled()
+  })
+  it("an empty authorized list starts nothing", async () => {
+    h.state.flows = [KEYWORD_FLOW]
+    const r = await run({ restrictToFlowIds: [] })
+    expect(r.consumed).toBe(false)
+    expect(startedRuns()).toHaveLength(0)
+  })
+  it("every send of the started run carries the run id (the database re-checks it on each message)", async () => {
+    h.state.flows = [KEYWORD_FLOW]
+    await run({ restrictToFlowIds: ["flow-1"] })
+    expect(engineSendText).toHaveBeenCalled()
+    expect((engineSendText.mock.calls[0] as unknown as [{ flowRunId?: string }])[0].flowRunId).toBe("run-1")
+  })
+  it("an ACTIVE run of a flow that is no longer authorized is neither advanced nor answered", async () => {
+    h.state.activeRuns = [{ id: "run-9", flow_id: "flow-1", account_id: "acct-1", contact_id: "ct-1", status: "active", current_node_key: "greet", vars: {}, reprompt_count: 0 }]
+    h.state.flows = [KEYWORD_FLOW]
+    const r = await run({ restrictToFlowIds: ["flow-other"] })
+    expect(r).toMatchObject({ consumed: false, outcome: "no_match" })
+    expect(engineSendText).not.toHaveBeenCalled()
+  })
+})

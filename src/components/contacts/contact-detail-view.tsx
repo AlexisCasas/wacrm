@@ -1,5 +1,7 @@
 'use client';
 
+import { ContactPhoneLine } from "@/components/contacts/contact-phone-line";
+import { hasPhone } from "@/lib/contacts/display";
 import { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@/lib/supabase/client';
 import { addContactTag, deleteContactTag } from '@/lib/contacts/tag-api';
@@ -193,14 +195,15 @@ export function ContactDetailView({
   }, [open, contactId, fetchContact, fetchTags, fetchNotes, fetchCustomFields, fetchDeals]);
 
   async function copyPhone() {
-    if (!contact) return;
+    if (!contact || !hasPhone(contact)) return;
     await navigator.clipboard.writeText(contact.phone);
     setCopiedPhone(true);
     setTimeout(() => setCopiedPhone(false), 2000);
   }
 
   async function saveDetails() {
-    if (!contactId || !editPhone.trim()) {
+    // A contact identified only by a WhatsApp user id may keep an empty phone; every other contact still needs one.
+    if (!contactId || (!editPhone.trim() && !contact?.phone_optional)) {
       toast.error(t('toastPhoneRequired'));
       return;
     }
@@ -210,7 +213,8 @@ export function ContactDetailView({
       .from('contacts')
       .update({
         name: editName.trim() || null,
-        phone: editPhone.trim(),
+        // Never rewrite the phone of a phone-less contact with an empty value.
+        ...(editPhone.trim() || !contact?.phone_optional ? { phone: editPhone.trim() } : {}),
         email: editEmail.trim() || null,
         company: editCompany.trim() || null,
         updated_at: new Date().toISOString(),
@@ -412,7 +416,7 @@ export function ContactDetailView({
                       className="flex items-center gap-1 hover:text-primary transition-colors cursor-pointer"
                     >
                       <Phone className="size-3" />
-                      {contact.phone}
+                      <ContactPhoneLine contact={contact} />
                       {copiedPhone ? (
                         <Check className="size-3 text-primary" />
                       ) : (
@@ -499,7 +503,7 @@ export function ContactDetailView({
                   </div>
                   <div className="space-y-1.5">
                     <Label className="text-muted-foreground text-xs">
-                      {t('phone')} <span className="text-red-400">*</span>
+                      {t('phone')} {!contact?.phone_optional && <span className="text-red-400">*</span>}
                     </Label>
                     <Input
                       value={editPhone}
