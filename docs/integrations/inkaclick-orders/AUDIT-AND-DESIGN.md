@@ -1,12 +1,12 @@
 # WACRM → InkaClick: pedidos confirmados (auditoría y diseño)
 
-Estado: borrador para conformidad. Sin migraciones, sin despliegue, sin envíos reales.
+Estado: documento de diseño (histórico). La captura comercial en WACRM ya está desplegada y en piloto; el receptor de InkaClick existe en código pero **no está desplegado** (ver `QA-CLOSURE-AND-ACTIVATION-PLAN.md`). Sin envíos reales.
 Auditoría de solo lectura del 2026-10-31 (base de datos de InkaClick y servidor de WACRM). Los identificadores de proyectos y cuentas y las cifras absolutas de negocio se omiten a propósito: este repositorio es público.
 
 ## A. Auditoría de arquitectura real
 
 ### Lo que NO se pudo verificar
-- El código del receptor `/api/webhooks/manychat/confirmed-orders` (Vercel `inkaclick-api`) **no está** en el repo `InkaClick-Saas` (solo un front Vite con datos de ejemplo, sin `supabase/`), ni en la VPS, ni en las 9 edge functions desplegadas. Su contrato (validaciones, auth, parseo) se infiere de los datos, no del código.
+- El código del receptor **de ManyChat** `/api/webhooks/manychat/confirmed-orders` (Vercel `inkaclick-api`) no está en el repo `InkaClick-Saas`, ni en la VPS, ni en las edge functions desplegadas; su contrato se infiere de los datos. (Corrección: el receptor **de WACRM**, `wacrm-confirmed-orders`, sí existe en `InkaClick-Saas`, rama `main`, con su migración y pruebas; la afirmación anterior de que no existía era errónea.)
 
 ### InkaClick (base de datos de producción)
 - `confirmed_orders`: miles de filas, todas `source='manychat'`, `agencia='Shalom'`. RLS activa; escritura solo con service role (el receptor).
@@ -72,8 +72,8 @@ Extras de trazabilidad (columnas nuevas, nullables, aditivas): `external_order_i
 Inbox → botón → formulario precargado (contacto + campos personalizados) → validación → vista previa → confirmar. El botón se deshabilita tras el clic y el servidor deduplica por `request_key`.
 
 ## E. Receptor/emisor e idempotencia
-- Recomendado: **edge function nueva `wacrm-confirmed-orders` en el Supabase de InkaClick**, con secreto propio (`WACRM_ORDERS_TOKEN`, comparación en tiempo constante), que llama a una función SQL idempotente. Motivo: el código del receptor Vercel no está localizado; la deduplicación queda en la base, independiente de la capa HTTP. No toca la ruta ManyChat.
-- Migración aditiva en InkaClick (no aplicada): `external_order_id text`, `departamento text`, índice **único parcial** `(source, external_order_id) WHERE external_order_id IS NOT NULL`. `duplicate_key = 'wacrm_' || external_order_id` para no colisionar con ManyChat.
+- Implementado en `InkaClick-Saas@main`: **edge function `wacrm-confirmed-orders` en el Supabase de InkaClick**, con secreto propio (`WACRM_ORDERS_TOKEN`, comparación en tiempo constante), que llama a una función SQL idempotente. Motivo: el código del receptor Vercel no está localizado; la deduplicación queda en la base, independiente de la capa HTTP. No toca la ruta ManyChat.
+- Migración aditiva en InkaClick (existe en el repositorio; **no aplicada** en producción): `external_order_id UUID`, `departamento text`, tabla `wacrm_order_events` (auditoría sin datos personales), función `create_confirmed_order_from_wacrm(jsonb)` e índice **único parcial** `(source, external_order_id) WHERE external_order_id IS NOT NULL`. `duplicate_key = 'wacrm_' || external_order_id` para no colisionar con ManyChat.
 - Respuesta idempotente: mismo `external_order_id` → mismo `id` de InkaClick, sin segunda fila.
 - Emisor (outbox): reclamo con `FOR UPDATE SKIP LOCKED`, backoff exponencial con tope y límite de intentos, timeout, solo 5xx/timeout/429 se reintentan, 4xx → `failed` revisable. HTTP 200 = `sent`; `acknowledged` solo tras reconciliación (consulta por `external_order_id`).
 - Logs sin nombre, DNI ni teléfono completos.
@@ -84,9 +84,9 @@ Inbox → botón → formulario precargado (contacto + campos personalizados) �
 - Rollback del número de WhatsApp: **no es instantáneo** (migración de número entre proveedores); se documenta aparte y no depende de este código.
 
 ## G. Decisiones pendientes (conformidad)
-1. Ubicación del receptor: edge function nueva (recomendada) frente a ruta Vercel (requiere el código).
+1. Ubicación del receptor: **resuelto** — edge function `wacrm-confirmed-orders` ya escrita en `InkaClick-Saas@main`; falta desplegarla.
 2. Cuenta del piloto: la cuenta de pruebas (decidido); la operativa queda para después.
 3. Obligatorios: DNI y Departamento opcionales; Destino y Vendedor obligatorios.
 4. Vendedores: **resuelto** — todo miembro real de la cuenta es elegible, sin catálogo (ver `SELLERS-FROM-MEMBERS.md`).
-5. Reutilizar `descripcion_pedido_url` para texto libre.
+5. Reutilizar `descripcion_pedido_url` para texto libre. **Almacenamiento vs. visualización**: el receptor guarda la descripción en `descripcion_pedido_url` y el departamento en la columna nueva `departamento`; la interfaz logística actual muestra la descripción como enlace (un texto libre no es una URL) y no muestra el departamento. Es una propuesta de frontend aparte, no un cambio de datos.
 6. Migración aditiva en InkaClick por quien administre ese proyecto.
