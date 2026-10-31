@@ -1,6 +1,6 @@
 # Instalación del receptor en InkaClick (solo migración + Edge Function)
 
-Estado: **preparado, no ejecutado**. Cada bloque `[AUTORIZAR]` cambia producción de InkaClick y requiere permiso expreso. No incluye ni redespliega el frontend, ni toca ManyChat, ni activa el envío desde WACRM.
+Estado (2026-10-31): **fases 0 a 3 EJECUTADAS** con autorización expresa en el proyecto productivo de InkaClick: respaldo verificado, migración aditiva (`20261101010000`, una transacción, versión registrada), función `wacrm-confirmed-orders` v1 con `verify_jwt=false`, secreto `WACRM_ORDERS_TOKEN` fijado por la persona responsable, pruebas de seguridad PASS y emisor de WACRM preparado y apagado. **No repetir la migración ni el despliegue.** Pendiente: la prueba controlada (`PHASE4-CONTROLLED-TEST.md`). Cada bloque `[AUTORIZAR]` requirió permiso expreso.
 
 Principios: la migración es **aditiva** (dos columnas nulables, un índice parcial, una tabla, una función); el frontend productivo actual sigue funcionando sin cambios; los pedidos `held` de WACRM **nunca** se liberan solos (`held` solo pasa a `pending` por decisión manual expresa) y `enabled` en WACRM permanece `FALSE`.
 
