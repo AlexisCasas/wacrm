@@ -41,6 +41,7 @@ import {
 } from "@/lib/contacts/tag-api";
 import { PRESET_TAG_COLORS } from "@/lib/contacts/tag-colors";
 import { toast } from "sonner";
+import { ConfirmOrderButton } from "@/components/orders/confirm-order-button";
 
 interface ContactSidebarProps {
   contact: Contact | null;
@@ -62,9 +63,11 @@ interface ContactSidebarProps {
    * section N (immediate filter availability).
    */
   onTagCreated?: (tag: Tag) => void;
+  /** Open conversation, attached to a confirmed order when the agent presses "Confirmar pedido". */
+  conversationId?: string | null;
 }
 
-export function ContactSidebar({ contact, onTagsChanged, onTagCreated }: ContactSidebarProps) {
+export function ContactSidebar({ contact, onTagsChanged, onTagCreated, conversationId }: ContactSidebarProps) {
   const tSidebar = useTranslations("Inbox.sidebar");
   const tThread = useTranslations("Inbox.messageThread");
   const dateFnsLocale = useDateFnsLocale();
@@ -308,6 +311,11 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated }: Contact
             </h3>
             {contact.company && (
               <p className="text-xs text-muted-foreground">{contact.company}</p>
+            )}
+            {canSendMessages && (
+              <div className="mt-3 w-full">
+                <ConfirmOrderButton contact={contact} conversationId={conversationId} />
+              </div>
             )}
           </div>
 

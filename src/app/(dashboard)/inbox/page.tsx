@@ -816,6 +816,7 @@ function InboxPageInner() {
           <div className="hidden lg:block">
             <ContactSidebar
               contact={activeContact}
+              conversationId={activeConversation?.id ?? null}
               onTagsChanged={handleContactTagsChange}
               onTagCreated={handleTagCreated}
             />
