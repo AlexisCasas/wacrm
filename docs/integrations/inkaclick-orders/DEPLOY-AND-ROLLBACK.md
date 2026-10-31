@@ -22,9 +22,9 @@ Los PRs 1 a 3 están apilados (cada uno contiene los anteriores); fusionar en or
 3. Con todo apagado nada cambia: sin vendedores el botón no aparece; sin `INKACLICK_ORDERS_ENABLED=true` el cron no envía.
 4. **Cron** (cuando se active): añadir una línea igual a la de flows que llame a `GET /api/orders/cron` con `x-cron-secret` cada minuto.
 
-## Activación gradual (cuenta `keyler.ortega@unmsm.edu.pe`, `4d04a2e0-62b8-4508-a046-4b125aa2e8db`)
+## Activación gradual (cuenta piloto de pruebas)
 
-1. Crear vendedores (`order_sellers`): Lindey, Nando, Keyler Ortega, Jhon (lista a confirmar). El botón aparece.
+1. Crear vendedores (`order_sellers`): los 4 vendedores históricos (lista a confirmar). El botón aparece.
 2. Con el interruptor de la cuenta apagado, confirmar un pedido de prueba: queda `held` (guardado, no se envía).
 3. Prueba extremo a extremo contra un **proyecto InkaClick de pruebas** (no el productivo): `order_integration_settings.enabled = true`, `INKACLICK_ORDERS_*` apuntando al entorno de pruebas.
 4. Producción: un solo pedido real autorizado, comprobar fila en `confirmed_orders` (`source='wacrm'`), estado `acknowledged` en WACRM y que el cliente se creó en `customers`.
@@ -59,4 +59,4 @@ Cambiar de proveedor el número no es una operación instantánea ni reversible 
 - Lista final de vendedores y quién los da de alta (no hay pantalla de administración todavía: se cargan por SQL con rol de servicio).
 - Proyecto InkaClick de pruebas para la verificación extremo a extremo.
 - Quién aplica la migración en InkaClick y despliega la edge function.
-- Confirmar que la UI de InkaClick muestra `descripcion_pedido_url` con texto libre (ya contiene texto libre en 2.108 pedidos) y si debe mostrar `departamento`.
+- Confirmar que la UI de InkaClick muestra `descripcion_pedido_url` con texto libre (ya contiene texto libre en más de la mitad de los pedidos históricos) y si debe mostrar `departamento`.
