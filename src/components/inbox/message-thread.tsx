@@ -227,6 +227,10 @@ export function MessageThread({
   const [blockDialogOpen, setBlockDialogOpen] = useState(false);
   const [blocking, setBlocking] = useState(false);
   const [profiles, setProfiles] = useState<Profile[]>([]);
+  const profilesByUserId = useMemo(
+    () => new Map(profiles.map((profile) => [profile.user_id, profile])),
+    [profiles],
+  );
   const [reactions, setReactions] = useState<MessageReaction[]>([]);
   // Purely visual spin state for the manual-refresh button. The actual
   // refetch is fire-and-forget through `onRefresh` (which bumps the
@@ -1370,6 +1374,10 @@ export function MessageThread({
                       >
                         <MessageBubble
                           message={msg}
+                          author={msg.sender_type === "agent" ? (() => {
+                            const profile = msg.sender_id ? profilesByUserId.get(msg.sender_id) : null;
+                            return profile ? { fullName: profile.full_name, avatarUrl: profile.avatar_url } : null;
+                          })() : null}
                           reply={reply}
                           reactions={msgReactions}
                           currentUserId={user?.id}
