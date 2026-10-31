@@ -53,9 +53,10 @@ vi.mock("@/lib/whatsapp/template-body", () => ({ renderTemplateBody: () => "temp
 vi.mock("./reply-quote", () => ({ buildReplyPreview: () => "reply" }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 vi.mock("./message-bubble", () => ({
-  MessageBubble: ({ message, reply, onOpenReplyMedia }: { message: Message; reply?: { id: string; mediaUrl?: string; contentType?: string } | null; onOpenReplyMedia?: (id: string) => void }) => (
+  MessageBubble: ({ message, author, reply, onOpenReplyMedia }: { message: Message; author?: { fullName: string } | null; reply?: { id: string; mediaUrl?: string; contentType?: string } | null; onOpenReplyMedia?: (id: string) => void }) => (
     <div>
       {message.id}
+      {author && <span data-testid={`author-${message.id}`}>{author.fullName}</span>}
       {reply && <span data-testid={`reply-${message.id}`}>{`${reply.contentType}:${reply.mediaUrl}`}</span>}
       {reply && onOpenReplyMedia && <button onClick={() => onOpenReplyMedia(reply.id)}>{`open-reply-${message.id}`}</button>}
     </div>
@@ -286,6 +287,19 @@ beforeEach(() => {
 });
 
 describe("MessageThread scroll follow", () => {
+  it("uses an immutable author snapshot when the profile is no longer available", async () => {
+    const authored = {
+      ...message("historical-agent"),
+      sender_type: "agent" as const,
+      sender_id: undefined,
+      sender_name_snapshot: "Asesora eliminada",
+    };
+    const view = render(<MessageThread {...threadProps([authored])} />);
+    attachScrollMetrics(view.container.querySelector<HTMLElement>(".overflow-y-auto")!);
+    await act(async () => h.resolveMessages([authored]));
+    expect(screen.getByTestId("author-historical-agent")).toHaveTextContent("Asesora eliminada");
+  });
+
   it("keeps an image parent's visual metadata in the bubble quote and composer reply", async () => {
     const parent = {
       ...message("parent-image"),
