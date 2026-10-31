@@ -1376,7 +1376,9 @@ export function MessageThread({
                           message={msg}
                           author={msg.sender_type === "agent" ? (() => {
                             const profile = msg.sender_id ? profilesByUserId.get(msg.sender_id) : null;
-                            return profile ? { fullName: profile.full_name, avatarUrl: profile.avatar_url } : null;
+                            const fullName = msg.sender_name_snapshot ?? profile?.full_name;
+                            const avatarUrl = msg.sender_avatar_url_snapshot ?? profile?.avatar_url;
+                            return fullName ? { fullName, avatarUrl } : null;
                           })() : null}
                           reply={reply}
                           reactions={msgReactions}

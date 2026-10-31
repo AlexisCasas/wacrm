@@ -238,6 +238,7 @@ export function MessageBubble({
 
   const isAgent = message.sender_type === "agent" || message.sender_type === "bot";
   const time = format(new Date(message.created_at), "HH:mm");
+  const authorName = author?.fullName ?? "Asesor no identificado";
 
   // Row alignment + width cap are owned by <MessageActions> so its hover
   // group matches the bubble's content area, not the full row.
@@ -306,13 +307,17 @@ export function MessageBubble({
       </div>
       {message.sender_type === "agent" && (
         <Tooltip>
-          <TooltipTrigger aria-label={author?.fullName ?? "Asesor no identificado"} className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-foreground">
+          <TooltipTrigger
+            aria-label={`Autor: ${authorName}`}
+            title={authorName}
+            className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary-foreground"
+          >
             <Avatar size="sm">
               {author?.avatarUrl && <AvatarImage src={author.avatarUrl} alt="" />}
-              <AvatarFallback>{initials(author?.fullName ?? "Asesor no identificado")}</AvatarFallback>
+              <AvatarFallback>{initials(authorName)}</AvatarFallback>
             </Avatar>
           </TooltipTrigger>
-          <TooltipContent side="left">{author?.fullName ?? "Asesor no identificado"}</TooltipContent>
+          <TooltipContent side="left">{authorName}</TooltipContent>
         </Tooltip>
       )}
       </div>
