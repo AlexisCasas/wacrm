@@ -62,21 +62,38 @@ function genericKeyFor(context: AuthErrorContext): string {
   }
 }
 
+function isEmailDeliveryFailure(err: AuthErrorLike, message: string): boolean {
+  return (
+    typeof err.status === 'number' &&
+    err.status >= 500 &&
+    /error sending .*email/i.test(message)
+  );
+}
+
 export function mapAuthError(
   error: unknown,
   t: (key: string) => string,
-  context: AuthErrorContext,
+  context: AuthErrorContext
 ): string {
+  const err = (error ?? {}) as AuthErrorLike;
+  const message =
+    typeof err.message === 'string'
+      ? err.message
+      : error instanceof Error
+        ? error.message
+        : '';
+
   if (error) {
     // Technical detail stays in the console/server logs — never the
-    // user-facing string returned below.
-    console.error(
-      `[auth:${context}]`,
-      error instanceof Error ? error.message : error,
-    );
+    // user-facing string returned below. Only the stable code and HTTP
+    // status (plus a fixed reason tag) are logged: the raw message can echo
+    // request data.
+    console.error(`[auth:${context}]`, {
+      code: err.code ?? null,
+      status: err.status ?? null,
+      reason: isEmailDeliveryFailure(err, message) ? 'email_delivery' : null,
+    });
   }
-
-  const err = (error ?? {}) as AuthErrorLike;
 
   if (err.code && CODE_TO_KEY[err.code]) {
     return t(CODE_TO_KEY[err.code]);
@@ -86,12 +103,14 @@ export function mapAuthError(
     return t('rateLimited');
   }
 
-  const message =
-    typeof err.message === 'string'
-      ? err.message
-      : error instanceof Error
-        ? error.message
-        : '';
+  // GoTrue answers 500 `unexpected_failure` with this exact message when the
+  // account was rolled back because the verification email could not be sent
+  // (SMTP unreachable or misconfigured). Only that case gets the specific copy;
+  // any other 5xx stays generic. Its own pattern, not in MESSAGE_PATTERNS,
+  // because it also needs the 5xx status.
+  if (context === 'signup' && isEmailDeliveryFailure(err, message)) {
+    return t('emailDeliveryUnavailable');
+  }
 
   for (const [pattern, key] of MESSAGE_PATTERNS) {
     if (pattern.test(message)) {
