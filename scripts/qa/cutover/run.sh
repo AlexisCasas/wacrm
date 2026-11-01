@@ -41,8 +41,9 @@ INSERT INTO public.flow_nodes (flow_id, node_key, node_type, config) VALUES
  ('$F3','start','start','{"next_node_key":"end"}'),('$F3','end','end','{}');
 SQL
 st() { sql "select status from public.flows where id='$1'"; }
-set_st() { # from to ids expected [account]
-  runf -v account_id=${5:-$A} -v from_status=$1 -v to_status=$2 -v flow_ids="$3" -v expected=$4 -f - < "$OPS/flows-set-status.sql"; }
+md5list() { printf '%s' "$1" | tr ',' '\n' | sort | paste -sd, | tr -d '\n' | md5sum | cut -d' ' -f1; }
+set_st() { # from to ids expected [account] [md5 override]
+  runf -v account_id=${5:-$A} -v from_status=$1 -v to_status=$2 -v flow_ids="$3" -v expected=$4 -v approved_md5="${6:-$(md5list "$3")}" -f - < "$OPS/flows-set-status.sql"; }
 fp() { sql "select md5(string_agg(md5(to_jsonb(f)::text), '|' order by id)) from public.flows f where id not in ($1)"; }
 
 eq "fixture: all five flows start as draft" "$(sql "select count(*) from public.flows where status='draft'")" "5"
@@ -56,6 +57,8 @@ out=$(set_st draft active "$F3,$FB" 2);             has "refuses an id that belo
 out=$(set_st active draft "$F3" 1);                  has "refuses when a flow is not in the expected current status" "0 of 1 flows" "$out"
 out=$(set_st draft draft "$F3" 1);                   has "refuses from=to" "must be draft<->active" "$out"
 out=$(set_st draft archived "$F3" 1);                has "refuses a status other than draft/active" "must be draft<->active" "$out"
+out=$(set_st draft active "$F3,$F2" 2 $A 00000000000000000000000000000000); has "refuses a list that is not the approved one (md5 mismatch)" "not the approved one" "$out"
+out=$(set_st draft active "$F3,$F4" 2 $A "$(md5list "$F3,$F2")"); has "refuses a list that swaps one flow for another even with the right count" "not the approved one" "$out"
 out=$(set_st draft active "not-a-uuid" 1);          has "refuses a malformed id" "invalid input syntax for type uuid" "$out"
 out=$(set_st draft active "$F3" 1 99999999-9999-4999-8999-999999999999); has "refuses a non-existent account" "account does not exist" "$out"
 eq "after every refusal not one flow changed" "$(sql "select md5(string_agg(md5(to_jsonb(f)::text), '|' order by id)) from public.flows f")" "$BASE"

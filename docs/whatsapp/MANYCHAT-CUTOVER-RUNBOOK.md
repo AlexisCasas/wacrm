@@ -1,7 +1,13 @@
 # Corte operativo reversible ManyChat → WACRM: runbook y preflight (preparado, NO ejecutado)
 
 Complementa `MANYCHAT-CUTOVER-PLAN.md`. Repo público: sin identificadores ni cifras de negocio; las listas exactas de flows viven en la custodia privada del operador.
-Herramientas probadas en base desechable: `scripts/ops/cutover/flows-set-status.sql` (activar/pausar una lista exacta de flows) y `scripts/ops/cutover/cutover-watch.sql` (vigilancia de solo lectura). QA: `scripts/qa/cutover/run.sh` (33 comprobaciones).
+Herramientas probadas en base desechable: `scripts/ops/cutover/flows-set-status.sql` (activar/pausar una lista exacta de flows) y `scripts/ops/cutover/cutover-watch.sql` (vigilancia de solo lectura). QA: `scripts/qa/cutover/run.sh` (35 comprobaciones). La activación exige además `approved_md5`: el md5 de los ids aprobados ordenados; una lista distinta en un solo id es rechazada.
+
+## 0. Reparto de responsabilidades
+
+- **Propietario (manual, en ManyChat):** revisar y pausar las automatizaciones que responden, detener secuencias y difusiones que puedan emitir mensajes durante el corte, **verificar con un mensaje de prueba que ManyChat ya no responde** y mantener el acceso para revertir. WACRM no audita ni compara los flows de ManyChat y **no afirma** que cubra todas sus automatizaciones.
+- **WACRM (técnico):** preflight, activación de la lista exacta aprobada, comprobación de respuestas, vigilancia de **WACRM** (envíos fallidos, mensajes sin responder en WACRM, corridas atascadas, errores), pedido controlado y desactivación inmediata de los flows de WACRM.
+- La vigilancia de WACRM **no es una prueba de que ManyChat calla**: esa comprobación es solo del propietario.
 
 ## 1. Preflight (todo debe estar en PASS; un solo FAIL crítico detiene el corte)
 
@@ -45,12 +51,12 @@ Entregar, por cada automatización activa: nombre, disparador (palabras clave o 
 0. **Guardar el estado previo:** `flows-status-before` (recuentos) y la lista de la oleada en la custodia privada.
 1. **Verificar** que la vigilancia funciona (`cutover-watch.sql` en vacío) y abrir las dos plataformas.
 2. **ManyChat:** pausar/despublicar las automatizaciones del inventario que puedan responder (flows, respuesta por defecto, bienvenida, reglas, secuencias, difusiones programadas, asignación automática). **No** desconectar el canal, **no** tocar el acceso de socio ni la línea de crédito. Anotar la hora.
-3. **Comprobar que ManyChat calla:** mensaje de prueba desde un teléfono de prueba con una palabra clave que ManyChat atendía: no debe llegar ninguna respuesta de ManyChat.
+3. **Comprobar que ManyChat calla (propietario):** mensaje de prueba desde un teléfono de prueba con una palabra clave que ManyChat atendía: no debe llegar ninguna respuesta de ManyChat. El propietario confirma a WACRM «ManyChat pausado» antes de la activación.
 4. **WACRM, inmediatamente:** activar la oleada con el script (los sub-flows primero o en la misma lista; la guarda lo verifica):
    ```bash
    docker exec -i supabase-db psql -U postgres -d postgres -X -v ON_ERROR_STOP=1 \
      -v account_id=<CUENTA_DESTINO> -v from_status=draft -v to_status=active \
-     -v flow_ids="$(cat <lista-privada.csv>)" -v expected=<N> \
+     -v flow_ids="$(cat <lista-privada.csv>)" -v expected=<N> -v approved_md5=<md5 de la lista aprobada> \
      < scripts/ops/cutover/flows-set-status.sql      # responde FLOWS_SET_ACTIVE rows=<N>
    ```
 5. **Probar:** palabra clave de la oleada → respuesta del flow (una sola); mensaje fuera de la oleada → respuesta humana o ninguna (según P4); atención manual desde la bandeja; un **pedido controlado** (sección 5).

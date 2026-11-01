@@ -2,7 +2,10 @@
 -- list, to roll it back (active -> draft). It touches nothing else: not Meta, not ManyChat, not other flows, not automations.
 --
 --   psql -v ON_ERROR_STOP=1 -v account_id=<uuid> -v from_status=draft -v to_status=active \
---        -v flow_ids='<uuid>,<uuid>,...' -v expected=<n> -f flows-set-status.sql
+--        -v flow_ids='<uuid>,<uuid>,...' -v expected=<n> -v approved_md5=<md5 of the approved list> -f flows-set-status.sql
+--
+-- approved_md5 pins the list to what the owner approved: md5 of the ids sorted ascending and joined with ',' (e.g. `sort ids.txt | paste -sd, | tr -d '\n' | md5sum`).
+-- A list that differs by one id, one character or one position is refused, so only the authorised flows can be touched.
 --
 -- Guards (any failure aborts, nothing is kept): the ids are distinct and exactly `expected`; every id belongs to the account and is currently
 -- in from_status; when ACTIVATING, every sub-flow called by an activated flow (execute_flow) is ACTIVE afterwards (a draft callee fails at run time
@@ -12,7 +15,7 @@ BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
 SELECT set_config('cut.account', :'account_id', true), set_config('cut.from', :'from_status', true), set_config('cut.to', :'to_status', true),
-       set_config('cut.ids', :'flow_ids', true), set_config('cut.expected', :'expected', true) \gset
+       set_config('cut.ids', :'flow_ids', true), set_config('cut.expected', :'expected', true), set_config('cut.md5', :'approved_md5', true) \gset
 CREATE TEMP TABLE _cut_before ON COMMIT DROP AS SELECT id, md5(to_jsonb(f)::text) h FROM public.flows f;
 DO $$
 DECLARE
@@ -23,6 +26,7 @@ BEGIN
   SELECT array_agg(x::uuid) INTO v_ids FROM unnest(string_to_array(current_setting('cut.ids'), ',')) x WHERE btrim(x) <> '';
   IF v_ids IS NULL OR cardinality(v_ids) <> v_expected THEN RAISE EXCEPTION 'guard: expected % ids, got %', v_expected, coalesce(cardinality(v_ids), 0); END IF;
   IF (SELECT count(DISTINCT i) FROM unnest(v_ids) i) <> cardinality(v_ids) THEN RAISE EXCEPTION 'guard: duplicate ids in the list'; END IF;
+  IF md5((SELECT string_agg(i::text, ',' ORDER BY i::text) FROM unnest(v_ids) i)) <> lower(btrim(current_setting('cut.md5'))) THEN RAISE EXCEPTION 'guard: the list is not the approved one (md5 mismatch)'; END IF;
   PERFORM 1 FROM public.accounts WHERE id = v_account;
   IF NOT FOUND THEN RAISE EXCEPTION 'guard: account does not exist'; END IF;
   SELECT count(*) INTO n FROM public.flows WHERE id = ANY (v_ids) AND account_id = v_account AND status = v_from;

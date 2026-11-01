@@ -1,4 +1,7 @@
--- READ-ONLY monitor for the cut-over window. Never writes. Run it every few minutes:
+-- READ-ONLY monitor for the cut-over window. Never writes. Run it every few minutes.
+-- IT ONLY SEES WACRM. It does NOT prove that ManyChat stopped answering (that is verified by hand in ManyChat with a test message, by the person who paused it).
+-- 'Unanswered inbound' means: a customer message in WACRM that nobody (flow, bot or agent) answered in WACRM; it is not evidence about ManyChat either way.
+--
 --   psql -X -At -v ON_ERROR_STOP=1 -v account_id=<uuid> -v since='2026-11-08 08:00:00+00' -v silence_minutes=3 -f cutover-watch.sql
 -- Every line starts with a verdict word (OK / ALERT / INFO) so a person or a script can scan it.
 \set ON_ERROR_STOP on
