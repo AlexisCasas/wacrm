@@ -112,3 +112,19 @@ ALTER TABLE customers ENABLE TRIGGER trg_customers_updated_at;
 COMMIT;
 ```
 No se borra ninguna ficha de cliente ni dato histórico. El pedido de WACRM (`acknowledged`) se conserva como evidencia.
+
+## Evaluación: nombre del pedido distinto del de la ficha del cliente
+El formulario toma por defecto el nombre del contacto de WACRM; la ficha histórica de `customers` puede tener otro. Los pedidos de WACRM son **inmutables** (disparador de congelación), así que el nombre de un pedido ya confirmado no se puede corregir. Al insertar el pedido, el disparador de InkaClick hace `nombre_completo = coalesce(nuevo, existente)`: el nombre del pedido sobrescribe el de la ficha. Es el comportamiento normal de InkaClick (también con pedidos de ManyChat), no un defecto de la integración.
+
+| Opción | Efecto sobre la ficha histórica | Valoración |
+|---|---|---|
+| Escribir en el formulario exactamente el nombre de la ficha | Ninguno | La mejor; hay que hacerlo **antes** de confirmar |
+| Enviar un pedido con otro nombre y restaurar después | La ficha cambia hasta la limpieza; después vuelve a su estado original (hash de la fila idéntico a la pre-imagen) | Aceptable en una prueba si la limpieza se hace de inmediato |
+| Corregir el pedido ya confirmado | No es posible (inmutable) | Descartada |
+| Retirar el pedido de la cola y confirmar otro | Requiere cambiar el estado de un pedido de WACRM | Solo con autorización expresa |
+| Cambiar el disparador de InkaClick para no sobrescribir nombres | Cambia el comportamiento de producción para todos los pedidos | Fuera de alcance |
+
+Para operación general: el nombre del pedido debe ser el del cliente real, no el alias del contacto de WACRM.
+
+## Evaluación: departamento distinto del destino
+`departamento` y `destino` son campos independientes del formulario: el primero se guarda en la columna nueva `departamento` (que el frontend productivo aún no muestra) y el segundo en `destino`, que es el que usa la logística. Una discrepancia entre ambos (p. ej. departamento de una región y destino en otra) no impide la entrega ni afecta a la logística, pero es una incoherencia de datos. El pedido ya confirmado no se puede editar. En la prueba es inocuo y además ejercita el campo `departamento`; para operación general conviene validar la coherencia en el formulario (mejora futura, no bloqueante).
