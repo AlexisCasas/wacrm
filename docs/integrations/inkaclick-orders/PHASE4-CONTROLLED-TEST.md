@@ -84,3 +84,31 @@ Todo en una transacción con `lock_timeout`, y solo con autorización expresa.
 | Pedidos `pending` sin enviar tras la ventana | Quedan en WACRM sin enviarse mientras `enabled` sea `FALSE`; decidir caso por caso |
 | Pedido de prueba en InkaClick | No se borra sin autorización; ver «Limpieza» |
 | Datos históricos | No se modifican; restauración solo por tabla desde el respaldo |
+
+## Por qué `customers.total_pedidos` no coincide con los pedidos reales
+`customers.total_pedidos` y `ultimo_pedido_at` solo se recalculan cuando se **inserta o actualiza** un pedido (el disparador es `AFTER INSERT OR UPDATE OF …`; no hay ninguno para `DELETE`). El pedido más antiguo que conserva `confirmed_orders` es del 22-ago-2026 y no queda ninguno anterior: una limpieza de datos antiguos borró pedidos sin tocar `customers`. Por eso un cliente cuyo último pedido fue el 21-ago conserva `total_pedidos = 2` aunque ya no tenga pedidos. No es un fallo de esta integración: afecta a más de la mitad de los clientes con contador positivo. **Consecuencia para la prueba:** el primer pedido nuevo recalcula el contador desde los pedidos que existan hoy (0 por DNI), por lo que puede bajar; la limpieza lo restaura desde la pre-imagen.
+
+## Limpieza — SQL de referencia (solo con autorización; valores entre `<>` desde la pre-imagen y la prueba)
+```sql
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+DO $$ DECLARE n int; BEGIN
+  SELECT count(*) INTO n FROM confirmed_orders WHERE source = 'wacrm';
+  IF n <> 1 THEN RAISE EXCEPTION 'se esperaba exactamente 1 pedido wacrm, hay %', n; END IF;
+  SELECT (SELECT count(*) FROM vouchers WHERE confirmed_order_id = o.id) + (SELECT count(*) FROM whatsapp_messages WHERE confirmed_order_id = o.id)
+       + (SELECT count(*) FROM manychat_webhook_events WHERE confirmed_order_id = o.id) + (SELECT count(*) FROM confirmed_orders r WHERE r.replacement_confirmed_order_id = o.id)
+    INTO n FROM confirmed_orders o WHERE o.source = 'wacrm';
+  IF n <> 0 THEN RAISE EXCEPTION 'el pedido de prueba esta referenciado (% filas); abortar', n; END IF;
+END $$;
+DELETE FROM wacrm_order_events WHERE external_order_id = '<EXTERNAL_ORDER_ID>';
+DELETE FROM confirmed_orders WHERE source = 'wacrm' AND external_order_id = '<EXTERNAL_ORDER_ID>';
+ALTER TABLE customers DISABLE TRIGGER trg_customers_updated_at;   -- solo para devolver updated_at; se revierte con la transacción si algo falla
+UPDATE customers SET total_pedidos = <TOTAL_PEDIDOS_ORIGINAL>, ultimo_pedido_at = '<ULTIMO_PEDIDO_AT_ORIGINAL>', updated_at = '<UPDATED_AT_ORIGINAL>'
+  -- nombre_completo y telefono: añadir solo si la prueba los cambió (si el pedido llevó el mismo nombre, no cambian)
+  WHERE id = '<CLIENTE_ID>';
+ALTER TABLE customers ENABLE TRIGGER trg_customers_updated_at;
+-- Verificaciones antes de COMMIT: md5(to_jsonb(fila del cliente)) = el de la línea base; 0 filas wacrm; 0 eventos;
+-- md5 de confirmed_orders (sin las 2 columnas nuevas) = el de la línea base; la conversación conserva sus mensajes y su fila.
+COMMIT;
+```
+No se borra ninguna ficha de cliente ni dato histórico. El pedido de WACRM (`acknowledged`) se conserva como evidencia.
