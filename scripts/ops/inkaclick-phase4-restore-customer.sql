@@ -1,5 +1,7 @@
 -- Controlled restoration of the historical customer row altered by the phase 4 E2E test order. TEMPLATE: replace every <PLACEHOLDER>; the values come
 -- from the protected pre-image / baseline files, never from this repository. Nothing here deletes or edits the E2E order or its audit event.
+-- Restore EVERY column the test may have touched (nombre, apellido, nombre_completo, total_pedidos, ultimo_pedido_at, updated_at); the final hash check
+-- against the pre-test row catches anything left out. Lesson from 2026-11-01: a first attempt that restored only four columns aborted at that check.
 -- Guards (the whole transaction aborts if any fails): the row is locked, it must still be in the exact post-test state (no concurrent change), and
 -- no other order may have appeared for the customer. After the update the row must hash identical to the pre-test row.
 BEGIN;
@@ -19,7 +21,7 @@ BEGIN
 
   ALTER TABLE public.customers DISABLE TRIGGER trg_customers_updated_at;   -- only to give back the original updated_at; rolled back with the transaction on failure
   UPDATE public.customers
-     SET nombre_completo = '<PRE_NOMBRE_COMPLETO>', total_pedidos = <PRE_TOTAL_PEDIDOS>, ultimo_pedido_at = '<PRE_ULTIMO_PEDIDO_AT>', updated_at = '<PRE_UPDATED_AT>'
+     SET nombre = '<PRE_NOMBRE>', apellido = <PRE_APELLIDO_LITERAL_OR_NULL>, nombre_completo = '<PRE_NOMBRE_COMPLETO>', total_pedidos = <PRE_TOTAL_PEDIDOS>, ultimo_pedido_at = '<PRE_ULTIMO_PEDIDO_AT>', updated_at = '<PRE_UPDATED_AT>'
    WHERE id = '<CUSTOMER_ID>';
   ALTER TABLE public.customers ENABLE TRIGGER trg_customers_updated_at;
 
