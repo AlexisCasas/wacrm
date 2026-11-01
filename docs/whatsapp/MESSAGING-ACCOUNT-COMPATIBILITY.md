@@ -28,10 +28,11 @@ Reglas:
 
 | Archivo | Cambio |
 |---|---|
-| `supabase/migrations/20261103000000_whatsapp_config_messaging_account_id.sql` | Columna `messaging_account_id TEXT` nula + `CHECK` de 5 a 25 dígitos. Aditiva e idempotente |
+| `supabase/migrations/20261103000000_whatsapp_config_messaging_account_id.sql` | Columna `messaging_account_id TEXT` nula + `CHECK` de 5 a 25 dígitos (`NOT VALID` y luego `VALIDATE`). Aditiva e idempotente, en **una transacción**: `lock_timeout` 5 s, `statement_timeout` 30 s y una comprobación interna de que ninguna fila existente cambió (si falla, se deshace sola) |
 | `src/lib/whatsapp/meta-api.ts` | `messagingAccountField()` y `MESSAGING_ACCOUNT_ID_PATTERN`; parámetro `messagingAccountId` en los seis envíos: texto, multimedia y audio, plantilla, reacción, botones y lista |
 | `send-message.ts`, `flows/meta-send.ts` (texto, multimedia, botones, lista), `automations/meta-send.ts`, `broadcast-core.ts`, `broadcast-resume.ts`, `broadcast/route.ts`, `react/route.ts` | Pasan `config.messaging_account_id` a cada envío. `react/route.ts` lo añade a su `select` explícito |
-| `src/app/api/whatsapp/config/route.ts` | Campo opcional validado `messaging_account_id`; modo `prepare_only`; el `GET` devuelve el identificador |
+| `src/app/api/whatsapp/config/route.ts` | Campo opcional validado `messaging_account_id`; modo `prepare_only` (fila nueva = `disconnected`); el `GET` devuelve el identificador y `receiving_enabled` |
+| `settings-overview.tsx`, `whatsapp-tile-state.ts`, `whatsapp-config.tsx`, `messages/{es,en}.json` | Distinguen «credenciales válidas» de «recepción habilitada»; las cuentas que ya reciben no cambian |
 | `src/types/index.ts` | Campo en `WhatsAppConfig` |
 
 Garantías:
@@ -44,7 +45,9 @@ Garantías:
 ### `/api/whatsapp/config`: preparar sin registrar ni suscribir
 
 - `messaging_account_id`: `undefined` no toca el valor guardado; `null` o `''` lo borra; otro valor debe ser de 5 a 25 dígitos o responde 400.
-- `prepare_only: true` (solo el booleano `true`): verifica el token con Meta (solo lectura), cifra y guarda, y **no** llama a `/register` ni a `/subscribed_apps`; no reescribe `registered_at` ni `subscribed_apps_at`. No se admite junto con un PIN. La respuesta incluye `prepared_only: true` y `registration_skipped: true`.
+- `prepare_only: true` (solo el booleano `true`): verifica el token con Meta (solo lectura), cifra y guarda, y **no** llama a `/register` ni a `/subscribed_apps`; no reescribe `registered_at` ni `subscribed_apps_at`. No se admite junto con un PIN. La respuesta incluye `prepared_only: true`, `registration_skipped: true` y `receiving_enabled: false`.
+- **Una cuenta preparada no parece operativa.** Una fila **nueva** guardada con `prepare_only` queda `status = 'disconnected'` y `connected_at = NULL`; una fila **existente** conserva su estado (preparar credenciales nuevas nunca apaga una cuenta que funciona). El `GET` distingue dos hechos: `connected` (Meta acepta el token, semántica de siempre) y **`receiving_enabled`** (`status = 'connected'`). Los ajustes muestran «Credenciales válidas — recepción no habilitada» y el resumen «Credenciales válidas · recepción sin habilitar» en lugar de «Conectado». Un guardado real posterior (sin `prepare_only`) o `activate-account.sql` es la activación. Las cuentas actuales (`status = 'connected'`) y una API que no envíe el campo se comportan como siempre.
+- Alcance: `receiving_enabled` informa de la recepción; **no bloquea envíos** (las cuentas con credenciales válidas siempre han podido enviar). Mientras una cuenta esté preparada, no debe usarse para enviar: es parte de la secuencia de conexión (sección 9).
 - Sin `prepare_only`, el guardado normal queda **igual que antes** (registro con PIN y suscripción), probado con regresión.
 - Aislamiento: se mantiene el rechazo 409 si el número pertenece a otra cuenta.
 
@@ -54,14 +57,14 @@ Nota operativa: guardar la configuración desde la pantalla **suscribe la aplica
 
 | # | Control | Resultado |
 |---|---|---|
-| 1 | Suite completa (`vitest`) | **PASS** 3344 pruebas (134 omitidas de antes), 231 archivos |
+| 1 | Suite completa (`vitest`) | **PASS** (ver el PR para el recuento final) |
 | 2 | Forma exacta del payload de los seis envíos (con identificador, sin él, nulo, vacío, malformado) | **PASS** `messaging-account.test.ts` |
 | 3 | Todos los llamadores pasan `messagingAccountId` (guarda estática: ningún envío nuevo puede olvidarlo) | **PASS** `messaging-account-wiring.test.ts` |
 | 4 | Ruta manual/API: el identificador llega a texto, imagen, audio, plantilla, botones y lista; sin él, no llega nada | **PASS** `send-message.test.ts` |
 | 5 | `/api/whatsapp/config`: `prepare_only`, validación, aislamiento, regresión del guardado normal, sin secretos en la respuesta | **PASS** `route.messaging-account.test.ts` (y las 11 pruebas previas de la ruta siguen en verde) |
 | 6 | Mutaciones: quitar el parámetro de un llamador, de un payload, aceptar valores malformados, suscribir en `prepare_only`, reescribir `subscribed_apps_at` | Detectadas |
-| 7 | Migración en Postgres desechable con el esquema real (sin red, datos sintéticos): aplica, es idempotente, `CHECK`, filas existentes idénticas salvo la columna nueva | **PASS** `scripts/qa/messaging-account/run.sh` (64 comprobaciones) |
-| 8 | Conexión y desconexión protegidas: 8 guardas de rechazo, exactamente una fila, ninguna otra fila cambia, rollback exacto, RLS de la columna | **PASS** (mismo script) |
+| 7 | Migración en Postgres desechable con el esquema real (sin red, datos sintéticos): aplica, es idempotente (también con valores en la columna), `CHECK`, filas existentes idénticas salvo la columna nueva; `lock_timeout`/`statement_timeout` efectivos; con una tabla bloqueada **desiste en ~5 s sin dejar nada**; una variante que altere una fila se deshace sola | **PASS** `scripts/qa/messaging-account/run.sh` (88 comprobaciones) |
+| 8 | Conexión (fila preparada, `disconnected`), activación y desconexión protegidas: guardas de rechazo, exactamente una fila, ninguna otra fila cambia, rollback exacto, RLS de la columna | **PASS** (mismo script) |
 | 9 | Rollback del esquema y reaplicación | **PASS** (mismo script) |
 | 10 | ESLint de los archivos tocados y tipado de `src` | **PASS** |
 | 11 | Compilación completa (`docker build`: compila y pasa el tipado de Next) | **PASS** (imagen de prueba ya eliminada) |
@@ -87,11 +90,11 @@ No conecta ninguna cuenta, no suscribe ni desuscribe aplicaciones, no envía men
 Todo en este orden. Detenerse y revertir ante cualquier fallo.
 
 1. **Preflight**: `main` incluye el PR; contenedor `app` healthy; copia de seguridad cifrada de la base y de `.env.local` (mismo procedimiento que `ORDER-HISTORY-PANEL-DEPLOY-PLAN.md`, sección 3). Anotar la imagen en ejecución y guardarla con `docker save` (la limpieza programada de imágenes borra las de más de 24 h sin uso).
-2. **Migración primero** (aditiva, sin bloqueos largos; sin datos que mover):
+2. **Migración primero** (aditiva; una transacción con `lock_timeout` 5 s y `statement_timeout` 30 s; no mueve datos):
    ```bash
    docker exec -i supabase-db psql -U postgres -d postgres -v ON_ERROR_STOP=1 < supabase/migrations/20261103000000_whatsapp_config_messaging_account_id.sql
    ```
-   Verificar: la columna existe, es nula en todas las filas, y la aplicación actual sigue sana (no la lee).
+   Si otra sesión retiene la tabla, la migración **desiste a los 5 s sin cambiar nada**: reintentar cuando no haya carga, nunca subir el timeout. Verificar: la columna y la restricción existen, la columna es nula en todas las filas, las filas existentes son idénticas (huella previa/posterior) y la aplicación actual sigue sana (no la lee).
 3. **Imagen** construida desde `main` fusionado, con las mismas `NEXT_PUBLIC_*` que la actual; `docker build` debe terminar sin errores (incluye el tipado de Next).
 4. **Recrear solo `app`** (`up -d --no-deps app`) con los mismos ficheros compose que lee el contenedor.
 5. **Verificación**: contenedor healthy sin reinicios; sin errores en los logs; `/login` responde; una cuenta con configuración existente **sigue enviando igual** (comprobar con una respuesta real de un agente o con el payload en logs de prueba, nunca imprimiendo tokens); los cron de pedidos y los demás siguen escribiendo `OK`.
@@ -108,8 +111,8 @@ Cada punto requiere autorización expresa, después del despliegue técnico:
 
 1. Token propio para la cuenta (mismo usuario de sistema y misma aplicación, sin revocar el existente), cifrado con `scripts/ops/messaging-account/encrypt-secret.js` **dentro del contenedor**; nunca por chat.
 2. Respaldo cifrado + ensayo en base desechable.
-3. Inserción protegida con `connect-account.sql`: una sola fila; `registered_at` y `subscribed_apps_at` quedan nulos; no se llama a Meta.
+3. Inserción protegida con `connect-account.sql`: una sola fila **preparada** (`status = 'disconnected'`, `registered_at`, `subscribed_apps_at` y `connected_at` nulos); no se llama a Meta; no parece operativa en Ajustes.
 4. Pausa controlada de los flows de la cuenta antes de suscribir (todos los socios del número reciben cada mensaje entrante y Meta no enruta conversaciones).
-5. Suscripción de la aplicación a la cuenta de mensajería; prueba entrante.
+5. Suscripción de la aplicación a la cuenta de mensajería; prueba entrante; después `activate-account.sql` (`confirm_subscribed=yes`) registra el estado en WACRM (solo acepta una fila preparada).
 6. Prueba saliente con un mensaje de plantilla y comprobación de que el cargo cae en la cuenta de mensajería propia.
 7. Corte; retirar al proveedor anterior en último lugar.

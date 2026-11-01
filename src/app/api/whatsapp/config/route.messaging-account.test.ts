@@ -72,7 +72,7 @@ describe('POST /api/whatsapp/config — prepare_only', () => {
     const res = await post({ ...BASE, messaging_account_id: MA, prepare_only: true })
     const json = await res.json()
     expect(res.status).toBe(200)
-    expect(json).toMatchObject({ success: true, saved: true, prepared_only: true, registered: false, registration_skipped: true })
+    expect(json).toMatchObject({ success: true, saved: true, prepared_only: true, registered: false, registration_skipped: true, receiving_enabled: false })
     expect(h.verifyPhoneNumber).toHaveBeenCalledTimes(1)
     expect(h.registerPhoneNumber).not.toHaveBeenCalled()
     expect(h.subscribeWabaToApp).not.toHaveBeenCalled()
@@ -80,6 +80,27 @@ describe('POST /api/whatsapp/config — prepare_only', () => {
     const row = h.writes[0].row
     expect(row).toMatchObject({ phone_number_id: BASE.phone_number_id, waba_id: MA, messaging_account_id: MA, registered_at: null, access_token: 'enc(TOKEN)' })
     expect(row).not.toHaveProperty('subscribed_apps_at')
+  })
+
+  it('a NEW prepared row is saved as disconnected (not receiving): valid credentials never read as a fully operational account', async () => {
+    await post({ ...BASE, prepare_only: true })
+    expect(h.writes[0].op).toBe('insert')
+    expect(h.writes[0].row).toMatchObject({ status: 'disconnected', connected_at: null })
+  })
+
+  it('an EXISTING live row keeps its status and connected_at: preparing credentials never switches a working account off', async () => {
+    h.existing.mockResolvedValue({ data: { id: 'cfg', registered_at: '2026-09-07T00:00:00Z', phone_number_id: BASE.phone_number_id } })
+    await post({ ...BASE, prepare_only: true })
+    expect(h.writes[0].op).toBe('update')
+    expect(h.writes[0].row).not.toHaveProperty('status')
+    expect(h.writes[0].row).not.toHaveProperty('connected_at')
+  })
+
+  it('a real save afterwards is the activation: status connected, subscription recorded, receiving_enabled true', async () => {
+    const res = await post({ ...BASE })
+    expect(h.writes[0].row).toMatchObject({ status: 'connected' })
+    expect(h.writes[0].row.connected_at).not.toBeNull()
+    expect((await res.json()).receiving_enabled).toBe(true)
   })
 
   it('never stores the token in clear and never echoes it', async () => {
@@ -168,8 +189,17 @@ describe('GET /api/whatsapp/config', () => {
     h.existing.mockResolvedValue({ data: { phone_number_id: BASE.phone_number_id, access_token: 'enc(TOKEN)', status: 'connected', app_secret: null, messaging_account_id: MA } })
     const json = await (await GET()).json()
     expect(h.selectCols.join('|')).toContain('messaging_account_id')
-    expect(json).toMatchObject({ connected: true, messaging_account_id: MA })
+    expect(json).toMatchObject({ connected: true, messaging_account_id: MA, receiving_enabled: true })
     expect(JSON.stringify(json)).not.toContain('TOKEN')
+  })
+  it('a prepared (disconnected) row: credentials valid but receiving_enabled=false', async () => {
+    h.existing.mockResolvedValue({ data: { phone_number_id: BASE.phone_number_id, access_token: 'enc(TOKEN)', status: 'disconnected', app_secret: null, messaging_account_id: MA } })
+    expect(await (await GET()).json()).toMatchObject({ connected: true, receiving_enabled: false })
+  })
+  it('an operating account (status connected) reads exactly as before, plus receiving_enabled=true', async () => {
+    h.existing.mockResolvedValue({ data: { phone_number_id: BASE.phone_number_id, access_token: 'enc(TOKEN)', status: 'connected', app_secret: null, messaging_account_id: null } })
+    const json = await (await GET()).json()
+    expect(json).toMatchObject({ connected: true, app_secret_configured: false, receiving_enabled: true, messaging_account_id: null })
   })
   it('null when the account has none', async () => {
     h.existing.mockResolvedValue({ data: { phone_number_id: BASE.phone_number_id, access_token: 'enc(TOKEN)', status: 'connected', app_secret: null, messaging_account_id: null } })

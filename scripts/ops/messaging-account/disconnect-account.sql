@@ -6,6 +6,7 @@
 \set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
 SELECT set_config('wa.account', :'account_id', true), set_config('wa.pn', :'phone_number_id', true), set_config('wa.ma', :'messaging_account_id', true),
        set_config('wa.ack', :'confirm_unsubscribed', true) \gset
 LOCK TABLE public.whatsapp_config IN SHARE ROW EXCLUSIVE MODE;

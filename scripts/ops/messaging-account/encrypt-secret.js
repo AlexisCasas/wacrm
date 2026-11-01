@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- standalone CommonJS helper run with `node -e` inside the container; it is not part of the app bundle */
 // Encrypts ONE secret read from stdin with the application's own ENCRYPTION_KEY (AES-256-GCM, iv:ciphertext:tag in hex: the format
 // src/lib/whatsapp/encryption.ts reads) and prints the ciphertext. Run INSIDE the app container so the key never leaves it:
 //   docker exec -i wacrm-app-1 node -e "$(cat encrypt-secret.js)" < /path/to/secret-file   (0600 file; the script itself is the -e argument)

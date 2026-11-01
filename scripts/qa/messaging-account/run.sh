@@ -52,7 +52,26 @@ HL0=$(rowhash $L); HA0=$(rowhash $A)
 
 eq "before: the column does not exist yet" "$(sql "select count(*) from information_schema.columns where table_name='whatsapp_config' and column_name='messaging_account_id'")" "0"
 
-# ---- migration
+# ---- migration: controlled transaction
+grep -q "SET LOCAL lock_timeout = '5s'" "$MIG" && grep -q "SET LOCAL statement_timeout = '30s'" "$MIG" && ok "migration sets lock_timeout 5s and statement_timeout 30s" || bad "migration timeouts" "missing"
+eq "migration is one explicit transaction (BEGIN ... COMMIT)" "$(grep -cE '^(BEGIN|COMMIT);$' "$MIG")" "2"
+out=$(sed 's/^COMMIT;$/SHOW lock_timeout; SHOW statement_timeout; ROLLBACK;/' "$MIG" | runf)
+eq "inside the transaction the timeouts really are 5s / 30s" "$(echo "$out" | grep -E '^(5s|30s)$' | tr '\n' ' ')" "5s 30s "
+eq "a rolled-back run leaves no trace (column still absent)" "$(sql "select count(*) from information_schema.columns where table_name='whatsapp_config' and column_name='messaging_account_id'")" "0"
+# a long-held lock on the table: the migration must give up in ~5s, keep nothing, and leave every row alone
+( "${PSQL[@]}" -c "begin; lock table public.whatsapp_config in access exclusive mode; select pg_sleep(14); rollback;" >/dev/null 2>&1 & )
+sleep 2; T0=$(date +%s); out=$(runf < "$MIG"); T1=$(date +%s)
+fails_with "under a held lock the migration gives up with a lock timeout" "lock timeout" "$out"
+[ $((T1-T0)) -le 10 ] && ok "...and it gave up in $((T1-T0))s (not queued behind the lock)" || bad "lock timeout latency" "$((T1-T0))s"
+sleep 14
+eq "after the failed attempt the column is still absent" "$(sql "select count(*) from information_schema.columns where table_name='whatsapp_config' and column_name='messaging_account_id'")" "0"
+eq "after the failed attempt account L row is unchanged" "$(rowhash $L)" "$HL0"
+eq "after the failed attempt account A row is unchanged" "$(rowhash $A)" "$HA0"
+# the in-transaction proof: a variant of the migration that ALSO changes an existing row must roll itself back and keep nothing
+out=$(awk '/^-- Proof, inside the transaction/ && !d {print "UPDATE public.whatsapp_config SET mirror_inbound_media = NOT mirror_inbound_media;"; d=1} {print}' "$MIG" | runf)
+fails_with "a migration that alters an existing row aborts itself (in-transaction proof)" "migration check failed" "$out"
+eq "...and kept nothing: column still absent" "$(sql "select count(*) from information_schema.columns where table_name='whatsapp_config' and column_name='messaging_account_id'")" "0"
+eq "...and the existing rows are unchanged" "$(rowhash $L)$(rowhash $A)" "$HL0$HA0"
 out=$(runf < "$MIG"); eq "migration applies cleanly" "$(echo "$out" | grep -ci error)" "0"
 out=$(runf < "$MIG"); eq "migration is idempotent (second run, no error)" "$(echo "$out" | grep -ci error)" "0"
 eq "column is text and nullable" "$(sql "select data_type||'/'||is_nullable from information_schema.columns where table_name='whatsapp_config' and column_name='messaging_account_id'")" "text/YES"
@@ -89,8 +108,22 @@ out=$(conn); fails_with "connect inserts exactly one row" "INSERTED_1_ROW" "$out
 eq "now three configurations" "$(sql "select count(*) from public.whatsapp_config")" "3"
 eq "account L row untouched by the connect" "$(rowhash $L)" "$HL0"
 eq "account A row untouched by the connect" "$(rowhash $A)" "$HA0"
-eq "new row: account K, the right ids" "$(sql "select account_id||' '||phone_number_id||' '||waba_id||' '||messaging_account_id||' '||status from public.whatsapp_config where account_id='$K'")" "$K $PN $MA $MA connected"
-eq "new row: nothing registered or subscribed (NULL timestamps)" "$(sql "select (registered_at is null)::text||(subscribed_apps_at is null)::text from public.whatsapp_config where account_id='$K'")" "truetrue"
+eq "new row: account K, the right ids, PREPARED (disconnected): not operational yet" "$(sql "select account_id||' '||phone_number_id||' '||waba_id||' '||messaging_account_id||' '||status from public.whatsapp_config where account_id='$K'")" "$K $PN $MA $MA disconnected"
+eq "new row: nothing registered, subscribed or connected (NULL timestamps)" "$(sql "select (registered_at is null)::text||(subscribed_apps_at is null)::text||(connected_at is null)::text from public.whatsapp_config where account_id='$K'")" "truetruetrue"
+out=$(runf < "$MIG"); eq "re-applying the migration with a value in the column: no error" "$(echo "$out" | grep -ci error)" "0"
+eq "...and the value is intact" "$(sql "select messaging_account_id from public.whatsapp_config where account_id='$K'")" "$MA"
+# activation (after the separately authorised Meta subscription)
+act() { runf -v account_id=$K -v phone_number_id=$PN -v messaging_account_id=$MA -v confirm_subscribed=yes "$@" < "$OPS/activate-account.sql"; }
+out=$(act -v confirm_subscribed=no); fails_with "activate refuses without the subscribed confirmation" "confirm_subscribed=yes is required" "$out"
+out=$(act -v messaging_account_id=99999); fails_with "activate refuses a different messaging account" "not the one this procedure created" "$out"
+out=$(act -v account_id=$A -v phone_number_id=4444444444444444 -v messaging_account_id=1111111111111111); fails_with "activate cannot touch account A" "(not the one this procedure created|prepared state)" "$out"
+out=$(act -v account_id=$L -v phone_number_id=3333333333333333); fails_with "activate cannot touch account L" "(not the one this procedure created|prepared state)" "$out"
+eq "still prepared after the refusals" "$(sql "select status from public.whatsapp_config where account_id='$K'")" "disconnected"
+out=$(act); fails_with "activate flips exactly the prepared row" "ACTIVATED_1_ROW" "$out"
+eq "now operational: connected, connected_at and subscribed_apps_at set, registered_at still NULL" "$(sql "select status||(connected_at is not null)::text||(subscribed_apps_at is not null)::text||(registered_at is null)::text from public.whatsapp_config where account_id='$K'")" "connectedtruetruetrue"
+out=$(act); fails_with "a second activate is refused (no longer prepared)" "not in the prepared state" "$out"
+eq "account L untouched by the activation" "$(rowhash $L)" "$HL0"
+eq "account A untouched by the activation" "$(rowhash $A)" "$HA0"
 eq "new row: secrets stored exactly as the ciphertext given" "$(sql "select (access_token='$CT')::text||(verify_token='$CT')::text||(app_secret='$CT2')::text from public.whatsapp_config where account_id='$K'")" "truetruetrue"
 out=$(conn); fails_with "a second connect is refused (account already has one)" "already has a whatsapp_config" "$out"
 out=$(conn -v phone_number_id=2222222222222223); fails_with "another number for the same account is refused" "already has a whatsapp_config" "$out"

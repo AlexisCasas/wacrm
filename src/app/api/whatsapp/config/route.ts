@@ -156,6 +156,9 @@ export async function GET() {
         phone_info: phoneInfo,
         app_secret_configured: appSecretConfigured,
         messaging_account_id: config.messaging_account_id ?? null,
+        // `connected` only says the token is accepted by Meta. Whether this account RECEIVES (app subscribed, number registered) is the stored
+        // status: a row saved with prepare_only is 'disconnected' until a real save / activation flips it, so it never reads as fully operational.
+        receiving_enabled: config.status === 'connected',
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Meta API error'
@@ -424,8 +427,16 @@ export async function POST(request: Request) {
       access_token: encryptedAccessToken,
       verify_token: encryptedVerifyToken,
       ...(encryptedAppSecret ? { app_secret: encryptedAppSecret } : {}),
-      status: registrationError ? 'disconnected' : 'connected',
-      connected_at: registrationError ? null : new Date().toISOString(),
+      // prepare_only: credentials are valid but the app is NOT subscribed, so a NEW row is 'disconnected' (not receiving) rather than looking
+      // fully operational. An EXISTING row keeps the status it already had: preparing new credentials must never switch a live account off.
+      ...(prepareOnly
+        ? existing
+          ? {}
+          : { status: 'disconnected', connected_at: null }
+        : {
+            status: registrationError ? 'disconnected' : 'connected',
+            connected_at: registrationError ? null : new Date().toISOString(),
+          }),
       registered_at: registrationError ? null : registeredAt,
       // prepare_only never touched Meta, so it must not rewrite what an earlier (real) save recorded about the subscription.
       ...(prepareOnly ? {} : { subscribed_apps_at: subscribedAppsAt ?? null }),
@@ -493,6 +504,8 @@ export async function POST(request: Request) {
       registration_skipped: registrationSkipped,
       // true: nothing was sent to Meta beyond the read-only credential check (no /register, no subscribed_apps).
       prepared_only: prepareOnly,
+      // false for prepare_only: valid credentials, app not subscribed, nothing registered. A real save (no prepare_only) is the activation.
+      receiving_enabled: !prepareOnly,
       phone_info: phoneInfo,
     })
   } catch (error) {

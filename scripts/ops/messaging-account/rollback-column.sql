@@ -4,6 +4,7 @@
 \set ON_ERROR_STOP on
 BEGIN;
 SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
 DO $$
 DECLARE n int;
 BEGIN

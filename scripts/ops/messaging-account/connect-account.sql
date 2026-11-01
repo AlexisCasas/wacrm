@@ -11,6 +11,7 @@
 \if :{?cipher_app_secret} \else \set cipher_app_secret '' \endif
 BEGIN;
 SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
 SELECT set_config('wa.account', :'account_id', true), set_config('wa.actor', :'actor_user_id', true), set_config('wa.pn', :'phone_number_id', true),
        set_config('wa.waba', :'waba_id', true), set_config('wa.ma', :'messaging_account_id', true), set_config('wa.tok', :'cipher_token', true),
        set_config('wa.ver', :'cipher_verify', true), set_config('wa.sec', :'cipher_app_secret', true) \gset
@@ -33,10 +34,11 @@ BEGIN
   SELECT count(*) INTO n FROM public.whatsapp_config WHERE phone_number_id = v_pn;
   IF n <> 0 THEN RAISE EXCEPTION 'guard: this phone_number_id already belongs to a configuration'; END IF;
   INSERT INTO public.whatsapp_config (account_id, user_id, phone_number_id, waba_id, messaging_account_id, access_token, verify_token, app_secret, status, connected_at)
-  VALUES (v_account, v_actor, v_pn, v_waba, v_ma, current_setting('wa.tok'), NULLIF(current_setting('wa.ver'), ''), NULLIF(current_setting('wa.sec'), ''), 'connected', now());
+  VALUES (v_account, v_actor, v_pn, v_waba, v_ma, current_setting('wa.tok'), NULLIF(current_setting('wa.ver'), ''), NULLIF(current_setting('wa.sec'), ''), 'disconnected', NULL);
   GET DIAGNOSTICS n = ROW_COUNT;
   IF n <> 1 THEN RAISE EXCEPTION 'expected exactly 1 row inserted, got %', n; END IF;
-  -- registered_at / subscribed_apps_at stay NULL on purpose: nothing was registered or subscribed on Meta.
+  -- status 'disconnected' + NULL timestamps on purpose: nothing was registered or subscribed on Meta, so the account must not read as operational.
+  -- activate-account.sql flips it AFTER the (separately authorised) subscription.
   SELECT count(*) INTO n FROM public.whatsapp_config w JOIN _wa_before b USING (id) WHERE md5(to_jsonb(w)::text) <> b.h;
   IF n <> 0 THEN RAISE EXCEPTION 'guard: another configuration changed'; END IF;
   SELECT count(*) INTO n FROM public.whatsapp_config WHERE id NOT IN (SELECT id FROM _wa_before);
