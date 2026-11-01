@@ -120,7 +120,7 @@ Base aislada (la misma pila desechable de `e2e.integration.test.ts`, solo datos 
 - El historial refleja la transición `held`/`pending` → `sent` → `acknowledged` sin recargar la página (sondeo).
 - Comprobación negativa: tras renderizar y sondear, `messages`, `notifications`, `order_confirmations` y las entregas no cambian, y no hay llamadas a WhatsApp ni al receptor.
 
-Interfaz (Playwright sobre datos sintéticos, como el QA del frontend de InkaClick): panel con 0, 1 y 6 pedidos; los 7 estados; ancho de 280 px sin desbordes; tema claro y oscuro; detalle y copia del identificador; estado de error con reintento; el botón «Confirmar pedido» sigue abriendo el diálogo; cuenta con `confirm_enabled` apagado sin sección.
+Interfaz (Playwright sobre datos sintéticos, como el QA del frontend de InkaClick): panel con 0, 1 y 6 pedidos; los 7 estados; ancho de 280 px sin desbordes; los temas de acento (la app tiene una sola paleta oscura, no hay modo claro); detalle y copia del identificador; estado de error con reintento; el botón «Confirmar pedido» sigue abriendo el diálogo; cuenta con `confirm_enabled` apagado sin sección.
 
 ## 7. Plan de despliegue
 
@@ -133,3 +133,17 @@ Interfaz (Playwright sobre datos sintéticos, como el QA del frontend de InkaCli
 ## 8. Restricciones respetadas en esta etapa
 
 Sin cron, sin liberar los dos `held`, sin pedidos nuevos, sin cambios en InkaClick productivo, sin fusiones, sin despliegue, y sin trabajo adicional sobre `is_test` ni sobre pruebas de duplicados.
+
+## 9. Resultado del QA (rama `codex/order-history-panel`)
+
+| Prueba | Cómo se ejecuta | Resultado |
+|---|---|---|
+| Vitest: librería, ruta, panel, barra lateral, mensajes | `npx vitest run` | 3256 pasan, 134 omitidas (E2E con Docker) |
+| Aislamiento entre cuentas y RLS, sobre una base desechable (sin red, esquema de producción sin filas, datos sintéticos) | `WACRM_SCHEMA_DUMP=… scripts/qa/orders-history/run.sh` | 23 aserciones PASS |
+| QA visual en Chromium sobre los componentes reales (dos temas de acento, columna de 280 px) | `scripts/qa/orders-history/visual/` | 48 de 48 PASS |
+
+Lo que cubre la base desechable: un agente de A ve sus 3 pedidos y nada de B (con y sin filtro de cuenta); B no ve A; un `viewer`, un usuario de otra cuenta y una sesión vacía ven 0; ningún agente puede insertar, actualizar, borrar ni llamar a `create_order_confirmation`; los pedidos sobreviven al borrado de la conversación (se encuentran por el contacto) y al del autor (queda el nombre congelado); no se crea ningún mensaje, notificación ni intento de entrega.
+Lo que cubre el QA visual: vacío, uno, seis, los siete estados, 50+, error y función apagada; autor y vendedor por separado; fechas de Lima; la tarjeta `held` nunca dice «pendiente» y solo `acknowledged` dice «Recibido en InkaClick»; sin desbordes horizontales con un nombre de producto largo; el detalle se abre con el teclado y el botón «Confirmar pedido» sigue abriendo su diálogo; todas las peticiones son GET.
+El QA visual encontró un defecto real (el identificador se partía en ocho líneas en un diálogo estrecho) y quedó corregido.
+
+Límites: el entorno de pruebas tiene el ACL de `authenticated` con más privilegios que producción (allí es solo SELECT); en las pruebas la escritura la frena la RLS (0 filas), en producción ya falla por privilegio. Tampoco sustituye mirar la sesión real tras un despliegue autorizado.

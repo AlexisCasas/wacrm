@@ -215,9 +215,9 @@ function OrderDetail({ order, locale, onClose }: { order: OrderHistoryItem | nul
               <dd>{when(order.acknowledged_at)}</dd>
               <dt className="text-muted-foreground">{t("detailAttempts")}</dt>
               <dd>{order.attempts}</dd>
-              <dt className="text-muted-foreground">{t("detailId")}</dt>
-              <dd className="flex items-center gap-2">
-                <code className="break-all text-xs">{order.id}</code>
+              <dt className="col-span-2 text-muted-foreground">{t("detailId")}</dt>
+              <dd className="col-span-2 flex items-center gap-2">
+                <code className="min-w-0 flex-1 break-all text-xs">{order.id}</code>
                 <Button type="button" variant="outline" size="sm" onClick={copy} aria-label={t("detailCopyId")}>
                   {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
                 </Button>
