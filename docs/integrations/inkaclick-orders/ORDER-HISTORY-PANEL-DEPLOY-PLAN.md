@@ -88,7 +88,7 @@ No se crean pedidos, no se envía ningún formulario y no se toca ningún pedido
 
 ## 5. Riesgos y notas
 
-- **Poda de imágenes a las 04:13:** por eso se guarda la imagen actual con `docker save` antes de construir. Conviene no dejar el despliegue a medias pasada esa hora.
+- **Poda de imágenes a las 04:13:** el cron es `docker image prune -af --filter "until=24h"`: borra las imágenes sin uso y de más de 24 h. `orders-1246621b` está en uso hoy, pero en cuanto se despliegue la nueva pasará a estar sin uso y, con más de 24 h, la poda de la noche siguiente la borraría. Por eso se guarda con `docker save` antes de desplegar y se conserva el `.tar` hasta cerrar la validación.
 - **Lo que verá cada agente de la cuenta piloto:** todos los pedidos de esa cuenta, incluido el E2E. WACRM no conoce la marca `is_test` de InkaClick (no se desarrolla ahora), así que lo identifica solo por su texto.
 - **Viewers:** no ven el panel (la política exige rol agente), igual que no ven el botón.
 - **Idiomas:** textos en español e inglés. `ko.json` no tiene el bloque `Orders` (ya era así) y el idioma coreano está excluido de la paridad de mensajes.
@@ -102,3 +102,18 @@ Con este panel en producción y verificado, continúa el plan de activación aut
 ## 7. Qué no cambia
 
 Base de datos, funciones SQL, el cron, `enabled` y `confirm_enabled`, las variables de entorno, los dos pedidos `held`, el receptor y el frontend de InkaClick, ManyChat y los mensajes de WhatsApp.
+
+## 8. Preflight ejecutado (solo lectura, 2026-11-01 09:42 UTC)
+
+| Comprobación | Resultado |
+|---|---|
+| Contenedor `wacrm-app-1` | `orders-1246621b`, healthy, 0 reinicios |
+| Archivos `-f` de compose (etiqueta del contenedor) | Los cuatro existen, incluido `wacrm-orders-image2.yml` de rollback |
+| Imagen de rollback | `orders-1246621b` (`ae602f4a949b`) presente. Se guardará con `docker save` en 3.1 |
+| Pedidos | 2 `held` con 0 intentos, 1 `acknowledged`; 1 fila de entregas |
+| Interruptores | `confirm_enabled = TRUE`, `enabled = FALSE`; sin `/etc/cron.d/wacrm-orders`; sin logs de pedidos |
+| `GET /api/orders/history` en producción hoy | 404 (la ruta aún no existe; es la referencia «antes») |
+| Disco | 48 GB libres |
+| Compilación completa de la rama (`docker build`, etiqueta de prueba ya eliminada) | Correcta: compila, pasa el tipado y la ruta `/api/orders/history` figura en el build |
+| `next build` local | No usable en este equipo: Turbopack rechaza el `node_modules` enlazado. La prueba válida es el `docker build` |
+| Secuencia de fusión simulada (en un HEAD separado, sin tocar ramas) | `main` + #59: 0 archivos fuera de `docs/` y `scripts/`. #60 encima: sin conflictos, diff exacto de 22 archivos y el árbol resultante es idéntico al de la rama de #60 |
