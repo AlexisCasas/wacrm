@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { createClient as createAdminClient } from '@supabase/supabase-js'
 import {
+  MESSAGING_ACCOUNT_ID_PATTERN,
   registerPhoneNumber,
   subscribeWabaToApp,
   verifyPhoneNumber,
@@ -94,7 +95,7 @@ export async function GET() {
 
     const { data: config, error: configError } = await supabase
       .from('whatsapp_config')
-      .select('phone_number_id, access_token, status, app_secret')
+      .select('phone_number_id, access_token, status, app_secret, messaging_account_id')
       .eq('account_id', accountId)
       .maybeSingle()
 
@@ -154,6 +155,10 @@ export async function GET() {
         connected: true,
         phone_info: phoneInfo,
         app_secret_configured: appSecretConfigured,
+        messaging_account_id: config.messaging_account_id ?? null,
+        // `connected` only says the token is accepted by Meta. Whether this account RECEIVES (app subscribed, number registered) is the stored
+        // status: a row saved with prepare_only is 'disconnected' until a real save / activation flips it, so it never reads as fully operational.
+        receiving_enabled: config.status === 'connected',
       })
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown Meta API error'
@@ -205,7 +210,7 @@ export async function POST(request: Request) {
     }
 
     const body = await request.json()
-    const { phone_number_id, waba_id, access_token, verify_token, pin, app_secret } = body
+    const { phone_number_id, waba_id, access_token, verify_token, pin, app_secret, messaging_account_id, prepare_only } = body
 
     if (!access_token || !phone_number_id) {
       return NextResponse.json(
@@ -230,6 +235,32 @@ export async function POST(request: Request) {
     // inbound message. See issue #136. Post-multi-user we key on
     // account_id (not user_id) since teammates inside the same account
     // all share one config; the conflict is between accounts.
+    // Optional Meta messaging account billed for outbound sends. `undefined` leaves a stored value alone, `null`/'' clears it, anything
+    // else must be digits only (it is copied into every send payload).
+    let messagingAccountId: string | null | undefined
+    if (messaging_account_id === undefined) {
+      messagingAccountId = undefined
+    } else if (messaging_account_id === null || messaging_account_id === '') {
+      messagingAccountId = null
+    } else if (typeof messaging_account_id === 'string' && MESSAGING_ACCOUNT_ID_PATTERN.test(messaging_account_id.trim())) {
+      messagingAccountId = messaging_account_id.trim()
+    } else {
+      return NextResponse.json(
+        { error: 'messaging_account_id must be 5 to 25 digits.' },
+        { status: 400 }
+      )
+    }
+
+    // `prepare_only` saves verified credentials WITHOUT touching Meta's account state: no /register, no subscribed_apps. It lets an
+    // account be prepared before the cut-over is authorised; the subscription is then a separate, deliberate step.
+    const prepareOnly = prepare_only === true
+    if (prepareOnly && typeof pin === 'string' && pin.length > 0) {
+      return NextResponse.json(
+        { error: 'prepare_only does not register the number, so it cannot be combined with a PIN.' },
+        { status: 400 }
+      )
+    }
+
     const { data: claimed, error: claimedError } = await supabaseAdmin()
       .from('whatsapp_config')
       .select('account_id')
@@ -325,9 +356,9 @@ export async function POST(request: Request) {
     // True when registration was deliberately skipped because no PIN
     // was supplied (see below). Distinct from registrationError — this
     // is not a failure, just an incomplete-but-valid save.
-    let registrationSkipped = false
+    let registrationSkipped = prepareOnly
 
-    const needsRegistration = !sameNumber || (typeof pin === 'string' && pin.length > 0)
+    const needsRegistration = !prepareOnly && (!sameNumber || (typeof pin === 'string' && pin.length > 0))
     if (needsRegistration) {
       if (!pin) {
         // No PIN provided. Meta TEST numbers (Developer Console) are
@@ -365,7 +396,7 @@ export async function POST(request: Request) {
     // Skipped only when there's no waba_id (legacy rows from before
     // we required it).
     let subscribedAppsAt: string | null = null
-    if (waba_id) {
+    if (waba_id && !prepareOnly) {
       try {
         await subscribeWabaToApp({
           wabaId: waba_id,
@@ -396,10 +427,20 @@ export async function POST(request: Request) {
       access_token: encryptedAccessToken,
       verify_token: encryptedVerifyToken,
       ...(encryptedAppSecret ? { app_secret: encryptedAppSecret } : {}),
-      status: registrationError ? 'disconnected' : 'connected',
-      connected_at: registrationError ? null : new Date().toISOString(),
+      // prepare_only: credentials are valid but the app is NOT subscribed, so a NEW row is 'disconnected' (not receiving) rather than looking
+      // fully operational. An EXISTING row keeps the status it already had: preparing new credentials must never switch a live account off.
+      ...(prepareOnly
+        ? existing
+          ? {}
+          : { status: 'disconnected', connected_at: null }
+        : {
+            status: registrationError ? 'disconnected' : 'connected',
+            connected_at: registrationError ? null : new Date().toISOString(),
+          }),
       registered_at: registrationError ? null : registeredAt,
-      subscribed_apps_at: subscribedAppsAt ?? null,
+      // prepare_only never touched Meta, so it must not rewrite what an earlier (real) save recorded about the subscription.
+      ...(prepareOnly ? {} : { subscribed_apps_at: subscribedAppsAt ?? null }),
+      ...(messagingAccountId !== undefined ? { messaging_account_id: messagingAccountId } : {}),
       last_registration_error: registrationError,
       updated_at: new Date().toISOString(),
     }
@@ -461,6 +502,10 @@ export async function POST(request: Request) {
       // Meta test number). The UI shows the "Not registered" banner
       // rather than claiming the number is fully live.
       registration_skipped: registrationSkipped,
+      // true: nothing was sent to Meta beyond the read-only credential check (no /register, no subscribed_apps).
+      prepared_only: prepareOnly,
+      // false for prepare_only: valid credentials, app not subscribed, nothing registered. A real save (no prepare_only) is the activation.
+      receiving_enabled: !prepareOnly,
       phone_info: phoneInfo,
     })
   } catch (error) {

@@ -75,6 +75,8 @@ export function WhatsAppConfig() {
   const [showToken, setShowToken] = useState(false);
   const [config, setConfig] = useState<NonSensitiveWhatsAppConfig | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('unknown');
+  // false = credentials accepted by Meta but the account is not receiving yet (saved with prepare_only / not activated). Missing = receiving.
+  const [receivingEnabled, setReceivingEnabled] = useState(true);
   const [resetReason, setResetReason] = useState<ResetReason>(null);
   const [statusMessage, setStatusMessage] = useState<string>('');
   // Guards against re-hydrating the form when the load effect below
@@ -205,6 +207,7 @@ export function WhatsAppConfig() {
 
           if (payload.connected) {
             setConnectionStatus('connected');
+            setReceivingEnabled(payload.receiving_enabled !== false);
             setResetReason(null);
             setStatusMessage('');
           } else {
@@ -343,6 +346,11 @@ export function WhatsAppConfig() {
           t('registerFailed', { reason: data.registration_error }),
           { duration: 12000 },
         );
+      } else if (data.prepared_only) {
+        // prepare_only: valid credentials, nothing registered, app NOT subscribed. Never claim the account is live.
+        toast.success(t('preparedOnly'), { duration: 10000 });
+        setReceivingEnabled(false);
+        setPin('');
       } else if (data.registration_skipped) {
         // Credentials saved + verified, but /register was skipped
         // because no PIN was supplied (e.g. a Meta test number).
@@ -383,6 +391,7 @@ export function WhatsAppConfig() {
 
       if (payload.connected) {
         setConnectionStatus('connected');
+        setReceivingEnabled(payload.receiving_enabled !== false);
         setResetReason(null);
         setStatusMessage('');
         toast.success(
@@ -540,12 +549,18 @@ export function WhatsAppConfig() {
               <XCircle className="size-4 text-red-500" />
             )}
             <AlertTitle className="text-foreground mb-0">
-              {connectionStatus === 'connected' ? t('credentialsValid') : t('notConnected')}
+              {connectionStatus === 'connected'
+                ? receivingEnabled
+                  ? t('credentialsValid')
+                  : t('credentialsValidNotReceiving')
+                : t('notConnected')}
             </AlertTitle>
           </div>
           <AlertDescription className="text-muted-foreground">
             {connectionStatus === 'connected'
-              ? t('connectedDesc')
+              ? receivingEnabled
+                ? t('connectedDesc')
+                : t('notReceivingDesc')
               : statusMessage ||
                 t('notConnectedDesc')}
           </AlertDescription>

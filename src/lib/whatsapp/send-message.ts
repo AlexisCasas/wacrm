@@ -472,6 +472,7 @@ export async function sendMessageToConversation(
       const result = await sendTemplateMessage({
         phoneNumberId: config.phone_number_id,
         accessToken,
+        messagingAccountId: config.messaging_account_id,
         to: phone,
         templateName: templateName!,
         language: sendLanguage,
@@ -486,6 +487,7 @@ export async function sendMessageToConversation(
       const result = await sendMediaMessage({
         phoneNumberId: config.phone_number_id,
         accessToken,
+        messagingAccountId: config.messaging_account_id,
         to: phone,
         kind: messageType as MediaKind,
         link: mediaUrl!,
@@ -502,6 +504,7 @@ export async function sendMessageToConversation(
         const result = await sendInteractiveButtons({
           phoneNumberId: config.phone_number_id,
           accessToken,
+          messagingAccountId: config.messaging_account_id,
           to: phone,
           bodyText: p.body,
           headerText: p.header || undefined,
@@ -514,6 +517,7 @@ export async function sendMessageToConversation(
       const result = await sendInteractiveList({
         phoneNumberId: config.phone_number_id,
         accessToken,
+        messagingAccountId: config.messaging_account_id,
         to: phone,
         bodyText: p.body,
         buttonLabel: p.button_label,
@@ -527,6 +531,7 @@ export async function sendMessageToConversation(
     const result = await sendTextMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
+      messagingAccountId: config.messaging_account_id,
       to: phone,
       text: contentText!,
       contextMessageId,

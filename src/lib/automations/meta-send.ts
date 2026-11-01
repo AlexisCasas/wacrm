@@ -224,6 +224,7 @@ async function sendTemplateViaMeta(
     const r = await sendTemplateMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
+      messagingAccountId: config.messaging_account_id,
       to: phone,
       templateName: input.templateName,
       language: input.language,

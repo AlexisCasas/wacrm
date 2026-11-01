@@ -1,0 +1,61 @@
+-- ============================================================
+-- 20261103000000_whatsapp_config_messaging_account_id
+--
+-- Meta's new WhatsApp account model: billing, templates and webhook subscriptions belong to a MESSAGING ACCOUNT, not to the phone number. When
+-- a token can reach more than one messaging account for the same number, a send has to NAME the one that is billed (`messaging_account_id` in
+-- the POST /{phone_number_id}/messages body); otherwise Meta may charge an account nobody chose.
+--
+-- This adds ONE nullable column to whatsapp_config, kept apart from the two identifiers that already exist:
+--   * phone_number_id  - the number (unique per instance, resolves the inbound webhook to the account). Unchanged.
+--   * waba_id          - the Graph node used for template CRUD and /subscribed_apps. Unchanged. For a number connected through its own
+--                        messaging account it holds that account's id; it must never be filled with another provider's account.
+--   * messaging_account_id (NEW) - the account billed for outbound sends. NULL = not sent = exactly the behaviour before this migration.
+--
+-- Additive and idempotent, applied in ONE controlled transaction: lock_timeout 5 s (it gives up instead of queueing behind a long query and blocking
+-- every WhatsApp read behind it), statement_timeout 30 s, and an in-transaction proof that no existing row changed (otherwise it rolls itself back).
+-- Apply with `psql -v ON_ERROR_STOP=1`: any error aborts the transaction and nothing is kept. Existing rows (every existing account) stay NULL and keep sending the same payload. The CHECK keeps the value to
+-- digits only, because it is copied into a request body. No data is moved, no index is needed (it is only read with the row of the account).
+-- ============================================================
+
+BEGIN;
+SET LOCAL lock_timeout = '5s';
+SET LOCAL statement_timeout = '30s';
+
+-- Fingerprint of every existing row BEFORE touching the table.
+-- (the new column is left out of the fingerprint so the check also holds when the migration is re-applied on top of a column that already has values)
+CREATE TEMP TABLE _wa_cfg_before ON COMMIT DROP AS SELECT id, md5((to_jsonb(w) - 'messaging_account_id')::text) AS h FROM public.whatsapp_config w;
+CREATE TEMP TABLE _wa_cfg_col ON COMMIT DROP AS
+  SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'whatsapp_config' AND column_name = 'messaging_account_id') AS existed;
+
+ALTER TABLE public.whatsapp_config ADD COLUMN IF NOT EXISTS messaging_account_id TEXT;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'whatsapp_config_messaging_account_id_format' AND conrelid = 'public.whatsapp_config'::regclass) THEN
+    -- NOT VALID first, then VALIDATE: the validation scan only needs a SHARE UPDATE EXCLUSIVE lock, so writers are not blocked while it runs.
+    ALTER TABLE public.whatsapp_config
+      ADD CONSTRAINT whatsapp_config_messaging_account_id_format
+      CHECK (messaging_account_id IS NULL OR messaging_account_id ~ '^[0-9]{5,25}$') NOT VALID;
+  END IF;
+END $$;
+ALTER TABLE public.whatsapp_config VALIDATE CONSTRAINT whatsapp_config_messaging_account_id_format;
+
+COMMENT ON COLUMN public.whatsapp_config.messaging_account_id IS
+  'Meta messaging account billed for outbound sends (new account model). NULL = the send does not name one (legacy behaviour). Not an identifier of the phone number (phone_number_id) nor of the Graph node used for templates/subscriptions (waba_id).';
+
+-- Proof, inside the transaction: the same rows exist, none changed (the new column aside) and the new column is NULL everywhere. If this fails the
+-- whole migration rolls back.
+DO $$
+DECLARE n_before int; n_after int; n_changed int; n_set int;
+BEGIN
+  SELECT count(*) INTO n_before FROM _wa_cfg_before;
+  SELECT count(*) INTO n_after FROM public.whatsapp_config;
+  SELECT count(*) INTO n_changed FROM public.whatsapp_config w JOIN _wa_cfg_before b USING (id) WHERE md5((to_jsonb(w) - 'messaging_account_id')::text) <> b.h;
+  -- a column that did not exist a moment ago must be NULL on every row (a re-run on an existing column may legitimately hold values)
+  SELECT count(*) INTO n_set FROM public.whatsapp_config WHERE messaging_account_id IS NOT NULL AND NOT (SELECT existed FROM _wa_cfg_col);
+  IF n_before <> n_after OR n_changed <> 0 OR n_set <> 0 THEN
+    RAISE EXCEPTION 'migration check failed: rows before %, after %, changed %, with a value %', n_before, n_after, n_changed, n_set;
+  END IF;
+END $$;
+
+COMMIT;

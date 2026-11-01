@@ -68,6 +68,8 @@ export interface BroadcastPlan {
   templateLanguage: string;
   phoneNumberId: string;
   accessToken: string;
+  /** Messaging account billed for the sends (Meta's new account model); null when the account has none configured. */
+  messagingAccountId?: string | null;
   templateRow: MessageTemplate | null;
   planned: PlannedRecipient[];
   /** Phones rejected up front (invalid E.164) — counted as failed. */
@@ -236,6 +238,7 @@ export async function createBroadcast(
     templateLanguage: resolvedTemplate.language,
     phoneNumberId: config.phone_number_id,
     accessToken,
+    messagingAccountId: config.messaging_account_id,
     templateRow,
     planned,
     rejected,
@@ -269,6 +272,7 @@ export async function deliverBroadcast(
         const result = await sendTemplateMessage({
           phoneNumberId: plan.phoneNumberId,
           accessToken: plan.accessToken,
+          messagingAccountId: plan.messagingAccountId,
           to: variant,
           templateName: plan.templateName,
           language: plan.templateLanguage,

@@ -177,3 +177,40 @@ describe("WhatsAppConfig — App Secret field never round-trips the real value",
     expect(lastPostBody?.app_secret).toBe("brand-new-secret");
   });
 });
+
+// ---------------------------------------------------------------------------
+// prepare_only: valid credentials are NOT the same as receiving enabled. The Connection Status banner must say so, while accounts that already
+// receive (or that talk to an older API that does not send the field) keep the banner they always had.
+// ---------------------------------------------------------------------------
+describe("WhatsAppConfig — credentials valid vs receiving enabled", () => {
+  it("receiving_enabled=false: says credentials are valid but receiving is NOT enabled (never the plain 'valid' banner)", async () => {
+    getResponse = { connected: true, receiving_enabled: false, phone_info: {}, app_secret_configured: true };
+    render(<WhatsAppConfig />);
+    await waitFor(() => expect(screen.getByText("credentialsValidNotReceiving")).toBeInTheDocument());
+    expect(screen.getByText("notReceivingDesc")).toBeInTheDocument();
+    expect(screen.queryByText("credentialsValid")).not.toBeInTheDocument();
+    expect(screen.queryByText("connectedDesc")).not.toBeInTheDocument();
+  });
+
+  it("receiving_enabled=true: the banner of an operating account is unchanged", async () => {
+    getResponse = { connected: true, receiving_enabled: true, phone_info: {}, app_secret_configured: true };
+    render(<WhatsAppConfig />);
+    await waitFor(() => expect(screen.getByText("credentialsValid")).toBeInTheDocument());
+    expect(screen.getByText("connectedDesc")).toBeInTheDocument();
+    expect(screen.queryByText("credentialsValidNotReceiving")).not.toBeInTheDocument();
+  });
+
+  it("the field absent (older API, or an account saved before this change): treated as receiving, banner unchanged", async () => {
+    getResponse = { connected: true, phone_info: {}, app_secret_configured: true };
+    render(<WhatsAppConfig />);
+    await waitFor(() => expect(screen.getByText("credentialsValid")).toBeInTheDocument());
+    expect(screen.queryByText("credentialsValidNotReceiving")).not.toBeInTheDocument();
+  });
+
+  it("not connected at all: still 'notConnected' whatever receiving_enabled says", async () => {
+    getResponse = { connected: false, reason: "meta_api_error", message: "x", receiving_enabled: false };
+    render(<WhatsAppConfig />);
+    await waitFor(() => expect(screen.getByText("notConnected")).toBeInTheDocument());
+    expect(screen.queryByText("credentialsValidNotReceiving")).not.toBeInTheDocument();
+  });
+});

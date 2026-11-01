@@ -17,6 +17,7 @@ import { SECTION_META, type SettingsSection } from './settings-sections';
 import { SettingsChip, StatusDot } from './settings-chip';
 import { ROLE_META } from './role-meta';
 
+import { whatsappTileState } from './whatsapp-tile-state';
 interface OverviewCounts {
   members: number | null;
   pendingInvites: number | null;
@@ -29,6 +30,8 @@ interface OverviewCounts {
 interface WhatsAppStatus {
   configured: boolean;
   connected: boolean;
+  /** false = valid credentials but the account is not receiving yet (e.g. saved with prepare_only). Undefined = older API: treated as receiving. */
+  receiving: boolean;
 }
 
 export function SettingsOverview({
@@ -132,6 +135,7 @@ export function SettingsOverview({
       setWhatsapp({
         configured: row.status === 'fulfilled' && !!row.value.data?.phone_number_id,
         connected: health.status === 'fulfilled' && !!health.value?.connected,
+        receiving: !(health.status === 'fulfilled' && health.value?.receiving_enabled === false),
       });
       setWhatsappLoading(false);
     })();
@@ -161,17 +165,30 @@ export function SettingsOverview({
     {
       section: 'whatsapp',
       loading: whatsappLoading,
-      subtitle: !whatsapp?.configured ? (
-        t('notSetup')
-      ) : whatsapp.connected ? (
-        <>
-          <StatusDot tone="ok" /> {t('connected')}
-        </>
-      ) : (
-        <>
-          <StatusDot tone="muted" /> {t('needsReconnecting')}
-        </>
-      ),
+      subtitle: (() => {
+        switch (whatsappTileState(whatsapp)) {
+          case 'not_setup':
+            return t('notSetup')
+          case 'connected':
+            return (
+              <>
+                <StatusDot tone="ok" /> {t('connected')}
+              </>
+            )
+          case 'credentials_only':
+            return (
+              <>
+                <StatusDot tone="muted" /> {t('credentialsOnly')}
+              </>
+            )
+          default:
+            return (
+              <>
+                <StatusDot tone="muted" /> {t('needsReconnecting')}
+              </>
+            )
+        }
+      })(),
     },
     {
       section: 'members',

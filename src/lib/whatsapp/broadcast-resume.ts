@@ -238,6 +238,7 @@ export async function planBroadcastResume(
     templateLanguage: resolvedTemplate.language,
     phoneNumberId: config.phone_number_id,
     accessToken: decrypt(config.access_token),
+    messagingAccountId: config.messaging_account_id,
     templateRow: resolvedTemplate.row,
     planned: slice.map((row) => ({
       recipientRowId: row.id,

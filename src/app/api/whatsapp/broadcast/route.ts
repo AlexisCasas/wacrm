@@ -188,6 +188,7 @@ export async function POST(request: Request) {
           const result = await sendTemplateMessage({
             phoneNumberId: config.phone_number_id,
             accessToken,
+            messagingAccountId: config.messaging_account_id,
             to: variant,
             templateName: template_name,
             language: resolvedTemplate.language,
