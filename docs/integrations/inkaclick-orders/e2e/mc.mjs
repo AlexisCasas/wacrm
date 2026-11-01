@@ -1,0 +1,3 @@
+const H = { apikey: process.env.SERVICE_KEY, authorization: `Bearer ${process.env.SERVICE_KEY}`, 'content-type': 'application/json', prefer: 'return=representation' }
+const row = { manychat_contact_id: 'mc-e2e', nombre_completo: 'Cliente ManyChat Sintetico', telefono: '51900000011', dni: '12345678', producto: 'X', cantidad_productos: 1, precio: 10, source: 'manychat', duplicate_key: 'mc_e2e_2026-10-31T10:00:00-05:00' }
+for (let i = 0; i < 2; i++) { const r = await fetch('http://gw:8000/rest/v1/confirmed_orders', { method: 'POST', headers: H, body: JSON.stringify(row) }); console.log('manychat insert', i + 1, r.status) }
