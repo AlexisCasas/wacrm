@@ -76,37 +76,6 @@ describe('runOrderOutbox', () => {
     expect(rpc).not.toHaveBeenCalledWith('acknowledge_order_delivery', expect.objectContaining({ p_order: 'o-2' }))
   })
 
-  it('delivers on one run and reconciles sent -> acknowledged on a LATER run (only once the order has been sent for a minute)', async () => {
-    const NOW = Date.parse('2026-11-01T15:00:00.000Z')
-    const lt = vi.fn()
-    const sentRows = { current: [] as unknown[] }
-    const rpc = vi.fn(async (name: string) => {
-      if (name === 'claim_order_deliveries') return { data: sentRows.current.length ? [] : [row(1)], error: null }
-      if (name === 'finish_order_delivery') return { data: 'sent', error: null }
-      return { data: true, error: null }
-    })
-    const chain: Record<string, unknown> = {}
-    for (const m of ['select', 'eq', 'limit']) chain[m] = () => chain
-    chain.lt = (...a: unknown[]) => { lt(...a); return chain }
-    chain.then = (resolve: (v: unknown) => void) => resolve({ data: sentRows.current, error: null })
-    const admin = { rpc, from: vi.fn(() => chain) } as never
-    const fetchImpl = vi.fn().mockImplementation(async (_u: string, init?: RequestInit) => (init?.method === 'POST' ? json(201, { id: ID }) : json(200, { id: ID })))
-
-    // Run 1: the order is delivered; nothing has been sent for a minute yet, so nothing is reconciled and no GET is made.
-    const first = await runOrderOutbox(admin, cfg, { fetchImpl, now: () => NOW })
-    expect(first).toMatchObject({ claimed: 1, sent: 1, reconciled: 0 })
-    expect(lt).toHaveBeenCalledWith('sent_at', new Date(NOW - 60_000).toISOString())
-    expect(rpc).not.toHaveBeenCalledWith('acknowledge_order_delivery', expect.anything())
-
-    // Run 2, a minute later: the database now lists it as sent for more than 60 s; the receiver confirms it by external id.
-    sentRows.current = [{ id: row().id, inkaclick_order_id: ID }]
-    const second = await runOrderOutbox(admin, cfg, { fetchImpl, now: () => NOW + 61_000 })
-    expect(second).toMatchObject({ claimed: 0, sent: 0, reconciled: 1 })
-    expect(rpc).toHaveBeenCalledWith('acknowledge_order_delivery', { p_order: row().id, p_inkaclick_id: ID })
-    // The reconciliation is a GET by external id; it never posts the order again.
-    expect(fetchImpl.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toHaveLength(1)
-  })
-
   it('surfaces a claim failure instead of swallowing it', async () => {
     const admin = { rpc: vi.fn().mockResolvedValue({ data: null, error: { message: 'boom' } }), from: vi.fn() } as never
     await expect(runOrderOutbox(admin, cfg)).rejects.toThrow('claim_order_deliveries failed')

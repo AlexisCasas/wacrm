@@ -1,9 +1,0 @@
-# PREPARED, NOT INSTALLED: /etc/logrotate.d/wacrm-orders
-/var/log/wacrm-orders-cron.log /var/log/wacrm-orders-health.log {
-    weekly
-    rotate 8
-    compress
-    missingok
-    notifempty
-    create 0640 root root
-}
