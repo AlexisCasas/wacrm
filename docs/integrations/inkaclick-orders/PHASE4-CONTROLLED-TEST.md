@@ -128,3 +128,30 @@ Para operación general: el nombre del pedido debe ser el del cliente real, no e
 
 ## Evaluación: departamento distinto del destino
 `departamento` y `destino` son campos independientes del formulario: el primero se guarda en la columna nueva `departamento` (que el frontend productivo aún no muestra) y el segundo en `destino`, que es el que usa la logística. Una discrepancia entre ambos (p. ej. departamento de una región y destino en otra) no impide la entrega ni afecta a la logística, pero es una incoherencia de datos. El pedido ya confirmado no se puede editar. En la prueba es inocuo y además ejercita el campo `departamento`; para operación general conviene validar la coherencia en el formulario (mejora futura, no bloqueante).
+
+## Resultado de la prueba E2E en producción (2026-11-01)
+Primera entrega real de un pedido de WACRM a InkaClick con un contacto existente. Una llamada manual envió el pedido (HTTP 201), un reenvío idempotente devolvió 200 con el mismo id, y una segunda llamada manual lo reconcilió (`acknowledged`). Después se cerró la ventana (`enabled = FALSE`, variable global retirada, `app` recreada, sin cron). Los dos pedidos de prueba anteriores siguen en `held`; el historial de ManyChat conserva su hash; el pedido E2E y su evento de auditoría se conservan.
+
+| Verificación | Resultado |
+|---|---|
+| Una sola fila nueva `source='wacrm'` con el `external_order_id` correcto | PASS |
+| Campos comerciales transferidos (incluido `departamento`) | PASS |
+| 1 evento `created`; reenvío: 200, mismo id, evento `replayed`, sigue 1 fila | PASS |
+| Reconciliación: `claimed=0`, `reconciled=1`, pedido `acknowledged` con su `inkaclick_order_id`, sin segunda entrega | PASS |
+| Ventana cerrada, `app` healthy, sin cron, entrega global apagada | PASS |
+| Dos pedidos originales en `held` | PASS |
+| Historial ManyChat intacto | PASS |
+| Conversación del contacto sin cambios (mismos mensajes, misma fila) | PASS |
+| Ficha histórica del cliente intacta | **FAIL (esperado y documentado): modificada por el disparador; restauración preparada** |
+
+## Incidencia: ficha del cliente
+Causa (demostrada con la definición de producción en una base desechable): `sync_customer_from_confirmed_order()` no distingue el origen. Con un cliente que ya tiene DNI válido cuenta los pedidos **solo por ese DNI**; un pedido de WACRM sin DNI no entra en la cuenta, y como `count(*)` nunca es `NULL`, el respaldo `coalesce(v_total_pedidos, 1)` no se aplica: el contador queda en 0 aunque acabe de entrar un pedido. Además sobrescribe `nombre_completo` con el nombre del pedido, que en WACRM es el alias del contacto del Inbox. Con pedidos de prueba el contador sigue siendo, por diseño, "pedidos que cumplen el criterio"; la semántica correcta para pedidos de prueba requiere poder identificarlos (ver abajo).
+- **Restauración controlada** (preparada, no ejecutada): `scripts/ops/inkaclick-phase4-restore-customer.sql`. Bloquea la fila, exige que siga en el estado exacto posterior a la prueba (sin cambios concurrentes) y que no haya otros pedidos, restaura desde la pre-imagen y comprueba que el hash de la fila vuelve a ser idéntico al original; no toca el pedido E2E ni su auditoría. Ensayada con datos sintéticos (caso feliz y cambio concurrente simulado).
+- **Corrección separada del disparador** (propuesta, sin desplegar): rama `codex/customer-sync-wacrm-semantics` en InkaClick-Saas, con regresión: la función actual de producción reproduce la incidencia, el comportamiento de ManyChat es idéntico antes y después (misma instantánea de `customers`) y siete escenarios WACRM pasan.
+
+## Validaciones comerciales pendientes
+1. **Departamento frente a destino:** el pedido de prueba llevó un departamento distinto de la región del destino. Son campos independientes; no afecta a la logística (usa `destino`), pero conviene validar la coherencia en el formulario.
+2. **Visualización segura de descripción y departamento en el frontend de InkaClick:** pendiente (`InkaClick-Saas#5`, borrador, no fusionado). Hasta entonces la descripción libre no debe enviarse en operación general.
+3. **Pedidos de prueba y estadísticas:** el pedido E2E (S/ 1.00) cuenta como un pedido más en listados y recuentos. Hace falta una marca de prueba (por ejemplo `is_test` o un valor reservado en el payload) que los pedidos de WACRM puedan llevar y que los informes, el contador de clientes y el pipeline excluyan. No existe hoy; es decisión de diseño pendiente.
+4. **Nombre del pedido:** en operación general debe ser el del cliente real y no el alias del contacto.
+5. Mientras no se despliegue la corrección del disparador, no activar WACRM comercialmente: cada pedido de WACRM de un cliente existente con DNI vuelve a sobrescribir su nombre y su contador.
