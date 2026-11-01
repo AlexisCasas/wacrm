@@ -35,6 +35,8 @@ export interface MetaPhoneInfo {
   display_phone_number: string
   verified_name?: string
   quality_rating?: string
+  /** Meta's own state of the number ('CONNECTED', 'PENDING', ...). Read-only: it is how we learn a number was registered before WACRM touched it. */
+  status?: string
 }
 
 interface MetaErrorResponse {
@@ -195,7 +197,7 @@ export async function verifyPhoneNumber(
   args: VerifyPhoneNumberArgs
 ): Promise<MetaPhoneInfo> {
   const { phoneNumberId, accessToken } = args
-  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating`
+  const url = `${META_API_BASE}/${phoneNumberId}?fields=id,display_phone_number,verified_name,quality_rating,status`
   const response = await fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
@@ -315,6 +317,28 @@ export async function subscribeWabaToApp(
   })
   if (!response.ok) {
     await throwMetaError(response, `Meta API error: ${response.status}`)
+  }
+}
+
+export interface GetTokenAppIdArgs {
+  accessToken: string
+}
+
+/**
+ * The Meta app a token belongs to (`GET /app` answers for the app of the token that asks). Accounts do not have to share one app - each
+ * account may use its own App ID and App Secret - so "is OUR app subscribed?" has to be answered per account, from its own token. Returns null
+ * when the identity cannot be established (Meta error, network, unexpected shape); it never throws, and never puts the token in the URL.
+ */
+export async function getTokenAppId(args: GetTokenAppIdArgs): Promise<string | null> {
+  try {
+    const response = await fetch(`${META_API_BASE}/app?fields=id`, {
+      headers: { Authorization: `Bearer ${args.accessToken}` },
+    })
+    if (!response.ok) return null
+    const data = (await response.json()) as { id?: unknown }
+    return typeof data?.id === 'string' && /^\d+$/.test(data.id) ? data.id : null
+  } catch {
+    return null
   }
 }
 
