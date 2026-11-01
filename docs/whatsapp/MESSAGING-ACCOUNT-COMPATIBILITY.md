@@ -116,3 +116,18 @@ Cada punto requiere autorización expresa, después del despliegue técnico:
 5. Suscripción de la aplicación a la cuenta de mensajería; prueba entrante; después `activate-account.sql` (`confirm_subscribed=yes`) registra el estado en WACRM (solo acepta una fila preparada).
 6. Prueba saliente con un mensaje de plantilla y comprobación de que el cargo cae en la cuenta de mensajería propia.
 7. Corte; retirar al proveedor anterior en último lugar.
+
+## 10. Diagnóstico de registro: registro previo en Meta frente a registro de WACRM
+
+`registered_at` es la hora real en que **WACRM** ejecutó `POST /register`. Un número que ya estaba registrado en Meta antes de usarse en WACRM (por ejemplo, con el proveedor anterior) conserva `registered_at` nulo: **no se inventa una fecha**. El diagnóstico lo distingue:
+
+| `registration_source` | Significado | Cuándo | ¿Operativo? |
+|---|---|---|---|
+| `wacrm` | WACRM registró el número | `registered_at` informado | Sí, si Meta responde y hay app suscrita (igual que siempre) |
+| `meta_prior` | Registrado en Meta antes de WACRM | `registered_at` nulo **y** Meta confirma `CONNECTED` **y** la app está suscrita **y** la cuenta está activada (`status = 'connected'` con `subscribed_apps_at`) | Sí |
+| `none` | Ninguno | cualquier otro caso (incluida una cuenta preparada) | No |
+
+- `GET /api/whatsapp/config/verify-registration` (solo lectura) devuelve `registration_source` y el nuevo `checks.meta_confirms_connected`; `registered_at` nunca se modifica.
+- Ajustes muestra tres textos distintos: «Registrado — Meta enviará eventos» (WACRM), «Registrado previamente en Meta — operativo (el registro no lo hizo wacrm)» y, mientras no se verifique, «Sin registro local — verifica con Meta» en lugar de «Meta no enviará eventos».
+- Lorteg y Alexis Test (con `registered_at`) se comportan exactamente igual.
+- Corrige además un fallo previo: tras pulsar «Verificar con Meta», la recarga de la configuración borraba el resultado del diagnóstico.

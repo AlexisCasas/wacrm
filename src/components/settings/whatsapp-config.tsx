@@ -43,6 +43,7 @@ type NonSensitiveWhatsAppConfig = Pick<
   | 'waba_id'
   | 'status'
   | 'registered_at'
+  | 'subscribed_apps_at'
   | 'last_registration_error'
   | 'mirror_inbound_media'
 >;
@@ -129,9 +130,27 @@ export function WhatsAppConfig() {
     last_registration_error?: string | null;
     registered_at?: string | null;
     subscribed_apps_at?: string | null;
+    /** 'wacrm' = WACRM ran /register; 'meta_prior' = already registered in Meta before WACRM, confirmed by Meta now; 'none'. */
+    registration_source?: 'wacrm' | 'meta_prior' | 'none';
   };
   const [registrationProbe, setRegistrationProbe] =
     useState<RegistrationProbe | null>(null);
+
+  // Registration is shown as THREE different facts (never one invented date):
+  //   wacrm      - WACRM ran /register (registered_at is its real time)
+  //   meta_prior - the number was already registered in Meta before WACRM; Meta confirms it, the app is subscribed, the account is activated
+  //   unverified - activated and subscribed but with no local registration: say "verify with Meta" instead of claiming Meta will not deliver
+  //   none       - not registered (the pre-existing amber state, unchanged)
+  const activatedWithoutLocalRegistration =
+    !isRegistered && config?.status === 'connected' && Boolean(config?.subscribed_apps_at);
+  const registrationState: 'wacrm' | 'meta_prior' | 'unverified' | 'none' = isRegistered
+    ? 'wacrm'
+    : registrationProbe?.registration_source === 'meta_prior' && registrationProbe.live
+      ? 'meta_prior'
+      : activatedWithoutLocalRegistration && !registrationProbe
+        ? 'unverified'
+        : 'none';
+  const registrationOk = registrationState === 'wacrm' || registrationState === 'meta_prior';
 
   const webhookUrl =
     typeof window !== 'undefined'
@@ -160,7 +179,7 @@ export function WhatsAppConfig() {
       const { data, error } = await supabase
         .from('whatsapp_config')
         .select(
-          'id, phone_number_id, waba_id, status, registered_at, last_registration_error, mirror_inbound_media',
+          'id, phone_number_id, waba_id, status, registered_at, subscribed_apps_at, last_registration_error, mirror_inbound_media',
         )
         .eq('account_id', acctId)
         .maybeSingle();
@@ -422,7 +441,6 @@ export function WhatsAppConfig() {
         method: 'GET',
       });
       const data = (await res.json()) as RegistrationProbe;
-      setRegistrationProbe(data);
       if (data.live) {
         toast.success(t('registrationLive'));
       } else {
@@ -432,6 +450,8 @@ export function WhatsAppConfig() {
         );
       }
       if (accountId) await fetchConfig(accountId);
+      // AFTER the reload: fetchConfig clears any stale probe, which used to wipe this very result the moment it was fetched.
+      setRegistrationProbe(data);
     } catch (err) {
       console.error('verify-registration failed:', err);
       toast.error(t('verifyEndpointUnreachable'));
@@ -574,26 +594,30 @@ export function WhatsAppConfig() {
         {config && (
           <Alert
             className={
-              isRegistered
+              registrationOk
                 ? 'bg-emerald-950/30 border-emerald-700/50'
                 : 'bg-amber-950/30 border-amber-700/50'
             }
           >
             <div className="flex items-center justify-between gap-2 flex-wrap">
               <div className="flex items-center gap-2">
-                {isRegistered ? (
+                {registrationOk ? (
                   <CheckCircle2 className="size-4 text-emerald-400" />
                 ) : (
                   <AlertTriangle className="size-4 text-amber-400" />
                 )}
                 <AlertTitle
                   className={
-                    'mb-0 ' + (isRegistered ? 'text-emerald-200' : 'text-amber-200')
+                    'mb-0 ' + (registrationOk ? 'text-emerald-200' : 'text-amber-200')
                   }
                 >
-                  {isRegistered
+                  {registrationState === 'wacrm'
                     ? t('registered')
-                    : t('notRegistered')}
+                    : registrationState === 'meta_prior'
+                      ? t('registeredPriorInMeta')
+                      : registrationState === 'unverified'
+                        ? t('registrationUnverified')
+                        : t('notRegistered')}
                 </AlertTitle>
               </div>
               <Button
@@ -622,6 +646,10 @@ export function WhatsAppConfig() {
                     }),
                   }}
                 />
+              ) : registrationState === 'meta_prior' ? (
+                <>{t('priorInMetaDesc')}</>
+              ) : registrationState === 'unverified' ? (
+                <>{t('unverifiedDesc')}</>
               ) : lastRegistrationError ? (
                 <>
                   {t('lastAttemptFailed')}

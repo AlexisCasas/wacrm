@@ -72,6 +72,8 @@ vi.mock("@/lib/supabase/client", () => ({
 }));
 
 let lastPostBody: Record<string, unknown> | null = null;
+/** What GET /api/whatsapp/config/verify-registration returns — set per test. */
+let verifyResponse: Record<string, unknown> = { live: true, registration_source: "wacrm", checks: {}, errors: [] };
 /** What the GET /api/whatsapp/config health-check mock returns — set per test. */
 let getResponse: Record<string, unknown> = { connected: true, phone_info: {}, app_secret_configured: true };
 
@@ -88,6 +90,9 @@ beforeEach(() => {
           ok: true,
           json: async () => ({ success: true, saved: true, registered: true, phone_info: {} }),
         };
+      }
+      if (url === "/api/whatsapp/config/verify-registration") {
+        return { ok: true, json: async () => verifyResponse };
       }
       if (url === "/api/whatsapp/config" && (!init || init.method === "GET")) {
         return { ok: true, json: async () => getResponse };
@@ -212,5 +217,66 @@ describe("WhatsAppConfig — credentials valid vs receiving enabled", () => {
     render(<WhatsAppConfig />);
     await waitFor(() => expect(screen.getByText("notConnected")).toBeInTheDocument());
     expect(screen.queryByText("credentialsValidNotReceiving")).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Registration is three different facts. WACRM-registered numbers (registered_at set: Lorteg, Alexis Test) keep their banner; a number that was
+// registered in Meta BEFORE WACRM (registered_at stays NULL, never invented) is shown as such once Meta confirms it; everything else keeps
+// the old "not registered" state.
+// ---------------------------------------------------------------------------
+describe("WhatsAppConfig — registration: WACRM vs prior in Meta", () => {
+  const BASE_ROW = { ...EXISTING_ROW };
+  afterEach(() => {
+    Object.keys(EXISTING_ROW).forEach((k) => delete (EXISTING_ROW as Record<string, unknown>)[k]);
+    Object.assign(EXISTING_ROW, BASE_ROW);
+    verifyResponse = { live: true, registration_source: "wacrm", checks: {}, errors: [] };
+  });
+  const asPriorRegistered = (over: Record<string, unknown> = {}) =>
+    Object.assign(EXISTING_ROW, { registered_at: null, status: "connected", subscribed_apps_at: "2026-11-01T19:30:00.000Z", ...over });
+
+  it("registered by WACRM (registered_at set): unchanged — 'registered' with its real date", async () => {
+    render(<WhatsAppConfig />);
+    await waitFor(() => expect(screen.getByText("registered")).toBeInTheDocument());
+    expect(screen.queryByText("registeredPriorInMeta")).not.toBeInTheDocument();
+    expect(screen.queryByText("registrationUnverified")).not.toBeInTheDocument();
+  });
+
+  it("activated + subscribed but no local registration, not verified yet: says so instead of 'Meta will not deliver events'", async () => {
+    asPriorRegistered();
+    render(<WhatsAppConfig />);
+    await waitFor(() => expect(screen.getByText("registrationUnverified")).toBeInTheDocument());
+    expect(screen.getByText("unverifiedDesc")).toBeInTheDocument();
+    expect(screen.queryByText("notRegistered")).not.toBeInTheDocument();
+    expect(screen.queryByText("registered")).not.toBeInTheDocument();
+  });
+
+  it("after 'Verify with Meta' confirms a prior registration: 'registered in Meta beforehand', and NO invented date", async () => {
+    asPriorRegistered();
+    verifyResponse = { live: true, registration_source: "meta_prior", checks: { meta_confirms_connected: true, locally_marked_registered: false }, errors: [], registered_at: null };
+    render(<WhatsAppConfig />);
+    await waitFor(() => expect(screen.getByText("registrationUnverified")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("verifyWithMeta"));
+    await waitFor(() => expect(screen.getByText("registeredPriorInMeta")).toBeInTheDocument());
+    expect(screen.getByText("priorInMetaDesc")).toBeInTheDocument();
+    expect(screen.queryByText("subscribedSince")).not.toBeInTheDocument();
+    expect(screen.queryByText("notRegistered")).not.toBeInTheDocument();
+  });
+
+  it("if Meta does NOT confirm (not live), the old 'not registered' state is shown", async () => {
+    asPriorRegistered();
+    verifyResponse = { live: false, registration_source: "none", checks: { meta_confirms_connected: false }, errors: ["x"] };
+    render(<WhatsAppConfig />);
+    await waitFor(() => expect(screen.getByText("registrationUnverified")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("verifyWithMeta"));
+    await waitFor(() => expect(screen.getByText("notRegistered")).toBeInTheDocument());
+    expect(screen.queryByText("registeredPriorInMeta")).not.toBeInTheDocument();
+  });
+
+  it("not activated (disconnected / prepared): unchanged 'not registered'", async () => {
+    asPriorRegistered({ status: "disconnected", subscribed_apps_at: null });
+    render(<WhatsAppConfig />);
+    await waitFor(() => expect(screen.getByText("notRegistered")).toBeInTheDocument());
+    expect(screen.queryByText("registrationUnverified")).not.toBeInTheDocument();
   });
 });

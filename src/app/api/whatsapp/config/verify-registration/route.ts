@@ -5,6 +5,7 @@ import {
   getSubscribedApps,
   verifyPhoneNumber,
 } from '@/lib/whatsapp/meta-api'
+import { isRegistrationLive, registrationSource } from '@/lib/whatsapp/registration-state'
 
 /**
  * GET /api/whatsapp/config/verify-registration
@@ -21,8 +22,13 @@ import {
  *   2. waba_subscription — our app appears in
  *                    GET /{waba_id}/subscribed_apps
  *   3. registered_at — local timestamp set by POST /config when
- *                    /register last succeeded; NULL means the
- *                    number was saved but never actually subscribed
+ *                    /register last succeeded; NULL means WACRM never
+ *                    registered it. A number registered in Meta BEFORE
+ *                    WACRM (e.g. by a previous provider) is reported as
+ *                    registration_source 'meta_prior' and counts as live
+ *                    only if Meta confirms CONNECTED, the app is subscribed
+ *                    and the account is activated. registered_at is never
+ *                    invented for it.
  *
  * Returns 200 in every case so the UI can render diagnostic detail
  * rather than a generic error toast. The combined `live` flag is
@@ -90,22 +96,27 @@ export async function GET() {
     phone_metadata_ok: boolean
     waba_subscribed_to_app: boolean | null
     locally_marked_registered: boolean
+    meta_confirms_connected: boolean | null
   } = {
     config_exists: true,
     token_decryptable: true,
     phone_metadata_ok: false,
     waba_subscribed_to_app: null,
     locally_marked_registered: config.registered_at != null,
+    meta_confirms_connected: null,
   }
+  let metaPhoneStatus: string | undefined
   const errors: string[] = []
 
   // 1. Phone metadata
   try {
-    await verifyPhoneNumber({
+    const phone = await verifyPhoneNumber({
       phoneNumberId: config.phone_number_id,
       accessToken,
     })
     checks.phone_metadata_ok = true
+    metaPhoneStatus = phone?.status
+    checks.meta_confirms_connected = phone?.status === 'CONNECTED'
   } catch (err) {
     errors.push(
       `Phone metadata check failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -140,13 +151,22 @@ export async function GET() {
     )
   }
 
-  const live =
-    checks.phone_metadata_ok &&
-    (checks.waba_subscribed_to_app ?? false) &&
-    checks.locally_marked_registered
+  const source = registrationSource({
+    registeredAt: config.registered_at,
+    status: config.status,
+    subscribedAppsAt: config.subscribed_apps_at,
+    metaPhoneStatus,
+  })
+  const live = isRegistrationLive({
+    phoneMetadataOk: checks.phone_metadata_ok,
+    wabaSubscribed: checks.waba_subscribed_to_app,
+    source,
+  })
 
   return NextResponse.json({
     live,
+    // 'wacrm' = registered by WACRM (registered_at is its real time); 'meta_prior' = already registered in Meta, confirmed now; 'none'.
+    registration_source: source,
     checks,
     errors,
     last_registration_error: config.last_registration_error ?? null,
