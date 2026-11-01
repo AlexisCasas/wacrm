@@ -33,7 +33,8 @@ interface Props {
 
 // Read-only list of the conversation's confirmed orders. It never writes anything and never triggers a delivery. "Confirmed in WACRM" is always
 // true for a listed order; "received by InkaClick" is shown ONLY for `acknowledged`. Nothing is rendered while the feature is off for the account,
-// the user is not an agent, or the first lookup fails (the "Confirmar pedido" button is unaffected). Remount per conversation (key).
+// or the user is not an agent. If the first lookup fails it shows an error with a retry (the "Confirmar pedido" button is unaffected). Remount per
+// conversation (key).
 export function OrderHistory({ conversationId }: Props) {
   const t = useTranslations("Orders");
   const locale = useLocale();
@@ -98,13 +99,15 @@ export function OrderHistory({ conversationId }: Props) {
 
   if (!conversationId || hidden) return null;
   if (orders === null && !failed) return <p className="mt-3 text-xs text-muted-foreground">{t("historyLoading")}</p>;
-  if (orders === null) return null;
+  // First load failed: say so and offer a retry (the "Confirmar pedido" button lives outside this component and is unaffected).
+  const list = orders ?? [];
 
   return (
     <section className="mt-3 w-full text-left" aria-label={t("historyTitle")}>
       <div className="flex items-center justify-between px-1">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          {t("historyTitle")} ({orders.length}{hasMore ? "+" : ""})
+          {t("historyTitle")}
+          {orders !== null && ` (${list.length}${hasMore ? "+" : ""})`}
         </h4>
         <button
           type="button"
@@ -125,11 +128,11 @@ export function OrderHistory({ conversationId }: Props) {
         </p>
       )}
 
-      {orders.length === 0 ? (
+      {orders === null ? null : list.length === 0 ? (
         <p className="mt-2 px-1 text-xs text-muted-foreground">{t("historyEmpty")}</p>
       ) : (
         <ul className="mt-2 space-y-2">
-          {orders.map((o) => {
+          {list.map((o) => {
             const info = statusInfo(o.delivery_status);
             return (
               <li key={o.id}>

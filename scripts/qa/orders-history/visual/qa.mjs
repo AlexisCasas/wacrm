@@ -68,7 +68,11 @@ for (const theme of ['violet', 'amber']) {
 
   // error / off / many
   t = await open('error', theme)
-  check(`[${theme}] error on first load: panel hidden, button unaffected`, !(await text(t.page)).includes('Pedidos confirmados') && (await t.page.getByRole('button', { name: 'Confirmar pedido' }).isVisible()))
+  body = await text(t.page)
+  check(`[${theme}] error on first load: error text with a Reintentar action, panel title kept`, body.includes('No se pudieron cargar los pedidos') && body.includes('Reintentar') && body.toLowerCase().includes('pedidos confirmados'))
+  check(`[${theme}] error on first load: "Confirmar pedido" stays visible and clickable`, await t.page.getByRole('button', { name: 'Confirmar pedido' }).isVisible())
+  check(`[${theme}] error on first load: not shown as an empty list`, !body.includes('Aún no hay pedidos confirmados'))
+  await t.page.screenshot({ path: `${OUT}/error-${theme}.png` })
   await t.ctx.close()
   t = await open('off', theme)
   check(`[${theme}] feature off: no panel`, !(await text(t.page)).includes('Pedidos confirmados'))

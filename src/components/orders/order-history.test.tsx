@@ -2,12 +2,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+vi.mock("@/lib/supabase/client", () => ({ createClient: () => ({ from: () => ({ select: () => ({ eq: async () => ({ data: [] }) }) }) }) }));
 vi.mock("next-intl", () => ({
   useLocale: () => "es",
   useTranslations: () => (key: string, params?: Record<string, unknown>) => (params ? `${key}:${JSON.stringify(params)}` : key),
 }));
 
 import { OrderHistory, ORDERS_CHANGED_EVENT } from "./order-history";
+import { ConfirmOrderButton } from "./confirm-order-button";
 
 const CONV = "33333333-3333-4333-8333-333333333333";
 const order = (over: Record<string, unknown> = {}) => ({
@@ -50,24 +53,54 @@ describe("OrderHistory", () => {
     expect(String(vi.mocked(fetch).mock.calls[0][0])).toContain(`conversation_id=${CONV}`);
   });
 
-  it("renders nothing when the feature is off, or when the lookup fails for the first time (viewer, 500, network)", async () => {
+  it("renders nothing when the feature is off for the account", async () => {
     answer({ enabled: false, orders: [], has_more: false });
     const a = render(<OrderHistory conversationId={CONV} />);
     await waitFor(() => expect(fetch).toHaveBeenCalled());
     await new Promise((r) => setTimeout(r, 20));
     expect(a.container.textContent).toBe("");
-    a.unmount();
+  });
 
-    answer({ error: "forbidden" }, 403);
-    const b = render(<OrderHistory conversationId={CONV} />);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(b.container.textContent).toBe("");
-    b.unmount();
+  it.each([
+    ["server error 500", () => vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 500 })))],
+    ["forbidden 403", () => vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 403 })))],
+    ["network failure", () => vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")))],
+  ])("first load fails (%s): shows the error with a retry, not an empty or hidden panel", async (_label, arm) => {
+    arm();
+    render(<OrderHistory conversationId={CONV} />);
+    await screen.findByText("historyError");
+    expect(screen.getByText("historyRetry")).toBeTruthy();
+    expect(screen.queryByText("historyEmpty")).toBeNull();
+  });
 
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
-    const c = render(<OrderHistory conversationId={CONV} />);
-    await new Promise((r) => setTimeout(r, 20));
-    expect(c.container.textContent).toBe("");
+  it("the retry after a failed first load loads the orders", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { status: 500 })));
+    render(<OrderHistory conversationId={CONV} />);
+    fireEvent.click(await screen.findByText("historyRetry"));
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    answer({ enabled: true, orders: [order()], has_more: false });
+    fireEvent.click(screen.getByText("historyRetry"));
+    await screen.findByText("Prensa de banco");
+    expect(screen.queryByText("historyError")).toBeNull();
+  });
+
+  it("a failed first load does not hide the confirm button (they are independent)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation(async (url: string) =>
+        String(url).includes("/api/orders/sellers")
+          ? new Response(JSON.stringify({ enabled: true, sellers: [{ id: "u1", name: "Titular" }] }))
+          : new Response("{}", { status: 500 }),
+      ),
+    );
+    render(
+      <>
+        <ConfirmOrderButton contact={{ id: "22222222-2222-4222-8222-222222222222", name: "C", phone: "9" }} conversationId={CONV} />
+        <OrderHistory conversationId={CONV} />
+      </>,
+    );
+    await screen.findByText("historyError");
+    expect(screen.getByText("confirmButton")).toBeTruthy();
   });
 
   it("shows the empty state, and nothing at all without a conversation", async () => {
