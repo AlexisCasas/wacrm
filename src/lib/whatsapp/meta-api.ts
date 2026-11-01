@@ -320,6 +320,28 @@ export async function subscribeWabaToApp(
   }
 }
 
+export interface GetTokenAppIdArgs {
+  accessToken: string
+}
+
+/**
+ * The Meta app a token belongs to (`GET /app` answers for the app of the token that asks). Accounts do not have to share one app - each
+ * account may use its own App ID and App Secret - so "is OUR app subscribed?" has to be answered per account, from its own token. Returns null
+ * when the identity cannot be established (Meta error, network, unexpected shape); it never throws, and never puts the token in the URL.
+ */
+export async function getTokenAppId(args: GetTokenAppIdArgs): Promise<string | null> {
+  try {
+    const response = await fetch(`${META_API_BASE}/app?fields=id`, {
+      headers: { Authorization: `Bearer ${args.accessToken}` },
+    })
+    if (!response.ok) return null
+    const data = (await response.json()) as { id?: unknown }
+    return typeof data?.id === 'string' && /^\d+$/.test(data.id) ? data.id : null
+  } catch {
+    return null
+  }
+}
+
 export interface GetSubscribedAppsArgs {
   wabaId: string
   accessToken: string

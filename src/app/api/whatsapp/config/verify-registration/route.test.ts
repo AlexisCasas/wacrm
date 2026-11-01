@@ -11,6 +11,7 @@ const h = vi.hoisted(() => ({
   config: vi.fn(),
   verifyPhoneNumber: vi.fn(),
   getSubscribedApps: vi.fn(),
+  getTokenAppId: vi.fn(),
   writes: vi.fn(),
 }))
 
@@ -18,6 +19,7 @@ vi.mock('@/lib/whatsapp/encryption', () => ({ decrypt: (v: string) => v }))
 vi.mock('@/lib/whatsapp/meta-api', () => ({
   verifyPhoneNumber: (...a: unknown[]) => h.verifyPhoneNumber(...a),
   getSubscribedApps: (...a: unknown[]) => h.getSubscribedApps(...a),
+  getTokenAppId: (...a: unknown[]) => h.getTokenAppId(...a),
 }))
 vi.mock('@/lib/supabase/server', () => ({
   createClient: async () => ({
@@ -36,15 +38,21 @@ vi.mock('@/lib/supabase/server', () => ({
 import { GET } from './route'
 
 const SUB = '2026-11-01T19:30:00.000Z'
+// Synthetic app ids. Accounts do NOT have to share one: WACRM's own app here, another provider's app, and a second account's own app.
+const APP_WACRM = '1000000000000001'
+const APP_MANYCHAT = '2000000000000002'
+const APP_OTHER_ACCOUNT = '3000000000000003'
+const sub = (id: string | undefined, name = 'app') => ({ whatsapp_business_api_data: { id, name } })
 const row = (over: Record<string, unknown> = {}) => ({
   phone_number_id: '2222222222222222', waba_id: '1111111111111111', access_token: 'tok', status: 'connected',
   registered_at: null, subscribed_apps_at: SUB, last_registration_error: null, ...over,
 })
 
 beforeEach(() => {
-  for (const f of [h.config, h.verifyPhoneNumber, h.getSubscribedApps, h.writes]) f.mockReset()
+  for (const f of [h.config, h.verifyPhoneNumber, h.getSubscribedApps, h.getTokenAppId, h.writes]) f.mockReset()
   h.verifyPhoneNumber.mockResolvedValue({ id: '2222222222222222', display_phone_number: '+51 900 000 000', status: 'CONNECTED' })
-  h.getSubscribedApps.mockResolvedValue([{ whatsapp_business_api_data: { name: 'app' } }])
+  h.getTokenAppId.mockResolvedValue(APP_WACRM)
+  h.getSubscribedApps.mockResolvedValue([sub(APP_WACRM, 'WACRM')])
 })
 
 describe('verify-registration — registered by WACRM (unchanged)', () => {
@@ -125,5 +133,85 @@ describe('verify-registration — read-only and guarded', () => {
   it('never leaks the token', async () => {
     h.config.mockReturnValue(row())
     expect(JSON.stringify(await (await GET()).json())).not.toContain('"tok"')
+  })
+})
+
+describe('verify-registration — the subscribed app must be THIS account\'s app', () => {
+  const live = async () => (await GET()).json()
+
+  it('only another provider (ManyChat) is subscribed: the subscription of WACRM is NOT confirmed, not live (whatever the registration)', async () => {
+    h.getSubscribedApps.mockResolvedValue([sub(APP_MANYCHAT, 'Manychat')])
+    for (const cfg of [row(), row({ registered_at: '2026-09-07T06:28:26.687Z' })]) {
+      h.config.mockReturnValue(cfg)
+      const json = await live()
+      expect(json.live).toBe(false)
+      expect(json.checks).toMatchObject({ waba_subscribed_to_app: false, app_identity_verified: true })
+      expect(json.errors.join(' ')).toMatch(/Other apps are subscribed/)
+    }
+  })
+
+  it('WACRM subscribed: PASS (registered by WACRM and registered beforehand in Meta)', async () => {
+    for (const cfg of [row(), row({ registered_at: '2026-09-07T06:28:26.687Z' })]) {
+      h.config.mockReturnValue(cfg)
+      const json = await live()
+      expect(json.live).toBe(true)
+      expect(json.checks).toMatchObject({ waba_subscribed_to_app: true, app_identity_verified: true })
+    }
+  })
+
+  it('both apps subscribed: PASS as long as WACRM is present, in any order', async () => {
+    h.config.mockReturnValue(row())
+    for (const list of [[sub(APP_MANYCHAT), sub(APP_WACRM)], [sub(APP_WACRM), sub(APP_MANYCHAT)]]) {
+      h.getSubscribedApps.mockResolvedValue(list)
+      expect(await live()).toMatchObject({ live: true, registration_source: 'meta_prior' })
+    }
+  })
+
+  it('accounts do not have to share an App ID: each is judged by its OWN token\'s app (Lorteg-style account with a different app)', async () => {
+    h.config.mockReturnValue(row({ registered_at: '2026-09-08T17:26:47.921Z' }))
+    h.getTokenAppId.mockResolvedValue(APP_OTHER_ACCOUNT)
+    h.getSubscribedApps.mockResolvedValue([sub(APP_OTHER_ACCOUNT, 'Their own bot')])
+    expect(await live()).toMatchObject({ live: true, registration_source: 'wacrm' })
+    // the same list judged for an account whose app is WACRM's: not its subscription
+    h.getTokenAppId.mockResolvedValue(APP_WACRM)
+    expect((await live()).live).toBe(false)
+  })
+
+  it.each([
+    ['the token\'s app cannot be identified (null)', () => h.getTokenAppId.mockResolvedValue(null)],
+    ['the identity lookup throws', () => h.getTokenAppId.mockRejectedValue(new Error('boom'))],
+  ])('%s: never a false PASS, whichever apps are subscribed', async (_n, arrange) => {
+    arrange()
+    for (const cfg of [row(), row({ registered_at: '2026-09-07T06:28:26.687Z' })]) {
+      h.config.mockReturnValue(cfg)
+      h.getSubscribedApps.mockResolvedValue([sub(APP_WACRM), sub(APP_MANYCHAT)])
+      const json = await live()
+      expect(json.live).toBe(false)
+      expect(json.checks.waba_subscribed_to_app).not.toBe(true)
+      expect(json.checks.app_identity_verified).toBe(false)
+      expect(json.errors.join(' ')).toMatch(/Could not identify/)
+    }
+  })
+
+  it('subscribed entries without an id cannot prove anything: not live', async () => {
+    h.config.mockReturnValue(row())
+    h.getSubscribedApps.mockResolvedValue([sub(undefined, 'WACRM')])
+    expect((await live()).live).toBe(false)
+  })
+
+  it('nobody subscribed keeps the original message', async () => {
+    h.config.mockReturnValue(row())
+    h.getSubscribedApps.mockResolvedValue([])
+    const json = await live()
+    expect(json.live).toBe(false)
+    expect(json.errors.join(' ')).toMatch(/no subscribed apps/)
+  })
+
+  it('never leaks app ids or the token in the response', async () => {
+    h.config.mockReturnValue(row())
+    const text = JSON.stringify(await live())
+    expect(text).not.toContain(APP_WACRM)
+    expect(text).not.toContain(APP_MANYCHAT)
+    expect(text).not.toContain('"tok"')
   })
 })

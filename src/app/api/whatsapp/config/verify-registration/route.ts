@@ -3,6 +3,7 @@ import { createClient } from '@/lib/supabase/server'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import {
   getSubscribedApps,
+  getTokenAppId,
   verifyPhoneNumber,
 } from '@/lib/whatsapp/meta-api'
 import { isRegistrationLive, registrationSource } from '@/lib/whatsapp/registration-state'
@@ -95,6 +96,8 @@ export async function GET() {
     token_decryptable: boolean
     phone_metadata_ok: boolean
     waba_subscribed_to_app: boolean | null
+    /** The app of this account's token could be identified (accounts may each use their own App ID). false => the subscription cannot be confirmed. */
+    app_identity_verified: boolean | null
     locally_marked_registered: boolean
     meta_confirms_connected: boolean | null
   } = {
@@ -102,6 +105,7 @@ export async function GET() {
     token_decryptable: true,
     phone_metadata_ok: false,
     waba_subscribed_to_app: null,
+    app_identity_verified: null,
     locally_marked_registered: config.registered_at != null,
     meta_confirms_connected: null,
   }
@@ -130,15 +134,32 @@ export async function GET() {
         wabaId: config.waba_id,
         accessToken,
       })
-      // Meta returns the apps subscribed to this WABA. If the list
-      // is non-empty, OUR app is in there (the access_token we used
-      // belongs to our app — Meta wouldn't return data for an app
-      // the token can't see). Treat any entry as success.
-      checks.waba_subscribed_to_app = subs.length > 0
-      if (!checks.waba_subscribed_to_app) {
+      // A non-empty list does NOT mean OUR app is in it: a WABA can have another provider's app subscribed (e.g. ManyChat) and not ours.
+      // Identify the app of THIS account's token (accounts may use different App IDs) and require that exact app among the subscribers.
+      let appId: string | null = null
+      try {
+        appId = await getTokenAppId({ accessToken })
+      } catch {
+        appId = null // getTokenAppId does not throw; this keeps an unexpected failure from ever reading as a PASS
+      }
+      checks.app_identity_verified = appId != null
+      if (appId == null) {
+        // Never a false PASS: if we cannot tell which app this token is, we cannot say it is subscribed.
+        checks.waba_subscribed_to_app = null
         errors.push(
-          'WABA has no subscribed apps. Re-save the configuration to subscribe.',
+          'Could not identify this account\'s Meta app from its token, so the app subscription cannot be confirmed.',
         )
+      } else {
+        checks.waba_subscribed_to_app = subs.some(
+          (s) => s.whatsapp_business_api_data?.id === appId,
+        )
+        if (!checks.waba_subscribed_to_app) {
+          errors.push(
+            subs.length === 0
+              ? 'WABA has no subscribed apps. Re-save the configuration to subscribe.'
+              : 'Other apps are subscribed to this WABA, but this account\'s app is not. Re-save the configuration to subscribe it.',
+          )
+        }
       }
     } catch (err) {
       errors.push(
