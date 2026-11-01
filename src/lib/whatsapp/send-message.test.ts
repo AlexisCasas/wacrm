@@ -265,6 +265,7 @@ function sendPathDb(
   templateRows: unknown[],
   captured: CapturedWrites,
   contactOverrides: Record<string, unknown> = {},
+  configOverrides: Record<string, unknown> = {},
 ): SupabaseClient {
   const conversation = {
     id: 'cv-1',
@@ -274,6 +275,7 @@ function sendPathDb(
     id: 'cfg-1',
     phone_number_id: 'pn-1',
     access_token: 'token',
+    ...configOverrides,
   };
 
   return {
@@ -1105,5 +1107,41 @@ describe('sendMessageToConversation — blocked contact (P0 contact blocking)', 
       { conversationId: 'cv-1', messageType: 'text', contentText: 'hi' },
     );
     expect(result.whatsappMessageId).toBeTruthy();
+  });
+});
+
+// ============================================================
+// Meta's new account model: the account's messaging_account_id reaches EVERY manual/API sender (billing goes to the account that was chosen),
+// and an account without one passes nothing, so its payload stays what it was.
+// ============================================================
+
+describe('sendMessageToConversation — messaging_account_id', async () => {
+  const metaApi = await import('@/lib/whatsapp/meta-api');
+  const MA = '1111111111111111';
+  const variants: Array<[string, Omit<SendMessageParams, 'conversationId' | 'senderId'>, () => { mock: { calls: unknown[][] } }]> = [
+    ['text', { messageType: 'text', contentText: 'Hola' }, () => metaApi.sendTextMessage as never],
+    ['image', { messageType: 'image', mediaUrl: 'https://x/p.jpg' }, () => sendMediaMessage as never],
+    ['audio', { messageType: 'audio', mediaUrl: 'https://x/a.ogg' }, () => sendMediaMessage as never],
+    ['template', { messageType: 'template', templateName: 'order_update', templateParams: ['A', 'B'] }, () => sendTemplateMessage as never],
+    ['buttons', { messageType: 'interactive', interactivePayload: { kind: 'buttons', body: 'Elige', buttons: [{ id: 'y', title: 'Si' }] } }, () => metaApi.sendInteractiveButtons as never],
+    ['list', { messageType: 'interactive', interactivePayload: { kind: 'list', body: 'Elige', button_label: 'Ver', sections: [{ title: 'S', rows: [{ id: 'r', title: 'R' }] }] } }, () => metaApi.sendInteractiveList as never],
+  ];
+
+  it.each(variants)('%s: passes the account\'s messaging_account_id to the sender', async (_n, params, sender) => {
+    const captured: CapturedWrites = {};
+    const s = sender();
+    s.mock.calls.length = 0;
+    await sendMessageToConversation(sendPathDb([TEMPLATE_ROW], captured, {}, { messaging_account_id: MA }), 'acct-1', { conversationId: 'cv-1', senderId: 'agent-1', ...params });
+    expect(s.mock.calls).toHaveLength(1);
+    expect((s.mock.calls[0][0] as { messagingAccountId?: string }).messagingAccountId).toBe(MA);
+  });
+
+  it.each(variants)('%s: an account without one passes nothing (legacy payload)', async (_n, params, sender) => {
+    const captured: CapturedWrites = {};
+    const s = sender();
+    s.mock.calls.length = 0;
+    await sendMessageToConversation(sendPathDb([TEMPLATE_ROW], captured), 'acct-1', { conversationId: 'cv-1', senderId: 'agent-1', ...params });
+    expect(s.mock.calls).toHaveLength(1);
+    expect((s.mock.calls[0][0] as { messagingAccountId?: string | null }).messagingAccountId ?? null).toBeNull();
   });
 });

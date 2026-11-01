@@ -12,6 +12,20 @@
 const META_API_VERSION = 'v21.0'
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`
 
+/**
+ * Meta's new account model: a send may name the Messaging account that is billed for it (`messaging_account_id`). It is only added to the
+ * payload when the account has one configured, so an account without it (every existing account) sends exactly the same bytes as before.
+ * Digits only: the value comes from a database column and goes straight into a request body.
+ */
+export const MESSAGING_ACCOUNT_ID_PATTERN = /^\d{5,25}$/
+export function messagingAccountField(id: string | null | undefined): { messaging_account_id?: string } {
+  const v = typeof id === 'string' ? id.trim() : ''
+  if (!v) return {}
+  // A malformed value must stop the send: dropping it silently would let Meta bill an account nobody chose.
+  if (!MESSAGING_ACCOUNT_ID_PATTERN.test(v)) throw new Error('Invalid messaging_account_id on the WhatsApp configuration.')
+  return { messaging_account_id: v }
+}
+
 export interface MetaSendResult {
   messageId: string
 }
@@ -344,6 +358,8 @@ export async function getSubscribedApps(
 export interface SendTextMessageArgs {
   phoneNumberId: string
   accessToken: string
+  /** Messaging account billed for this send (Meta's new account model). Omitted when null/undefined. */
+  messagingAccountId?: string | null
   to: WaTarget
   text: string
   /** Meta's message_id of the message being replied to. Adds a `context` field
@@ -358,11 +374,12 @@ export interface SendTextMessageArgs {
 export async function sendTextMessage(
   args: SendTextMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, text, contextMessageId } = args
+  const { phoneNumberId, accessToken, messagingAccountId, to, text, contextMessageId } = args
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
+    ...messagingAccountField(messagingAccountId),
     ...recipientFields(to),
     type: 'text',
     text: { body: text },
@@ -390,6 +407,8 @@ export type MediaKind = 'image' | 'video' | 'document' | 'audio'
 export interface SendMediaMessageArgs {
   phoneNumberId: string
   accessToken: string
+  /** Messaging account billed for this send (Meta's new account model). Omitted when null/undefined. */
+  messagingAccountId?: string | null
   to: WaTarget
   kind: MediaKind
   /** Public URL Meta fetches at send time. */
@@ -430,7 +449,7 @@ export interface SendMediaMessageArgs {
 export async function sendMediaMessage(
   args: SendMediaMessageArgs,
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, kind, link, caption, filename, voice, contextMessageId } = args
+  const { phoneNumberId, accessToken, messagingAccountId, to, kind, link, caption, filename, voice, contextMessageId } = args
   if (!link) throw new Error('sendMediaMessage requires a link.')
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
 
@@ -449,6 +468,7 @@ export async function sendMediaMessage(
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
+    ...messagingAccountField(messagingAccountId),
     ...recipientFields(to),
     type: kind,
     [kind]: media,
@@ -480,6 +500,8 @@ import {
 export interface SendTemplateMessageArgs {
   phoneNumberId: string
   accessToken: string
+  /** Messaging account billed for this send (Meta's new account model). Omitted when null/undefined. */
+  messagingAccountId?: string | null
   to: WaTarget
   templateName: string
   language?: string
@@ -525,6 +547,7 @@ export async function sendTemplateMessage(
   const {
     phoneNumberId,
     accessToken,
+    messagingAccountId,
     to,
     templateName,
     language = 'en_US',
@@ -566,6 +589,7 @@ export async function sendTemplateMessage(
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
+    ...messagingAccountField(messagingAccountId),
     ...recipientFields(to),
     type: 'template',
     template: templatePayload,
@@ -812,6 +836,8 @@ export async function deleteMessageTemplate(
 export interface SendReactionMessageArgs {
   phoneNumberId: string
   accessToken: string
+  /** Messaging account billed for this send (Meta's new account model). Omitted when null/undefined. */
+  messagingAccountId?: string | null
   to: WaTarget
   /** Meta's message_id of the message being reacted to. */
   targetMessageId: string
@@ -826,7 +852,7 @@ export interface SendReactionMessageArgs {
 export async function sendReactionMessage(
   args: SendReactionMessageArgs
 ): Promise<MetaSendResult> {
-  const { phoneNumberId, accessToken, to, targetMessageId, emoji } = args
+  const { phoneNumberId, accessToken, messagingAccountId, to, targetMessageId, emoji } = args
   const url = `${META_API_BASE}/${phoneNumberId}/messages`
   const response = await fetch(url, {
     method: 'POST',
@@ -837,6 +863,7 @@ export async function sendReactionMessage(
     body: JSON.stringify({
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
+      ...messagingAccountField(messagingAccountId),
       ...recipientFields(to),
       type: 'reaction',
       reaction: { message_id: targetMessageId, emoji },
@@ -888,6 +915,8 @@ export interface InteractiveButton {
 export interface SendInteractiveButtonsArgs {
   phoneNumberId: string
   accessToken: string
+  /** Messaging account billed for this send (Meta's new account model). Omitted when null/undefined. */
+  messagingAccountId?: string | null
   to: WaTarget
   /** The body text — what the customer reads above the buttons. */
   bodyText: string
@@ -913,7 +942,7 @@ export async function sendInteractiveButtons(
   args: SendInteractiveButtonsArgs
 ): Promise<MetaSendResult> {
   const {
-    phoneNumberId, accessToken, to,
+    phoneNumberId, accessToken, messagingAccountId, to,
     bodyText, headerText, footerText, buttons, contextMessageId,
   } = args
   validateInteractiveBody(bodyText)
@@ -957,6 +986,7 @@ export async function sendInteractiveButtons(
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
+    ...messagingAccountField(messagingAccountId),
     ...recipientFields(to),
     type: 'interactive',
     interactive,
@@ -997,6 +1027,8 @@ export interface InteractiveListSection {
 export interface SendInteractiveListArgs {
   phoneNumberId: string
   accessToken: string
+  /** Messaging account billed for this send (Meta's new account model). Omitted when null/undefined. */
+  messagingAccountId?: string | null
   to: WaTarget
   bodyText: string
   /** Label of the tap-to-expand button on the message bubble. */
@@ -1021,7 +1053,7 @@ export async function sendInteractiveList(
   args: SendInteractiveListArgs
 ): Promise<MetaSendResult> {
   const {
-    phoneNumberId, accessToken, to,
+    phoneNumberId, accessToken, messagingAccountId, to,
     bodyText, buttonLabel, headerText, footerText, sections, contextMessageId,
   } = args
   validateInteractiveBody(bodyText)
@@ -1089,6 +1121,7 @@ export async function sendInteractiveList(
   const body: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
+    ...messagingAccountField(messagingAccountId),
     ...recipientFields(to),
     type: 'interactive',
     interactive,

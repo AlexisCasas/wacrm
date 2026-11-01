@@ -131,6 +131,7 @@ export async function engineSendText(
     const r = await sendTextMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
+      messagingAccountId: config.messaging_account_id,
       to: phone,
       text: args.text,
     })
@@ -362,6 +363,7 @@ export async function engineSendMedia(
     const r = await sendMediaMessage({
       phoneNumberId: config.phone_number_id,
       accessToken,
+      messagingAccountId: config.messaging_account_id,
       to: phone,
       kind: args.kind,
       link: args.link,
@@ -599,6 +601,7 @@ async function sendInteractiveViaMeta(
       const r = await sendInteractiveButtons({
         phoneNumberId: config.phone_number_id,
         accessToken,
+        messagingAccountId: config.messaging_account_id,
         to: phone,
         bodyText: input.bodyText,
         buttons: input.buttons,
@@ -610,6 +613,7 @@ async function sendInteractiveViaMeta(
     const r = await sendInteractiveList({
       phoneNumberId: config.phone_number_id,
       accessToken,
+      messagingAccountId: config.messaging_account_id,
       to: phone,
       bodyText: input.bodyText,
       buttonLabel: input.buttonLabel,

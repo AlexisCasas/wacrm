@@ -294,6 +294,11 @@ export interface WhatsAppConfig {
   user_id: string;
   phone_number_id: string;
   waba_id?: string;
+  /**
+   * Meta messaging account billed for outbound sends (new account model). Absent/null = a send does not name one. Distinct from
+   * `phone_number_id` (the number) and `waba_id` (the Graph node for templates and subscriptions). Migration 20261103000000.
+   */
+  messaging_account_id?: string | null;
   access_token: string;
   verify_token?: string;
   status: 'connected' | 'disconnected';
