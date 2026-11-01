@@ -24,7 +24,7 @@ Estado: **plan y herramientas preparadas. Nada está instalado ni activado.** Es
 | `scripts/ops/orders-cron/orders-health.sql` / `orders-health.sh` | **Solo SELECT.** Los controles de la sección 4 |
 | `scripts/ops/orders-cron/orders-health-monitor.sh` + `wacrm-orders-health.cron.d` | Monitor cada 5 min con el mismo patrón que `alerts-p8-monitor.sh`: un bloqueo, intervalo mínimo, una línea de log local, repetición limitada, no envía nada a ningún lado |
 | `scripts/ops/orders-cron/wacrm-orders.logrotate` | Rotación semanal de los dos logs |
-| `scripts/qa/orders-delivery/` | QA en base desechable (sin red): 25 comprobaciones PASS del reclamo, los `held`, la reconciliación y cada control de salud |
+| `scripts/qa/orders-delivery/` | QA en base desechable (sin red): 28 comprobaciones PASS del reclamo, los `held`, la reconciliación y cada control de salud |
 
 ## 3. Pruebas ya ejecutadas
 
@@ -36,7 +36,7 @@ Estado: **plan y herramientas preparadas. Nada está instalado ni activado.** Es
 | `held` nunca pasa a `acknowledged` ni se puede cerrar con `finish_order_delivery` | PASS |
 | `failed` no se vuelve a reclamar; el cierre duplicado de un intento se ignora | PASS |
 | Controles O1–O7: cada uno se dispara exactamente en su estado, no antes del umbral, y calla en estado limpio | PASS (12) |
-| Monitor: avisa si el cron está instalado y su log falta o lleva más de 5 min sin escribir | Comprobado a mano en rutas de prueba (cron ausente, log faltante, log parado 20 min); no está automatizado |
+| Monitor, **automatizado** (`scripts/qa/orders-delivery/monitor-test.sh`, sin base ni Docker): 17 escenarios, incluidos endpoint `enabled:false` con cuenta activa, interruptor global apagado, cuenta activa sin cron, cron parado o fallido, error del propio monitor y límite de repetición | PASS (17). Mutación de cada una de las tres alertas nuevas: la prueba falla (4, 5 y 3 fallos) |
 | Vitest: entrega en una pasada y `sent → acknowledged` en una pasada posterior, sin reenviar | PASS |
 | Estado productivo actual con `orders-health.sh` (solo lectura) | Sin alertas: 2 `held`, 1 `acknowledged`, 0 cuentas con entrega |
 
@@ -53,6 +53,11 @@ Estado: **plan y herramientas preparadas. Nada está instalado ni activado.** Es
 | `O7_open_attempts_stale` | un intento «started» de más de 5 min | Pasada interrumpida |
 | `O8_cron_silent` / `O8_cron_log_missing` | el cron está instalado y su log no se escribe | El cron no se ejecuta |
 | `O9_cron_last_run_failed` | la última línea del log del cron no es `rc=0` | Secreto, contenedor o endpoint con error |
+| `O9_endpoint_disabled_with_active_account` | hay una cuenta con entrega habilitada y la última respuesta del endpoint es `enabled:false` | **La integración está apagada mientras una cuenta espera entrega.** Revisar `INKACLICK_ORDERS_ENABLED`, la URL y el token |
+| `O9_global_switch_off_with_active_account` | hay una cuenta con entrega habilitada y `INKACLICK_ORDERS_ENABLED` no vale exactamente `true` en el contenedor | Igual que la anterior; se detecta también sin cron instalado |
+| `O10_account_on_without_cron` | hay una cuenta con entrega habilitada y no existe `/etc/cron.d/wacrm-orders` | Nadie reparte los pedidos. **Es esperable durante la ventana manual (pasos 3 a 6 del plan) y se apaga al instalar el cron en el paso 7** |
+
+Una integración apagada **a propósito** (sin ninguna cuenta con entrega habilitada) sigue siendo saludable aunque el endpoint responda `enabled:false`.
 
 Límite: el monitor **escribe un log local y no envía nada** (igual que los de alertas existentes). Para recibir un aviso activo hay que decidir un canal (correo o WhatsApp interno); no lo he añadido.
 
