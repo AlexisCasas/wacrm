@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { PERU_DEPARTMENTS, validateOrderInput } from "@/lib/orders/fields";
+import { ORDERS_CHANGED_EVENT } from "@/components/orders/order-history";
 import { buildPrefill, type OrderFormValues } from "@/lib/orders/prefill";
 
 /** A member of the account who can be the commercial seller. `id` is the member's user id (stable across renames). */
@@ -130,6 +131,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
         toast.success(body.created === false ? t("alreadyToast") : t("confirmedToast"), {
           description: body.delivery_status === "held" ? t("heldHint") : t("queuedHint"),
         });
+        window.dispatchEvent(new Event(ORDERS_CHANGED_EVENT)); // the history panel refreshes at once
         onOpenChange(false);
         return; // inFlight stays true: this dialog session has already produced its order.
       }

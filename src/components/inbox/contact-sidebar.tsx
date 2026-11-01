@@ -42,6 +42,7 @@ import {
 import { PRESET_TAG_COLORS } from "@/lib/contacts/tag-colors";
 import { toast } from "sonner";
 import { ConfirmOrderButton } from "@/components/orders/confirm-order-button";
+import { OrderHistory } from "@/components/orders/order-history";
 
 interface ContactSidebarProps {
   contact: Contact | null;
@@ -315,6 +316,7 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated, conversat
             {canSendMessages && (
               <div className="mt-3 w-full">
                 <ConfirmOrderButton contact={contact} conversationId={conversationId} />
+                <OrderHistory key={conversationId ?? "none"} conversationId={conversationId} />
               </div>
             )}
           </div>
