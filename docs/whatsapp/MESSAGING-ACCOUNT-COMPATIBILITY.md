@@ -67,7 +67,7 @@ Nota operativa: guardar la configuración desde la pantalla **suscribe la aplica
 | 8 | Conexión (fila preparada, `disconnected`), activación y desconexión protegidas: guardas de rechazo, exactamente una fila, ninguna otra fila cambia, rollback exacto, RLS de la columna | **PASS** (mismo script) |
 | 9 | Rollback del esquema y reaplicación | **PASS** (mismo script) |
 | 10 | ESLint de los archivos tocados y tipado de `src` | **PASS** |
-| 11 | Compilación completa (`docker build`: compila y pasa el tipado de Next) | **PASS** (imagen de prueba ya eliminada) |
+| 11 | Compilación completa (`docker build`: compila y pasa el tipado de Next), repetida sobre el HEAD final | **PASS** (imagen de prueba ya eliminada) |
 
 Probado con mutaciones también en los scripts SQL (quitar la guarda de «la cuenta ya tiene configuración» o la de «es la configuración que creamos» hace fallar la QA).
 
