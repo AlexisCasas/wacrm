@@ -145,6 +145,19 @@ describe("matchesKeywordTrigger", () => {
   });
 });
 
+describe("matchesKeywordTrigger — match_type word", () => {
+  it("matches whole words only, ignoring case, accents and punctuation", () => {
+    const cfg = { keywords: ["Jaén"], match_type: "word" as const };
+    expect(matchesKeywordTrigger("jaen", cfg)).toBe(true);
+    expect(matchesKeywordTrigger("Soy de JAÉN, Cajamarca", cfg)).toBe(true);
+    expect(matchesKeywordTrigger("jaenxx", cfg)).toBe(false);
+  });
+  it("does not fire inside another word", () => {
+    expect(matchesKeywordTrigger("cocina eléctrica", { keywords: ["Ica"], match_type: "word" })).toBe(false);
+    expect(matchesKeywordTrigger("cocina eléctrica", { keywords: ["Ica"] })).toBe(true); // default mode unchanged
+  });
+});
+
 describe("node classification helpers", () => {
   it("isAutoAdvancing covers start + send_message + send_media + condition + set_tag + delay + set_contact_field", () => {
     expect(isAutoAdvancing("start")).toBe(true);

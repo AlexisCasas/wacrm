@@ -41,6 +41,7 @@ import {
   engineSendText,
 } from "./meta-send";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
+import { pickEntryFlow, wordMatchSpecificity } from "./keyword-match";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition-capability";
@@ -132,6 +133,7 @@ export function matchesKeywordTrigger(
   cfg: KeywordTriggerConfig,
 ): boolean {
   if (!text || !cfg.keywords?.length) return false;
+  if (cfg.match_type === "word") return wordMatchSpecificity(text, cfg) !== null;
   const matchType = cfg.match_type ?? "contains";
   const haystack = cfg.case_sensitive ? text : text.toLowerCase();
   for (const raw of cfg.keywords) {
@@ -416,24 +418,14 @@ async function findEntryFlow(
 
   // BSUID contacts (no phone) may only be offered the flows the database authorizes for them; every other flow behaves as if absent.
   const typed = (flows as FlowRow[]).filter((f) => !restrictToFlowIds || restrictToFlowIds.includes(f.id));
-  for (const flow of typed) {
-    if (flow.trigger_type === "keyword") {
-      const cfg = flow.trigger_config as KeywordTriggerConfig;
-      if (candidates.some((text) => matchesKeywordTrigger(text, cfg))) {
-        return flow;
-      }
-    } else if (flow.trigger_type === "first_inbound_message" && isFirstInbound) {
-      // Also reachable by a tap now: a broadcast template with a
-      // quick-reply button can genuinely be what prompts a contact's
-      // first-ever inbound. The automations dispatcher has always
-      // treated a tap that way (the webhook pushes
-      // `first_inbound_message` regardless of envelope) — flows were
-      // the inconsistent half.
-      return flow;
-    }
-    // 'manual' triggers do not auto-start from inbound messages.
+  // Non-`word` flows first, in creation order, exactly as before; `word` flows only compete when none of them matched (see pickEntryFlow).
+  const pick = pickEntryFlow(typed, candidates, isFirstInbound, matchesKeywordTrigger);
+  if (pick.kind === "ambiguous") {
+    // Not an error: two regional flows are equally specific for this message. Nothing starts and a person answers from the Inbox.
+    console.warn("[flows] ambiguous word match, no flow started:", pick.flow_ids.join(","));
+    return null;
   }
-  return null;
+  return pick.kind === "flow" ? pick.flow : null;
 }
 
 // ============================================================
