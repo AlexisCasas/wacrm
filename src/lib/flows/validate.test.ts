@@ -725,3 +725,34 @@ describe("reachableFromEntry", () => {
     expect(set).toEqual(new Set(["a", "b"]));
   });
 });
+
+describe("validateFlowForActivation — trigger match_type word", () => {
+  const run = (trigger_config: Record<string, unknown>) =>
+    validateFlowForActivation({ ...validFlow, trigger_config }, validNodes);
+  const fields = (issues: ReturnType<typeof run>, severity: "error" | "warning") =>
+    issues.filter((i) => i.severity === severity).map((i) => i.field);
+
+  it("accepts a well-formed whole-word trigger", () => {
+    expect(run({ keywords: ["Jaén", "Cajamarca"], match_type: "word", word_priority: 2 })).toEqual([]);
+  });
+  it("still accepts contains, exact and no match_type, exactly as before", () => {
+    for (const match_type of [undefined, "contains", "exact"]) expect(run({ keywords: ["x"], ...(match_type ? { match_type } : {}) })).toEqual([]);
+  });
+  it("rejects an unknown match_type", () => {
+    expect(fields(run({ keywords: ["x"], match_type: "fuzzy" }), "error")).toContain("trigger_config.match_type");
+  });
+  it("errors when no keyword has letters or digits", () => {
+    expect(fields(run({ keywords: ["¿?", "  "], match_type: "word" }), "error")).toContain("trigger_config.keywords");
+  });
+  it("warns about very short keywords and about case_sensitive being ignored", () => {
+    const w = fields(run({ keywords: ["Ic"], match_type: "word", case_sensitive: true }), "warning");
+    expect(w).toContain("trigger_config.keywords");
+    expect(w).toContain("trigger_config.case_sensitive");
+  });
+  it.each([-1, 1.5, "2", null])("rejects word_priority %j", (word_priority) => {
+    expect(fields(run({ keywords: ["x"], match_type: "word", word_priority }), "error")).toContain("trigger_config.word_priority");
+  });
+  it("does not check word_priority outside word mode", () => {
+    expect(run({ keywords: ["x"], word_priority: -5 })).toEqual([]);
+  });
+});

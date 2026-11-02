@@ -28,6 +28,7 @@ import { durableWaitSeconds, isDurableWaitConfig } from "./durable-wait";
 import { INTERACTIVE_LIMITS } from "@/lib/whatsapp/meta-api";
 import { parseVoiceNoteUrl } from "@/lib/media/voice-note-path";
 import { gateModeOf, inspectProductAudiosConfig, productAudiosRouteKeys } from "./product-audios-config";
+import { normalizeForWordMatch } from "./keyword-match";
 
 /** Condition operators that compare the subject with a configured value. */
 const CONDITION_VALUE_OPERATORS: string[] = ["equals", "not_equals", "contains", "not_contains", "starts_with"];
@@ -204,6 +205,27 @@ function validateTrigger(
         message: "Keyword triggers need at least one keyword.",
       });
     } else {
+      // `match_type` is optional (default contains). `word` is the whole-word, accent/case-insensitive matcher (keyword-match.ts).
+      const matchType = trigger_config.match_type;
+      if (matchType !== undefined && matchType !== "contains" && matchType !== "exact" && matchType !== "word") {
+        issues.push({ severity: "error", scope: "trigger", field: "trigger_config.match_type", message: 'match_type must be "contains", "exact" or "word".' });
+      }
+      if (matchType === "word") {
+        const normalized = keywords.filter((k): k is string => typeof k === "string").map((k) => normalizeForWordMatch(k));
+        if (!normalized.some((k) => k.length > 0)) {
+          issues.push({ severity: "error", scope: "trigger", field: "trigger_config.keywords", message: "Whole-word keywords need at least one keyword with letters or digits." });
+        }
+        if (normalized.some((k) => k.length > 0 && k.length < 3)) {
+          issues.push({ severity: "warning", scope: "trigger", field: "trigger_config.keywords", message: "A keyword of fewer than 3 letters matches very often as a whole word." });
+        }
+        if (trigger_config.case_sensitive === true) {
+          issues.push({ severity: "warning", scope: "trigger", field: "trigger_config.case_sensitive", message: "Whole-word matching ignores case_sensitive." });
+        }
+        const prio = trigger_config.word_priority;
+        if (prio !== undefined && !(typeof prio === "number" && Number.isInteger(prio) && prio >= 0)) {
+          issues.push({ severity: "error", scope: "trigger", field: "trigger_config.word_priority", message: "word_priority must be a non-negative integer." });
+        }
+      }
       // Empty / whitespace-only keywords are silent no-ops at match
       // time — call them out so the user doesn't think they configured
       // a keyword that never fires.

@@ -382,8 +382,18 @@ export type FlowNodeType = FlowNodeConfig["node_type"];
 export interface KeywordTriggerConfig {
   /** One or more keywords. Match is case-insensitive by default. */
   keywords: string[];
-  match_type?: "exact" | "contains";
+  /**
+   * `contains` (default): case-insensitive substring. `exact`: the whole message. `word` (opt-in): whole words, folding case, accents and
+   * punctuation, evaluated only after every non-`word` flow (see `pickEntryFlow`).
+   */
+  match_type?: "exact" | "contains" | "word";
+  /** Ignored by `word` (always case-insensitive). */
   case_sensitive?: boolean;
+  /**
+   * `word` only: breaks a tie between flows whose best keyword has the same number of words (higher wins; default 0). A tie that remains
+   * is ambiguous and starts nothing. Non-negative integer.
+   */
+  word_priority?: number;
   /**
    * TEMPORARY UX metadata (feat/flow-advertising-links) — the message
    * pre-filled by a `wa.me` advertising link. Purely descriptive: the
