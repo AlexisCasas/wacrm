@@ -44,9 +44,15 @@ No migration, no new table, no new environment variable, no UI change (the flow 
 - Production data check (read-only, before this PR): no flow of any account has `match_type` other than `exact` (1 flow) or none, so the stricter validation of unknown values affects nothing that exists.
 - Automations (`src/lib/automations`) have their own keyword matcher and are not touched.
 
+## 4b. Test coverage
+
+- Default suite: 237 files, 3464 tests pass; ESLint reports 0 errors (the 48 warnings are pre-existing and none is in a changed file); `tsc` has no errors under `src`.
+- Six test files are skipped without a database. Three of them drive the real flow engine (`dispatchInboundToFlows`) against a disposable PostgreSQL + PostgREST and are relevant to this change; they were run in isolation on this branch: subflow execution 32/32, durable waits 9/9, customer-reply condition 18/19. The one failure (R09) fails identically on unmodified `main` (a database trigger added by migration `20261031034834` rejects a fixture update that predates it), so it is not caused by this PR; the fixture needs updating separately.
+- Not run, not related to this change: `audio-guide` sequencer and voice-note storage QA, and the orders end-to-end integration test.
+
 ## 5. Same-data comparison of the engines
 
-One case set of 722 cases, built from the production flows of the pilot account (regional keywords, product advertising texts, 48 distinct real inbound messages, negative and hierarchy cases), evaluated four ways:
+One case set of 718 cases (552 + 48 + 95 + 15 + 8, counted from the evaluated data), built from the production flows of the pilot account (regional keywords, product advertising texts, 48 distinct real inbound messages, negative and hierarchy cases), evaluated four ways:
 
 1. production today (62 active flows, regionals in draft);
 2. today's engine with all 234 regionals active (what activating them as-is would do);
