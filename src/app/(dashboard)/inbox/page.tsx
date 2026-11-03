@@ -712,6 +712,24 @@ function InboxPageInner() {
     setTagCatalogVersion((v) => v + 1);
   }, []);
 
+  /** Keep the thread header, right sidebar and conversation list consistent
+   * after a persisted standard-field edit (never optimistic). */
+  const handleContactUpdated = useCallback((updated: Contact) => {
+    setConversations((prev) => prev.map((conversation) =>
+      conversation.contact?.id === updated.id
+        ? { ...conversation, contact: { ...conversation.contact, ...updated } }
+        : conversation
+    ));
+    setActiveContact((prev) =>
+      prev?.id === updated.id ? { ...prev, ...updated } : prev
+    );
+    setActiveConversation((prev) =>
+      prev?.contact?.id === updated.id
+        ? { ...prev, contact: { ...prev.contact, ...updated } }
+        : prev
+    );
+  }, []);
+
   /**
    * A contact was just blocked from this open conversation. The
    * conversation itself is never deleted (block/unblock never touches
@@ -819,6 +837,7 @@ function InboxPageInner() {
               conversationId={activeConversation?.id ?? null}
               onTagsChanged={handleContactTagsChange}
               onTagCreated={handleTagCreated}
+              onContactUpdated={handleContactUpdated}
             />
           </div>
         )}

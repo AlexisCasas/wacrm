@@ -1,6 +1,7 @@
 "use client";
 
 import { ContactPhoneLine } from "@/components/contacts/contact-phone-line";
+import { InboxContactFields } from "./contact-fields-editor";
 import { contactLabel, hasPhone } from "@/lib/contacts/display";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -20,6 +21,8 @@ import {
   Search,
   X,
   Loader2,
+  ChevronDown,
+  NotebookPen,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,9 +69,11 @@ interface ContactSidebarProps {
   onTagCreated?: (tag: Tag) => void;
   /** Open conversation, attached to a confirmed order when the agent presses "Confirmar pedido". */
   conversationId?: string | null;
+  /** Patch the Inbox's active contact after a successful standard-field edit. */
+  onContactUpdated?: (contact: Contact) => void;
 }
 
-export function ContactSidebar({ contact, onTagsChanged, onTagCreated, conversationId }: ContactSidebarProps) {
+export function ContactSidebar({ contact, onTagsChanged, onTagCreated, onContactUpdated, conversationId }: ContactSidebarProps) {
   const tSidebar = useTranslations("Inbox.sidebar");
   const tThread = useTranslations("Inbox.messageThread");
   const dateFnsLocale = useDateFnsLocale();
@@ -79,6 +84,7 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated, conversat
   const [notes, setNotes] = useState<ContactNote[]>([]);
   const [newNote, setNewNote] = useState("");
   const [addingNote, setAddingNote] = useState(false);
+  const [fieldsOpen, setFieldsOpen] = useState(false);
 
   // Tag catalog for the account — NOT the contact's own tags (those
   // come from `contact.tags`, already embedded by the Inbox's
@@ -607,6 +613,31 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated, conversat
               </div>
             </div>
           </div>
+
+          {/* Standard and custom contact values, under Notes in the
+              existing sidebar scroll area; no new full-screen dialog. */}
+          <div className="my-4 border-t border-border" />
+          <section aria-label={tSidebar("fieldsTitle")}>
+            <button
+              type="button"
+              aria-expanded={fieldsOpen}
+              onClick={() => setFieldsOpen((current) => !current)}
+              className="flex w-full items-center justify-between gap-2 rounded-md px-1 py-1 text-xs font-medium uppercase tracking-wider text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <span className="flex items-center gap-2">
+                <NotebookPen className="h-3.5 w-3.5" />
+                {tSidebar("fieldsTitle")}
+              </span>
+              <ChevronDown className={cn("h-4 w-4 transition-transform", fieldsOpen && "rotate-180")} />
+            </button>
+            {fieldsOpen && (
+              <InboxContactFields
+                key={contact.id}
+                contact={contact}
+                onContactUpdated={onContactUpdated}
+              />
+            )}
+          </section>
         </div>
       </ScrollArea>
     </div>
