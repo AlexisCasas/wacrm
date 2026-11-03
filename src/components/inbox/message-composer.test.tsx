@@ -158,12 +158,27 @@ afterEach(() => {
   cleanup();
 });
 
-describe("MessageComposer — attach menu separates upload vs. record voice note", () => {
-  it("shows both 'Upload voice note' and 'Record voice note' as distinct entries", async () => {
+describe("MessageComposer — direct composer shortcuts", () => {
+  it("keeps upload voice note in the attach menu and exposes recording directly", async () => {
     renderComposer();
+    expect(screen.getByRole("button", { name: "recordVoiceNote" })).toBeEnabled();
     await openAttachMenu();
     expect(screen.getByText("uploadVoiceNote")).toBeInTheDocument();
-    expect(screen.getByText("recordVoiceNote")).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "recordVoiceNote" })).not.toBeInTheDocument();
+  });
+
+  it("opens the existing quick-reply picker directly, without sending a message", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ quick_replies: [] }),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onSendMedia = renderComposer();
+    fireEvent.click(screen.getByRole("button", { name: "quickReplies" }));
+    expect(await screen.findByPlaceholderText("quickRepliesSearchPlaceholder")).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onSendMedia).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
   });
 });
 
@@ -296,8 +311,7 @@ describe("MessageComposer — sendDraft wires voiceNote through to onSendMedia",
 
   it("a recorded voice note sends with voiceNote=true", async () => {
     const onSendMedia = renderComposer();
-    await openAttachMenu();
-    fireEvent.click(screen.getByText("recordVoiceNote"));
+    fireEvent.click(screen.getByRole("button", { name: "recordVoiceNote" }));
 
     await waitFor(() => expect(lastRecorder).not.toBeNull());
     // Simulate opus-recorder finishing with a real (non-empty) take.
