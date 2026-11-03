@@ -116,10 +116,11 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
     return () => { cancelled = true; };
     // The component is keyed by contact.id in the sidebar, so any pending
     // response for a previous contact is discarded on unmount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, contact.id, reload, supabase]);
 
   const dirtyStandard = (Object.keys(standard) as (keyof StandardValues)[])
-    .some((key) => clean(standard[key]) !== savedStandard[key]);
+    .some((key) => clean(standard[key]) !== clean(savedStandard[key]));
   const dirtyCustomIds = changedCustomFieldIds(fields, values, savedValues);
   const filtered = useMemo(() => fields.filter((field) =>
     normalizedSearch(field.field_name).includes(normalizedSearch(search)),
@@ -138,7 +139,7 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
     if (!canSendMessages || !accountId || !dbContact || !dirtyStandard || savingStandard) return;
     const patch: Record<string, string | null> = {};
     for (const key of Object.keys(standard) as (keyof StandardValues)[]) {
-      if (clean(standard[key]) !== savedStandard[key]) {
+      if (clean(standard[key]) !== clean(savedStandard[key])) {
         patch[key] = clean(standard[key]) || null;
       }
     }
