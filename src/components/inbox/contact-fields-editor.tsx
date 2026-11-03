@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
 import { createClient } from "@/lib/supabase/client";
+import { changedCustomFieldIds } from "@/lib/contacts/field-diff";
 import type { Contact, CustomField } from "@/types";
 
 type StandardValues = { name: string; email: string; company: string };
@@ -26,17 +27,6 @@ function initialStandard(contact: Contact): StandardValues {
 
 function clean(value: string): string {
   return value.trim();
-}
-
-/** Only changed values are written; unchanged flow-managed fields are never touched. */
-export function changedCustomFieldIds(
-  fields: FieldDefinition[],
-  next: Record<string, string>,
-  previous: Record<string, string>,
-): string[] {
-  return fields
-    .filter((field) => clean(next[field.id] ?? "") !== clean(previous[field.id] ?? ""))
-    .map((field) => field.id);
 }
 
 function normalizedSearch(text: string): string {
