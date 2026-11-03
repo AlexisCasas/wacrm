@@ -35,7 +35,7 @@ export function changedCustomFieldIds(
   previous: Record<string, string>,
 ): string[] {
   return fields
-    .filter((field) => clean(next[field.id] ?? "") !== (previous[field.id] ?? ""))
+    .filter((field) => clean(next[field.id] ?? "") !== clean(previous[field.id] ?? ""))
     .map((field) => field.id);
 }
 
@@ -183,28 +183,29 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
         const next = clean(values[fieldId] ?? "");
         const oldRow = stored[fieldId];
         if (oldRow) {
-          // Optimistic compare-and-set: a flow/agent that changed this exact
-          // field since load wins; report a conflict instead of overwriting.
-          let query = next
-            ? supabase.from("contact_custom_values")
-                .update({ value: next })
-                .eq("id", oldRow.id)
-                .eq("contact_id", contact.id)
-                .eq("custom_field_id", fieldId)
-            : supabase.from("contact_custom_values")
-                .delete()
-                .eq("id", oldRow.id)
-                .eq("contact_id", contact.id)
-                .eq("custom_field_id", fieldId);
-          query = oldRow.value === null
-            ? query.is("value", null)
-            : query.eq("value", oldRow.value);
-          const { data, error } = await query.select("id, custom_field_id, value").maybeSingle();
-          if (error) throw error;
-          if (!data) throw new Error("contact_custom_value_changed");
+          // Optimistic compare-and-set: another agent or flow that changed
+          // this exact value since load wins, rather than being overwritten.
           if (next) {
+            let query = supabase.from("contact_custom_values")
+              .update({ value: next })
+              .eq("id", oldRow.id)
+              .eq("contact_id", contact.id)
+              .eq("custom_field_id", fieldId);
+            query = oldRow.value === null ? query.is("value", null) : query.eq("value", oldRow.value);
+            const { data, error } = await query.select("id, custom_field_id, value").maybeSingle();
+            if (error) throw error;
+            if (!data) throw new Error("contact_custom_value_changed");
             setStored((prev) => ({ ...prev, [fieldId]: data as StoredValue }));
           } else {
+            let query = supabase.from("contact_custom_values")
+              .delete()
+              .eq("id", oldRow.id)
+              .eq("contact_id", contact.id)
+              .eq("custom_field_id", fieldId);
+            query = oldRow.value === null ? query.is("value", null) : query.eq("value", oldRow.value);
+            const { data, error } = await query.select("id").maybeSingle();
+            if (error) throw error;
+            if (!data) throw new Error("contact_custom_value_changed");
             setStored((prev) => {
               const copy = { ...prev };
               delete copy[fieldId];
@@ -228,8 +229,10 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
         setValues((prev) => ({ ...prev, [fieldId]: next }));
       }
       toast.success(t("fieldsSaved"));
-    } catch {
-      toast.error(t("fieldsConflict"));
+    } catch (error) {
+      const conflict = error instanceof Error && error.message === "contact_custom_value_changed";
+      const unique = typeof error === "object" && error !== null && "code" in error && error.code === "23505";
+      toast.error(t(conflict || unique ? "fieldsConflict" : "fieldsSaveError"));
     } finally {
       setSavingCustom(false);
     }
