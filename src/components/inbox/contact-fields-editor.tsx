@@ -61,6 +61,9 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
   const [savingStandard, setSavingStandard] = useState(false);
   const [savingCustom, setSavingCustom] = useState(false);
   const [reload, setReload] = useState(0);
+  // Contact id the loaded state belongs to. Never render values while it
+  // differs from the contact on screen, even if the component is reused.
+  const [loadedFor, setLoadedFor] = useState<string | null>(null);
 
   useEffect(() => {
     if (!accountId) return;
@@ -104,6 +107,7 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
       setValues(original);
       setSavedValues(original);
       setStored(byField);
+      setLoadedFor(contact.id);
       setLoadError(false);
       setLoading(false);
       } catch {
@@ -238,7 +242,7 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
 
   const canEdit = Boolean(accountId && canSendMessages);
 
-  if (loading) {
+  if (loading && !loadError) {
     return (
       <div className="flex justify-center py-5" role="status">
         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
@@ -254,6 +258,14 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
           <RefreshCw className="mr-1 h-3.5 w-3.5" />
           {t("fieldsReload")}
         </Button>
+      </div>
+    );
+  }
+
+  if (loadedFor !== contact.id) {
+    return (
+      <div className="flex justify-center py-5" role="status">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
       </div>
     );
   }
@@ -306,7 +318,8 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
                 placeholder={t("fieldsSearch")} aria-label={t("fieldsSearch")}
                 className="h-8 pl-7 text-xs" />
             </div>
-            <div className="space-y-2">
+            <div className="max-h-64 space-y-2 overflow-y-auto overscroll-contain pr-1"
+              data-testid="custom-fields-scroll">
               {filtered.length === 0 && <p className="text-xs text-muted-foreground">{t("fieldsNoMatches")}</p>}
               {filtered.map((field) => (
                 <label key={field.id} className="block space-y-1">
