@@ -431,3 +431,19 @@ describe("ContactSidebar — switching contacts does not leak state", () => {
     expect(screen.queryByText("Favoritos")).not.toBeInTheDocument();
   });
 });
+
+describe("ContactSidebar — scroll layout", () => {
+  it("keeps a bounded height so the ScrollArea can shrink and scroll", () => {
+    const { container } = render(<ContactSidebar contact={makeContact()} />);
+    const area = container.querySelector('[data-slot="scroll-area"]') as HTMLElement;
+    const root = area.parentElement as HTMLElement;
+    // Root: bounded by the Inbox row (h-full) and allowed to shrink below content.
+    expect(root.className).toContain("h-full");
+    expect(root.className).toContain("min-h-0");
+    expect(root.className).toContain("flex-col");
+    // Without min-h-0 a flex-1 item grows to its content (min-height:auto)
+    // and the Inbox row's overflow-hidden clips it instead of scrolling.
+    expect(area.className).toContain("min-h-0");
+    expect(area.className).toContain("flex-1");
+  });
+});
