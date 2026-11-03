@@ -66,6 +66,7 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
     if (!accountId) return;
     let cancelled = false;
     void (async () => {
+      try {
       const [contactRes, fieldsRes, valuesRes] = await Promise.all([
         supabase.from("contacts")
           .select("id, account_id, name, phone, email, company, wa_username, phone_optional, updated_at")
@@ -105,6 +106,12 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
       setStored(byField);
       setLoadError(false);
       setLoading(false);
+      } catch {
+        if (!cancelled) {
+          setLoadError(true);
+          setLoading(false);
+        }
+      }
     })();
     return () => { cancelled = true; };
     // The component is keyed by contact.id in the sidebar, so any pending
