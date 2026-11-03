@@ -1581,16 +1581,20 @@ export function isReplaceableWaitingRun(run: FlowRunRow): boolean {
  * Closes a parked run as `paused_by_agent` + `end_reason = reason` in ONE conditional UPDATE that repeats every condition of `isReplaceableWaitingRun`
  * in the WHERE clause. `claim_due_flow_waits` and `consume_flow_wait` only touch `status = 'active'` runs, so the closed run can never be resumed.
  * `wait_until` / `wait_node_key` are kept as history. False when the run is no longer in that state (a worker claimed it, it ended, another start won).
+ * The WHERE also pins the exact wait that was read (`current_node_key`, `wait_node_key`, `wait_until`): a run that was resumed and parked again on a
+ * later wait between the read and this UPDATE has a new `wait_until` and is NOT the run the caller decided to replace.
  */
-async function interruptWaitingRun(db: AdminClient, run: FlowRunRow, reason: ReplaceReason): Promise<boolean> {
+/** Exported for the disposable-database suite (replace-waiting-run.engine.http.test.ts); not part of the engine's public surface. */
+export async function interruptWaitingRun(db: AdminClient, run: FlowRunRow, reason: ReplaceReason): Promise<boolean> {
   const { data, error } = await db
     .from("flow_runs")
     .update({ status: "paused_by_agent", ended_at: new Date().toISOString(), end_reason: reason })
     .eq("id", run.id)
     .eq("account_id", run.account_id)
     .eq("status", "active")
-    .not("wait_until", "is", null)
-    .not("wait_node_key", "is", null)
+    .eq("wait_until", run.wait_until as string)
+    .eq("wait_node_key", run.wait_node_key as string)
+    .eq("current_node_key", run.current_node_key as string)
     .is("wait_claim_token", null)
     .is("current_flow_id", null)
     .select("id");
@@ -1601,16 +1605,24 @@ async function interruptWaitingRun(db: AdminClient, run: FlowRunRow, reason: Rep
   return Array.isArray(data) && data.length === 1;
 }
 
-/** Undo of `interruptWaitingRun` when the new run could not be created. A no-op (and a logged unique violation) if the contact already has another active run. */
-async function restoreInterruptedRun(db: AdminClient, run: FlowRunRow, reason: ReplaceReason): Promise<void> {
-  const { error } = await db
+/**
+ * Undo of `interruptWaitingRun` when the new run could not be created. Best effort, NOT a transaction: it touches only the row this swap closed
+ * (`paused_by_agent` + this `end_reason`). It fails (logged, plus an `error` event on the old run) when the contact already has another active run
+ * (`idx_one_active_run_per_contact`) or the UPDATE errors; the old run then stays paused for an agent to look at, never silently resumed twice.
+ */
+export async function restoreInterruptedRun(db: AdminClient, run: FlowRunRow, reason: ReplaceReason): Promise<void> {
+  const { data, error } = await db
     .from("flow_runs")
     .update({ status: "active", ended_at: null, end_reason: null })
     .eq("id", run.id)
     .eq("account_id", run.account_id)
     .eq("status", "paused_by_agent")
-    .eq("end_reason", reason);
-  if (error) console.error("[flows] restoreInterruptedRun error:", error.message);
+    .eq("end_reason", reason)
+    .select("id");
+  if (error || !Array.isArray(data) || data.length !== 1) {
+    console.error("[flows] restoreInterruptedRun failed:", error?.message ?? "no row restored");
+    await logEvent(db, run.id, "error", run.wait_node_key ?? null, { reason: "replace_restore_failed", replace_reason: reason, detail: error?.message ?? "no_row_restored" });
+  }
 }
 
 type CreateRunResult = Awaited<ReturnType<typeof createAndStartFlowRun>>;
