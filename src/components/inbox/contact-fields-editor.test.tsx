@@ -146,6 +146,8 @@ describe("InboxContactFields — per-contact custom values", () => {
     const box = screen.getByTestId("custom-fields-scroll");
     expect(box.className).toContain("max-h-");
     expect(box.className).toContain("overflow-y-auto");
+    // Scroll must chain to the sidebar once the list hits its edge.
+    expect(box.className).not.toContain("overscroll");
     expect(box.querySelectorAll("input").length).toBe(NAMES.length);
   });
 

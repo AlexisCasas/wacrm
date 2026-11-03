@@ -318,7 +318,7 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
                 placeholder={t("fieldsSearch")} aria-label={t("fieldsSearch")}
                 className="h-8 pl-7 text-xs" />
             </div>
-            <div className="max-h-64 space-y-2 overflow-y-auto overscroll-contain pr-1"
+            <div className="max-h-64 space-y-2 overflow-y-auto pr-1"
               data-testid="custom-fields-scroll">
               {filtered.length === 0 && <p className="text-xs text-muted-foreground">{t("fieldsNoMatches")}</p>}
               {filtered.map((field) => (
