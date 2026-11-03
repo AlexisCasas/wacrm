@@ -1552,6 +1552,150 @@ async function advanceCurrentNodeKey(
 }
 
 // ============================================================
+// Replacing a run that is only waiting.
+//
+// `idx_one_active_run_per_contact` stays the rule: one active run per contact. The only change is WHO may free the slot: a run parked on a durable
+// delay (nothing is being sent, nothing is processing) can be interrupted by a NEW flow that was explicitly chosen (manual start) or clearly selected
+// by a keyword. The order is always: resolve + validate the new flow, close the old run with a compare-and-set that re-checks it is still active and
+// parked, create the new run, and put the old run back if the new one could not be created.
+// ============================================================
+
+export type ReplaceReason = "replaced_by_manual_flow" | "replaced_by_keyword_flow";
+
+/**
+ * True only for a run that is parked on a durable delay of its own flow: active, `wait_until` + `wait_node_key` set, parked on the node it is at, no
+ * worker holding the claim (a claimed wait is being resumed right now) and not inside a called flow. Everything else keeps the one-active-run protection.
+ */
+export function isReplaceableWaitingRun(run: FlowRunRow): boolean {
+  return (
+    run.status === "active" &&
+    Boolean(run.wait_until) &&
+    Boolean(run.wait_node_key) &&
+    run.wait_node_key === run.current_node_key &&
+    !run.wait_claim_token &&
+    !run.current_flow_id
+  );
+}
+
+/**
+ * Closes a parked run as `paused_by_agent` + `end_reason = reason` in ONE conditional UPDATE that repeats every condition of `isReplaceableWaitingRun`
+ * in the WHERE clause. `claim_due_flow_waits` and `consume_flow_wait` only touch `status = 'active'` runs, so the closed run can never be resumed.
+ * `wait_until` / `wait_node_key` are kept as history. False when the run is no longer in that state (a worker claimed it, it ended, another start won).
+ * The WHERE also pins the exact wait that was read (`current_node_key`, `wait_node_key`, `wait_until`): a run that was resumed and parked again on a
+ * later wait between the read and this UPDATE has a new `wait_until` and is NOT the run the caller decided to replace.
+ */
+/** Exported for the disposable-database suite (replace-waiting-run.engine.http.test.ts); not part of the engine's public surface. */
+export async function interruptWaitingRun(db: AdminClient, run: FlowRunRow, reason: ReplaceReason): Promise<boolean> {
+  const { data, error } = await db
+    .from("flow_runs")
+    .update({ status: "paused_by_agent", ended_at: new Date().toISOString(), end_reason: reason })
+    .eq("id", run.id)
+    .eq("account_id", run.account_id)
+    .eq("status", "active")
+    .eq("wait_until", run.wait_until as string)
+    .eq("wait_node_key", run.wait_node_key as string)
+    .eq("current_node_key", run.current_node_key as string)
+    .is("wait_claim_token", null)
+    .is("current_flow_id", null)
+    .select("id");
+  if (error) {
+    console.error("[flows] interruptWaitingRun error:", error.message);
+    return false;
+  }
+  return Array.isArray(data) && data.length === 1;
+}
+
+/**
+ * Undo of `interruptWaitingRun` when the new run could not be created. Best effort, NOT a transaction: it touches only the row this swap closed
+ * (`paused_by_agent` + this `end_reason`). It fails (logged, plus an `error` event on the old run) when the contact already has another active run
+ * (`idx_one_active_run_per_contact`) or the UPDATE errors; the old run then stays paused for an agent to look at, never silently resumed twice.
+ */
+export async function restoreInterruptedRun(db: AdminClient, run: FlowRunRow, reason: ReplaceReason): Promise<void> {
+  const { data, error } = await db
+    .from("flow_runs")
+    .update({ status: "active", ended_at: null, end_reason: null })
+    .eq("id", run.id)
+    .eq("account_id", run.account_id)
+    .eq("status", "paused_by_agent")
+    .eq("end_reason", reason)
+    .select("id");
+  if (error || !Array.isArray(data) || data.length !== 1) {
+    console.error("[flows] restoreInterruptedRun failed:", error?.message ?? "no row restored");
+    await logEvent(db, run.id, "error", run.wait_node_key ?? null, { reason: "replace_restore_failed", replace_reason: reason, detail: error?.message ?? "no_row_restored" });
+  }
+}
+
+type CreateRunResult = Awaited<ReturnType<typeof createAndStartFlowRun>>;
+
+/** The new flow must already be resolved and validated by the caller. `stale` means the old run was no longer parked: nothing was changed. */
+async function replaceWaitingRunAndStart(
+  db: AdminClient,
+  waiting: FlowRunRow,
+  reason: ReplaceReason,
+  flow: FlowRow,
+  contactId: string,
+  conversationId: string | null,
+  nodes: Map<string, FlowNodeRow>,
+  startedEventPayloadExtra: Record<string, unknown>,
+): Promise<CreateRunResult | { kind: "stale" }> {
+  if (!(await interruptWaitingRun(db, waiting, reason))) return { kind: "stale" };
+  let result: CreateRunResult;
+  try {
+    result = await createAndStartFlowRun(db, flow, contactId, conversationId, nodes, {
+      ...startedEventPayloadExtra,
+      replaced_run_id: waiting.id,
+      replaced_flow_id: waiting.flow_id,
+      replaced_reason: reason,
+    });
+  } catch (err) {
+    await restoreInterruptedRun(db, waiting, reason);
+    throw err;
+  }
+  if (result.kind !== "started") await restoreInterruptedRun(db, waiting, reason);
+  return result;
+}
+
+/**
+ * Keyword path: the contact's run is parked on a delay and a text message arrives. The message selects a flow with exactly the policy of a contact
+ * without a run (`findEntryFlow`: keyword triggers only here, an ambiguous word match picks nothing). Returns null — meaning "behave as before, the
+ * message is a reply to the parked run" — unless a DIFFERENT flow was selected, can start for this contact, and the swap went through.
+ */
+async function tryReplaceWaitingRunByKeyword(
+  db: AdminClient,
+  waiting: FlowRunRow,
+  input: DispatchInboundInput,
+): Promise<DispatchInboundResult | null> {
+  const flow = await findEntryFlow(db, input.accountId, input.message, false, input.restrictToFlowIds);
+  if (!flow || !flow.entry_node_id || flow.id === waiting.flow_id || flow.trigger_type !== "keyword") return null;
+
+  const { data: contactData } = await db
+    .from("contacts")
+    .select("id, blocked, phone")
+    .eq("id", input.contactId)
+    .eq("account_id", input.accountId)
+    .maybeSingle();
+  const contact = contactData as { id: string; blocked: boolean; phone: string | null } | null;
+  if (!contact || contact.blocked) return null;
+  try {
+    await resolveContactTarget(db, input.accountId, contact, { origin: "flow_preflight", flowId: flow.id });
+  } catch {
+    return null;
+  }
+  const nodes = await loadAllNodes(db, flow.id);
+  if (!nodes.has(flow.entry_node_id)) return null;
+
+  const result = await replaceWaitingRunAndStart(db, waiting, "replaced_by_keyword_flow", flow, input.contactId, input.conversationId, nodes, {
+    meta_message_id: input.message.meta_message_id,
+  });
+  if (result.kind !== "started") return null;
+  return {
+    consumed: true,
+    flow_run_id: result.run.id,
+    outcome: result.advanceOutcome === "advanced" ? "started" : (result.advanceOutcome as DispatchInboundResult["outcome"]),
+  };
+}
+
+// ============================================================
 // Public entry point — the webhook calls this on every inbound.
 // ============================================================
 
@@ -1586,6 +1730,12 @@ export async function dispatchInboundToFlows(
           flow_run_id: activeRun.id,
           outcome: "duplicate_inbound_ignored",
         };
+      }
+      // A run parked ONLY on a durable delay does not block a keyword that clearly selects ANOTHER flow; anything else (a plain reply, the same flow, an
+      // ambiguous match, a run that is not parked) falls through to the behaviour below, unchanged.
+      if (isReplaceableWaitingRun(activeRun) && input.message.kind === "text") {
+        const replaced = await tryReplaceWaitingRunByKeyword(db, activeRun, input);
+        if (replaced) return replaced;
       }
       // One SELECT for the whole flow's nodes — advance loop is now
       // in-memory. See loadAllNodes.
@@ -1966,7 +2116,7 @@ export interface StartFlowManuallyArgs {
 }
 
 export type StartFlowManuallyResult =
-  | { outcome: "started"; flow_run_id: string; flow_id: string; flow_name: string }
+  | { outcome: "started"; flow_run_id: string; flow_id: string; flow_name: string; replaced_flow_run_id?: string }
   // P1 bug #2 (docs/P1_DUPLICATE_CHATS_AUDIT.md) — the run WAS created
   // and DID execute (it's preserved for audit — see the flow_run_id),
   // but its first advance ended in `status='failed'` before ever
@@ -2080,25 +2230,32 @@ export async function startFlowManually(
   // index (checked again below via 23505) is the last line of defense
   // against a genuine race.
   const existingActive = await loadActiveRunForContact(db, accountId, contactId);
-  if (existingActive) {
-    const activeFlow = await loadFlow(db, existingActive.flow_id);
+  const activeConflict = async (run: FlowRunRow): Promise<StartFlowManuallyResult> => {
+    const activeFlow = await loadFlow(db, run.flow_id);
     return {
       outcome: "active_flow_exists",
-      active_flow_run_id: existingActive.id,
-      active_flow_id: existingActive.flow_id,
+      active_flow_run_id: run.id,
+      active_flow_id: run.flow_id,
       active_flow_name: activeFlow?.name,
     };
-  }
+  };
+  // Only a run parked on a durable delay, and only for a DIFFERENT flow, may be replaced; every other active run keeps the conflict.
+  const replacing = existingActive && existingActive.flow_id !== flow.id && isReplaceableWaitingRun(existingActive) ? existingActive : null;
+  if (existingActive && !replacing) return activeConflict(existingActive);
 
   const nodes = await loadAllNodes(db, flow.id);
-  const result = await createAndStartFlowRun(
-    db,
-    flow,
-    contactId,
-    conversationId,
-    nodes,
-    { trigger_source: "manual", initiated_by_user_id: initiatedByUserId },
-  );
+  // The new flow is validated BEFORE the parked run is touched: an unusable flow leaves the contact exactly as it was.
+  if (replacing && !nodes.has(flow.entry_node_id)) return { outcome: "flow_not_active" };
+  const startedExtra = { trigger_source: "manual", initiated_by_user_id: initiatedByUserId };
+  const created = replacing
+    ? await replaceWaitingRunAndStart(db, replacing, "replaced_by_manual_flow", flow, contactId, conversationId, nodes, startedExtra)
+    : await createAndStartFlowRun(db, flow, contactId, conversationId, nodes, startedExtra);
+  // The parked run stopped being parked between the read and the swap (a worker claimed it, or another start won): nothing was changed.
+  if (created.kind === "stale") {
+    const current = await loadActiveRunForContact(db, accountId, contactId);
+    return current ? activeConflict(current) : { outcome: "error", message: "Waiting run changed during the replacement" };
+  }
+  const result = created;
 
   if (result.kind === "duplicate_active_run") {
     // Lost the race despite the pre-check — recover conflict details
@@ -2181,6 +2338,7 @@ export async function startFlowManually(
     flow_run_id: result.run.id,
     flow_id: flow.id,
     flow_name: flow.name,
+    ...(replacing ? { replaced_flow_run_id: replacing.id } : {}),
   };
 }
 

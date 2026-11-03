@@ -117,6 +117,7 @@ export async function POST(
           flow_run_id: result.flow_run_id,
           flow_id: result.flow_id,
           flow_name: result.flow_name,
+          ...(result.replaced_flow_run_id ? { replaced_flow_run_id: result.replaced_flow_run_id } : {}),
         },
         { status: 201 },
       )
