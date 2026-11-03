@@ -761,7 +761,7 @@ export function MessageComposer({
           </Button>
         </div>
       ) : (
-        <div className="flex items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2">
           {/* Attach menu — photo / video / document / voice. */}
           <DropdownMenu>
             <DropdownMenuTrigger
@@ -798,10 +798,6 @@ export function MessageComposer({
                 <Upload className="mr-2 h-4 w-4" />
                 {t("uploadVoiceNote")}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => void startRecording()}>
-                <Mic className="mr-2 h-4 w-4" />
-                {t("recordVoiceNote")}
-              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
 
@@ -826,12 +822,32 @@ export function MessageComposer({
                 <MessageSquareDashed className="mr-2 h-4 w-4" />
                 {t("interactiveMessage")}
               </DropdownMenuItem>
-              <DropdownMenuItem onClick={() => setQuickReplyOpen(true)}>
-                <Zap className="mr-2 h-4 w-4" />
-                {t("quickReplies")}
-              </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
+
+          {/* Direct voice and quick-reply shortcuts. Reuse existing flows;
+              no auto-send and the same composer restrictions as the menus. */}
+          <button
+            type="button"
+            onClick={() => void startRecording()}
+            disabled={inputsDisabled || busy}
+            title={t("recordVoiceNote")}
+            aria-label={t("recordVoiceNote")}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Mic className="h-4 w-4" />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setQuickReplyOpen(true)}
+            disabled={inputsDisabled}
+            title={t("quickReplies")}
+            aria-label={t("quickReplies")}
+            className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Zap className="h-4 w-4" />
+          </button>
 
           <GatedButton
             variant="ghost"
@@ -883,7 +899,7 @@ export function MessageComposer({
             // The placeholder text also surfaces the read-only state.
             title={readOnly ? t("readOnlyTitle") : undefined}
             className={cn(
-              "flex-1 resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50",
+              "min-w-[10rem] flex-1 resize-none rounded-xl border border-border bg-muted px-4 py-2.5 text-sm text-foreground placeholder-muted-foreground outline-none transition-colors focus:border-primary/50",
               inputsDisabled && "cursor-not-allowed opacity-50"
             )}
           />
