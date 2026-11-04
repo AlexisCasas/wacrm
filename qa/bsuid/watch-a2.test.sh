@@ -35,6 +35,16 @@ begin
   end loop;
   return r;
 end $f$;
+-- ev: one event of a run at a given age; mkrun0: a run with only its started event (the tests then add node_entered / send_intent / message_sent by hand)
+create function ev(r uuid, t text, node text, pl jsonb, ago interval) returns void language sql as $f$
+  insert into flow_run_events(flow_run_id, event_type, node_key, payload, created_at) values (r, t, node, pl, now() - ago) $f$;
+create function mkrun0(p_acc uuid, p_c uuid, p_meta text, p_ago interval) returns uuid language plpgsql as $f$
+declare r uuid := gen_random_uuid();
+begin
+  insert into flow_runs(id, account_id, contact_id, started_at) values (r, p_acc, p_c, now() - p_ago);
+  perform ev(r, 'started', 'start', jsonb_build_object('trigger_type','keyword','meta_message_id',p_meta), p_ago);
+  return r;
+end $f$;
 SQL
 A=a1a1a1a1-0000-4000-8000-00000000000a; B=b2b2b2b2-0000-4000-8000-00000000000b
 FAILS=0
@@ -119,5 +129,37 @@ WATCH_ACCOUNTS=$A WATCH; R=$?
 chk "B duplicate, only A watched: exit 0, B master on, B auth enabled" "$R$(master $B)$(auths $B)" "0t1"
 WATCH_ACCOUNTS=$B WATCH; R=$?
 chk "B watched: breaker trips B only, A untouched" "$R$(master $B)$(master $A)$(auths $A)" "1ft1"
+
+echo "== 9. send_intent is not an entry (tracked flows write node_entered(reason=send_intent) before each Meta call)"
+E='{"node_type":"send_media"}'; I='{"node_type":"send_media","reason":"send_intent"}'; S='{"node_type":"send_media","recipient_kind":"bsuid"}'
+fresh; X=$(newc $A true)
+P -q -c "select ev(r,'node_entered','m',('$E')::jsonb,'30 seconds'), ev(r,'node_entered','m',('$I')::jsonb,'30 seconds'), ev(r,'message_sent','m',('$S')::jsonb,'29 seconds') from (select mkrun0('$A','$X','wamid.T1','31 seconds') r) q" >/dev/null
+WATCH; R=$?; chk "entry + send_intent + ONE send: no alert, master on" "$R$(has 'A2')$(master $A)" "00t"
+fresh; X=$(newc $A true)
+P -q -c "select ev(r,'node_entered','m',('$E')::jsonb,'30 seconds'), ev(r,'node_entered','m',('$I')::jsonb,'30 seconds'), ev(r,'message_sent','m',('$S')::jsonb,'29 seconds'), ev(r,'message_sent','m',('$S')::jsonb,'28 seconds') from (select mkrun0('$A','$X','wamid.T2','31 seconds') r) q" >/dev/null
+WATCH; R=$?; chk "one real entry + one send_intent + TWO sends: A2 trips" "$R$(has 'A2(duplicate_send=1')$(master $A)" "11f"
+fresh; X=$(newc $A true)
+P -q -c "select ev(r,'node_entered','m',('$E')::jsonb,'30 seconds'), ev(r,'node_entered','m',('$I')::jsonb,'30 seconds'), ev(r,'node_entered','m',('$I')::jsonb,'29 seconds'), ev(r,'message_sent','m',('$S')::jsonb,'29 seconds'), ev(r,'message_sent','m',('$S')::jsonb,'28 seconds') from (select mkrun0('$A','$X','wamid.T3','31 seconds') r) q" >/dev/null
+WATCH; R=$?; chk "one real entry + TWO send_intents + two sends: A2 trips (intents hide nothing)" "$R$(has 'A2(duplicate_send=1')$(master $A)" "11f"
+fresh; X=$(newc $A true)
+P -q -c "select ev(r,'node_entered','m',('$E')::jsonb,'40 seconds'), ev(r,'node_entered','m',('$I')::jsonb,'40 seconds'), ev(r,'message_sent','m',('$S')::jsonb,'39 seconds'), ev(r,'node_entered','m',('$E')::jsonb,'20 seconds'), ev(r,'node_entered','m',('$I')::jsonb,'20 seconds'), ev(r,'message_sent','m',('$S')::jsonb,'19 seconds') from (select mkrun0('$A','$X','wamid.T4','41 seconds') r) q" >/dev/null
+WATCH; R=$?; chk "TWO real entries (a loop) + two sends: no alert, master on" "$R$(has 'A2')$(master $A)" "00t"
+
+echo "== 10. time window: the whole history of a recent run counts, an old duplicate outside the window does not"
+fresh; X=$(newc $A true)
+P -q -c "select ev(r,'node_entered','m',('$E')::jsonb,'40 minutes'), ev(r,'node_entered','m',('$I')::jsonb,'40 minutes'), ev(r,'message_sent','m',('$S')::jsonb,'40 minutes'), ev(r,'message_sent','m',('$S')::jsonb,'1 minute') from (select mkrun0('$A','$X','wamid.T5','40 minutes') r) q" >/dev/null
+WATCH; R=$?; chk "flow started 40 min ago, duplicate send 1 min ago: A2 trips" "$R$(has 'A2(duplicate_send=1')$(master $A)" "11f"
+fresh; X=$(newc $A true)
+P -q -c "select ev(r,'node_entered','m',('$E')::jsonb,'40 minutes'), ev(r,'message_sent','m',('$S')::jsonb,'40 minutes'), ev(r,'message_sent','m',('$S')::jsonb,'39 minutes') from (select mkrun0('$A','$X','wamid.T6','40 minutes') r) q" >/dev/null
+WATCH; R=$?; chk "duplicate that happened 40 min ago (outside the window): no alert, master on" "$R$(has 'A2')$(master $A)" "00t"
+fresh; X=$(newc $A true)
+P -q -c "select ev(r,'node_entered','m',('$E')::jsonb,'40 minutes'), ev(r,'message_sent','m',('$S')::jsonb,'40 minutes'), ev(r,'node_entered','m',('$E')::jsonb,'1 minute'), ev(r,'message_sent','m',('$S')::jsonb,'1 minute') from (select mkrun0('$A','$X','wamid.T7','40 minutes') r) q" >/dev/null
+WATCH; R=$?; chk "old legit send + recent send of a second real entry: no alert" "$R$(has 'A2')$(master $A)" "00t"
+fresh; X=$(newc $A true)
+P -q -c "select mkrun0('$A','$X','wamid.SAME2','25 minutes'), mkrun0('$A','$X','wamid.SAME2','1 minute') " >/dev/null
+WATCH; R=$?; chk "same inbound started a second run recently (twin 25 min old): A2 trips" "$R$(has 'A2(duplicate_send=0,duplicate_runs=1)')$(master $A)" "11f"
+fresh; X=$(newc $A true)
+P -q -c "select mkrun0('$A','$X','wamid.SAME3','50 minutes'), mkrun0('$A','$X','wamid.SAME3','49 minutes')" >/dev/null
+WATCH; R=$?; chk "old duplicate runs, nothing recent: no alert" "$R$(has 'A2')$(master $A)" "00t"
 
 echo; if [ "$FAILS" = 0 ]; then echo "ALL CHECKS PASSED"; else echo "$FAILS CHECK(S) FAILED"; exit 1; fi
