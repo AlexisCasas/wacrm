@@ -42,7 +42,7 @@ import {
 } from "./meta-send";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { pickEntryFlow, wordMatchSpecificity } from "./keyword-match";
-import { isKeywordAutomationsPaused } from "@/lib/contacts/automation-pause";
+import { keywordAutomationsPausedFailClosed } from "@/lib/contacts/automation-pause";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition-capability";
@@ -1665,12 +1665,7 @@ async function replaceWaitingRunAndStart(
  * waiting run). Never used by startFlowManually, replies to an active run, waits or resumes. A failed read counts as paused: no automatic start.
  */
 async function keywordAutomationsPaused(db: AdminClient, input: DispatchInboundInput): Promise<boolean> {
-  try {
-    return await isKeywordAutomationsPaused(db, input.accountId, input.contactId);
-  } catch (err) {
-    console.error("[flows] keyword pause check failed, treating as paused:", err instanceof Error ? err.message : err);
-    return true;
-  }
+  return keywordAutomationsPausedFailClosed(db, input.accountId, input.contactId);
 }
 
 /**

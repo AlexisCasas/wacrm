@@ -1,5 +1,5 @@
 import { renderTemplate } from '@/lib/variables'
-import { isKeywordAutomationsPaused } from '@/lib/contacts/automation-pause'
+import { keywordAutomationsPausedFailClosed } from '@/lib/contacts/automation-pause'
 import type {
   Automation,
   AutomationLogStepResult,
@@ -270,9 +270,9 @@ export async function runAutomationsForTrigger(input: DispatchInput): Promise<vo
     }
 
     // Per-contact pause of keyword automations: ONLY the keyword_match trigger is gated. Every other trigger is untouched. A failed read
-    // fails closed (nothing starts) and is logged by the surrounding catch.
+    // fails closed (nothing starts), a missing table means not paused (see keywordAutomationsPausedFailClosed).
     if (input.triggerType === 'keyword_match' && input.contactId) {
-      if (await isKeywordAutomationsPaused(db, input.accountId, input.contactId)) return
+      if (await keywordAutomationsPausedFailClosed(db, input.accountId, input.contactId)) return
     }
 
     const { data: automations, error } = await db

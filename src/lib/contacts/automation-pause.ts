@@ -26,3 +26,21 @@ export async function isKeywordAutomationsPaused(
   }
   return data?.keyword_automations_paused === true
 }
+
+/**
+ * The read policy used by every consumer (Flow keyword entry, `keyword_match` automations, AI auto-reply stand-down), so they never disagree:
+ * a real read error counts as PAUSED (fail closed: nothing keyword-driven starts), a missing table counts as NOT paused (rollout compatibility).
+ * Never throws.
+ */
+export async function keywordAutomationsPausedFailClosed(
+  db: SupabaseClient,
+  accountId: string,
+  contactId: string,
+): Promise<boolean> {
+  try {
+    return await isKeywordAutomationsPaused(db, accountId, contactId)
+  } catch (err) {
+    console.error('[automations] keyword pause check failed, treating as paused:', err instanceof Error ? err.message : err)
+    return true
+  }
+}
