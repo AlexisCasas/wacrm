@@ -2,6 +2,7 @@
 
 import { ContactPhoneLine } from "@/components/contacts/contact-phone-line";
 import { InboxContactFields } from "./contact-fields-editor";
+import { ContactAutomationToggle } from "./contact-automation-toggle";
 import { contactLabel, hasPhone } from "@/lib/contacts/display";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -351,6 +352,11 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated, onContact
           </div>
 
           {/* Divider */}
+          <div className="my-4 border-t border-border" />
+
+          {/* Per-contact pause of NEW keyword automations */}
+          <ContactAutomationToggle key={contact.id} contactId={contact.id} />
+
           <div className="my-4 border-t border-border" />
 
           {/* Tags */}

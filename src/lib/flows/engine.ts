@@ -42,6 +42,7 @@ import {
 } from "./meta-send";
 import { decideFallback, resolveFallbackPolicy } from "./fallback";
 import { pickEntryFlow, wordMatchSpecificity } from "./keyword-match";
+import { isKeywordAutomationsPaused } from "@/lib/contacts/automation-pause";
 import { addContactTagAndDispatch } from "@/lib/contacts/tag-events";
 import { removeContactTag } from "@/lib/contacts/tag-write";
 import { isCustomConditionEnabledForAccount } from "@/lib/flows/custom-condition-capability";
@@ -394,6 +395,8 @@ async function findEntryFlow(
   message: ParsedInbound,
   isFirstInbound: boolean,
   restrictToFlowIds?: string[],
+  // The contact paused keyword automations: flows started BY A KEYWORD are not offered. Other automatic entries (first inbound message) are not keyword-driven and stay.
+  excludeKeywordFlows = false,
 ): Promise<FlowRow | null> {
   // A tap used to be rejected outright here, on the reasoning that
   // interactive replies are responses to existing prompts. That holds
@@ -417,7 +420,9 @@ async function findEntryFlow(
   if (error || !flows) return null;
 
   // BSUID contacts (no phone) may only be offered the flows the database authorizes for them; every other flow behaves as if absent.
-  const typed = (flows as FlowRow[]).filter((f) => !restrictToFlowIds || restrictToFlowIds.includes(f.id));
+  const typed = (flows as FlowRow[]).filter(
+    (f) => (!restrictToFlowIds || restrictToFlowIds.includes(f.id)) && !(excludeKeywordFlows && f.trigger_type === "keyword"),
+  );
   // Non-`word` flows first, in creation order, exactly as before; `word` flows only compete when none of them matched (see pickEntryFlow).
   const pick = pickEntryFlow(typed, candidates, isFirstInbound, matchesKeywordTrigger);
   if (pick.kind === "ambiguous") {
@@ -1656,6 +1661,19 @@ async function replaceWaitingRunAndStart(
 }
 
 /**
+ * Per-contact "pause keyword automations" gate, shared by the two automatic keyword entries of the dispatcher (new run, replacement of a
+ * waiting run). Never used by startFlowManually, replies to an active run, waits or resumes. A failed read counts as paused: no automatic start.
+ */
+async function keywordAutomationsPaused(db: AdminClient, input: DispatchInboundInput): Promise<boolean> {
+  try {
+    return await isKeywordAutomationsPaused(db, input.accountId, input.contactId);
+  } catch (err) {
+    console.error("[flows] keyword pause check failed, treating as paused:", err instanceof Error ? err.message : err);
+    return true;
+  }
+}
+
+/**
  * Keyword path: the contact's run is parked on a delay and a text message arrives. The message selects a flow with exactly the policy of a contact
  * without a run (`findEntryFlow`: keyword triggers only here, an ambiguous word match picks nothing). Returns null — meaning "behave as before, the
  * message is a reply to the parked run" — unless a DIFFERENT flow was selected, can start for this contact, and the swap went through.
@@ -1733,7 +1751,7 @@ export async function dispatchInboundToFlows(
       }
       // A run parked ONLY on a durable delay does not block a keyword that clearly selects ANOTHER flow; anything else (a plain reply, the same flow, an
       // ambiguous match, a run that is not parked) falls through to the behaviour below, unchanged.
-      if (isReplaceableWaitingRun(activeRun) && input.message.kind === "text") {
+      if (isReplaceableWaitingRun(activeRun) && input.message.kind === "text" && !(await keywordAutomationsPaused(db, input))) {
         const replaced = await tryReplaceWaitingRunByKeyword(db, activeRun, input);
         if (replaced) return replaced;
       }
@@ -1760,6 +1778,7 @@ export async function dispatchInboundToFlows(
       input.message,
       input.isFirstInboundMessage,
       input.restrictToFlowIds,
+      await keywordAutomationsPaused(db, input),
     );
     if (!flow || !flow.entry_node_id) {
       return { consumed: false, outcome: "no_match" };

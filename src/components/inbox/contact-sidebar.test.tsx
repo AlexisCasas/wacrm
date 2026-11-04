@@ -447,3 +447,13 @@ describe("ContactSidebar — scroll layout", () => {
     expect(area.className).toContain("flex-1");
   });
 });
+
+describe("ContactSidebar — automations section", () => {
+  it("renders the per-contact AUTOMATIZACIONES section above Tags, inside the scroll area", () => {
+    const { container } = render(<ContactSidebar contact={makeContact()} />);
+    const section = screen.getByTestId("contact-automations");
+    const area = container.querySelector('[data-slot="scroll-area"]') as HTMLElement;
+    expect(area.contains(section)).toBe(true);
+    expect(section.compareDocumentPosition(screen.getByText("Tags")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
