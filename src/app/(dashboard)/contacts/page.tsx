@@ -69,11 +69,12 @@ import { TIME_FILTERS, resolveTimeRange, isTimeFilterActive, type TimeFilter, ty
 
 const PAGE_SIZE = 25;
 
-// base-ui renders the checkbox as an inline <span>: inside a table cell (a block context) the size-4 width/height is ignored, so only the two
-// vertical borders paint and it looks like a line. inline-flex makes the size apply; the visible border (dark mode: border-input is almost the
-// card colour) and hover state make it read as a square.
+// base-ui renders the checkbox as an inline <span>. In a table cell an inline element ignores width/height (measured in Chromium: display inline,
+// 2x17 px box), so only the two vertical borders painted and it looked like a line. inline-flex makes the size apply; min-size / shrink-0 /
+// box-border keep it a real 18x18 square whatever the table does; the visible border (border-input is almost the card colour) and the hover
+// state make it read as a checkbox in light and dark mode.
 const TABLE_CHECKBOX_CLASS =
-  'inline-flex size-[18px] items-center justify-center align-middle border-muted-foreground/70 hover:border-primary';
+  'inline-flex size-[18px] min-h-[18px] min-w-[18px] shrink-0 box-border items-center justify-center align-middle border-muted-foreground/70 hover:border-primary';
 
 interface ContactWithTags extends Contact {
   tags?: Tag[];
