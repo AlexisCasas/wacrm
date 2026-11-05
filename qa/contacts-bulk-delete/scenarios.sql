@@ -118,8 +118,8 @@ END $$;
 
 -- ---------- privileges: only service_role may run the delete ----------
 DO $$ BEGIN
-  IF has_function_privilege('authenticated', 'bulk_delete_contacts_internal(uuid, uuid[])', 'EXECUTE') OR has_function_privilege('anon', 'bulk_delete_contacts_internal(uuid, uuid[])', 'EXECUTE') THEN RAISE EXCEPTION 'bulk delete callable by a browser role'; END IF;
-  IF NOT has_function_privilege('service_role', 'bulk_delete_contacts_internal(uuid, uuid[])', 'EXECUTE') THEN RAISE EXCEPTION 'service_role cannot run it'; END IF;
+  IF has_function_privilege('authenticated', 'bulk_delete_contacts_internal(uuid, uuid[], text)', 'EXECUTE') OR has_function_privilege('anon', 'bulk_delete_contacts_internal(uuid, uuid[], text)', 'EXECUTE') THEN RAISE EXCEPTION 'bulk delete callable by a browser role'; END IF;
+  IF NOT has_function_privilege('service_role', 'bulk_delete_contacts_internal(uuid, uuid[], text)', 'EXECUTE') THEN RAISE EXCEPTION 'service_role cannot run it'; END IF;
 END $$;
 
 SELECT 'PASS' AS result;

@@ -430,7 +430,7 @@
       "deleteBulkIrreversible": "이 작업은 되돌릴 수 없습니다.",
       "deleteBulkConfirm": "{count, plural, other {연락처 #개 삭제}}",
       "deleteBulkRecreate": "나중에 다시 메시지를 보내면 새 연락처로 다시 생성됩니다.",
-      "toastMediaCleanupIncomplete": "연락처는 삭제되었지만 일부 미디어 파일을 삭제하지 못했습니다."
+      "toastMediaCleanupIncomplete": "연락처는 정상적으로 삭제되었지만 일부 미디어 파일은 정리 대기 중입니다."
     },
     "blocked": {
       "title": "차단된 연락처",

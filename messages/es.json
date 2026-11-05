@@ -559,7 +559,7 @@
       "deleteBulkIrreversible": "Esta acción no se puede deshacer.",
       "deleteBulkConfirm": "{count, plural, one {Eliminar # contacto} other {Eliminar # contactos}}",
       "deleteBulkRecreate": "Si alguno vuelve a escribir en el futuro, se creará nuevamente como un contacto nuevo.",
-      "toastMediaCleanupIncomplete": "Contactos eliminados, pero algunos archivos multimedia no se pudieron borrar."
+      "toastMediaCleanupIncomplete": "Los contactos fueron eliminados correctamente, pero algunos archivos multimedia quedaron pendientes de limpieza."
     },
     "blocked": {
       "title": "Contactos bloqueados",

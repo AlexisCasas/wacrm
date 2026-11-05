@@ -246,17 +246,17 @@ describe('Contacts page — delete', () => {
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ contact_ids: ['c2'] })
   })
 
-  it('a clean cleanup shows the normal success; an incomplete media cleanup is a warning, never a plain success', async () => {
+  it('a clean cleanup shows the normal success; pending media cleanup is a warning (the contacts WERE deleted), never a failure', async () => {
     const { toast } = await import('sonner')
     vi.mocked(toast.success).mockClear(); vi.mocked(toast.warning).mockClear()
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, media: { cleanup_complete: true } }) })
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, cleanup_complete: true, storage_pending: 0 }) })
     await selectTwoAndOpenDialog()
     fireEvent.click(screen.getByText('deleteBulkConfirm:2'))
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('toastBulkDeleted:2'))
     expect(toast.warning).not.toHaveBeenCalled()
 
     cleanup(); vi.mocked(toast.success).mockClear()
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, media: { cleanup_complete: false, failed: 1 } }) })
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, cleanup_complete: false, storage_pending: 3 }) })
     await selectTwoAndOpenDialog()
     fireEvent.click(screen.getByText('deleteBulkConfirm:2'))
     await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('toastMediaCleanupIncomplete'))

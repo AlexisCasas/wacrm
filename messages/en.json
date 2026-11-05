@@ -559,7 +559,7 @@
       "deleteBulkIrreversible": "This action cannot be undone.",
       "deleteBulkConfirm": "{count, plural, one {Delete # contact} other {Delete # contacts}}",
       "deleteBulkRecreate": "If any of them writes again in the future, they will be created again as a new contact.",
-      "toastMediaCleanupIncomplete": "Contacts deleted, but some media files could not be removed."
+      "toastMediaCleanupIncomplete": "The contacts were deleted successfully, but some media files are pending cleanup."
     },
     "blocked": {
       "title": "Blocked contacts",

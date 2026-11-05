@@ -287,7 +287,7 @@ export default function ContactsPage() {
     try {
       // Same atomic server-side path as the bulk delete, with a single id.
       const result = await bulkDeleteContacts([deleteTarget.id]);
-      if (result.media && !result.media.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
+      if (!result.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
       else toast.success(t('toastDeleted'));
       fetchContacts();
     } catch {
@@ -334,7 +334,7 @@ export default function ContactsPage() {
 
     try {
       const result = await bulkDeleteContacts(ids);
-      if (result.media && !result.media.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
+      if (!result.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
       else toast.success(t('toastBulkDeleted', { count: result.deleted }));
       setSelected(new Set());
       fetchContacts();

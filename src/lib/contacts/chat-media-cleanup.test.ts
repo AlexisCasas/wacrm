@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
-import { classifyMediaUrl, planMediaCleanup, removeChatMedia, CHAT_MEDIA_BUCKET } from './chat-media-cleanup'
+import { describe, expect, it } from 'vitest'
+import { classifyMediaUrl, CHAT_MEDIA_BUCKET } from './chat-media-cleanup'
 
 const ACCOUNT = 'a1000000-0000-4000-8000-000000000001'
 const OTHER = 'b1000000-0000-4000-8000-000000000001'
@@ -48,64 +48,5 @@ describe('classifyMediaUrl — only chat-media/account-<own account>/… is dele
 
   it('without a configured own origin nothing is provably managed (fail closed)', () => {
     expect(classifyMediaUrl(mine('x.jpg'), { accountId: ACCOUNT, publicBase: undefined })).toEqual({ kind: 'skip', reason: 'external' })
-  })
-})
-
-describe('planMediaCleanup', () => {
-  it('splits deletable / shared / skipped and never lists an object twice', () => {
-    const plan = planMediaCleanup([
-      { media_url: mine('inbound/a.jpg'), shared: false },
-      { media_url: mine('inbound/a.jpg'), shared: false }, // same object used by two messages of the same chat
-      { media_url: mine('shared.jpg'), shared: true },
-      { media_url: url('flow-media', `account-${ACCOUNT}/catalog.png`), shared: true },
-      { media_url: 'https://example.org/x.jpg', shared: false },
-      { media_url: url('chat-media', `account-${OTHER}/x.jpg`), shared: false },
-    ], ctx)
-    expect(plan.deletable).toEqual([`account-${ACCOUNT}/inbound/a.jpg`])
-    expect(plan.preservedShared).toEqual([`account-${ACCOUNT}/shared.jpg`])
-    expect(plan.skipped.map((s) => s.reason).sort()).toEqual(['bucket_not_eligible', 'external', 'wrong_namespace'])
-    expect(plan.identified).toBe(6)
-  })
-
-  it('an object is preserved if ANY url that points at it is shared', () => {
-    const plan = planMediaCleanup([{ media_url: mine('x.jpg'), shared: false }, { media_url: mine('x.jpg'), shared: true }], ctx)
-    expect(plan.deletable).toEqual([])
-    expect(plan.preservedShared).toHaveLength(1)
-  })
-
-  it('objects already handled in the first pass are not handled again', () => {
-    const handled = new Set([`account-${ACCOUNT}/a.jpg`])
-    const plan = planMediaCleanup([{ media_url: mine('a.jpg'), shared: false }, { media_url: mine('late.jpg'), shared: false }], ctx, handled)
-    expect(plan.deletable).toEqual([`account-${ACCOUNT}/late.jpg`])
-  })
-})
-
-describe('removeChatMedia', () => {
-  const storageWith = (impl: (paths: string[]) => Promise<{ data: unknown[] | null; error: { message: string } | null }>) => {
-    const remove = vi.fn(impl)
-    const from = vi.fn((bucket: string) => ({ bucket, remove }))
-    return { storage: { from }, remove, from }
-  }
-
-  it('removes in chunks from the chat-media bucket only and counts removed vs already missing', async () => {
-    const present = new Set(['a', 'b', 'c'])
-    const { storage, remove, from } = storageWith(async (paths) => ({ data: paths.filter((p) => present.has(p)).map((name) => ({ name })), error: null }))
-    const r = await removeChatMedia(storage, ['a', 'b', 'c', 'gone'], 2)
-    expect(r).toEqual({ removed: 3, alreadyMissing: 1, failed: [] })
-    expect(remove).toHaveBeenCalledTimes(2)
-    expect(from.mock.calls.every((c) => c[0] === 'chat-media')).toBe(true)
-  })
-
-  it('a Storage error is returned, never swallowed, and does not stop the report of the other chunks', async () => {
-    let n = 0
-    const { storage } = storageWith(async (paths) => (++n === 1 ? { data: null, error: { message: 'boom' } } : { data: paths.map((name) => ({ name })), error: null }))
-    const r = await removeChatMedia(storage, ['a', 'b', 'c'], 2)
-    expect(r.failed).toEqual([{ path: 'a', error: 'boom' }, { path: 'b', error: 'boom' }])
-    expect(r.removed).toBe(1)
-  })
-
-  it('a thrown error is also reported', async () => {
-    const { storage } = storageWith(async () => { throw new Error('network') })
-    expect((await removeChatMedia(storage, ['a'])).failed).toEqual([{ path: 'a', error: 'network' }])
   })
 })

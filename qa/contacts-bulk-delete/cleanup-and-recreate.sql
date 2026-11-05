@@ -1,5 +1,5 @@
 -- ============================================================
--- QA for migration 20261106000000_contacts_full_cleanup — DISPOSABLE database only (app schema + both contact migrations applied).
+-- QA for migrations 20261106000000_contacts_full_cleanup + 20261107000000_contact_media_cleanup_queue — DISPOSABLE database only (app schema + the three contact migrations applied).
 --   docker exec -i <scratch> psql -U postgres -X -v ON_ERROR_STOP=1 < qa/contacts-bulk-delete/cleanup-and-recreate.sql
 -- Covers: media candidates (exclusive / shared / catalog), full per-contact cleanup, history preserved, and that the SAME phone and the SAME
 -- BSUID can be recreated as brand-new contacts (replaying the statements of findOrCreateContact / findOrCreateConversation and calling the real
@@ -79,10 +79,11 @@ EXCEPTION WHEN OTHERS THEN IF SQLERRM <> 'CONTACTS_NOT_IN_ACCOUNT' THEN RAISE; E
 -- ---------- delete P ----------
 CREATE TEMP TABLE _old AS SELECT 'c1000000-0000-4000-8000-0000000000a1'::uuid AS contact_id, 'd1000000-0000-4000-8000-0000000000a1'::uuid AS conversation_id;
 DO $$ DECLARE r jsonb; BEGIN
-  r := bulk_delete_contacts_internal('a1000000-0000-4000-8000-000000000001', ARRAY['c1000000-0000-4000-8000-0000000000a1']::uuid[]);
+  r := bulk_delete_contacts_internal('a1000000-0000-4000-8000-000000000001', ARRAY['c1000000-0000-4000-8000-0000000000a1']::uuid[], 'https://s.example');
   IF (r->>'deleted')::int <> 1 OR (r->>'conversations_deleted')::int <> 1 OR (r->>'messages_deleted')::int <> 9 OR (r->>'notifications_deleted')::int <> 2 THEN RAISE EXCEPTION 'counts %', r; END IF;
-  IF jsonb_array_length(r->'media') <> 8 THEN RAISE EXCEPTION 'media list not returned %', r; END IF;
-  IF NOT EXISTS (SELECT 1 FROM jsonb_array_elements(r->'media') e WHERE e->>'media_url' LIKE '%/img-1.jpg' AND (e->>'shared')::boolean = false) THEN RAISE EXCEPTION 'media list must carry media_url + shared (the API reads these keys) %', r->'media'; END IF;
+  -- the API reads these: 8 distinct urls seen, 1 shared with another chat + the flow catalog = 2 preserved, 4 chat-media objects queued
+  IF (r->>'media_identified')::int <> 8 OR (r->>'media_queued')::int <> 4 OR (r->>'media_preserved_shared')::int <> 2 THEN RAISE EXCEPTION 'media summary %', r; END IF;
+  IF (SELECT count(*) FROM contact_media_cleanup_items WHERE operation_id = (r->>'operation_id')::uuid AND status = 'pending') <> 4 THEN RAISE EXCEPTION 'cleanup items not queued'; END IF;
   -- selected contact: nothing left, anywhere
   IF EXISTS (SELECT 1 FROM contacts WHERE id = 'c1000000-0000-4000-8000-0000000000a1')
      OR EXISTS (SELECT 1 FROM conversations WHERE contact_id = 'c1000000-0000-4000-8000-0000000000a1')
@@ -134,7 +135,7 @@ DO $$ DECLARE c1 uuid; c2 uuid; v1 uuid; v2 uuid; created1 boolean; created2 boo
   INSERT INTO contact_tags(contact_id, tag_id) VALUES (c1, '7a000000-0000-4000-8000-0000000000a1');
   IF NOT EXISTS (SELECT 1 FROM contact_identities WHERE contact_id = c1 AND kind = 'bsuid' AND value = 'BS.NEW.001') THEN RAISE EXCEPTION 'identity not created'; END IF;
 
-  r := bulk_delete_contacts_internal('a1000000-0000-4000-8000-000000000001', ARRAY[c1]::uuid[]);
+  r := bulk_delete_contacts_internal('a1000000-0000-4000-8000-000000000001', ARRAY[c1]::uuid[], 'https://s.example');
   IF (r->>'deleted')::int <> 1 THEN RAISE EXCEPTION 'bsuid contact not deleted %', r; END IF;
   IF EXISTS (SELECT 1 FROM contact_identities WHERE kind = 'bsuid' AND value = 'BS.NEW.001') THEN RAISE EXCEPTION 'BSUID mapping still reserved'; END IF;
 
