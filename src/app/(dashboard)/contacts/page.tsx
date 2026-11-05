@@ -286,8 +286,9 @@ export default function ContactsPage() {
 
     try {
       // Same atomic server-side path as the bulk delete, with a single id.
-      await bulkDeleteContacts([deleteTarget.id]);
-      toast.success(t('toastDeleted'));
+      const result = await bulkDeleteContacts([deleteTarget.id]);
+      if (result.media && !result.media.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
+      else toast.success(t('toastDeleted'));
       fetchContacts();
     } catch {
       toast.error(t('toastFailedDelete'));
@@ -333,7 +334,8 @@ export default function ContactsPage() {
 
     try {
       const result = await bulkDeleteContacts(ids);
-      toast.success(t('toastBulkDeleted', { count: result.deleted }));
+      if (result.media && !result.media.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
+      else toast.success(t('toastBulkDeleted', { count: result.deleted }));
       setSelected(new Set());
       fetchContacts();
     } catch {
@@ -980,6 +982,7 @@ export default function ContactsPage() {
             </DialogTitle>
             <DialogDescription className="text-muted-foreground">
               {t('deleteBulkDesc', { count: selected.size })}{' '}
+              {t('deleteBulkRecreate')}{' '}
               <strong className="font-semibold text-foreground">{t('deleteBulkIrreversible')}</strong>
             </DialogDescription>
           </DialogHeader>

@@ -10,7 +10,7 @@ vi.mock('next-intl', () => {
   return { useTranslations: () => t }
 })
 vi.mock('next/link', () => ({ default: ({ children, href }: { children: React.ReactNode; href: string }) => <a href={href}>{children}</a> }))
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }))
+vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() } }))
 vi.mock('@/lib/date-locale', () => ({ useIntlLocaleTag: () => 'en-US' }))
 vi.mock('@/components/contacts/contact-phone-line', () => ({ ContactPhoneLine: () => null }))
 vi.mock('@/components/contacts/contact-form', () => ({ ContactForm: () => null }))
@@ -196,6 +196,7 @@ describe('Contacts page — delete', () => {
     const dialog = await selectTwoAndOpenDialog()
     expect(within(dialog).getByText('deleteBulkTitle:2')).toBeTruthy()
     expect(within(dialog).getByText(/deleteBulkDesc:2/)).toBeTruthy()
+    expect(within(dialog).getByText(/deleteBulkRecreate/)).toBeTruthy() // a contact that writes again is created as a NEW contact
     expect(within(dialog).getByText('deleteBulkIrreversible')).toBeTruthy()
     expect(within(dialog).getByText('deleteBulkConfirm:2')).toBeTruthy()
   })
@@ -244,5 +245,21 @@ describe('Contacts page — delete', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ contact_ids: ['c2'] })
   })
-})
 
+  it('a clean cleanup shows the normal success; an incomplete media cleanup is a warning, never a plain success', async () => {
+    const { toast } = await import('sonner')
+    vi.mocked(toast.success).mockClear(); vi.mocked(toast.warning).mockClear()
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, media: { cleanup_complete: true } }) })
+    await selectTwoAndOpenDialog()
+    fireEvent.click(screen.getByText('deleteBulkConfirm:2'))
+    await waitFor(() => expect(toast.success).toHaveBeenCalledWith('toastBulkDeleted:2'))
+    expect(toast.warning).not.toHaveBeenCalled()
+
+    cleanup(); vi.mocked(toast.success).mockClear()
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, media: { cleanup_complete: false, failed: 1 } }) })
+    await selectTwoAndOpenDialog()
+    fireEvent.click(screen.getByText('deleteBulkConfirm:2'))
+    await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('toastMediaCleanupIncomplete'))
+    expect(toast.success).not.toHaveBeenCalled()
+  })
+})

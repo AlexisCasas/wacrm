@@ -1,5 +1,5 @@
 -- ============================================================
--- QA for migration 20261105000000_contacts_time_filter_bulk_delete — run ONLY against a DISPOSABLE database that has the app schema
+-- QA for migrations 20261105000000_contacts_time_filter_bulk_delete + 20261106000000_contacts_full_cleanup (apply both first) — run ONLY against a DISPOSABLE database that has the app schema
 -- (e.g. a scratch postgres loaded with `pg_dump -s -n public` of the app). It creates its own accounts/users/contacts, never reads production data.
 --   docker exec -i <scratch> psql -U postgres -X -v ON_ERROR_STOP=1 < qa/contacts-bulk-delete/scenarios.sql
 -- Every scenario asserts with RAISE EXCEPTION; the last line prints PASS.
@@ -77,12 +77,13 @@ DO $$ DECLARE r jsonb; BEGIN
   IF (SELECT contact_id FROM deals WHERE id = 'e1000000-0000-4000-8000-000000000003') <> 'c1000000-0000-4000-8000-000000000003' THEN RAISE EXCEPTION 'deal of a NOT selected contact changed'; END IF;
   IF (SELECT count(*) FROM broadcast_recipients) <> 2 OR (SELECT contact_id FROM broadcast_recipients WHERE id = 'ba000000-0000-4000-8000-000000000001') IS NOT NULL THEN RAISE EXCEPTION 'broadcast history not preserved'; END IF;
   IF (SELECT count(*) FROM broadcasts) <> 1 THEN RAISE EXCEPTION 'broadcast deleted'; END IF;
-  -- no orphan workers: the selected contact's ACTIVE run is stopped (history kept); the other contact's run is untouched
-  IF (SELECT status || '/' || end_reason FROM flow_runs WHERE id = 'f4000000-0000-4000-8000-000000000001') <> 'paused_by_agent/contact_deleted' THEN RAISE EXCEPTION 'active run of a deleted contact not stopped'; END IF;
-  IF EXISTS (SELECT 1 FROM flow_runs WHERE status = 'active' AND contact_id IS NULL) THEN RAISE EXCEPTION 'orphan ACTIVE run'; END IF;
-  IF (SELECT count(*) FROM flow_run_events) <> 1 THEN RAISE EXCEPTION 'run history lost'; END IF;
+  -- runs of the deleted contacts are cleaned (events cascade); runs of the NOT selected contact are untouched; nothing is left orphaned
+  IF EXISTS (SELECT 1 FROM flow_runs WHERE id = 'f4000000-0000-4000-8000-000000000001') THEN RAISE EXCEPTION 'run of a deleted contact remains'; END IF;
+  IF EXISTS (SELECT 1 FROM flow_runs WHERE contact_id IS NULL) THEN RAISE EXCEPTION 'orphan run (contact_id NULL)'; END IF;
+  IF (SELECT count(*) FROM flow_run_events) <> 0 THEN RAISE EXCEPTION 'events of a deleted run remain'; END IF;
   IF (SELECT status FROM flow_runs WHERE id = 'f4000000-0000-4000-8000-000000000003') <> 'active' THEN RAISE EXCEPTION 'run of a NOT selected contact changed'; END IF;
-  IF (SELECT status FROM automation_pending_executions WHERE id = 'a6000000-0000-4000-8000-000000000001') <> 'done' THEN RAISE EXCEPTION 'pending wait of a deleted contact not cancelled'; END IF;
+  IF (r->>'runs_deleted')::int <> 1 OR (r->>'active_runs_stopped')::int <> 1 OR (r->>'pending_automations_deleted')::int <> 1 THEN RAISE EXCEPTION 'cleanup counts %', r; END IF;
+  IF EXISTS (SELECT 1 FROM automation_pending_executions WHERE id = 'a6000000-0000-4000-8000-000000000001') THEN RAISE EXCEPTION 'pending wait of a deleted contact remains'; END IF;
   IF (SELECT status FROM automation_pending_executions WHERE id = 'a6000000-0000-4000-8000-000000000003') <> 'pending' THEN RAISE EXCEPTION 'pending wait of a NOT selected contact changed'; END IF;
 END $$;
 

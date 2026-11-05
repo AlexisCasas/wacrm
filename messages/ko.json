@@ -402,11 +402,11 @@
       "showingPagination": "전체 {total}개 중 {start}-{end}",
       "pageCount": "{total} 중 {page}페이지",
       "deleteContactTitle": "연락처 삭제",
-      "deleteContactDesc": "{name}을(를) 삭제하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+      "deleteContactDesc": "{name}을(를) 삭제하시겠습니까? 채팅, 메시지 및 미디어 파일이 영구적으로 삭제됩니다. 이 작업은 되돌릴 수 없습니다.",
       "cancel": "취소",
       "deleteBtn": "삭제",
       "deleteBulkTitle": "{count, plural, other {연락처 #개 삭제}}",
-      "deleteBulkDesc": "선택한 연락처가 채팅 및 관련 메시지와 함께 영구적으로 삭제됩니다.",
+      "deleteBulkDesc": "선택한 연락처가 채팅, 메시지 및 미디어 파일과 함께 영구적으로 삭제됩니다.",
       "toastFailedLoad": "연락처를 불러오지 못했습니다",
       "toastFailedDelete": "연락처를 삭제하지 못했습니다",
       "toastDeleted": "연락처가 삭제되었습니다",
@@ -428,7 +428,9 @@
       "timeInvalidRange": "시작일은 종료일보다 이전이어야 합니다.",
       "removeTimeFilterAria": "기간 필터 제거",
       "deleteBulkIrreversible": "이 작업은 되돌릴 수 없습니다.",
-      "deleteBulkConfirm": "{count, plural, other {연락처 #개 삭제}}"
+      "deleteBulkConfirm": "{count, plural, other {연락처 #개 삭제}}",
+      "deleteBulkRecreate": "나중에 다시 메시지를 보내면 새 연락처로 다시 생성됩니다.",
+      "toastMediaCleanupIncomplete": "연락처는 삭제되었지만 일부 미디어 파일을 삭제하지 못했습니다."
     },
     "blocked": {
       "title": "차단된 연락처",

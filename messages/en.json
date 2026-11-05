@@ -531,11 +531,11 @@
       "showingPagination": "Showing {start}-{end} of {total}",
       "pageCount": "Page {page} of {total}",
       "deleteContactTitle": "Delete Contact",
-      "deleteContactDesc": "Are you sure you want to delete {name}? This action cannot be undone.",
+      "deleteContactDesc": "Are you sure you want to delete {name}? Their chat, messages and media files will be permanently deleted. This action cannot be undone.",
       "cancel": "Cancel",
       "deleteBtn": "Delete",
       "deleteBulkTitle": "{count, plural, one {Delete # contact} other {Delete # contacts}}",
-      "deleteBulkDesc": "The selected contacts will be permanently deleted together with their chats and associated messages.",
+      "deleteBulkDesc": "The selected contacts will be permanently deleted, together with their chats, messages and media files.",
       "toastFailedLoad": "Failed to load contacts",
       "toastFailedDelete": "Failed to delete contact",
       "toastDeleted": "Contact deleted",
@@ -557,7 +557,9 @@
       "timeInvalidRange": "The start date must be before the end date.",
       "removeTimeFilterAria": "Remove time filter",
       "deleteBulkIrreversible": "This action cannot be undone.",
-      "deleteBulkConfirm": "{count, plural, one {Delete # contact} other {Delete # contacts}}"
+      "deleteBulkConfirm": "{count, plural, one {Delete # contact} other {Delete # contacts}}",
+      "deleteBulkRecreate": "If any of them writes again in the future, they will be created again as a new contact.",
+      "toastMediaCleanupIncomplete": "Contacts deleted, but some media files could not be removed."
     },
     "blocked": {
       "title": "Blocked contacts",

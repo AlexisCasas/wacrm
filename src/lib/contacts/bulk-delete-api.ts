@@ -5,10 +5,11 @@ export class BulkDeleteError extends Error {
   }
 }
 
-export type BulkDeleteResult = { deleted: number; conversations_deleted: number; messages_deleted: number }
+export type BulkDeleteMedia = { identified: number; deleted: number; preserved_shared: number; skipped: number; failed: number; cleanup_complete: boolean }
+export type BulkDeleteResult = { deleted: number; conversations_deleted: number; messages_deleted: number; media: BulkDeleteMedia | null }
 
 /**
- * Deletes exactly the given contacts (and, through the database cascades, their chats and messages) in ONE server-side transaction.
+ * Deletes exactly the given contacts with their chats, messages and chat media: files first, then ONE database transaction (all or none).
  * The body carries only the selected ids: never filters, search text, tags or a time range.
  */
 export async function bulkDeleteContacts(contactIds: string[]): Promise<BulkDeleteResult> {
@@ -19,5 +20,5 @@ export async function bulkDeleteContacts(contactIds: string[]): Promise<BulkDele
   })
   const body = (await res.json().catch(() => ({}))) as Partial<BulkDeleteResult> & { error?: string }
   if (!res.ok) throw new BulkDeleteError(body.error ?? 'bulk delete failed', res.status)
-  return { deleted: body.deleted ?? 0, conversations_deleted: body.conversations_deleted ?? 0, messages_deleted: body.messages_deleted ?? 0 }
+  return { deleted: body.deleted ?? 0, conversations_deleted: body.conversations_deleted ?? 0, messages_deleted: body.messages_deleted ?? 0, media: body.media ?? null }
 }

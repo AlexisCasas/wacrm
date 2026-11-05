@@ -531,11 +531,11 @@
       "showingPagination": "Mostrando {start}-{end} de {total}",
       "pageCount": "Página {page} de {total}",
       "deleteContactTitle": "Eliminar contacto",
-      "deleteContactDesc": "¿Seguro que quieres eliminar a {name}? Esta acción no se puede deshacer.",
+      "deleteContactDesc": "¿Seguro que quieres eliminar a {name}? Se eliminarán permanentemente su chat, mensajes y archivos multimedia. Esta acción no se puede deshacer.",
       "cancel": "Cancelar",
       "deleteBtn": "Eliminar",
       "deleteBulkTitle": "{count, plural, one {Eliminar # contacto} other {Eliminar # contactos}}",
-      "deleteBulkDesc": "Se eliminarán permanentemente los contactos seleccionados junto con sus chats y mensajes asociados.",
+      "deleteBulkDesc": "Se eliminarán permanentemente los contactos seleccionados, sus chats, mensajes y archivos multimedia asociados.",
       "toastFailedLoad": "Error al cargar los contactos",
       "toastFailedDelete": "Error al eliminar el contacto",
       "toastDeleted": "Contacto eliminado",
@@ -557,7 +557,9 @@
       "timeInvalidRange": "La fecha inicial debe ser anterior a la final.",
       "removeTimeFilterAria": "Quitar filtro de tiempo",
       "deleteBulkIrreversible": "Esta acción no se puede deshacer.",
-      "deleteBulkConfirm": "{count, plural, one {Eliminar # contacto} other {Eliminar # contactos}}"
+      "deleteBulkConfirm": "{count, plural, one {Eliminar # contacto} other {Eliminar # contactos}}",
+      "deleteBulkRecreate": "Si alguno vuelve a escribir en el futuro, se creará nuevamente como un contacto nuevo.",
+      "toastMediaCleanupIncomplete": "Contactos eliminados, pero algunos archivos multimedia no se pudieron borrar."
     },
     "blocked": {
       "title": "Contactos bloqueados",
