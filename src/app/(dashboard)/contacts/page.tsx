@@ -69,6 +69,12 @@ import { TIME_FILTERS, resolveTimeRange, isTimeFilterActive, type TimeFilter, ty
 
 const PAGE_SIZE = 25;
 
+// base-ui renders the checkbox as an inline <span>: inside a table cell (a block context) the size-4 width/height is ignored, so only the two
+// vertical borders paint and it looks like a line. inline-flex makes the size apply; the visible border (dark mode: border-input is almost the
+// card colour) and hover state make it read as a square.
+const TABLE_CHECKBOX_CLASS =
+  'inline-flex size-[18px] items-center justify-center align-middle border-muted-foreground/70 hover:border-primary';
+
 interface ContactWithTags extends Contact {
   tags?: Tag[];
 }
@@ -715,6 +721,7 @@ export default function ContactsPage() {
                   onCheckedChange={toggleSelectAll}
                   disabled={contacts.length === 0}
                   aria-label={t('selectAllAria')}
+                  className={TABLE_CHECKBOX_CLASS}
                 />
               </TableHead>
               <TableHead className="text-muted-foreground">{t('tableColumns.name')}</TableHead>
@@ -774,6 +781,7 @@ export default function ContactsPage() {
                       checked={selected.has(contact.id)}
                       onCheckedChange={() => toggleSelect(contact.id)}
                       aria-label={`Select ${contactLabel(contact)}`}
+                      className={TABLE_CHECKBOX_CLASS}
                     />
                   </TableCell>
                   <TableCell className="text-foreground font-medium">
