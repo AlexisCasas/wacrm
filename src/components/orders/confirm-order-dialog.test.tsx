@@ -88,6 +88,55 @@ describe("ConfirmOrderDialog", () => {
     expect(screen.getByText("review").closest("button")).toBeDisabled();
   });
 
+  it("offers a visible catalog search in each line and selects a result without inventing a price or sending an order", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.startsWith("/api/orders/products?q=hidro"))
+        return new Response(JSON.stringify({ products: [
+          { id: "44444444-4444-4444-8444-444444444444", display_name: "Hidrolavadora INGCO", active: true },
+        ] }), { status: 200 });
+      return new Response(JSON.stringify({ products: [] }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setup(true);
+    await waitFor(() => expect(value("order-price")).toBe("150"));
+    fireEvent.click(screen.getByText("lineMultiMode"));
+    fireEvent.click(screen.getByText("lineAdd"));
+    expect(screen.getAllByText("lineCatalogBrowse")).toHaveLength(2);
+    expect(value("order-item-unit-price-1")).toBe("");
+    fireEvent.click(screen.getAllByText("lineCatalogBrowse")[1]);
+    fireEvent.change(document.getElementById("order-catalog-search-1")!, { target: { value: "hidro" } });
+    fireEvent.click(await screen.findByText("Hidrolavadora INGCO"));
+    expect(value("order-item-product-1")).toBe("Hidrolavadora INGCO");
+    expect(value("order-item-unit-price-1")).toBe("");
+    expect(screen.getByText("lineFromCatalog")).toBeTruthy();
+    expect(screen.queryByTestId("order-catalog-picker-1")).toBeNull();
+    expect(fetchMock.mock.calls.every(([url]) => url.startsWith("/api/orders/products"))).toBe(true);
+    fireEvent.change(document.getElementById("order-item-product-1")!, { target: { value: "Producto libre" } });
+    expect(screen.queryByText("lineFromCatalog")).toBeNull();
+    expect(value("order-item-product-1")).toBe("Producto libre");
+  });
+
+  it("explains no catalog matches and keeps free-text entry available when the catalog fails", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.includes("noexiste")) return new Response(JSON.stringify({ products: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: "catalog_unavailable" }), { status: 500 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    setup(true);
+    await waitFor(() => expect(value("order-price")).toBe("150"));
+    fireEvent.click(screen.getByText("lineMultiMode"));
+    fireEvent.click(screen.getByText("lineCatalogBrowse"));
+    fireEvent.change(document.getElementById("order-catalog-search-0")!, { target: { value: "noexiste" } });
+    await screen.findByText("lineCatalogNoResults");
+    fireEvent.change(document.getElementById("order-catalog-search-0")!, { target: { value: "fallo" } });
+    await screen.findByText("lineCatalogUnavailable");
+    fireEvent.click(screen.getByText("lineCatalogClose"));
+    fireEvent.change(document.getElementById("order-item-product-0")!, { target: { value: "Producto manual" } });
+    expect(value("order-item-product-0")).toBe("Producto manual");
+    expect(value("order-item-unit-price-0")).toBe("150");
+    expect(fetchMock.mock.calls.every(([url]) => url.startsWith("/api/orders/products"))).toBe(true);
+  });
+
   it("keeps multi-item controls hidden for accounts without the feature", async () => {
     setup();
     await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
