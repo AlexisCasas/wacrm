@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HEADERS, KEY_COLUMN_INDEX, ProjectionError, columnLetter, compareRow, limaSerial, projectOrder, toCents, type OrderInput } from './layout'
+import { HEADERS, KEY_COLUMN_INDEX, ProjectionError, columnLetter, compareRow, rowFingerprint, limaSerial, projectOrder, toCents, type OrderInput } from './layout'
 
 const base: OrderInput = {
   id: '11111111-1111-4111-8111-111111111111', account_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', confirmed_at: '2026-11-04T15:30:05.000Z',
@@ -76,5 +76,16 @@ describe('compareRow (regression: changes that keep quantity and price must be d
   it('never returns cell values, only column names', () => {
     const a = cells(), b = [...a]; b[col('Nombre completo')] = 'Persona Real'
     expect(JSON.stringify(compareRow(a, b))).not.toContain('Persona')
+  })
+})
+
+describe('rowFingerprint', () => {
+  it('is stable across the float round trip of a Sheets serial date, and changes with any text field', () => {
+    const a = projectOrder(base, [], 't').lines[0].cells, b = [...a]
+    b[1] = (a[1] as number) + 3e-11
+    expect(rowFingerprint(b)).toBe(rowFingerprint(a))
+    b[1] = (a[1] as number) + 1 / 86400
+    expect(rowFingerprint(b)).not.toBe(rowFingerprint(a))
+    const c = [...a]; c[5] = 'Otro producto'; expect(rowFingerprint(c)).not.toBe(rowFingerprint(a))
   })
 })

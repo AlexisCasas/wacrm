@@ -43,13 +43,15 @@ Pestañas: «Ventas x producto» y «Ventas x vendedor» son fórmulas sobre las
 4. En el servidor (`.env.local`, nunca en Git/frontend/logs): `ORDERS_SHEETS_EXPORT_ENABLED=true`, `GOOGLE_SHEETS_SA_EMAIL=<correo>`, `GOOGLE_SHEETS_SA_KEY_B64=<base64 del private_key PEM>`. Añadir variables exige recrear `app` (≈10 s de 502; hacerlo junto a un cambio de imagen en la ventana tranquila).
 5. Registrar el destino: `insert into order_sheet_destinations (account_id, spreadsheet_id, enabled, eligible_since) values ('<keyler>','<id hoja>',false,null)`.
 
+Escenario de la prueba real: **5 filas, 4 pedidos** (3 pedidos / 4 líneas normales + 1 pedido / 1 línea con escritura ambigua simulada). La huella de cada fila se calcula sobre el contenido final (se corrigió un caso en que el nombre se cambiaba después de calcularla) y es estable ante el redondeo de fechas de Sheets.
+
 Hoy: **no existen credenciales** en el entorno, por lo que el cliente se probó contra un servidor HTTP falso (firma RS256 verificada con la clave pública, refresco 401, clasificación 429/5xx/403/404/400, timeouts) y la hoja QA se rellenó con filas sintéticas generadas por la misma proyección.
 
 ## 4. QA realizado (sintético, aislado; sin tocar producción)
 - Unitarias: proyección (ejemplo Hidrolavadora 95 + Discos 50 → 2 filas, 1 pedido, 2 unidades, S/ 145), pedido tradicional, datos inconsistentes, serie de fecha Lima, cliente HTTP, ruta cron (503/401/400 y interruptor global).
 - Integración sobre BD aislada (`scripts/qa/orders-sheets/setup.sh`, `QA_E2E=1`): solo `acknowledged`; exclusiones; re-ejecución sin cambios (hash de trabajos y hoja idénticos); escritura ambigua; fallo previo; Sheets caído → backoff → `dead` a los 8 intentos → `requeue`; recuperación tras caída de worker (lease/lock vencidos, el worker caído ya no puede completar); 3 workers concurrentes sin duplicados; separación entre cuentas; hoja alterada; `eligible_since`; privilegios (`anon`/`authenticated` sin acceso).
 - **Revalidación tras los correctivos** (SHA en el informe del PR): integración 15/15, tres ejecuciones seguidas; suite completa dos ejecuciones seguidas: 264 archivos / 3767 pruebas OK (187 omitidas por requerir pilas QA). Test intermitente: `contacts/page.test.tsx › changing page / search / tag / time clears the selection` falló **una vez** en la primera suite completa (con la máquina cargada por contenedores y compilaciones) y pasa solo (24/24) y en las dos ejecuciones posteriores; no toca este PR. Histórico simulado de nuevo: 226 pedidos / 227 líneas / 260 unidades / S/ 31 366,00, **0 diferencias incluidos producto, vendedor, fechas y huella**, segunda pasada idéntica. Escaneo de secretos de los 27 archivos del PR (PEM, `private_key`, claves/tokens de Google, JWT, base64 largo, correos de cuenta de servicio): 0 hallazgos; el cliente no registra nada en logs y sus errores llevan solo códigos.
-- Hoja QA sintética (4 pestañas): <https://docs.google.com/spreadsheets/d/1zjwubBlj01eKfsdcn3-FM8a5Vw4a7qPSxPKsCaRdLfk/edit>. Las vistas dan 4 pedidos, 6 líneas, 10 unidades, S/ 625 y «Sin diferencias».
+- Hoja QA limpia y dedicada a la prueba real (4 pestañas, sin filas): <https://docs.google.com/spreadsheets/d/11VTllvKJdult1b3GjZ6_h2SM9am2qO_nawWERBIjDhI/edit>. Ensayo de fórmulas con las 5 filas sintéticas del escenario (después borradas): vistas y Control dan 4 pedidos, 5 líneas, 8 unidades, S/ 495,00 («Sin diferencias»); por producto 285 + 160 + 50 y por vendedor 160 + 335 suman lo mismo. Con la hoja vacía las vistas muestran 0 y el Control «HAY DIFERENCIAS» (sin errores `#N/A`).
 - **Ensayo de carga histórica** (copia de un respaldo de producción de 2026-11-06 15:34Z restaurada en un contenedor local aislado; hoja simulada en memoria; solo agregados): 226 pedidos `acknowledged` → 226 pedidos / 227 líneas / 260 unidades / S/ 31 366,00 en la hoja; 0 claves faltantes, sobrantes, duplicadas o con importe distinto; 2 pedidos no confirmados (`held`) quedan fuera; segunda pasada: 0 filas nuevas, hoja idéntica. 2 pedidos `acknowledged` coinciden con heurísticas de «prueba/demo»: **un humano debe decidir** si se excluyen (`order_sheet_exclusions`) antes de la carga.
 
 ### Revisión del PR (correctivos)
@@ -62,9 +64,12 @@ Hoy: **no existen credenciales** en el entorno, por lo que el cliente se probó 
 
 Mutación de control: con `compareRow` neutralizada fallan 15 pruebas (12 unitarias, 3 de integración); restaurada, pasan todas.
 
+### Exclusión de pedidos de prueba (preparada, sin aplicar)
+Verificados de forma independiente en InkaClick (`is_test=true`, productos de prueba): referencias `c071235f` y `821d22b1`. `scripts/ops/orders-sheets/exclude-test-orders.sql` los registra en `order_sheet_exclusions` con `reason='test'`, en una transacción con guardas (exactamente 2 pedidos de Keyler, `acknowledged`, sin líneas, producto con la palabra «PRUEBA»; si algo no coincide, aborta), idempotente y sin tocar `order_confirmations`. Ensayo sobre la copia aislada: aplicado dos veces → 2 exclusiones; pedidos sin cambios; carga → 224 pedidos / 225 líneas / 258 unidades / S/ 31 255,00, 0 diferencias, ninguno de los dos en la hoja, `excludedByReason={test:2}`. Orden en producción: migración → este script → activar destino → carga histórica.
+
 ## 5. Procedimiento de carga histórica (tras autorización)
 1. Aplicar la migración `20261109000000_order_sheet_exports.sql` como `postgres` (solo añade 4 tablas y 8 funciones; inerte con `enabled=false`).
-2. Decidir exclusiones (pedidos de prueba) con el titular e insertarlas en `order_sheet_exclusions`.
+2. Aplicar `exclude-test-orders.sql` (2 pedidos de prueba confirmados en InkaClick).
 3. Hoja definitiva limpia compartida con la cuenta de servicio; variables en el servidor; destino con `enabled=false`.
 4. Activar el destino (`enabled=true`, `eligible_since=null`) y ejecutar `wacrm-orders-sheets-cron.sh sync` repetidamente hasta `claimed=0`; luego `... reconcile`: **debe dar `differences=0`**.
 5. Segunda ejecución de `sync`: 0 filas añadidas. Solo entonces instalar el cron de 2 min (`/etc/cron.d/wacrm-orders-sheets`).

@@ -85,7 +85,9 @@ const text = (v: string | null | undefined): string => (v ?? '').trim()
 
 // Stable fingerprint of the commercial content of a row (columns A-N plus quantities), so drift between DB and sheet is detectable.
 export function rowFingerprint(cells: Cell[]): string {
-  const s = JSON.stringify(cells.slice(0, COMMERCIAL_HEADERS.length))
+  // Numbers are quantised to 1/86400 (one second of a serial date; any 2-decimal amount is an exact multiple), so the fingerprint survives the double
+  // round trip through Sheets and is the same whether computed from the projection or from the row read back.
+  const s = JSON.stringify(cells.slice(0, COMMERCIAL_HEADERS.length).map((c) => (typeof c === 'number' ? Math.round(c * 86400) : String(c ?? ''))))
   let h = 0x811c9dc5
   for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
   return h.toString(16).padStart(8, '0')

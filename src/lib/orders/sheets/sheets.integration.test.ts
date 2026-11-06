@@ -190,4 +190,11 @@ describe.skipIf(!E2E)('Sheets export (isolated DB)', { timeout: 90_000 }, () => 
     sql(`insert into order_sheet_destinations (account_id, spreadsheet_id, enabled) values ('${B}','${'U'.repeat(30)}',false)`)   // a different file is fine
     expect(() => sql(`update order_sheet_destinations set spreadsheet_id = '${SPREAD}' where account_id = '${B}'`)).toThrow(/duplicate key|unique/i)
   })
+
+  it('the prepared test-exclusion SQL refuses to run unless exactly the two verified orders exist (guards)', () => {
+    order(A, { price: 50, qty: 1 })
+    const file = execFileSync('cat', ['scripts/ops/orders-sheets/exclude-test-orders.sql'], { encoding: 'utf8' })
+    expect(() => execFileSync('docker', ['exec', '-i', 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-v', 'ON_ERROR_STOP=1'], { input: file, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })).toThrow()
+    expect(sql(`select count(*) from order_sheet_exclusions`)).toBe('0')
+  })
 })

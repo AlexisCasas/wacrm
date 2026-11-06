@@ -25,7 +25,7 @@ Quién: el titular de la cuenta de Google que es dueña de la hoja. **Las creden
    Variables: `GOOGLE_SHEETS_SA_EMAIL=<correo de la cuenta de servicio>` y `GOOGLE_SHEETS_SA_KEY_B64=<salida anterior>`. Para la prueba QA basta exportarlas en la sesión de shell donde correrá la prueba; para producción irían al `.env` del servidor y la activación se autoriza aparte.
 
 ## D. Compartir **solo** la hoja QA
-1. Abre la hoja QA: <https://docs.google.com/spreadsheets/d/1zjwubBlj01eKfsdcn3-FM8a5Vw4a7qPSxPKsCaRdLfk/edit>
+1. Abre la hoja QA **limpia y dedicada a esta corrida** («QA - WhatsCRM Registro de pedidos Keyler (corrida API real, limpia)»): <https://docs.google.com/spreadsheets/d/11VTllvKJdult1b3GjZ6_h2SM9am2qO_nawWERBIjDhI/edit>. Contiene solo los encabezados y las fórmulas, sin filas de corridas anteriores; la primera hoja QA (con filas de ensayos previos) no se usa para esta prueba.
 2. **Compartir** → pega el correo de la cuenta de servicio → rol **Editor** → desmarca «Notificar» → Compartir.
 3. No compartas carpetas ni otros archivos. La cuenta de servicio solo ve lo que se le comparte explícitamente.
 4. La hoja definitiva (más adelante) será un archivo distinto y exclusivo de Keyler, también compartido solo con ese correo; la base de datos impide apuntar dos cuentas al mismo archivo.
@@ -35,10 +35,10 @@ Desde una copia del repositorio con `node_modules`, en el servidor o equipo de c
 ```bash
 export GOOGLE_SHEETS_SA_EMAIL='...'            # correo de la cuenta de servicio
 export GOOGLE_SHEETS_SA_KEY_B64='...'          # no lo pegues en ningún chat
-export QA_SHEET_ID='1zjwubBlj01eKfsdcn3-FM8a5Vw4a7qPSxPKsCaRdLfk'
+export QA_SHEET_ID='11VTllvKJdult1b3GjZ6_h2SM9am2qO_nawWERBIjDhI'
 QA_REAL_API=1 QA_REAL_API_OUT=/tmp/real-api-report.json npx vitest run src/lib/orders/sheets/real-api.integration.test.ts
 ```
-La prueba valida: encabezados, escritura, lectura, re-ejecución idempotente, escritura ambigua con reintento sin duplicados y conciliación por huella. Escribe 4 filas sintéticas nuevas (3 pedidos) en «Registro de pedidos» de la hoja QA y deja un informe solo con nombres de pasos y contadores. Después, la pestaña «Control de conciliación» permite contrastar con fórmulas reales (la columna «Base de datos» se actualiza a mano con los valores esperados del informe).
+La prueba valida: encabezados, escritura, lectura, re-ejecución idempotente, escritura ambigua con reintento sin duplicados y conciliación por huella. El escenario completo escribe **5 filas sintéticas de 4 pedidos** en «Registro de pedidos»: 3 pedidos / 4 líneas con escritura normal y 1 pedido / 1 línea con la simulación de respuesta perdida (escritura ambigua). Totales esperados: 4 pedidos, 5 líneas, 8 unidades, S/ 495,00. La hoja ya trae esos valores en la columna «Base de datos» de «Control de conciliación», de modo que tras la corrida debe mostrar «Sin diferencias» (antes de la corrida muestra «HAY DIFERENCIAS», porque la hoja está vacía). El informe (`QA_REAL_API_OUT`) solo contiene nombres de pasos y contadores. Si hay que repetir la corrida, se repiten las 5 filas con otros identificadores; para repetirla limpia, borra `A2:AA` de «Registro de pedidos» y vuelve a ejecutar.
 
 ## F. Rotación y revocación
 - Rotar: crear una clave nueva, actualizar `GOOGLE_SHEETS_SA_KEY_B64`, borrar la clave antigua en la consola.

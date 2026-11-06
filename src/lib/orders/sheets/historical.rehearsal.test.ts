@@ -1,7 +1,7 @@
 // Historical-load rehearsal on an ISOLATED restored copy of production orders (see docs). Prints AGGREGATES only: no names, phones, DNIs or per-customer amounts.
 // Skipped unless QA_HISTORICAL=1 (+ loopback URL). The sheet is an in-memory fake: nothing is sent to Google.
 import { execFileSync } from 'node:child_process'
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { createClient } from '@supabase/supabase-js'
 import { describe, expect, it } from 'vitest'
 import { runSheetsExport } from './exporter'
@@ -32,5 +32,28 @@ describe.skipIf(!ON)('historical load rehearsal', () => {
     const summary = { dbAcknowledged_notAcknowledged: dbCounts, testCandidatesAmongAcknowledged: cand, passes: passes.length, report: { ...rep, missingKeys: rep.missingKeys.length, extraKeys: rep.extraKeys.length, duplicateKeys: rep.duplicateKeys.length, lineMismatches: rep.lineMismatches.length, orderAmountMismatches: rep.orderAmountMismatches.length, projectionErrors: rep.projectionErrors }, rerun: { claimed: again.claimed, appended: again.appendedLines, rowsBefore: n, rowsAfter: sheet.data.length, identical: JSON.stringify(sheet.data) === before, differences: rep2.differences } }
     writeFileSync(process.env.QA_HISTORICAL_OUT ?? '/dev/null', JSON.stringify(summary, null, 1))
     expect(rep.differences).toBe(0); expect(again.appendedLines).toBe(0); expect(JSON.stringify(sheet.data)).toBe(before)
+  }, 300_000)
+
+  it('with the prepared test-order exclusion applied first: 2 orders excluded, the rest reconciles to zero, the SQL is idempotent', async () => {
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
+    if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(url) || !ACCOUNT) throw new Error('loopback URL and QA_HISTORICAL_ACCOUNT required')
+    const db = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } })
+    const script = readFileSync('scripts/ops/orders-sheets/exclude-test-orders.sql', 'utf8')
+    const apply = () => execFileSync('docker', ['exec', '-i', 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-v', 'ON_ERROR_STOP=1'], { input: script, encoding: 'utf8' })
+    q(`truncate order_sheet_events, order_sheet_exports, order_sheet_exclusions, order_sheet_destinations cascade`)
+    q(`insert into order_sheet_destinations (account_id, spreadsheet_id, enabled) values ('${ACCOUNT}','${'H'.repeat(30)}',true)`)
+    const orderStatusBefore = q(`select md5(string_agg(o::text, ',' order by id)) from order_confirmations o`)
+    apply(); apply()                                                                   // twice: idempotent
+    expect(q(`select count(*) from order_sheet_exclusions where reason = 'test'`)).toBe('2')
+    expect(q(`select md5(string_agg(o::text, ',' order by id)) from order_confirmations o`)).toBe(orderStatusBefore)   // orders untouched
+    const sheet = new FakeSheet()
+    for (let i = 0; i < 60; i++) { const r = await runSheetsExport(db, sheet, ACCOUNT, { batch: 50, maxBatches: 20 }); if (r.claimed === 0) break }
+    const rep = await reconcileAccount(db, sheet, ACCOUNT)
+    const excludedInSheet = q(`select count(*) from order_confirmations where left(md5(id::text), 8) in ('c071235f','821d22b1')`) // sanity: they exist in the DB
+    const keys = new Set(sheet.data.map((r) => String(r[16]).split(':')[0]))
+    const leaked = q(`select id from order_confirmations where left(md5(id::text), 8) in ('c071235f','821d22b1')`).split('\n').filter((id) => keys.has(id)).length
+    const out = { excludedBySql: 2, dbHasThem: excludedInSheet, leakedIntoSheet: leaked, eligibleOrders: rep.eligibleOrders, eligibleLines: rep.eligibleLines, eligibleUnits: rep.eligibleUnits, eligibleCents: rep.eligibleCents, sheetLines: rep.sheetLines, excludedOrders: rep.excludedOrders, excludedByReason: rep.excludedByReason, differences: rep.differences, jobsByStatus: rep.jobsByStatus }
+    writeFileSync((process.env.QA_HISTORICAL_OUT ?? '/dev/null').replace(/\.json$/, '') + '-excl.json', JSON.stringify(out, null, 1))
+    expect(rep.differences).toBe(0); expect(leaked).toBe(0); expect(rep.excludedByReason).toEqual({ test: 2 }); expect(rep.eligibleOrders).toBe(224)
   }, 300_000)
 })
