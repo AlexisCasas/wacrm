@@ -41,11 +41,28 @@ describe('GoogleSheetsClient', () => {
     expect(claims).toMatchObject({ iss: 'sa@proj.iam.example.invalid', scope: 'https://www.googleapis.com/auth/spreadsheets', aud: `${base}/token` })
     expect(log.every((l) => l.auth === 'Bearer tok-1')).toBe(true)
   })
-  it('appends RAW + INSERT_ROWS and sends values untouched', async () => {
-    await mk().append('S'.repeat(30), "Pedidos 'x'", [['=1+1', 5]])
-    expect(log[0].url).toContain('valueInputOption=RAW'); expect(log[0].url).toContain('insertDataOption=INSERT_ROWS')
-    expect(log[0].url).toContain(encodeURIComponent("'Pedidos ''x'''!A1"))
-    expect(JSON.parse(log[0].body!).values).toEqual([['=1+1', 5]])
+  it('appends typed cells with appendCells: text stays text (even "="), numbers stay numbers, formats attached, one atomic request', async () => {
+    script = (_n, url) => (url.includes('batchUpdate') ? { status: 200, body: {} } : { status: 200, body: { sheets: [{ properties: { sheetId: 77, title: "Pedidos 'x'" } }] } })
+    const c = mk()
+    await c.append('S'.repeat(30), "Pedidos 'x'", [[46330, 46330.5, '=1+1', '00000001', '', 'x', 1, 95.5]])
+    await c.append('S'.repeat(30), "Pedidos 'x'", [[46331]])                       // second call reuses the cached sheetId
+    const calls = log.filter((l) => l.url.includes('batchUpdate')), meta = log.filter((l) => !l.url.includes('batchUpdate'))
+    expect(meta).toHaveLength(1); expect(calls).toHaveLength(2)
+    expect(log.some((l) => l.url.includes('values:append') || l.url.includes('INSERT_ROWS'))).toBe(false)   // regression: INSERT_ROWS shifted the formulas that reference the register
+    const req = JSON.parse(calls[0].body!).requests[0].appendCells
+    expect(req.sheetId).toBe(77); expect(req.fields).toBe('userEnteredValue,userEnteredFormat.numberFormat')
+    const v = req.rows[0].values
+    expect(v[0]).toEqual({ userEnteredValue: { numberValue: 46330 }, userEnteredFormat: { numberFormat: { type: 'DATE', pattern: 'd/M/yyyy' } } })
+    expect(v[1].userEnteredFormat.numberFormat.type).toBe('DATE_TIME')
+    expect(v[2]).toEqual({ userEnteredValue: { stringValue: '=1+1' } })     // never a formula
+    expect(v[3]).toEqual({ userEnteredValue: { stringValue: '00000001' } }) // leading zeros kept
+    expect(v[4]).toEqual({})                                                  // blank
+    expect(v[7].userEnteredValue).toEqual({ numberValue: 95.5 })
+  })
+  it('an unknown tab is reported as not_found (retryable config problem), nothing is written', async () => {
+    script = () => ({ status: 200, body: { sheets: [{ properties: { sheetId: 1, title: 'Otra' } }] } })
+    const e = await mk().append('S'.repeat(30), 'Registro', [['x']]).catch((x) => x)
+    expect(e.code).toBe('not_found'); expect(log.every((l) => !l.url.includes('batchUpdate'))).toBe(true)
   })
   it('refreshes the token once on 401', async () => {
     script = (n) => (n === 1 ? { status: 401 } : { status: 200, body: { values: [['k1', 'k2']] } })

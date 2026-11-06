@@ -1,5 +1,5 @@
 import { createSign } from 'node:crypto'
-import { quoteTab, type Cell } from './layout'
+import { numberFormatFor, quoteTab, type Cell } from './layout'
 
 // Minimal Google Sheets v4 client authenticated as a SERVICE ACCOUNT (JWT bearer, RS256) using only node:crypto + fetch.
 // The private key lives only in the server environment; it is never logged and never part of an error message.
@@ -118,12 +118,36 @@ export class GoogleSheetsClient implements SheetsApi {
     return json.values ?? []
   }
 
-  // RAW: values are stored exactly as sent and never evaluated as formulas. INSERT_ROWS: appended below the last row of the table.
+  private sheetIds = new Map<string, number>()
+  private async sheetId(id: string, tab: string): Promise<number> {
+    const key = `${id}|${tab}`
+    const hit = this.sheetIds.get(key)
+    if (hit !== undefined) return hit
+    const res = await this.api(`/v4/spreadsheets/${encodeURIComponent(id)}?fields=${encodeURIComponent('sheets.properties.sheetId,sheets.properties.title')}`)
+    const json = (await res.json()) as { sheets?: { properties: { sheetId: number; title: string } }[] }
+    const found = json.sheets?.find((s) => s.properties.title === tab)
+    if (!found) throw new SheetsError('not_found', true, 404)
+    this.sheetIds.set(key, found.properties.sheetId)
+    return found.properties.sheetId
+  }
+
+  // appendCells (not values:append with INSERT_ROWS): rows go into the first blank rows after the last row with data and the grid only grows when it must, so
+  // formulas that reference the register (open ranges starting at row 2) are never shifted. Typed cells: text stays text (nothing is parsed or evaluated as a
+  // formula, '=...' included) and numbers stay numbers. One request = one atomic write of all the rows.
   async append(id: string, tab: string, rows: Cell[][]): Promise<void> {
     if (rows.length === 0) return
-    const range = encodeURIComponent(`${quoteTab(tab)}!A1`)
-    await this.api(`/v4/spreadsheets/${encodeURIComponent(id)}/values/${range}:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`, {
-      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ majorDimension: 'ROWS', values: rows }),
+    const sheetId = await this.sheetId(id, tab)
+    const cell = (v: Cell, col: number) => {
+      const fmt = numberFormatFor(col)
+      const out: Record<string, unknown> = {}
+      if (typeof v === 'number') out.userEnteredValue = { numberValue: v }
+      else if (v !== '') out.userEnteredValue = { stringValue: v }
+      if (fmt) out.userEnteredFormat = { numberFormat: fmt }
+      return out
+    }
+    await this.api(`/v4/spreadsheets/${encodeURIComponent(id)}:batchUpdate`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ requests: [{ appendCells: { sheetId, rows: rows.map((r) => ({ values: r.map(cell) })), fields: 'userEnteredValue,userEnteredFormat.numberFormat' } }] }),
     })
   }
 }

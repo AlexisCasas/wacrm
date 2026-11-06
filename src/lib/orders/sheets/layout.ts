@@ -152,3 +152,14 @@ export function compareRow(expected: Cell[], actual: Cell[]): string[] {
   if (actual.length > HEADERS.length && actual.slice(HEADERS.length).some((v) => !blank(v))) diffs.push('(columnas extra)')
   return diffs
 }
+
+// Display format of the columns the register shows as dates / money. Rows are appended with their own cell formats (a table that is empty or
+// formatted differently must still look right), so the sheet never depends on pre-formatted blank rows.
+export function numberFormatFor(colIndex: number): { type: 'DATE' | 'DATE_TIME' | 'NUMBER'; pattern: string } | null {
+  switch (HEADERS[colIndex]) {
+    case 'Fecha': return { type: 'DATE', pattern: 'd/M/yyyy' }
+    case 'Fecha y hora': return { type: 'DATE_TIME', pattern: 'yyyy-mm-dd h:mm:ss' }
+    case 'Precio': case 'Importe del pedido (no sumar)': case 'Precio unitario': return { type: 'NUMBER', pattern: '[$S/.]#,##0.00' }
+    default: return null
+  }
+}
