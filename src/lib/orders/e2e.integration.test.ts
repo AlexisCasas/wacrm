@@ -287,4 +287,42 @@ describe.skipIf(!E2E)('Confirmar pedido: WACRM -> outbox -> InkaClick (isolated 
       sql('wacrm', "update order_integration_settings set multiproduct_enabled=false where account_id='" + ACCOUNT + "'")
     }
   })
+
+  it('16. direct service-role RPC normalizes item names before saving immutable snapshots', async () => {
+    const { supabaseAdmin } = await import('@/lib/flows/admin-client')
+    sql('wacrm', "update order_integration_settings set multiproduct_enabled=true where account_id='" + ACCOUNT + "'")
+    try {
+      const key = 'qa-multiproduct-trim'
+      const { data, error } = await supabaseAdmin().rpc('create_order_confirmation', {
+        p_account: ACCOUNT,
+        p_contact: CONTACT,
+        p_conversation: CONVERSATION,
+        p_actor: USER,
+        p_actor_name: 'Asesor QA',
+        p_request_key: key,
+        p_seller: SELLER,
+        p_fields: {
+          customer_name: 'Cliente QA',
+          phone: '51900000011',
+          product: '1 x Guitarra QA',
+          quantity: 1,
+          price: '10.00',
+          destination: 'Arequipa',
+          items: [{
+            product_name: '  Guitarra QA  ',
+            quantity: 1,
+            unit_price: '10.00',
+            catalog_product_id: null,
+          }],
+        },
+      })
+      expect(error).toBeNull()
+      const row = (Array.isArray(data) ? data[0] : data) as { order_id: string; created: boolean }
+      expect(row.created).toBe(true)
+      expect(sql('wacrm', "select product_name from order_confirmation_items where order_id='" + row.order_id + "'"))
+        .toBe('Guitarra QA')
+    } finally {
+      sql('wacrm', "update order_integration_settings set multiproduct_enabled=false where account_id='" + ACCOUNT + "'")
+    }
+  })
 })
