@@ -110,7 +110,10 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
   const validation = useMemo(() => validateOrderInput(multiMode && multiproductEnabled
     ? { ...values, items: itemsForSubmission(items) }
     : values), [values, multiMode, multiproductEnabled, items]);
-  const errors = { ...(validation.errors as Record<string, string>), ...serverErrors };
+  // An empty server error means "cleared", not "hide the client validation error".
+  // Keep client-side feedback visible while an item/field remains invalid.
+  const activeServerErrors = Object.fromEntries(Object.entries(serverErrors).filter(([, message]) => Boolean(message)));
+  const errors = { ...(validation.errors as Record<string, string>), ...activeServerErrors };
   const canReview = validation.ok && sellerId !== "";
 
   const set = (key: keyof OrderFormValues, value: string) => {
