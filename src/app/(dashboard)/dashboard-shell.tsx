@@ -1,13 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { AuthProvider, useAuth } from "@/hooks/use-auth";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Header } from "@/components/layout/header";
 import { AccountAccessAlert } from "@/components/layout/account-access-alert";
 import { PresenceHeartbeat } from "@/components/presence/presence-heartbeat";
+import { PricingAnalyticsProvider } from "@/hooks/use-pricing-analytics";
 
 // Auth-gated dashboard shell. Extracted from the layout so the layout
 // itself can stay a server component and export metadata (noindex) —
@@ -62,10 +63,28 @@ function DashboardShellInner({ children }: { children: React.ReactNode }) {
   );
 }
 
+// ONE shared pricing-analytics request for the header indicator and the dashboard widget. It only runs on /dashboard (no Meta call from any
+// other page) and only once the account is known; the client key just invalidates state on an account switch, the API resolves the account
+// from the session.
+function PricingAnalyticsGate({ children }: { children: React.ReactNode }) {
+  const { user, loading, accountId } = useAuth();
+  const pathname = usePathname();
+  return (
+    <PricingAnalyticsProvider
+      enabled={!loading && Boolean(user) && Boolean(accountId) && pathname === "/dashboard"}
+      accountKey={accountId ?? user?.id ?? "anonymous"}
+    >
+      {children}
+    </PricingAnalyticsProvider>
+  );
+}
+
 export function DashboardShell({ children }: { children: React.ReactNode }) {
   return (
     <AuthProvider>
-      <DashboardShellInner>{children}</DashboardShellInner>
+      <PricingAnalyticsGate>
+        <DashboardShellInner>{children}</DashboardShellInner>
+      </PricingAnalyticsGate>
     </AuthProvider>
   );
 }
