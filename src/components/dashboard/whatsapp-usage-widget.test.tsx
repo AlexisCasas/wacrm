@@ -83,7 +83,7 @@ describe('WhatsappUsageWidget', () => {
 
     expect(await screen.findByText('paidMessages')).toBeInTheDocument();
     expect(screen.getByText('73')).toBeInTheDocument();
-    expect(screen.getByText('2.19')).toBeInTheDocument();
+    expect(screen.getByText('$2.19 USD')).toBeInTheDocument();
     expect(screen.getByText('101,389')).toBeInTheDocument();
     // no currency is invented and the old "Meta did not report the currency" hint is gone from the card
     expect(screen.queryByText('noCurrency')).not.toBeInTheDocument();
@@ -95,12 +95,12 @@ describe('WhatsappUsageWidget', () => {
   });
 
   it.each([
-    [40.4803, '40.48'],
-    [2.19, '2.19'],
-    [0, '0.00'],
-    [40.4851, '40.49'],
-    [1234.5, '1,234.50'],
-  ])('the cost card shows %s as %s (2 decimals, no currency)', async (cost, shown) => {
+    [40.4803, '$40.48 USD'],
+    [2.19, '$2.19 USD'],
+    [0, '$0.00 USD'],
+    [40.4851, '$40.49 USD'],
+    [1234.5, '$1,234.50 USD'],
+  ])('the cost card shows %s as %s', async (cost, shown) => {
     vi.mocked(fetch).mockReturnValue(
       jsonResponse({ ...READY, summary: { ...READY.summary, estimatedCost: cost }, breakdown: [] })
     );
@@ -108,22 +108,41 @@ describe('WhatsappUsageWidget', () => {
     await screen.findByText('paidMessages');
     const card = screen.getByText('estimatedCost').closest('div')!.parentElement as HTMLElement;
     expect(card).toHaveTextContent(shown);
-    expect(card.textContent).not.toMatch(/USD|PEN|S\/|\$/);
+    // the old "Meta did not report the currency" hint is gone
     expect(card.textContent).not.toMatch(/noCurrency/);
   });
 
-  it('the detail table keeps the full precision Meta returned', async () => {
+  it('the detail table shows every amount as USD with 2 decimals and no currency disclaimer', async () => {
     vi.mocked(fetch).mockReturnValue(
       jsonResponse({
         ...READY,
         summary: { ...READY.summary, estimatedCost: 40.4803 },
-        breakdown: [{ pricingType: 'REGULAR', category: 'SERVICE', volume: 5, cost: 40.4803 }],
+        breakdown: [
+          { pricingType: 'REGULAR', category: 'MARKETING', volume: 1, cost: 0.0703 },
+          { pricingType: 'REGULAR', category: 'SERVICE', volume: 90, cost: 40.41 },
+          { pricingType: 'FREE_CUSTOMER_SERVICE', category: 'SERVICE', volume: 682, cost: 0 },
+        ],
       })
     );
     renderWidget();
     await screen.findByText('paidMessages');
     fireEvent.click(screen.getByRole('button', { name: 'viewDetail' }));
-    expect(await screen.findByText('40.4803')).toBeInTheDocument();
+    expect(await screen.findByText('$0.07 USD')).toBeInTheDocument();
+    expect(screen.getByText('$40.41 USD')).toBeInTheDocument();
+    expect(screen.getByText('$0.00 USD')).toBeInTheDocument();
+    expect(screen.queryByText(/0\.0703|40\.4803/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/detailNoCurrency|noCurrency/)).not.toBeInTheDocument();
+  });
+
+  it('a currency reported by Meta wins over the default', async () => {
+    vi.mocked(fetch).mockReturnValue(
+      jsonResponse({ ...READY, currency: 'PEN', summary: { ...READY.summary, estimatedCost: 10 }, breakdown: [] })
+    );
+    renderWidget();
+    await screen.findByText('paidMessages');
+    const card = screen.getByText('estimatedCost').closest('div')!.parentElement as HTMLElement;
+    expect(card).toHaveTextContent('PEN');
+    expect(card.textContent).not.toContain('USD');
   });
 
   it('renders a valid zero/empty state', async () => {

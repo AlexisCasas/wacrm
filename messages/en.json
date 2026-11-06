@@ -201,7 +201,6 @@
       "volume": "Volume",
       "cost": "Cost",
       "noBreakdown": "Meta returned no pricing data for this period.",
-      "detailNoCurrency": "Amounts have no currency symbol because Meta did not report a currency.",
       "loading": "Loading WhatsApp usage",
       "errorTitle": "WhatsApp usage could not be loaded",
       "errorHint": "The rest of the Dashboard remains available. Try again in a moment.",

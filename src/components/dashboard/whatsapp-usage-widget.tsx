@@ -29,6 +29,7 @@ import {
 import { Skeleton } from '@/components/dashboard/skeleton';
 import { usePricingAnalytics } from '@/hooks/use-pricing-analytics';
 import type { PricingAnalyticsResult } from '@/lib/whatsapp/pricing-analytics';
+import { formatPricingAmount } from '@/lib/whatsapp/pricing-currency';
 
 type UnavailableReason = 'no_config' | 'missing_waba' | 'token_invalid';
 
@@ -91,10 +92,8 @@ export function WhatsappUsageWidget() {
           value={formatCost(
             data.summary.estimatedCost,
             data.currency,
-            t('costUnavailable'),
-            2
+            t('costUnavailable')
           )}
-          hint={data.currency ?? undefined}
           icon={BadgeDollarSign}
         />
         <UsageMetric
@@ -158,11 +157,6 @@ function PricingDetailDialog({ data }: { data: PricingAnalyticsResult }) {
           </Table>
         )}
 
-        {!data.currency ? (
-          <p className="text-muted-foreground text-xs">
-            {t('detailNoCurrency')}
-          </p>
-        ) : null}
       </DialogContent>
     </Dialog>
   );
@@ -264,17 +258,12 @@ function formatCount(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
 
-// `maxFractionDigits` only shortens what is DISPLAYED (the summary card shows 2 decimals); the value Meta returned is never changed.
+// Amounts are shown as "$40.48 USD" (2 decimals); the currency decision lives in pricing-currency.ts. The value received from Meta is untouched.
 function formatCost(
   value: number | null,
   currency: string | null,
-  unavailable: string,
-  maxFractionDigits = 6
+  unavailable: string
 ): string {
   if (value === null) return unavailable;
-  const amount = new Intl.NumberFormat(undefined, {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: maxFractionDigits,
-  }).format(value);
-  return currency ? `${amount} ${currency}` : amount;
+  return formatPricingAmount(value, currency);
 }

@@ -201,7 +201,6 @@
       "volume": "Volumen",
       "cost": "Costo",
       "noBreakdown": "Meta no devolvió datos de precios para este período.",
-      "detailNoCurrency": "Los importes se muestran sin símbolo porque Meta no informó una moneda.",
       "loading": "Cargando uso de WhatsApp",
       "errorTitle": "No se pudo cargar el uso de WhatsApp",
       "errorHint": "El resto del Panel sigue disponible. Intenta nuevamente en unos momentos.",
