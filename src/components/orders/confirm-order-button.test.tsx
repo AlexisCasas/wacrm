@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 vi.mock("next-intl", () => ({ useTranslations: () => (key: string) => key }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -21,6 +21,21 @@ describe("ConfirmOrderButton visibility", () => {
     answer({ enabled: true, sellers: [{ id: "u1", name: "Titular" }] });
     render(<ConfirmOrderButton contact={contact} />);
     await screen.findByText("confirmButton");
+  });
+
+  it("shows multiproduct mode only when the server enables that account", async () => {
+    answer({ enabled: true, multiproduct_enabled: true, sellers: [{ id: "u1", name: "Titular" }] });
+    render(<ConfirmOrderButton contact={contact} />);
+    fireEvent.click(await screen.findByText("confirmButton"));
+    expect(await screen.findByText("lineMultiMode")).toBeTruthy();
+  });
+
+  it("keeps other accounts on the classic order form", async () => {
+    answer({ enabled: true, multiproduct_enabled: false, sellers: [{ id: "u1", name: "Titular" }] });
+    render(<ConfirmOrderButton contact={contact} />);
+    fireEvent.click(await screen.findByText("confirmButton"));
+    await screen.findByText("review");
+    expect(screen.queryByText("lineMultiMode")).toBeNull();
   });
 
   it.each([
