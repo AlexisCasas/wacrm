@@ -214,10 +214,9 @@
       "tokenInvalidTitle": "La conexión con Meta requiere atención",
       "tokenInvalidHint": "El token guardado no pudo validarse. Revisa la conexión en Configuración.",
       "freeTierLabel": "Bolsa gratuita",
-      "freeTierFree": "gratis",
-      "freeTierRemaining": "{count} disponibles",
-      "freeTierLoading": "Cargando bolsa gratuita de WhatsApp",
-      "freeTierAccessibleLabel": "Bolsa gratuita de WhatsApp: {used} de {limit} usados, {remaining} disponibles"
+      "freeTierRemaining": "{count, plural, one {# disponible} other {# disponibles}}",
+      "freeTierExhausted": "Bolsa agotada",
+      "freeTierLoading": "Cargando bolsa gratuita de WhatsApp"
     },
     "activityFeed": {
       "title": "Actividad reciente",

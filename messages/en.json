@@ -214,10 +214,9 @@
       "tokenInvalidTitle": "The Meta connection needs attention",
       "tokenInvalidHint": "The saved token could not be validated. Review the connection in Settings.",
       "freeTierLabel": "Free allowance",
-      "freeTierFree": "free",
-      "freeTierRemaining": "{count} available",
-      "freeTierLoading": "Loading free WhatsApp allowance",
-      "freeTierAccessibleLabel": "Free WhatsApp allowance: {used} of {limit} used, {remaining} available"
+      "freeTierRemaining": "{count, plural, other {# available}}",
+      "freeTierExhausted": "Allowance used up",
+      "freeTierLoading": "Loading free WhatsApp allowance"
     },
     "activityFeed": {
       "title": "Recent Activity",

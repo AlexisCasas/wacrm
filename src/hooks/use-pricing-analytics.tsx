@@ -36,6 +36,11 @@ interface StoredState {
 
 const LOADING_STATE = { kind: 'loading' } as const;
 
+/** Meta recalculates analytics after the fact, so the Panel re-reads them while it stays open. */
+export const PRICING_ANALYTICS_REFRESH_MS = 5 * 60 * 1000;
+/** A request that never answers must not block every later refresh. */
+const REQUEST_TIMEOUT_MS = 60 * 1000;
+
 const PricingAnalyticsContext =
   createContext<PricingAnalyticsContextValue | null>(null);
 
@@ -43,10 +48,12 @@ export function PricingAnalyticsProvider({
   enabled,
   accountKey,
   children,
+  refreshIntervalMs = PRICING_ANALYTICS_REFRESH_MS,
 }: {
   enabled: boolean;
   accountKey: string;
   children: ReactNode;
+  refreshIntervalMs?: number;
 }) {
   const [stored, setStored] = useState<StoredState>({
     accountKey: null,
@@ -54,20 +61,30 @@ export function PricingAnalyticsProvider({
   });
   const [requestKey, setRequestKey] = useState(0);
 
+  // One cycle = ONE request whose result feeds every consumer (header indicator and Panel widget). It runs immediately when the Panel opens
+  // (or the account / retry key changes), then every refreshIntervalMs while `enabled`. The cleanup stops the timer and aborts the request.
   useEffect(() => {
     if (!enabled) return;
 
-    const controller = new AbortController();
+    let active = true;
+    let inFlight = false;
+    let controller: AbortController | null = null;
 
-    void fetch('/api/whatsapp/pricing-analytics', {
-      headers: { Accept: 'application/json' },
-      signal: controller.signal,
-    })
-      .then(async (response) => {
+    const load = async () => {
+      // Never start a second request while the previous one is still running.
+      if (inFlight) return;
+      inFlight = true;
+      const request = new AbortController();
+      controller = request;
+      const timeout = setTimeout(() => request.abort(), REQUEST_TIMEOUT_MS);
+      try {
+        const response = await fetch('/api/whatsapp/pricing-analytics', {
+          headers: { Accept: 'application/json' },
+          signal: request.signal,
+        });
         if (!response.ok) throw new Error('pricing analytics unavailable');
-        return (await response.json()) as ApiResponse;
-      })
-      .then((body) => {
+        const body = (await response.json()) as ApiResponse;
+        if (!active) return;
         if (body.status === 'ready') {
           const { status: _status, ...data } = body;
           void _status;
@@ -78,15 +95,29 @@ export function PricingAnalyticsProvider({
             value: { kind: 'unavailable', reason: body.reason },
           });
         }
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === 'AbortError')
-          return;
-        setStored({ accountKey, value: { kind: 'error' } });
-      });
+      } catch {
+        if (!active) return;
+        // A transient failure during a refresh keeps the last valid numbers on screen; the next cycle simply tries again.
+        setStored((previous) =>
+          previous.accountKey === accountKey && previous.value.kind === 'ready'
+            ? previous
+            : { accountKey, value: { kind: 'error' } }
+        );
+      } finally {
+        clearTimeout(timeout);
+        inFlight = false;
+      }
+    };
 
-    return () => controller.abort();
-  }, [accountKey, enabled, requestKey]);
+    void load();
+    const timer = setInterval(() => void load(), refreshIntervalMs);
+
+    return () => {
+      active = false;
+      clearInterval(timer);
+      controller?.abort();
+    };
+  }, [accountKey, enabled, refreshIntervalMs, requestKey]);
 
   const retry = useCallback(() => {
     setStored({ accountKey, value: LOADING_STATE });
