@@ -5,7 +5,7 @@ import { ExternalLink } from "lucide-react";
 import { useTranslations } from "next-intl";
 
 import { createClient } from "@/lib/supabase/client";
-import { adPlatformFromUrl, safeAdUrl } from "@/lib/whatsapp/ad-referral";
+import { adDetailText, adPlatformFromUrl, displayAdText, safeAdUrl } from "@/lib/whatsapp/ad-referral";
 
 interface ContactAdOriginProps {
   contactId: string;
@@ -13,12 +13,13 @@ interface ContactAdOriginProps {
 
 interface AdOrigin {
   headline: string | null;
+  body?: string | null;
   source_url: string | null;
 }
 
 /**
  * Inbox sidebar "ORIGEN DEL CLIENTE": the Meta ad the customer came from (first attribution, captured by the WhatsApp webhook). Read through RLS; only the
- * headline and the ad URL are selected, so technical ids (source_id, ctwa_clid) never reach the browser. No row = "Sin atribución de anuncio" (nothing is
+ * headline, the ad text (body) and the ad URL are selected, so technical ids (source_id, ctwa_clid) never reach the browser. No row = "Sin atribución de anuncio" (nothing is
  * assumed: not organic, not direct). The platform is shown only when the ad URL's host says so; "Ver anuncio" only for a real https Meta URL.
  * Keyed by contact id by the sidebar and the state remembers which contact it was loaded for, so a previous contact's origin is never shown.
  */
@@ -33,7 +34,7 @@ export function ContactAdOrigin({ contactId }: ContactAdOriginProps) {
       try {
         const { data, error } = await supabase
           .from("contact_ad_attributions")
-          .select("headline, source_url")
+          .select("headline, body, source_url")
           .eq("contact_id", contactId)
           .maybeSingle();
         // A failed read says nothing about the origin: show nothing rather than claim there is none.
@@ -51,6 +52,8 @@ export function ContactAdOrigin({ contactId }: ContactAdOriginProps) {
   const { ad } = state;
   const url = safeAdUrl(ad?.source_url);
   const platform = adPlatformFromUrl(url);
+  const headline = displayAdText(ad?.headline);
+  const detail = adDetailText(ad?.headline, ad?.body);
 
   return (
     <div className="mt-2 px-3" data-testid="contact-ad-origin">
@@ -58,7 +61,8 @@ export function ContactAdOrigin({ contactId }: ContactAdOriginProps) {
       {ad ? (
         <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
           <p className="font-medium text-foreground">📣 {t("originMetaAd")}</p>
-          {ad.headline && <p className="break-words">{t("originAd")}: {ad.headline}</p>}
+          {headline && <p className="break-words">{t("originAd")}: {headline}</p>}
+          {detail && <p className="line-clamp-2 break-words" title={detail}>{t("originDetail")}: {detail}</p>}
           <p>{t("originEntry")}: {t("originEntryValue")}</p>
           {platform && <p>{t("originPlatform")}: {platform === "instagram" ? t("originInstagram") : t("originFacebook")}</p>}
           {url && (

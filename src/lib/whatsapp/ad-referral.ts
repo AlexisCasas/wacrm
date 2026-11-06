@@ -91,3 +91,32 @@ export function normalizeAdReferral(referral: unknown): NormalizedAdReferral | n
   };
   return out.source_id || out.source_url || out.headline || out.ctwa_clid ? out : null;
 }
+
+/**
+ * Text of an ad as shown in the UI. Meta ad copy often uses "mathematical" bold letters (U+1D5D4…); NFKC maps them to plain letters, whitespace is collapsed.
+ * Display only: the stored text is never changed.
+ */
+export function displayAdText(value: string | null | undefined): string {
+  return typeof value === "string" ? value.normalize("NFKC").replace(/\s+/gu, " ").trim() : "";
+}
+
+const compareKey = (s: string) => s.normalize("NFD").replace(/\p{M}+/gu, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+const DETAIL_MAX = 200;
+
+/**
+ * The "Detalle" line of an ad: its body (the ad's own text, which usually names the product) as real text from the referral, compact. Null when there is
+ * no body or it adds nothing over the headline (equal, or one is practically the other).
+ */
+export function adDetailText(headline: string | null | undefined, body: string | null | undefined): string | null {
+  const detail = displayAdText(body);
+  if (!detail) return null;
+  const a = compareKey(detail);
+  const b = compareKey(displayAdText(headline));
+  if (!a) return null;
+  if (b) {
+    const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+    if (short === long || (long.includes(short) && short.length / long.length >= 0.8)) return null;
+  }
+  return detail.length > DETAIL_MAX ? `${detail.slice(0, DETAIL_MAX).trimEnd()}…` : detail;
+}

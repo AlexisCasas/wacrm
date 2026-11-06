@@ -7,13 +7,13 @@ import { ContactAdOrigin } from "./contact-ad-origin";
 vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) =>
     ({
-      originTitle: "ORIGEN DEL CLIENTE", originMetaAd: "Publicidad en Meta", originAd: "Anuncio", originEntry: "Entrada", originEntryValue: "Click a WhatsApp",
+      originTitle: "ORIGEN DEL CLIENTE", originMetaAd: "Publicidad en Meta", originAd: "Anuncio", originDetail: "Detalle", originEntry: "Entrada", originEntryValue: "Click a WhatsApp",
       originPlatform: "Plataforma", originViewAd: "Ver anuncio", originNone: "Sin atribución de anuncio", originFacebook: "Facebook", originInstagram: "Instagram",
     })[key] ?? key,
 }));
 
 const h = vi.hoisted(() => ({
-  rows: {} as Record<string, { headline: string | null; source_url: string | null }>,
+  rows: {} as Record<string, { headline: string | null; body?: string | null; source_url: string | null }>,
   selects: [] as string[],
   fail: false,
 }));
@@ -83,13 +83,40 @@ describe("ContactAdOrigin", () => {
     h.rows.c1 = { headline: "X", source_url: null };
     render(<ContactAdOrigin contactId="c1" />);
     await screen.findByText(/Publicidad en Meta/);
-    expect(h.selects).toEqual(["contact_ad_attributions:headline, source_url"]);
+    expect(h.selects).toEqual(["contact_ad_attributions:headline, body, source_url"]);
   });
   it("a failed read shows nothing instead of claiming there is no attribution", async () => {
     h.fail = true;
     const { container } = render(<ContactAdOrigin contactId="c1" />);
     await new Promise((r) => setTimeout(r, 20));
     expect(container.textContent).toBe("");
+  });
+  it("a generic headline (the page name) plus a specific body: shows both, the body as 'Detalle'", async () => {
+    h.rows.c1 = { headline: "Corporación Lorteg del Perú SAC", body: "🔥 Taladro inalámbrico 20V con batería y cargador\n\nPrecio de oferta", source_url: null };
+    render(<ContactAdOrigin contactId="c1" />);
+    expect(await screen.findByText("Anuncio: Corporación Lorteg del Perú SAC")).toBeTruthy();
+    expect(screen.getByText(/^Detalle: .*Taladro inalámbrico 20V con batería y cargador Precio de oferta/)).toBeTruthy();
+    expect(screen.getAllByText("ORIGEN DEL CLIENTE")).toHaveLength(1);
+  });
+  it("a specific headline without a body: no Detalle line", async () => {
+    h.rows.c1 = { headline: "Taladro inalámbrico 20V", body: null, source_url: null };
+    render(<ContactAdOrigin contactId="c1" />);
+    expect(await screen.findByText("Anuncio: Taladro inalámbrico 20V")).toBeTruthy();
+    expect(screen.queryByText(/Detalle/)).toBeNull();
+  });
+  it("a body equal to the headline is not repeated", async () => {
+    h.rows.c1 = { headline: "Taladro inalámbrico 20V", body: "  taladro inalambrico 20v ", source_url: null };
+    render(<ContactAdOrigin contactId="c1" />);
+    await screen.findByText("Anuncio: Taladro inalámbrico 20V");
+    expect(screen.queryByText(/Detalle/)).toBeNull();
+  });
+  it("mathematical-bold ad copy is shown as plain letters, and a long body is cut", async () => {
+    h.rows.c1 = { headline: "InkaClick", body: "🔥 𝗥𝗢𝗧𝗢𝗠𝗔𝗥𝗧𝗜𝗟𝗟𝗢 𝗧𝗢𝗧𝗔𝗟 𝗜𝗡𝗗𝗨𝗦𝗧𝗥𝗜𝗔𝗟 𝟭𝟬𝟱𝟬𝗪 " + "x".repeat(400), source_url: null };
+    render(<ContactAdOrigin contactId="c1" />);
+    const line = await screen.findByText(/^Detalle: /);
+    expect(line.textContent).toContain("🔥 ROTOMARTILLO TOTAL INDUSTRIAL 1050W");
+    expect(line.textContent!.length).toBeLessThan(230);
+    expect(line.textContent!.endsWith("…")).toBe(true);
   });
   it("another contact never shows the previous contact's origin", async () => {
     h.rows.a = { headline: "Anuncio A", source_url: null };

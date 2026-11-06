@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { adPlatformFromUrl, normalizeAdReferral, safeAdUrl } from "./ad-referral";
+import { adDetailText, adPlatformFromUrl, displayAdText, normalizeAdReferral, safeAdUrl } from "./ad-referral";
 
 describe("normalizeAdReferral", () => {
   it("keeps the documented ad fields, trimmed", () => {
@@ -58,5 +58,30 @@ describe("safeAdUrl", () => {
     for (const u of ["javascript:alert(1)", "http://www.facebook.com/x", "https://evil.test/x", "https://facebook.com.evil.test/x", "data:text/html,x", "", null, undefined]) {
       expect(safeAdUrl(u as string | null | undefined)).toBeNull();
     }
+  });
+});
+
+describe("displayAdText / adDetailText", () => {
+  it("turns mathematical-bold letters into plain ones and collapses whitespace, without inventing text", () => {
+    expect(displayAdText("🔥 𝗥𝗢𝗧𝗢𝗠𝗔𝗥𝗧𝗜𝗟𝗟𝗢  𝟭𝟬𝟱𝟬𝗪\n\n𝗣𝗿𝗲𝗰𝗶𝗼")).toBe("🔥 ROTOMARTILLO 1050W Precio");
+    expect(displayAdText(null)).toBe("");
+  });
+  it("the body is the detail when the headline is generic", () => {
+    expect(adDetailText("Corporación Lorteg del Perú SAC", "Taladro inalámbrico 20V con batería")).toBe("Taladro inalámbrico 20V con batería");
+  });
+  it("no body, or a body that adds nothing, gives no detail", () => {
+    expect(adDetailText("Taladro", null)).toBeNull();
+    expect(adDetailText("Taladro", "   ")).toBeNull();
+    expect(adDetailText("Taladro inalámbrico 20V", "TALADRO inalambrico 20V!")).toBeNull();
+    expect(adDetailText("Taladro inalámbrico 20V", "Taladro inalámbrico 20V.")).toBeNull();
+  });
+  it("a body that merely contains a short headline is still detail", () => {
+    expect(adDetailText("InkaClick", "InkaClick: Taladro inalámbrico con juego completo a solo S/95")).not.toBeNull();
+  });
+  it("a missing headline still shows the body; long bodies are cut at 200 characters", () => {
+    expect(adDetailText(null, "Lavadora industrial 15 kg")).toBe("Lavadora industrial 15 kg");
+    const long = adDetailText("X", "a".repeat(500))!;
+    expect(long.length).toBe(201);
+    expect(long.endsWith("…")).toBe(true);
   });
 });
