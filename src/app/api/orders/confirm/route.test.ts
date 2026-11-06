@@ -8,9 +8,16 @@ const CONTACT = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee'
 
 const rpc = vi.fn()
 const requireRole = vi.fn()
+const featureRead = vi.fn()
+const featureEq = vi.fn()
 vi.mock('@/lib/auth/account', () => ({ requireRole: (...a: unknown[]) => requireRole(...a), toErrorResponse: (e: Error) => new Response(JSON.stringify({ error: e.message }), { status: e.message === 'forbidden' ? 403 : 500 }) }))
 vi.mock('@/lib/flows/admin-client', () => ({
-  supabaseAdmin: () => ({ rpc, from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ single: async () => ({ data: { delivery_status: 'pending' } }) }) }) }) }) }),
+  supabaseAdmin: () => ({
+    rpc,
+    from: (table: string) => table === 'order_integration_settings'
+      ? { select: () => ({ eq: (...args: unknown[]) => { featureEq(...args); return { maybeSingle: featureRead } } }) }
+      : { select: () => ({ eq: () => ({ eq: () => ({ single: async () => ({ data: { delivery_status: 'pending' } }) }) }) }) },
+  }),
 }))
 vi.mock('@/lib/rate-limit', () => ({ checkRateLimit: () => ({ success: true }), rateLimitResponse: () => new Response('{}', { status: 429 }), RATE_LIMITS: { send: {} } }))
 
@@ -22,6 +29,9 @@ const post = (body: unknown) => POST(new Request('http://x/api/orders/confirm', 
 beforeEach(() => {
   rpc.mockReset()
   requireRole.mockReset()
+  featureRead.mockReset()
+  featureEq.mockReset()
+  featureRead.mockResolvedValue({ data: { multiproduct_enabled: false }, error: null })
   requireRole.mockResolvedValue({ supabase: { from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { full_name: 'Asesor Uno' } }) }) }) }) }) }, accountId: ACCOUNT, userId: USER })
 })
 
@@ -96,6 +106,41 @@ describe('POST /api/orders/confirm', () => {
     expect(args.p_actor).toBe(USER)
     expect(args.p_seller).toBe(SELLER)
     expect(args.p_actor).not.toBe(args.p_seller)
+  })
+
+  const multi = [
+    { product_name: 'Guitarra', quantity: 1, unit_price: '190' },
+    { product_name: 'Violin', quantity: 2, unit_price: '80' },
+  ]
+
+  it('blocks structured items for an account without the flag, even if the caller claims a different account', async () => {
+    const res = await post({ ...valid, items: multi, account_id: OTHER })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'multiproduct_disabled' })
+    expect(featureEq).toHaveBeenCalledWith('account_id', ACCOUNT)
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('allows structured items only after the current account flag is enabled, preserving the old payload fields', async () => {
+    featureRead.mockResolvedValue({ data: { multiproduct_enabled: true }, error: null })
+    rpc.mockResolvedValue({ data: [{ order_id: 'o-multi', created: true }], error: null })
+    const res = await post({ ...valid, items: multi })
+    expect(res.status).toBe(201)
+    expect(rpc.mock.calls[0][1].p_fields).toMatchObject({
+      product: '1 x Guitarra\n2 x Violin', quantity: 3, price: '350.00',
+      items: [{ product_name: 'Guitarra', quantity: 1, unit_price: '190.00' }, { product_name: 'Violin', quantity: 2, unit_price: '80.00' }],
+    })
+  })
+
+  it('fails closed if the feature-setting lookup fails and handles a SQL-level race to disabled', async () => {
+    featureRead.mockResolvedValue({ data: null, error: { code: '42P01' } })
+    expect((await post({ ...valid, items: multi })).status).toBe(500)
+    expect(rpc).not.toHaveBeenCalled()
+    featureRead.mockResolvedValue({ data: { multiproduct_enabled: true }, error: null })
+    rpc.mockResolvedValue({ data: null, error: { code: '42501', message: 'multiproduct_disabled' } })
+    const res = await post({ ...valid, items: multi })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toEqual({ error: 'multiproduct_disabled' })
   })
 
   it('warns about a malformed DNI but still creates the order', async () => {

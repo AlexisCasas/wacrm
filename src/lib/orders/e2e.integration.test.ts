@@ -62,7 +62,7 @@ describe.skipIf(!E2E)('Confirmar pedido: WACRM -> outbox -> InkaClick (isolated 
   beforeAll(() => {
     // Safety: this suite truncates tables. It only ever runs against the throwaway QA stack on loopback.
     if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '')) throw new Error('QA_E2E must point at the isolated loopback stack')
-    sql('wacrm', 'truncate order_confirmation_deliveries, order_confirmations')
+    sql('wacrm', 'truncate order_confirmation_items, order_confirmation_deliveries, order_confirmations')
     sql('inka', 'truncate wacrm_order_events, confirmed_orders, customers cascade')
     process.env.AUTOMATION_CRON_SECRET = CRON_SECRET
     process.env.INKACLICK_ORDERS_ENABLED = 'true'
@@ -211,7 +211,7 @@ describe.skipIf(!E2E)('Confirmar pedido: WACRM -> outbox -> InkaClick (isolated 
     sql('wacrm', `update order_integration_settings set confirm_enabled=false where account_id='${ACCOUNT}'`)
     try {
       const { GET } = await import('@/app/api/orders/sellers/route')
-      expect(await (await GET()).json()).toEqual({ enabled: false, sellers: [] })
+      expect(await (await GET()).json()).toEqual({ enabled: false, multiproduct_enabled: false, sellers: [] })
       const before = sql('wacrm', `select count(*) from order_confirmations`)
       const r = await confirm(order('qa-order-off'))
       expect(r.status).toBe(403)
@@ -234,5 +234,95 @@ describe.skipIf(!E2E)('Confirmar pedido: WACRM -> outbox -> InkaClick (isolated 
     sql('inka', `insert into confirmed_orders (manychat_contact_id, nombre_completo, telefono, producto, precio, source, duplicate_key) values ('mc-qa','Manychat Sintetico','51900000099','X',10,'manychat','mc_qa_2026-10-31T10:00:00-05:00')`)
     expect(sql('inka', `select count(*) from confirmed_orders where source='manychat' and external_order_id is null`)).toBe('1')
     expect(inkaRows()).toBe(2)
+  })
+
+  it('14. multiproduct disabled by default: legacy capture works, structured items are forbidden before SQL writes', async () => {
+    const productLines = [
+      { product_name: 'Guitarra QA', quantity: 1, unit_price: '190' },
+      { product_name: 'Violin QA', quantity: 2, unit_price: '80' },
+      { product_name: 'Tetera QA', quantity: 1, unit_price: '50' },
+    ]
+    const initial = sql('wacrm', "select count(*) from order_confirmations")
+    const attempt = await confirm(order('qa-multiproduct-disabled', { items: productLines }))
+    expect(attempt.status).toBe(403)
+    expect(attempt.body).toEqual({ error: 'multiproduct_disabled' })
+    expect(sql('wacrm', "select count(*) from order_confirmations")).toBe(initial)
+  })
+
+  it('15. multiproduct enabled: exactly one header and three immutable items, identical old InkaClick payload', async () => {
+    const lines = [
+      { product_name: 'Guitarra QA', quantity: 1, unit_price: '190' },
+      { product_name: 'Violin QA', quantity: 2, unit_price: '80' },
+      { product_name: 'Tetera QA', quantity: 1, unit_price: '50' },
+    ]
+    sql('wacrm', "update order_integration_settings set multiproduct_enabled=true where account_id='" + ACCOUNT + "'")
+    try {
+      const [a, b] = await Promise.all([
+        confirm(order('qa-multiproduct-1', { items: lines })),
+        confirm(order('qa-multiproduct-1', { items: lines })),
+      ])
+      expect([a.status, b.status].sort()).toEqual([200, 201])
+      expect(a.body.order_id).toBe(b.body.order_id)
+      const id = a.body.order_id
+      expect(sql('wacrm', "select quantity||'|'||price||'|'||replace(product,E'\\n',';') from order_confirmations where id='" + id + "'"))
+        .toBe('4|400.00|1 x Guitarra QA;2 x Violin QA;1 x Tetera QA')
+      expect(sql('wacrm', "select string_agg(product_name||':'||quantity||':'||subtotal, '|' order by line_number) from order_confirmation_items where order_id='" + id + "'"))
+        .toBe('Guitarra QA:1:190.00|Violin QA:2:160.00|Tetera QA:1:50.00')
+      expect(sql('wacrm', "select count(*) from order_confirmation_items where order_id='" + id + "'")).toBe('3')
+      expect(sql('wacrm', "select count(*) from order_confirmations where request_key='qa-multiproduct-1'")).toBe('1')
+      // A catalog ID from an unrelated account (or a nonexistent one) cannot
+      // be bound to the order. SQL must roll back the entire request.
+      const before = sql('wacrm', "select count(*) from order_confirmations")
+      const bad = await confirm(order('qa-multiproduct-invalid', {
+        items: [{ ...lines[0], catalog_product_id: '11111111-1111-4111-8111-111111111111' }],
+      }))
+      expect(bad.status).toBe(422)
+      expect(sql('wacrm', "select count(*) from order_confirmations")).toBe(before)
+      // The receiver remains untouched: it sees only old flattened fields.
+      await cron()
+      expect(inkaRows(id)).toBe(1)
+      expect(sql('inka', "select cantidad_productos||'|'||precio||'|'||replace(producto,E'\\n',';') from confirmed_orders where external_order_id='" + id + "'"))
+        .toBe('4|400.00|1 x Guitarra QA;2 x Violin QA;1 x Tetera QA')
+    } finally {
+      sql('wacrm', "update order_integration_settings set multiproduct_enabled=false where account_id='" + ACCOUNT + "'")
+    }
+  })
+
+  it('16. direct service-role RPC normalizes item names before saving immutable snapshots', async () => {
+    const { supabaseAdmin } = await import('@/lib/flows/admin-client')
+    sql('wacrm', "update order_integration_settings set multiproduct_enabled=true where account_id='" + ACCOUNT + "'")
+    try {
+      const key = 'qa-multiproduct-trim'
+      const { data, error } = await supabaseAdmin().rpc('create_order_confirmation', {
+        p_account: ACCOUNT,
+        p_contact: CONTACT,
+        p_conversation: CONVERSATION,
+        p_actor: USER,
+        p_actor_name: 'Asesor QA',
+        p_request_key: key,
+        p_seller: SELLER,
+        p_fields: {
+          customer_name: 'Cliente QA',
+          phone: '51900000011',
+          product: '1 x Guitarra QA',
+          quantity: 1,
+          price: '10.00',
+          destination: 'Arequipa',
+          items: [{
+            product_name: '  Guitarra QA  ',
+            quantity: 1,
+            unit_price: '10.00',
+            catalog_product_id: null,
+          }],
+        },
+      })
+      expect(error).toBeNull()
+      const row = (Array.isArray(data) ? data[0] : data) as { order_id: string; created: boolean }
+      expect(row.created).toBe(true)
+      expect(sql('wacrm', "select product_name from order_confirmation_items where order_id='" + row.order_id + "'"))
+        .toBe('Guitarra QA')
+    } finally {
+      sql('wacrm', "update order_integration_settings set multiproduct_enabled=false where account_id='" + ACCOUNT + "'")
+    }
   })
 })

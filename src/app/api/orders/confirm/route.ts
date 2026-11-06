@@ -38,6 +38,18 @@ export async function POST(request: Request) {
     const actorName = (profile?.full_name as string | null)?.trim() || 'Asesor no identificado'
 
     const admin = supabaseAdmin()
+    // Fail closed: the server derives accountId from the authenticated session.
+    // This separate switch gates only the structured-item path. Legacy single
+    // orders remain governed by confirm_enabled exactly as before.
+    if (validation.value.items !== undefined) {
+      const { data: settings, error: featureError } = await admin
+        .from('order_integration_settings')
+        .select('multiproduct_enabled')
+        .eq('account_id', accountId)
+        .maybeSingle()
+      if (featureError) return NextResponse.json({ error: 'Could not load order settings' }, { status: 500 })
+      if (!settings?.multiproduct_enabled) return NextResponse.json({ error: 'multiproduct_disabled' }, { status: 403 })
+    }
     const { data, error } = await admin.rpc('create_order_confirmation', {
       p_account: accountId,
       p_contact: contactId,
@@ -51,11 +63,12 @@ export async function POST(request: Request) {
     if (error) {
       // Switched off for this account, or the confirmer lacks the role (also enforced here, in SQL, as a second layer).
       if (error.code === '42501') {
-        const off = error.message === 'feature_disabled'
-        return NextResponse.json({ error: off ? 'feature_disabled' : 'forbidden' }, { status: 403 })
+        const code = error.message === 'feature_disabled' ? 'feature_disabled'
+          : error.message === 'multiproduct_disabled' ? 'multiproduct_disabled' : 'forbidden'
+        return NextResponse.json({ error: code }, { status: 403 })
       }
       // Ownership / seller violations are the caller's mistake (and must not reveal other accounts); everything else is ours.
-      const client = /does not belong|not a member/.test(error.message)
+      const client = error.code === '22023' || /does not belong|not a member/.test(error.message)
       if (!client) console.error('[orders] create failed:', error.code)
       return NextResponse.json({ error: client ? 'invalid_reference' : 'Could not confirm the order' }, { status: client ? 422 : 500 })
     }
