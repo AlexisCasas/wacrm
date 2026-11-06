@@ -23,7 +23,9 @@ export async function GET(request: Request) {
     if (!settings?.confirm_enabled || !settings?.multiproduct_enabled)
       return NextResponse.json({ error: "multiproduct_disabled" }, { status: 403, headers: NO_STORE });
 
-    const q = new URL(request.url).searchParams.get("q")?.trim() ?? "";
+    // PostgREST treats '*' as an ILIKE wildcard even though PostgreSQL uses '%'.
+    // Drop asterisks before constructing the LIKE pattern; preserve tenant scoping.
+    const q = (new URL(request.url).searchParams.get("q") ?? "").replace(/\*/g, "").trim();
     if (q.length < 2 || q.length > 120)
       return NextResponse.json({ products: [] }, { headers: NO_STORE });
 
