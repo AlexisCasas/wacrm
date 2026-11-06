@@ -167,10 +167,10 @@ const activeOf = (contact: string) => h.state.flowRuns.filter((r) => r.contact_i
 
 beforeEach(() => {
   Object.assign(h.state, { flows: [], flowNodes: [], conversations: [], contacts: [], flowRuns: [], flowRunEvents: [], nextRunId: 1, failNextRunInsert: false, raceRunBeforeInsert: null, beforeInterrupt: null });
-  h.state.contacts.push({ id: CONTACT, account_id: ACCOUNT, name: "Keyler", phone: "51939665944", blocked: false });
+  h.state.contacts.push({ id: CONTACT, account_id: ACCOUNT, name: "Cliente Sintetico", phone: "51900000044", blocked: false });
   h.state.conversations.push({ id: CONVERSATION, account_id: ACCOUNT, contact_id: CONTACT });
   recipient.resolveContactTarget.mockReset();
-  recipient.resolveContactTarget.mockResolvedValue({ kind: "phone", phone: "51939665944" });
+  recipient.resolveContactTarget.mockResolvedValue({ kind: "phone", phone: "51900000044" });
 });
 
 describe("isReplaceableWaitingRun", () => {
@@ -282,7 +282,7 @@ describe("manual start", () => {
   it("preserves the phone path: the preflight runs for the new flow with the contact's phone", async () => {
     seedFlow("flow-a"); seedFlow("flow-b"); seedRun("run-a", "flow-a");
     await startManual("flow-b");
-    expect(recipient.resolveContactTarget).toHaveBeenCalledWith(expect.anything(), ACCOUNT, expect.objectContaining({ phone: "51939665944" }), { origin: "flow_preflight", flowId: "flow-b" });
+    expect(recipient.resolveContactTarget).toHaveBeenCalledWith(expect.anything(), ACCOUNT, expect.objectContaining({ phone: "51900000044" }), { origin: "flow_preflight", flowId: "flow-b" });
   });
 });
 
@@ -401,7 +401,7 @@ describe("automatic keyword start", () => {
   it("14. phone contact: the preflight is the existing one, for the selected flow", async () => {
     seedFlow("flow-a"); seedFlow("flow-b"); seedRun("run-a", "flow-a");
     await dispatch(text("kw-flow-b"));
-    expect(recipient.resolveContactTarget).toHaveBeenCalledWith(expect.anything(), ACCOUNT, expect.objectContaining({ phone: "51939665944" }), { origin: "flow_preflight", flowId: "flow-b" });
+    expect(recipient.resolveContactTarget).toHaveBeenCalledWith(expect.anything(), ACCOUNT, expect.objectContaining({ phone: "51900000044" }), { origin: "flow_preflight", flowId: "flow-b" });
   });
 
   it("15. BSUID contact: only authorized flows can replace, and an unauthorized active run is left alone", async () => {

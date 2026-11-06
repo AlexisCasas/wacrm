@@ -2,6 +2,7 @@
 
 import { ContactPhoneLine } from "@/components/contacts/contact-phone-line";
 import { InboxContactFields } from "./contact-fields-editor";
+import { ContactAutomationToggle } from "./contact-automation-toggle";
 import { contactLabel, hasPhone } from "@/lib/contacts/display";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -297,8 +298,8 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated, onContact
   const initials = displayName.charAt(0).toUpperCase();
 
   return (
-    <div className="flex h-full w-70 flex-col border-l border-border bg-card">
-      <ScrollArea className="flex-1">
+    <div className="flex h-full min-h-0 w-70 flex-col border-l border-border bg-card">
+      <ScrollArea className="min-h-0 flex-1">
         <div className="p-4">
           {/* Contact Info */}
           <div className="flex flex-col items-center text-center">
@@ -351,6 +352,11 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated, onContact
           </div>
 
           {/* Divider */}
+          <div className="my-4 border-t border-border" />
+
+          {/* Per-contact pause of NEW keyword automations */}
+          <ContactAutomationToggle key={contact.id} contactId={contact.id} />
+
           <div className="my-4 border-t border-border" />
 
           {/* Tags */}

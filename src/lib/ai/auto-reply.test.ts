@@ -10,7 +10,12 @@ const h = vi.hoisted(() => ({
   engineSendText: vi.fn(),
   state: {
     conv: null as Record<string, unknown> | null,
-    autoResponders: [] as { id: string }[],
+    autoResponders: [] as { id: string; trigger_type?: string }[],
+    /** contact_id -> keyword_automations_paused (absent = no row = not paused). */
+    paused: {} as Record<string, boolean>,
+    settingsError: null as { code?: string; message: string } | null,
+    /** trigger types the last auto-responder lookup asked for. */
+    askedTriggers: [] as string[],
     claim: true as boolean,
     updatePayload: null as Record<string, unknown> | null,
     updateCalls: [] as Record<string, unknown>[],
@@ -36,9 +41,31 @@ vi.mock('./admin-client', () => ({
         const chain = {
           select: () => chain,
           eq: () => chain,
-          in: () => chain,
+          in: (_col: string, types: string[]) => {
+            h.state.askedTriggers = types
+            return chain
+          },
           limit: () =>
-            Promise.resolve({ data: h.state.autoResponders, error: null }),
+            Promise.resolve({
+              data: h.state.autoResponders.filter(
+                (a) => !a.trigger_type || h.state.askedTriggers.includes(a.trigger_type),
+              ),
+              error: null,
+            }),
+        }
+        return chain
+      }
+      if (table === 'contact_automation_settings') {
+        // .select().eq('contact_id').eq('account_id').maybeSingle()
+        const filters: Record<string, string> = {}
+        const chain = {
+          select: () => chain,
+          eq: (k: string, v: string) => ((filters[k] = v), chain),
+          maybeSingle: () => {
+            if (h.state.settingsError) return Promise.resolve({ data: null, error: h.state.settingsError })
+            const p = h.state.paused[filters.contact_id]
+            return Promise.resolve({ data: p === undefined ? null : { keyword_automations_paused: p }, error: null })
+          },
         }
         return chain
       }
@@ -115,6 +142,9 @@ beforeEach(() => {
     ai_reply_count: 0,
   }
   h.state.autoResponders = []
+  h.state.paused = {}
+  h.state.settingsError = null
+  h.state.askedTriggers = []
   h.state.claim = true
   h.state.updatePayload = null
   h.state.updateCalls = []
@@ -188,6 +218,62 @@ describe('dispatchInboundToAiReply — eligibility gates', () => {
     h.state.autoResponders = [{ id: 'auto-1' }]
     await dispatchInboundToAiReply(ARGS)
     expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  describe('per-contact pause of keyword automations', () => {
+    it('13. active contact + keyword_match automation: the AI still stands down (current behaviour)', async () => {
+      h.state.autoResponders = [{ id: 'auto-kw', trigger_type: 'keyword_match' }]
+      await dispatchInboundToAiReply(ARGS)
+      expect(h.generateReply).not.toHaveBeenCalled()
+      expect(h.state.askedTriggers).toEqual(['new_message_received', 'keyword_match'])
+    })
+
+    it('14. paused contact + keyword_match automation: that automation no longer silences the AI', async () => {
+      h.state.paused['contact-1'] = true
+      h.state.autoResponders = [{ id: 'auto-kw', trigger_type: 'keyword_match' }]
+      await dispatchInboundToAiReply(ARGS)
+      expect(h.state.askedTriggers).toEqual(['new_message_received'])
+      expect(h.generateReply).toHaveBeenCalled()
+      expect(h.engineSendText).toHaveBeenCalled()
+    })
+
+    it('paused contact + new_message_received automation: still counts, the AI stands down', async () => {
+      h.state.paused['contact-1'] = true
+      h.state.autoResponders = [{ id: 'auto-nm', trigger_type: 'new_message_received' }]
+      await dispatchInboundToAiReply(ARGS)
+      expect(h.generateReply).not.toHaveBeenCalled()
+    })
+
+    it('15. isolation: contact A paused answers, contact B (not paused) is still silenced by the same automation', async () => {
+      h.state.paused['contact-A'] = true
+      h.state.autoResponders = [{ id: 'auto-kw', trigger_type: 'keyword_match' }]
+      await dispatchInboundToAiReply({ ...ARGS, contactId: 'contact-A' })
+      expect(h.generateReply).toHaveBeenCalledTimes(1)
+      await dispatchInboundToAiReply({ ...ARGS, contactId: 'contact-B' })
+      expect(h.generateReply).toHaveBeenCalledTimes(1)
+    })
+
+    it('a real read error is treated as paused (same fail-closed policy as flows/automations)', async () => {
+      h.state.settingsError = { code: 'XX000', message: 'boom' }
+      h.state.autoResponders = [{ id: 'auto-kw', trigger_type: 'keyword_match' }]
+      await dispatchInboundToAiReply(ARGS)
+      expect(h.state.askedTriggers).toEqual(['new_message_received'])
+    })
+
+    it('a missing table (migration not applied yet) is treated as not paused', async () => {
+      h.state.settingsError = { code: '42P01', message: 'relation does not exist' }
+      h.state.autoResponders = [{ id: 'auto-kw', trigger_type: 'keyword_match' }]
+      await dispatchInboundToAiReply(ARGS)
+      expect(h.state.askedTriggers).toEqual(['new_message_received', 'keyword_match'])
+      expect(h.generateReply).not.toHaveBeenCalled()
+    })
+
+    it('the ManyChat shape (suppressWhenAutomationsActive: false) never reads the pause state', async () => {
+      h.state.paused['contact-1'] = true
+      await dispatchInboundToAiReply({ ...ARGS, suppressWhenAutomationsActive: false })
+      expect(h.state.askedTriggers).toEqual([])
+      expect(h.generateReply).toHaveBeenCalled()
+    })
   })
 
   it('does not send when the atomic slot claim loses the race', async () => {

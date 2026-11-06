@@ -10,6 +10,7 @@ import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { sendAiTextToConversation } from './send'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
+import { keywordAutomationsPausedFailClosed } from '@/lib/contacts/automation-pause'
 import type { AiConfig, ChatMessage } from './types'
 
 interface DispatchArgs {
@@ -180,13 +181,18 @@ export async function dispatchInboundToAiReply(
     // (the ManyChat bridge): that route never runs Automations at all,
     // so an active automation there is irrelevant — checking it would
     // only ever silence the AI for no reason.
+    //
+    // A contact whose keyword automations are paused (Inbox sidebar "Pausar") will not get any `keyword_match` automation run, so such an
+    // automation is not a competing responder for THIS contact and must not silence the AI. `new_message_received` still counts. The AI
+    // itself is never paused by that switch.
     if (suppressWhenAutomationsActive !== false) {
+      const keywordPaused = await keywordAutomationsPausedFailClosed(db, accountId, contactId)
       const { data: autoResponders } = await db
         .from('automations')
         .select('id')
         .eq('account_id', accountId)
         .eq('is_active', true)
-        .in('trigger_type', ['new_message_received', 'keyword_match'])
+        .in('trigger_type', keywordPaused ? ['new_message_received'] : ['new_message_received', 'keyword_match'])
         .limit(1)
       if (autoResponders && autoResponders.length > 0) return
     }
