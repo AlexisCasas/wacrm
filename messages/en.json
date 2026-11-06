@@ -212,7 +212,12 @@
       "missingWabaTitle": "WhatsApp account configuration is incomplete",
       "missingWabaHint": "The current configuration does not include a valid WABA.",
       "tokenInvalidTitle": "The Meta connection needs attention",
-      "tokenInvalidHint": "The saved token could not be validated. Review the connection in Settings."
+      "tokenInvalidHint": "The saved token could not be validated. Review the connection in Settings.",
+      "freeTierLabel": "Free allowance",
+      "freeTierFree": "free",
+      "freeTierRemaining": "{count} available",
+      "freeTierLoading": "Loading free WhatsApp allowance",
+      "freeTierAccessibleLabel": "Free WhatsApp allowance: {used} of {limit} used, {remaining} available"
     },
     "activityFeed": {
       "title": "Recent Activity",

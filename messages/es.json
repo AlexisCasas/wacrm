@@ -212,7 +212,12 @@
       "missingWabaTitle": "Falta configurar la cuenta de WhatsApp",
       "missingWabaHint": "La configuración actual no incluye un WABA válido.",
       "tokenInvalidTitle": "La conexión con Meta requiere atención",
-      "tokenInvalidHint": "El token guardado no pudo validarse. Revisa la conexión en Configuración."
+      "tokenInvalidHint": "El token guardado no pudo validarse. Revisa la conexión en Configuración.",
+      "freeTierLabel": "Bolsa gratuita",
+      "freeTierFree": "gratis",
+      "freeTierRemaining": "{count} disponibles",
+      "freeTierLoading": "Cargando bolsa gratuita de WhatsApp",
+      "freeTierAccessibleLabel": "Bolsa gratuita de WhatsApp: {used} de {limit} usados, {remaining} disponibles"
     },
     "activityFeed": {
       "title": "Actividad reciente",

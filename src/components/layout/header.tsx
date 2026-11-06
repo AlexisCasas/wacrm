@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ModeToggle } from "@/components/layout/mode-toggle";
+import { WhatsappFreeTierIndicator } from "@/components/dashboard/whatsapp-free-tier-indicator";
 
 const pageTitles: Record<string, string> = {
   "/dashboard": "dashboard",
@@ -74,6 +75,8 @@ export function Header({ onOpenSidebar }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-1 sm:gap-2">
+        {/* Free WhatsApp service allowance (1,000/month); shares the dashboard's single pricing-analytics request. */}
+        {pathname === "/dashboard" ? <WhatsappFreeTierIndicator /> : null}
         <ModeToggle />
 
         <DropdownMenu>

@@ -14,6 +14,7 @@ vi.mock('next-intl', () => ({
 }));
 
 import { WhatsappUsageWidget } from './whatsapp-usage-widget';
+import { PricingAnalyticsProvider } from '@/hooks/use-pricing-analytics';
 
 const READY = {
   status: 'ready',
@@ -49,6 +50,14 @@ function jsonResponse(body: unknown, status = 200) {
   } as Response);
 }
 
+function renderWidget(accountKey = 'acct-1') {
+  return render(
+    <PricingAnalyticsProvider enabled accountKey={accountKey}>
+      <WhatsappUsageWidget />
+    </PricingAnalyticsProvider>
+  );
+}
+
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn());
 });
@@ -61,7 +70,7 @@ afterEach(() => {
 describe('WhatsappUsageWidget', () => {
   it('shows a dashboard-native loading state', () => {
     vi.mocked(fetch).mockReturnValue(new Promise(() => {}));
-    render(<WhatsappUsageWidget />);
+    renderWidget();
     expect(screen.getByLabelText('loading')).toHaveAttribute(
       'aria-busy',
       'true'
@@ -70,7 +79,7 @@ describe('WhatsappUsageWidget', () => {
 
   it('renders summaries and the dynamic Meta breakdown', async () => {
     vi.mocked(fetch).mockReturnValue(jsonResponse(READY));
-    render(<WhatsappUsageWidget />);
+    renderWidget();
 
     expect(await screen.findByText('paidMessages')).toBeInTheDocument();
     expect(screen.getByText('73')).toBeInTheDocument();
@@ -97,7 +106,7 @@ describe('WhatsappUsageWidget', () => {
         breakdown: [],
       })
     );
-    render(<WhatsappUsageWidget />);
+    renderWidget();
     await screen.findByText('paidMessages');
     fireEvent.click(screen.getByRole('button', { name: 'viewDetail' }));
     expect(await screen.findByText('noBreakdown')).toBeInTheDocument();
@@ -107,7 +116,7 @@ describe('WhatsappUsageWidget', () => {
     vi.mocked(fetch).mockReturnValue(
       jsonResponse({ status: 'unavailable', reason: 'no_config' })
     );
-    render(<WhatsappUsageWidget />);
+    renderWidget();
     expect(await screen.findByText('noConfigTitle')).toBeInTheDocument();
     expect(screen.getByText('noConfigHint')).toBeInTheDocument();
   });
@@ -116,7 +125,7 @@ describe('WhatsappUsageWidget', () => {
     vi.mocked(fetch).mockReturnValue(
       jsonResponse({ reason: 'meta_error' }, 502)
     );
-    render(<WhatsappUsageWidget />);
+    renderWidget();
     expect(await screen.findByRole('alert')).toHaveTextContent('errorTitle');
 
     vi.mocked(fetch).mockReturnValue(jsonResponse(READY));

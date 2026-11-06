@@ -1,6 +1,5 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
 import {
   BadgeDollarSign,
   Gift,
@@ -28,58 +27,14 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Skeleton } from '@/components/dashboard/skeleton';
+import { usePricingAnalytics } from '@/hooks/use-pricing-analytics';
 import type { PricingAnalyticsResult } from '@/lib/whatsapp/pricing-analytics';
 
 type UnavailableReason = 'no_config' | 'missing_waba' | 'token_invalid';
 
-type ApiResponse =
-  | ({ status: 'ready' } & PricingAnalyticsResult)
-  | { status: 'unavailable'; reason: UnavailableReason };
-
-type ViewState =
-  | { kind: 'loading' }
-  | { kind: 'ready'; data: PricingAnalyticsResult }
-  | { kind: 'unavailable'; reason: UnavailableReason }
-  | { kind: 'error' };
-
 export function WhatsappUsageWidget() {
   const t = useTranslations('Dashboard.whatsappUsage');
-  const [state, setState] = useState<ViewState>({ kind: 'loading' });
-  const [requestKey, setRequestKey] = useState(0);
-
-  useEffect(() => {
-    const controller = new AbortController();
-
-    void fetch('/api/whatsapp/pricing-analytics', {
-      headers: { Accept: 'application/json' },
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error('pricing analytics unavailable');
-        return (await response.json()) as ApiResponse;
-      })
-      .then((body) => {
-        if (body.status === 'ready') {
-          const { status: _status, ...data } = body;
-          void _status;
-          setState({ kind: 'ready', data });
-        } else {
-          setState({ kind: 'unavailable', reason: body.reason });
-        }
-      })
-      .catch((error: unknown) => {
-        if (error instanceof DOMException && error.name === 'AbortError')
-          return;
-        setState({ kind: 'error' });
-      });
-
-    return () => controller.abort();
-  }, [requestKey]);
-
-  const retry = useCallback(() => {
-    setState({ kind: 'loading' });
-    setRequestKey((value) => value + 1);
-  }, []);
+  const { state, retry } = usePricingAnalytics();
 
   if (state.kind === 'loading') return <UsageSkeleton label={t('loading')} />;
   if (state.kind === 'error') {
