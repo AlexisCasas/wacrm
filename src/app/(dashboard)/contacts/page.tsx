@@ -53,6 +53,8 @@ import {
   Filter,
   X,
   Ban,
+  Clock,
+  Check,
 } from 'lucide-react';
 import { ContactForm } from '@/components/contacts/contact-form';
 import { ContactDetailView } from '@/components/contacts/contact-detail-view';
@@ -62,8 +64,17 @@ import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
 import { useIntlLocaleTag } from '@/lib/date-locale';
+import { bulkDeleteContacts } from '@/lib/contacts/bulk-delete-api';
+import { TIME_FILTERS, resolveTimeRange, isTimeFilterActive, type TimeFilter, type TimeRange } from '@/lib/contacts/time-filter';
 
 const PAGE_SIZE = 25;
+
+// base-ui renders the checkbox as an inline <span>. In a table cell an inline element ignores width/height (measured in Chromium: display inline,
+// 2x17 px box), so only the two vertical borders painted and it looked like a line. inline-flex makes the size apply; min-size / shrink-0 /
+// box-border keep it a real 18x18 square whatever the table does; the visible border (border-input is almost the card colour) and the hover
+// state make it read as a checkbox in light and dark mode.
+const TABLE_CHECKBOX_CLASS =
+  'inline-flex size-[18px] min-h-[18px] min-w-[18px] shrink-0 box-border items-center justify-center align-middle border-muted-foreground/70 hover:border-primary';
 
 interface ContactWithTags extends Contact {
   tags?: Tag[];
@@ -83,6 +94,12 @@ export default function ContactsPage() {
   const [totalCount, setTotalCount] = useState(0);
   // Tag filter — contacts shown must have ANY of these tags (OR).
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  // Time filter on contacts.created_at. The window is resolved when the user picks an option (not on every render) and kept as ISO strings.
+  const [timeFilter, setTimeFilter] = useState<TimeFilter>('all');
+  const [customFrom, setCustomFrom] = useState('');
+  const [customTo, setCustomTo] = useState('');
+  const [timeRange, setTimeRange] = useState<TimeRange>({ from: null, to: null });
+  const [timeInvalid, setTimeInvalid] = useState(false);
 
   // Modals
   const [formOpen, setFormOpen] = useState(false);
@@ -99,6 +116,8 @@ export default function ContactsPage() {
   // Bulk selection (page-scoped — only the loaded rows are selectable)
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  // Synchronous guard against a double click on a destructive button (state updates are async).
+  const deletingRef = useRef(false);
 
   // All tags for display
   const [tagsMap, setTagsMap] = useState<Record<string, Tag>>({});
@@ -144,12 +163,22 @@ export default function ContactsPage() {
       // windowed total count + pagination) so a tag covering many
       // contacts can't silently truncate the result or overflow an IN
       // clause. See migration 025_filter_contacts_by_tags.
-      const { data, error } = await supabase.rpc('filter_contacts_by_tags', {
-        p_tag_ids: selectedTagIds,
-        p_search: term || null,
-        p_limit: PAGE_SIZE,
-        p_offset: from,
-      });
+      // With a time window the new filter_contacts_by_tags_time is used; without one the original RPC runs exactly as before.
+      const { data, error } = isTimeFilterActive(timeRange)
+        ? await supabase.rpc('filter_contacts_by_tags_time', {
+            p_tag_ids: selectedTagIds,
+            p_search: term || null,
+            p_limit: PAGE_SIZE,
+            p_offset: from,
+            p_created_from: timeRange.from,
+            p_created_to: timeRange.to,
+          })
+        : await supabase.rpc('filter_contacts_by_tags', {
+            p_tag_ids: selectedTagIds,
+            p_search: term || null,
+            p_limit: PAGE_SIZE,
+            p_offset: from,
+          });
       if (seq !== fetchSeq.current) return; // superseded by a newer fetch
       if (error) {
         toast.error(t('toastFailedLoad'));
@@ -170,6 +199,8 @@ export default function ContactsPage() {
         const like = `%${term}%`;
         query = query.or(`name.ilike.${like},phone.ilike.${like},email.ilike.${like},wa_username.ilike.${like}`);
       }
+      if (timeRange.from) query = query.gte('created_at', timeRange.from);
+      if (timeRange.to) query = query.lt('created_at', timeRange.to);
 
       const { data, count: exactCount, error } = await query;
       if (seq !== fetchSeq.current) return; // superseded by a newer fetch
@@ -213,7 +244,7 @@ export default function ContactsPage() {
 
     setContacts(enriched);
     setLoading(false);
-  }, [supabase, page, search, selectedTagIds, tagsMap, t]);
+  }, [supabase, page, search, selectedTagIds, timeRange, tagsMap, t]);
 
   // Load-once-on-mount-ish data fetches. Each setter inside runs
   // inside an async promise completion (Supabase await), not
@@ -256,21 +287,21 @@ export default function ContactsPage() {
   }
 
   async function handleDelete() {
-    if (!deleteTarget) return;
+    if (!deleteTarget || deletingRef.current) return;
+    deletingRef.current = true;
     setDeleting(true);
 
-    const { error } = await supabase
-      .from('contacts')
-      .delete()
-      .eq('id', deleteTarget.id);
-
-    if (error) {
-      toast.error(t('toastFailedDelete'));
-    } else {
-      toast.success(t('toastDeleted'));
+    try {
+      // Same atomic server-side path as the bulk delete, with a single id.
+      const result = await bulkDeleteContacts([deleteTarget.id]);
+      if (!result.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
+      else toast.success(t('toastDeleted'));
       fetchContacts();
+    } catch {
+      toast.error(t('toastFailedDelete'));
     }
 
+    deletingRef.current = false;
     setDeleting(false);
     setDeleteConfirmOpen(false);
     setDeleteTarget(null);
@@ -302,20 +333,23 @@ export default function ContactsPage() {
   }
 
   async function handleBulkDelete() {
+    // The ONLY input is the set of ids the user ticked: no filters, search, tag or time range travel to the server.
     const ids = [...selected];
-    if (ids.length === 0) return;
+    if (ids.length === 0 || deletingRef.current) return;
+    deletingRef.current = true;
     setDeleting(true);
 
-    const { error } = await supabase.from('contacts').delete().in('id', ids);
-
-    if (error) {
-      toast.error(t('toastBulkFailedDelete'));
-    } else {
-      toast.success(t('toastBulkDeleted', { count: ids.length }));
+    try {
+      const result = await bulkDeleteContacts(ids);
+      if (!result.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
+      else toast.success(t('toastBulkDeleted', { count: result.deleted }));
       setSelected(new Set());
       fetchContacts();
+    } catch {
+      toast.error(t('toastBulkFailedDelete'));
     }
 
+    deletingRef.current = false;
     setDeleting(false);
     setBulkDeleteOpen(false);
   }
@@ -329,7 +363,7 @@ export default function ContactsPage() {
   const allTags = Object.values(tagsMap).sort((a, b) =>
     a.name.localeCompare(b.name)
   );
-  const hasActiveFilters = search.trim().length > 0 || selectedTagIds.length > 0;
+  const hasActiveFilters = search.trim().length > 0 || selectedTagIds.length > 0 || isTimeFilterActive(timeRange);
 
   function toggleTagFilter(tagId: string) {
     setSelectedTagIds((prev) =>
@@ -344,6 +378,39 @@ export default function ContactsPage() {
     setSelectedTagIds([]);
     setPage(0);
   }
+
+  // Time filter helpers. Like the other filters, every change resets to page 0 (and the fetch drops any selection).
+  function applyTimeFilter(filter: TimeFilter, from = customFrom, to = customTo) {
+    setTimeFilter(filter);
+    const result = resolveTimeRange(filter, new Date(), from, to);
+    if (result.ok) {
+      setTimeInvalid(false);
+      setTimeRange(result.range);
+    } else {
+      // A custom range that is incomplete / inverted is not applied; the list keeps showing the previous window.
+      setTimeInvalid(result.reason === 'invalid_range');
+    }
+    setPage(0);
+  }
+
+  function clearTimeFilter() {
+    setCustomFrom('');
+    setCustomTo('');
+    applyTimeFilter('all', '', '');
+  }
+
+  const timeLabels: Record<TimeFilter, string> = {
+    all: t('timeAll'),
+    today: t('timeToday'),
+    last7: t('timeLast7'),
+    last30: t('timeLast30'),
+    last60: t('timeLast60'),
+    last90: t('timeLast90'),
+    older30: t('timeOlder30'),
+    older60: t('timeOlder60'),
+    older90: t('timeOlder90'),
+    custom: t('timeCustom'),
+  };
 
   return (
     <div className="space-y-6">
@@ -476,7 +543,107 @@ export default function ContactsPage() {
               )}
             </PopoverContent>
           </Popover>
+
+          <Popover>
+            <PopoverTrigger
+              render={
+                <Button
+                  variant="outline"
+                  className="border-border text-muted-foreground hover:bg-muted shrink-0"
+                />
+              }
+            >
+              <Clock className="size-4" />
+              {t('filterByTime')}
+              {isTimeFilterActive(timeRange) && (
+                <span className="ml-1 inline-flex items-center justify-center rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+                  1
+                </span>
+              )}
+            </PopoverTrigger>
+            <PopoverContent align="start" className="w-64 p-0">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-border">
+                <span className="text-sm font-medium text-popover-foreground">
+                  {t('filterByTime')}
+                </span>
+                {timeFilter !== 'all' && (
+                  <button
+                    onClick={clearTimeFilter}
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    {t('clearAll')}
+                  </button>
+                )}
+              </div>
+              <div className="py-1" role="radiogroup" aria-label={t('filterByTime')}>
+                {TIME_FILTERS.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    role="radio"
+                    aria-checked={timeFilter === option}
+                    onClick={() => applyTimeFilter(option)}
+                    className="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-sm text-popover-foreground hover:bg-muted/50"
+                  >
+                    <span className="flex size-4 shrink-0 items-center justify-center">
+                      {timeFilter === option && <Check className="size-3.5 text-primary" />}
+                    </span>
+                    {timeLabels[option]}
+                  </button>
+                ))}
+              </div>
+              {timeFilter === 'custom' && (
+                <div className="space-y-2 border-t border-border px-3 py-3">
+                  <label className="block space-y-1">
+                    <span className="text-xs text-muted-foreground">{t('timeFrom')}</span>
+                    <Input
+                      type="date"
+                      value={customFrom}
+                      max={customTo || undefined}
+                      onChange={(e) => {
+                        setCustomFrom(e.target.value);
+                        applyTimeFilter('custom', e.target.value, customTo);
+                      }}
+                      className="bg-card border-border text-foreground"
+                    />
+                  </label>
+                  <label className="block space-y-1">
+                    <span className="text-xs text-muted-foreground">{t('timeTo')}</span>
+                    <Input
+                      type="date"
+                      value={customTo}
+                      min={customFrom || undefined}
+                      onChange={(e) => {
+                        setCustomTo(e.target.value);
+                        applyTimeFilter('custom', customFrom, e.target.value);
+                      }}
+                      className="bg-card border-border text-foreground"
+                    />
+                  </label>
+                  {timeInvalid && (
+                    <p className="text-xs text-destructive" role="alert">{t('timeInvalidRange')}</p>
+                  )}
+                </div>
+              )}
+            </PopoverContent>
+          </Popover>
         </div>
+
+        {/* Active time-filter chip */}
+        {isTimeFilterActive(timeRange) && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium text-foreground">
+              {timeLabels[timeFilter]}
+              <button
+                onClick={clearTimeFilter}
+                aria-label={t('removeTimeFilterAria')}
+                className="hover:opacity-70"
+              >
+                <X className="size-3" />
+              </button>
+            </span>
+          </div>
+        )}
 
         {/* Active tag-filter chips */}
         {selectedTagIds.length > 0 && (
@@ -555,6 +722,7 @@ export default function ContactsPage() {
                   onCheckedChange={toggleSelectAll}
                   disabled={contacts.length === 0}
                   aria-label={t('selectAllAria')}
+                  className={TABLE_CHECKBOX_CLASS}
                 />
               </TableHead>
               <TableHead className="text-muted-foreground">{t('tableColumns.name')}</TableHead>
@@ -614,6 +782,7 @@ export default function ContactsPage() {
                       checked={selected.has(contact.id)}
                       onCheckedChange={() => toggleSelect(contact.id)}
                       aria-label={`Select ${contactLabel(contact)}`}
+                      className={TABLE_CHECKBOX_CLASS}
                     />
                   </TableCell>
                   <TableCell className="text-foreground font-medium">
@@ -818,10 +987,12 @@ export default function ContactsPage() {
         <DialogContent className="bg-popover border-border text-popover-foreground sm:max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-popover-foreground">
-              {t('deleteBulkTitle')}
+              {t('deleteBulkTitle', { count: selected.size })}
             </DialogTitle>
             <DialogDescription className="text-muted-foreground">
-              {t('deleteBulkDesc', { count: selected.size })}
+              {t('deleteBulkDesc', { count: selected.size })}{' '}
+              {t('deleteBulkRecreate')}{' '}
+              <strong className="font-semibold text-foreground">{t('deleteBulkIrreversible')}</strong>
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="bg-popover border-border">
@@ -838,7 +1009,7 @@ export default function ContactsPage() {
               disabled={deleting}
             >
               {deleting && <Loader2 className="size-4 animate-spin" />}
-              {t('deleteBtn')}
+              {t('deleteBulkConfirm', { count: selected.size })}
             </Button>
           </DialogFooter>
         </DialogContent>
