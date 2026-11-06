@@ -10,7 +10,7 @@ import { FakeSheet } from './fake-sheet'
 
 const ON = process.env.QA_HISTORICAL === '1'
 const ACCOUNT = process.env.QA_HISTORICAL_ACCOUNT ?? ''
-const q = (s: string) => execFileSync('docker', ['exec', '-i', 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-F', '|', '-v', 'ON_ERROR_STOP=1', '-c', s], { encoding: 'utf8' }).trim()
+const q = (s: string) => execFileSync('docker', ['exec', '-i', process.env.QA_PG_CONTAINER ?? 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-F', '|', '-v', 'ON_ERROR_STOP=1', '-c', s], { encoding: 'utf8' }).trim()
 
 describe.skipIf(!ON)('historical load rehearsal', () => {
   it('loads every eligible order once, reconciles to zero, and a second pass changes nothing', async () => {
@@ -39,7 +39,7 @@ describe.skipIf(!ON)('historical load rehearsal', () => {
     if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(url) || !ACCOUNT) throw new Error('loopback URL and QA_HISTORICAL_ACCOUNT required')
     const db = createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY!, { auth: { persistSession: false } })
     const script = readFileSync('scripts/ops/orders-sheets/exclude-test-orders.sql', 'utf8')
-    const apply = () => execFileSync('docker', ['exec', '-i', 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-v', 'ON_ERROR_STOP=1'], { input: script, encoding: 'utf8' })
+    const apply = () => execFileSync('docker', ['exec', '-i', process.env.QA_PG_CONTAINER ?? 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-v', 'ON_ERROR_STOP=1'], { input: script, encoding: 'utf8' })
     q(`truncate order_sheet_events, order_sheet_exports, order_sheet_exclusions, order_sheet_destinations cascade`)
     q(`insert into order_sheet_destinations (account_id, spreadsheet_id, enabled) values ('${ACCOUNT}','${'H'.repeat(30)}',true)`)
     const orderStatusBefore = q(`select md5(string_agg(o::text, ',' order by id)) from order_confirmations o`)

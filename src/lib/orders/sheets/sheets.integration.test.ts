@@ -12,7 +12,7 @@ import { HEADERS, KEY_COLUMN_INDEX } from './layout'
 
 const E2E = process.env.QA_E2E === '1'
 const URL_ = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
-const sql = (q: string): string => execFileSync('docker', ['exec', '-i', 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-v', 'ON_ERROR_STOP=1', '-c', q], { encoding: 'utf8' }).trim()
+const sql = (q: string): string => execFileSync('docker', ['exec', '-i', process.env.QA_PG_CONTAINER ?? 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-v', 'ON_ERROR_STOP=1', '-c', q], { encoding: 'utf8' }).trim()
 
 let db: SupabaseClient
 const A = randomUUID(), B = randomUUID(), SPREAD = 'S'.repeat(30)
@@ -194,7 +194,7 @@ describe.skipIf(!E2E)('Sheets export (isolated DB)', { timeout: 90_000 }, () => 
   it('the prepared test-exclusion SQL refuses to run unless exactly the two verified orders exist (guards)', () => {
     order(A, { price: 50, qty: 1 })
     const file = execFileSync('cat', ['scripts/ops/orders-sheets/exclude-test-orders.sql'], { encoding: 'utf8' })
-    expect(() => execFileSync('docker', ['exec', '-i', 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-v', 'ON_ERROR_STOP=1'], { input: file, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })).toThrow()
+    expect(() => execFileSync('docker', ['exec', '-i', process.env.QA_PG_CONTAINER ?? 'qs-pg', 'psql', '-U', 'supabase_admin', '-d', 'wacrm', '-At', '-v', 'ON_ERROR_STOP=1'], { input: file, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] })).toThrow()
     expect(sql(`select count(*) from order_sheet_exclusions`)).toBe('0')
   })
 })

@@ -2,7 +2,7 @@
 const http = require("http");
 http.createServer((req, res) => {
   const path = req.url.replace(/^\/rest\/v1/, "") || "/";
-  const up = http.request({ host: "qs-rest", port: 3000, path, method: req.method, headers: { ...req.headers, host: "qs-rest:3000" } }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
+  const up = http.request({ host: process.env.PGRST_HOST || "qs-rest", port: 3000, path, method: req.method, headers: { ...req.headers, host: (process.env.PGRST_HOST || "qs-rest") + ":3000" } }, (r) => { res.writeHead(r.statusCode, r.headers); r.pipe(res); });
   up.on("error", () => { res.writeHead(502); res.end("{}"); });
   req.pipe(up);
 }).listen(3001, "0.0.0.0");
