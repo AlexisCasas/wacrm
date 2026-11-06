@@ -67,6 +67,27 @@ describe("ConfirmOrderDialog", () => {
     vi.clearAllMocks();
   });
 
+  it("continues showing a client-side invalid price after editing the classic form", async () => {
+    setup();
+    await waitFor(() => expect(value("order-price")).toBe("150"));
+    fireEvent.change(document.getElementById("order-price")!, { target: { value: "0" } });
+    expect(screen.getByText("errors.invalid_price")).toBeTruthy();
+    fireEvent.change(document.getElementById("order-product")!, { target: { value: "Otro producto" } });
+    expect(screen.getByText("errors.invalid_price")).toBeTruthy();
+    expect(screen.getByText("review").closest("button")).toBeDisabled();
+  });
+
+  it("keeps a multi-item validation error visible after editing a different field", async () => {
+    setup(true);
+    await waitFor(() => expect(value("order-price")).toBe("150"));
+    fireEvent.click(screen.getByText("lineMultiMode"));
+    fireEvent.change(document.getElementById("order-item-unit-price-0")!, { target: { value: "0" } });
+    expect(screen.getByText("errors.invalid_price")).toBeTruthy();
+    fireEvent.change(document.getElementById("order-item-quantity-0")!, { target: { value: "2" } });
+    expect(screen.getByText("errors.invalid_price")).toBeTruthy();
+    expect(screen.getByText("review").closest("button")).toBeDisabled();
+  });
+
   it("keeps multi-item controls hidden for accounts without the feature", async () => {
     setup();
     await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
