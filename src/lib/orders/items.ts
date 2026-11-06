@@ -1,6 +1,6 @@
 // Structured confirmed-order items. The exact same summary is stored in the
 // frozen legacy header and sent unchanged to InkaClick; only WACRM keeps lines.
-import { normalizePrice } from './fields'
+import { normalizePrice } from './money'
 
 export interface OrderItem {
   product_name: string
