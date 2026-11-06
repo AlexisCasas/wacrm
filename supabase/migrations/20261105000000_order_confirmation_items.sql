@@ -120,8 +120,10 @@ BEGIN
     IF NOT COALESCE(v_multiproduct_enabled, FALSE) THEN
       RAISE EXCEPTION 'multiproduct_disabled' USING ERRCODE = '42501';
     END IF;
-    IF jsonb_typeof(v_items) IS DISTINCT FROM 'array'
-       OR jsonb_array_length(v_items) NOT BETWEEN 1 AND 20 THEN
+    IF jsonb_typeof(v_items) IS DISTINCT FROM 'array' THEN
+      RAISE EXCEPTION 'invalid_order_items' USING ERRCODE = '22023';
+    END IF;
+    IF jsonb_array_length(v_items) NOT BETWEEN 1 AND 20 THEN
       RAISE EXCEPTION 'invalid_order_items' USING ERRCODE = '22023';
     END IF;
     FOR v_line IN
