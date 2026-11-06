@@ -195,6 +195,37 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
       tables.contact_identity_audit.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: a.p_contact_id, event: 'send_consumed', origin: a.p_origin, detail: { remaining: i.send_authorized_remaining }, created_at: tick() })
       return { data: true, error: null }
     },
+    // Mirrors migration 20261108000000 (apply_whatsapp_message_status): account-scoped through the conversation (messages) / the broadcast
+    // (recipients), forward-only, outbound rows only; returns just the messages that really changed. The SQL itself (including atomicity under
+    // concurrency and privileges) is exercised against PostgreSQL by src/lib/whatsapp/message-status.integration.test.ts.
+    apply_whatsapp_message_status(a) {
+      const rank: Record<string, number> = { pending: 0, sending: 0, sent: 1, delivered: 2, read: 3, replied: 4 }
+      const canAdvance = (cur: unknown, inc: string) =>
+        inc === 'failed' ? ['pending', 'sending', 'sent'].includes(String(cur)) : cur === 'failed' ? false : rank[inc] !== undefined && (rank[String(cur)] === undefined || rank[inc] > rank[String(cur)])
+      const wamid = String(a.p_wamid ?? '')
+      if (!a.p_account_id || wamid.trim() === '') return { data: null, error: { code: '22023', message: 'invalid_arguments' } }
+      const next = a.p_status === 'played' ? 'read' : String(a.p_status)
+      if (!['sent', 'delivered', 'read', 'failed'].includes(next)) return { data: null, error: { code: '22023', message: 'unsupported_status' } }
+      const at = a.p_event_at ?? new Date(clock).toISOString()
+      for (const br of tables.broadcast_recipients ?? []) {
+        const owner = (tables.broadcasts ?? []).find((b) => b.id === br.broadcast_id)
+        if (owner?.account_id !== a.p_account_id || br.whatsapp_message_id !== wamid || !canAdvance(br.status, next)) continue
+        br.status = next
+        if (next === 'sent') br.sent_at = at
+        if (next === 'delivered') br.delivered_at = at
+        if (next === 'read') br.read_at = at
+      }
+      const changed: Row[] = []
+      for (const m of tables.messages ?? []) {
+        if (m.message_id !== wamid || m.sender_type === 'customer') continue
+        const conv = (tables.conversations ?? []).find((c) => c.id === m.conversation_id)
+        if (!conv || conv.account_id !== a.p_account_id || !canAdvance(m.status, next)) continue
+        const previous = m.status
+        m.status = next
+        changed.push({ r_message_id: m.id, r_conversation_id: m.conversation_id, r_contact_id: conv.contact_id ?? null, r_previous_status: previous, r_new_status: next })
+      }
+      return { data: changed, error: null }
+    },
     // Mirrors migration 078 (bsuid_flow_scope / bsuid_flow_send_check); the SQL itself is exercised against PostgreSQL by qa/bsuid.
     bsuid_flow_scope(a) {
       const settings = (tables.bsuid_flow_settings ?? []).find((x) => x.account_id === a.p_account_id && x.flows_enabled)
