@@ -6,8 +6,8 @@
 Producción corre `wacrm-app:meta-pricing-13d12e06` = `main` 5d3dae2a + 6 commits del panel de analítica de precios de Meta (rama **local** `codex/meta-pricing-analytics-dashboard`, no está en GitHub) y **sin** el código del PR #81 (su migración ya está aplicada; el código sigue pendiente). La imagen candidata = `main` (con PR #81) + PR #82 + esa rama local, fusionados sin conflictos; el árbol de `main` tras integrar todo debe ser **idéntico** al de la imagen (lo exige `40-gate-image.sh`). Un único recreate de `app` lleva: panel de precios (se conserva), código de estados de WhatsApp del PR #81, exportador de Sheets (inerte) y las tres variables de entorno.
 
 ## Orden de integración en GitHub (requiere autorización; el árbol final es el mismo en cualquier orden)
-1. Publicar `codex/meta-pricing-analytics-dashboard` y abrirle PR (hoy solo existe en la VPS) → merge a `main`.
-2. Rebase/actualizar PR #82 si `main` cambió; sacarlo de Draft → merge.
+1. PR #83 (`codex/meta-pricing-analytics-dashboard`, publicada con sus 6 commits; verificada byte a byte contra la imagen productiva) → merge a `main`.
+2. Actualizar la rama del PR #82 con `git merge origin/main` (fusión limpia verificada; conserva el historial y las pruebas), repetir su QA y sacarlo de Draft → merge.
 3. `10-build-image.sh <main HEAD>` → la etiqueta de árbol debe coincidir con el árbol candidato registrado.
 
 ## Secuencia de despliegue (T0 = recreate de `app`; ventana tranquila Lima 04:30–05:00)

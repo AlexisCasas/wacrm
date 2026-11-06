@@ -32,6 +32,6 @@ Validación directa de la hoja (API, lectura): 5 filas, 4 pedidos, 5 claves úni
 1. Autorización de migración `20261109000000` y del script `exclude-test-orders.sql`.
 2. Hoja definitiva limpia y exclusiva de Keyler compartida con la cuenta de servicio; `order_sheet_destinations` con su ID (el índice único impide reutilizar el archivo).
 3. Variables `ORDERS_SHEETS_EXPORT_ENABLED`, `GOOGLE_SHEETS_SA_EMAIL`, `GOOGLE_SHEETS_SA_KEY_B64` en el entorno del servidor y recreación de `app` en ventana tranquila (idealmente junto con otro cambio de imagen).
-4. Rebase de la rama sobre `main` actual y nueva validación (prod ejecuta ahora una imagen distinta de las que se rehearsaron; fusionar este PR cambia el árbol de `main`).
+4. Integración: PR #83 (panel de Meta, código ya productivo) y este PR en `main`; reconstruir la imagen desde el SHA exacto de `main` y revalidar (`scripts/ops/orders-sheets/release/README.md`).
 5. Carga histórica con `eligible_since=null`, `reconcile` con 0 diferencias y segunda pasada sin cambios; solo entonces el cron.
 6. Decidir alerta ante `attention` (HTTP 500 del cron).
