@@ -30,12 +30,27 @@ describe('pricing currency (single source of presentation)', () => {
     expect(formatPricingAmount(value, null)).toBe(shown);
   });
 
-  it('shows a reported currency code instead of guessing USD', () => {
-    expect(formatPricingAmount(10, 'PEN')).toMatch(/PEN$/);
-    expect(formatPricingAmount(10, 'PEN')).not.toContain('USD');
+  it('the symbol follows the currency: PEN is "S/ 40.48 PEN", never "$40.48 PEN"', () => {
+    expect(formatPricingAmount(40.48, 'PEN')).toBe('S/ 40.48 PEN');
+    expect(formatPricingAmount(40.48, 'PEN')).not.toContain('$');
+    expect(formatPricingAmount(40.48, 'PEN')).not.toContain('USD');
+    expect(formatPricingAmount(1234.5, 'pen')).toBe('S/ 1,234.50 PEN');
   });
 
-  it('an unknown currency code still renders (amount + code)', () => {
+  it('EUR and GBP use their own symbols', () => {
+    expect(formatPricingAmount(40.48, 'EUR')).toBe('€40.48 EUR');
+    expect(formatPricingAmount(1234.5, 'GBP')).toBe('£1,234.50 GBP');
+  });
+
+  it('a "$"-family currency is not shown as plain dollars', () => {
+    expect(formatPricingAmount(40.48, 'MXN')).toBe('MX$40.48 MXN');
+  });
+
+  it('a currency without a known symbol is the plain amount plus its code (no borrowed "$")', () => {
+    expect(formatPricingAmount(40.48, 'COP')).toBe('40.48 COP');
+  });
+
+  it('an unknown or invalid currency code still renders (amount + code)', () => {
     expect(formatPricingAmount(10, 'ZZZZ')).toBe('10.00 ZZZZ');
   });
 
