@@ -54,6 +54,6 @@ describe.skipIf(!ON)('historical load rehearsal', () => {
     const leaked = q(`select id from order_confirmations where left(md5(id::text), 8) in ('c071235f','821d22b1')`).split('\n').filter((id) => keys.has(id)).length
     const out = { excludedBySql: 2, dbHasThem: excludedInSheet, leakedIntoSheet: leaked, eligibleOrders: rep.eligibleOrders, eligibleLines: rep.eligibleLines, eligibleUnits: rep.eligibleUnits, eligibleCents: rep.eligibleCents, sheetLines: rep.sheetLines, excludedOrders: rep.excludedOrders, excludedByReason: rep.excludedByReason, differences: rep.differences, jobsByStatus: rep.jobsByStatus }
     writeFileSync((process.env.QA_HISTORICAL_OUT ?? '/dev/null').replace(/\.json$/, '') + '-excl.json', JSON.stringify(out, null, 1))
-    expect(rep.differences).toBe(0); expect(leaked).toBe(0); expect(rep.excludedByReason).toEqual({ test: 2 }); expect(rep.eligibleOrders).toBe(224)
+    expect(rep.differences).toBe(0); expect(leaked).toBe(0); expect(rep.excludedByReason).toEqual({ test: 2 }); expect(rep.eligibleOrders).toBe(Number(q(`select count(*) from order_confirmations where account_id='${ACCOUNT}' and delivery_status='acknowledged'`)) - 2)
   }, 300_000)
 })
