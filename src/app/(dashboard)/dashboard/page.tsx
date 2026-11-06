@@ -33,6 +33,7 @@ import { ConversationsChart } from '@/components/dashboard/conversations-chart'
 import { PipelineDonut } from '@/components/dashboard/pipeline-donut'
 import { ResponseTimeChart } from '@/components/dashboard/response-time-chart'
 import { ActivityFeed } from '@/components/dashboard/activity-feed'
+import { WhatsappUsageWidget } from '@/components/dashboard/whatsapp-usage-widget'
 
 import { useTranslations } from 'next-intl'
 
@@ -187,6 +188,9 @@ export default function DashboardPage() {
           </>
         )}
       </div>
+
+      {/* Official Meta pricing analytics for the authenticated account. */}
+      <WhatsappUsageWidget />
 
       {/* Quick actions */}
       <QuickActions />
