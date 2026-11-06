@@ -3,7 +3,18 @@ import { draftFromLegacy, emptyOrderItem, itemsForSubmission, moneyDisplay, subt
 
 describe("multiproduct UI calculation", () => {
   it("starts with an empty valid quantity and no invented unit price", () => {
-    expect(emptyOrderItem()).toEqual({ product_name: "", quantity: "1", unit_price: "", catalog_product_id: null });
+    expect(emptyOrderItem()).toMatchObject({ product_name: "", quantity: "1", unit_price: "", catalog_product_id: null, row_id: expect.any(String) });
+  });
+
+  it("preserves a unique UI row ID when editing or removing other rows, without sending it to the API", () => {
+    const first = emptyOrderItem();
+    const second = emptyOrderItem();
+    expect(first.row_id).not.toBe(second.row_id);
+    const updated = { ...second, product_name: "Tetera" };
+    expect(updated.row_id).toBe(second.row_id);
+    const remaining = [first, updated].filter((row) => row.row_id !== first.row_id);
+    expect(remaining[0].row_id).toBe(second.row_id);
+    expect(itemsForSubmission(remaining)[0]).not.toHaveProperty("row_id");
   });
 
   it("pre-fills a unit price only for a single-unit legacy order", () => {
