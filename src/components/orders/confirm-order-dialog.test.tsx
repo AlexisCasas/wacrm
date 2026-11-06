@@ -26,9 +26,9 @@ import { toast } from "sonner";
 const sellers = [{ id: "11111111-1111-4111-8111-111111111111", name: "Vendedor Uno" }];
 const contact = { id: "22222222-2222-4222-8222-222222222222", name: "Cliente Sintetico", phone: "900000001" };
 
-function setup() {
+function setup(multiproductEnabled = false) {
   const onOpenChange = vi.fn();
-  render(<ConfirmOrderDialog open onOpenChange={onOpenChange} contact={contact} conversationId="33333333-3333-4333-8333-333333333333" sellers={sellers} />);
+  render(<ConfirmOrderDialog open onOpenChange={onOpenChange} contact={contact} conversationId="33333333-3333-4333-8333-333333333333" sellers={sellers} multiproductEnabled={multiproductEnabled} />);
   return { onOpenChange };
 }
 const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
@@ -65,6 +65,57 @@ describe("ConfirmOrderDialog", () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+  });
+
+  it("keeps multi-item controls hidden for accounts without the feature", async () => {
+    setup();
+    await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
+    expect(screen.queryByText("lineMultiMode")).toBeNull();
+    expect(screen.queryByTestId("order-items-editor")).toBeNull();
+  });
+
+  it("for an enabled account, previews and submits two item lines with computed totals", async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      if (url.startsWith("/api/audio-guide/products")) return new Response(JSON.stringify({ products: [] }), { status: 200 });
+      return new Response(JSON.stringify({ order_id: "multi-order", created: true, delivery_status: "pending" }), { status: 201 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { onOpenChange } = setup(true);
+    await waitFor(() => expect(value("order-price")).toBe("150"));
+    fireEvent.click(screen.getByText("lineMultiMode"));
+    expect(screen.getByTestId("order-items-editor")).toBeTruthy();
+    expect(value("order-item-product-0")).toBe("Nivel laser");
+    expect(value("order-item-unit-price-0")).toBe("150");
+    fireEvent.click(screen.getByText("lineAdd"));
+    fireEvent.change(document.getElementById("order-item-product-1")!, { target: { value: "Tetera" } });
+    fireEvent.change(document.getElementById("order-item-quantity-1")!, { target: { value: "2" } });
+    fireEvent.change(document.getElementById("order-item-unit-price-1")!, { target: { value: "80" } });
+    expect(screen.getByTestId("order-items-total").textContent).toContain("S/ 310.00");
+    await pickSeller();
+    fireEvent.click(screen.getByText("review"));
+    await screen.findByTestId("order-lines-preview");
+    expect(screen.getByTestId("order-preview").textContent).toContain("310.00");
+    fireEvent.click(screen.getByText("confirm"));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+    const posts = fetchMock.mock.calls.filter(([url]) => url === "/api/orders/confirm");
+    expect(posts).toHaveLength(1);
+    const request = JSON.parse((posts[0] as unknown as [string, { body: string }])[1].body);
+    expect(request.items).toEqual([
+      { product_name: "Nivel laser", quantity: "1", unit_price: "150", catalog_product_id: null },
+      { product_name: "Tetera", quantity: "2", unit_price: "80", catalog_product_id: null },
+    ]);
+    expect(request.request_key).toBe("key-1");
+  });
+
+  it("never interprets a prefilled order total as a unit price when quantity exceeds one", async () => {
+    setup(true);
+    await waitFor(() => expect(value("order-price")).toBe("150"));
+    fireEvent.change(document.getElementById("order-quantity")!, { target: { value: "2" } });
+    fireEvent.click(screen.getByText("lineMultiMode"));
+    expect(value("order-item-quantity-0")).toBe("2");
+    expect(value("order-item-unit-price-0")).toBe("");
+    expect(screen.getByText("linePrefillTotalHint")).toBeTruthy();
+    expect(screen.getByText("review").closest("button")).toBeDisabled();
   });
 
   it("pre-fills from the contact and its custom fields (phone stays text, quantity 1, agency Shalom)", async () => {
