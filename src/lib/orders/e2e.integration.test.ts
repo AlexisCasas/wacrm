@@ -62,7 +62,7 @@ describe.skipIf(!E2E)('Confirmar pedido: WACRM -> outbox -> InkaClick (isolated 
   beforeAll(() => {
     // Safety: this suite truncates tables. It only ever runs against the throwaway QA stack on loopback.
     if (!/^http:\/\/127\.0\.0\.1:\d+$/.test(process.env.NEXT_PUBLIC_SUPABASE_URL ?? '')) throw new Error('QA_E2E must point at the isolated loopback stack')
-    sql('wacrm', 'truncate order_confirmation_deliveries, order_confirmations')
+    sql('wacrm', 'truncate order_confirmation_items, order_confirmation_deliveries, order_confirmations')
     sql('inka', 'truncate wacrm_order_events, confirmed_orders, customers cascade')
     process.env.AUTOMATION_CRON_SECRET = CRON_SECRET
     process.env.INKACLICK_ORDERS_ENABLED = 'true'
