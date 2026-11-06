@@ -1,4 +1,5 @@
 // "Confirmar pedido": validation and normalisation of the 13 business fields. Pure, no I/O.
+import { validateOrderItems, type OrderItem } from './items'
 //
 // Evidence behind what is required (InkaClick `confirmed_orders`, 4 054 orders, 2026-10-31):
 //   * DNI is empty in 0.4 % and not 8 digits in 2.9 %: optional, with a warning (InkaClick only links a customer DNI when it has 8 digits).
@@ -17,6 +18,7 @@ export interface OrderInput {
   dni?: unknown
   phone?: unknown
   product?: unknown
+  items?: unknown
   quantity?: unknown
   price?: unknown
   order_description?: unknown
@@ -30,6 +32,7 @@ export interface OrderFields {
   dni: string
   phone: string
   product: string
+  items?: OrderItem[]
   quantity: number
   /** Decimal string with exactly two decimals: never a float. */
   price: string
@@ -44,7 +47,7 @@ export type OrderFieldName = keyof OrderFields
 export interface OrderValidation {
   ok: boolean
   value: OrderFields | null
-  errors: Partial<Record<OrderFieldName, string>>
+  errors: Partial<Record<OrderFieldName | 'items', string>>
   warnings: Partial<Record<OrderFieldName, string>>
 }
 
@@ -78,6 +81,12 @@ export function validateOrderInput(input: OrderInput): OrderValidation {
   const errors: OrderValidation['errors'] = {}
   const warnings: OrderValidation['warnings'] = {}
 
+  // Explicit 'items' switches to structured capture. An absent key retains
+  // the legacy single-product contract, including its price-is-total meaning.
+  const structured = Object.prototype.hasOwnProperty.call(input, 'items')
+  const parsed = structured ? validateOrderItems(input.items) : null
+  if (parsed && !parsed.ok) errors.items = parsed.error
+
   const customer_name = text(input.customer_name)
   if (!customer_name) errors.customer_name = 'required'
   else if (customer_name.length > 150) errors.customer_name = 'too_long'
@@ -89,17 +98,19 @@ export function validateOrderInput(input: OrderInput): OrderValidation {
   if (!text(input.phone)) errors.phone = 'required'
   else if (!phone) errors.phone = 'invalid_peru_phone'
 
-  const product = text(input.product)
+  const product = parsed?.ok ? parsed.product : text(input.product)
   if (!product) errors.product = 'required'
   else if (product.length > 500) errors.product = 'too_long'
 
-  const qRaw = typeof input.quantity === 'string' ? input.quantity.trim() : input.quantity
+  const qInput = parsed?.ok ? parsed.quantity : input.quantity
+  const qRaw = typeof qInput === 'string' ? qInput.trim() : qInput
   const quantity = typeof qRaw === 'number' ? qRaw : /^\d{1,5}$/.test(String(qRaw ?? '')) ? Number(qRaw) : NaN
   if (qRaw === undefined || qRaw === '' || qRaw === null) errors.quantity = 'required'
   else if (!Number.isInteger(quantity) || quantity < 1 || quantity > 10000) errors.quantity = 'invalid_quantity'
 
-  const price = normalizePrice(input.price)
-  if (input.price === undefined || input.price === null || text(input.price) === '') errors.price = 'required'
+  const priceInput = parsed?.ok ? parsed.price : input.price
+  const price = normalizePrice(priceInput)
+  if (priceInput === undefined || priceInput === null || text(priceInput) === '') errors.price = 'required'
   else if (!price) errors.price = 'invalid_price'
 
   const order_description = text(input.order_description)
@@ -123,7 +134,7 @@ export function validateOrderInput(input: OrderInput): OrderValidation {
   if (Object.keys(errors).length > 0 || !phone || !price) return { ok: false, value: null, errors, warnings }
   return {
     ok: true,
-    value: { customer_name, dni, phone, product, quantity, price, order_description, agency, destination, department },
+    value: { customer_name, dni, phone, product, ...(parsed?.ok ? { items: parsed.items } : {}), quantity, price, order_description, agency, destination, department },
     errors,
     warnings,
   }
