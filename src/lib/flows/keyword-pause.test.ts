@@ -168,10 +168,10 @@ const activeOf = (contact: string) => h.state.flowRuns.filter((r) => r.contact_i
 
 beforeEach(() => {
   Object.assign(h.state, { flows: [], flowNodes: [], conversations: [], contacts: [], flowRuns: [], flowRunEvents: [], settings: [], nextRunId: 1, failNextRunInsert: false, raceRunBeforeInsert: null, beforeInterrupt: null });
-  h.state.contacts.push({ id: CONTACT, account_id: ACCOUNT, name: "Keyler", phone: "51939665944", blocked: false });
+  h.state.contacts.push({ id: CONTACT, account_id: ACCOUNT, name: "Cliente Sintetico", phone: "51900000044", blocked: false });
   h.state.conversations.push({ id: CONVERSATION, account_id: ACCOUNT, contact_id: CONTACT });
   recipient.resolveContactTarget.mockReset();
-  recipient.resolveContactTarget.mockResolvedValue({ kind: "phone", phone: "51939665944" });
+  recipient.resolveContactTarget.mockResolvedValue({ kind: "phone", phone: "51900000044" });
 });
 
 
