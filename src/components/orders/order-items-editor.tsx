@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Search, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -69,6 +69,93 @@ interface CatalogProduct {
   active: boolean;
 }
 
+/** Explicit catalog search is separate from free-text product entry.
+ * Selecting an item copies only its ID/name; unit prices are never invented.
+ * This panel is mounted only while open, so stale suggestions cannot leak
+ * between different products or survive closing the picker. */
+function CatalogPicker({
+  index, onSelect,
+}: {
+  index: number;
+  onSelect: (product: CatalogProduct) => void;
+}) {
+  const t = useTranslations("Orders");
+  const [query, setQuery] = useState("");
+  const [options, setOptions] = useState<CatalogProduct[]>([]);
+  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) return;
+    const controller = new AbortController();
+    const timeout = setTimeout(async () => {
+      setStatus("loading");
+      try {
+        const response = await fetch("/api/orders/products?q=" + encodeURIComponent(q), {
+          cache: "no-store", signal: controller.signal,
+        });
+        if (!response.ok) throw new Error("catalog_unavailable");
+        const body = (await response.json()) as { products?: CatalogProduct[] };
+        if (!controller.signal.aborted) {
+          setOptions((body.products ?? []).filter((p) => p.active).slice(0, 10));
+          setStatus("ready");
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setOptions([]);
+          setStatus("error");
+        }
+      }
+    }, 300);
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [query]);
+
+  const q = query.trim();
+  return (
+    <div className="grid gap-2 rounded-md border bg-muted/20 p-2" data-testid={"order-catalog-picker-" + index}>
+      <Label htmlFor={"order-catalog-search-" + index}>{t("lineCatalogSearchLabel")}</Label>
+      <Input
+        id={"order-catalog-search-" + index}
+        type="search"
+        value={query}
+        autoComplete="off"
+        placeholder={t("lineCatalogSearchPlaceholder")}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOptions([]);
+          setStatus("idle");
+        }}
+      />
+      {q.length < 2 ? (
+        <p className="text-xs text-muted-foreground">{t("lineCatalogSearchPlaceholder")}</p>
+      ) : status === "loading" || status === "idle" ? (
+        <p role="status" className="text-xs text-muted-foreground">{t("lineCatalogSearching")}</p>
+      ) : status === "error" ? (
+        <p role="status" className="text-xs text-muted-foreground">{t("lineCatalogUnavailable")}</p>
+      ) : options.length === 0 ? (
+        <p role="status" className="text-xs text-muted-foreground">{t("lineCatalogNoResults")}</p>
+      ) : (
+        <div className="grid max-h-48 gap-1 overflow-y-auto rounded-md border bg-popover p-1" data-testid={"order-catalog-search-results-" + index}>
+          {options.map((product) => (
+            <button
+              key={product.id}
+              type="button"
+              className="rounded-sm px-2 py-2 text-left text-sm hover:bg-accent focus-visible:bg-accent"
+              onClick={() => onSelect(product)}
+            >
+              {product.display_name}
+            </button>
+          ))}
+        </div>
+      )}
+      <p className="text-xs text-muted-foreground">{t("lineCatalogManualHint")}</p>
+    </div>
+  );
+}
+
 function ProductNameInput({
   item, index, change,
 }: {
@@ -79,9 +166,10 @@ function ProductNameInput({
   const t = useTranslations("Orders");
   const [options, setOptions] = useState<CatalogProduct[]>([]);
   const [unavailable, setUnavailable] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
 
   useEffect(() => {
-    if (item.catalog_product_id || item.product_name.trim().length < 2) return;
+    if (catalogOpen || item.catalog_product_id || item.product_name.trim().length < 2) return;
     const controller = new AbortController();
     const timeout = setTimeout(async () => {
       try {
@@ -104,12 +192,25 @@ function ProductNameInput({
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [item.product_name, item.catalog_product_id]);
+  }, [item.product_name, item.catalog_product_id, catalogOpen]);
 
   const shown = !item.catalog_product_id && item.product_name.trim().length >= 2;
   return (
     <div className="grid gap-1 sm:col-span-2">
-      <Label htmlFor={"order-item-product-" + index}>{t("lineProductName")}</Label>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <Label htmlFor={"order-item-product-" + index}>{t("lineProductName")}</Label>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          aria-expanded={catalogOpen}
+          aria-controls={"order-catalog-picker-" + index}
+          onClick={() => setCatalogOpen((open) => !open)}
+        >
+          <Search className="mr-1 size-4" />
+          {catalogOpen ? t("lineCatalogClose") : t("lineCatalogBrowse")}
+        </Button>
+      </div>
       <Input
         id={"order-item-product-" + index}
         value={item.product_name}
@@ -121,7 +222,17 @@ function ProductNameInput({
           change({ product_name: e.target.value, catalog_product_id: null });
         }}
       />
-      {item.catalog_product_id ? (
+      {catalogOpen ? (
+        <CatalogPicker
+          index={index}
+          onSelect={(product) => {
+            change({ product_name: product.display_name, catalog_product_id: product.id });
+            setOptions([]);
+            setUnavailable(false);
+            setCatalogOpen(false);
+          }}
+        />
+      ) : item.catalog_product_id ? (
         <p className="text-xs text-muted-foreground">{t("lineFromCatalog")}</p>
       ) : shown && options.length > 0 ? (
         <div className="grid max-h-40 gap-1 overflow-y-auto rounded-md border bg-popover p-1" data-testid={"order-catalog-options-" + index}>
