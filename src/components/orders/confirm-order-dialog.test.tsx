@@ -76,7 +76,7 @@ describe("ConfirmOrderDialog", () => {
 
   it("for an enabled account, previews and submits two item lines with computed totals", async () => {
     const fetchMock = vi.fn(async (url: string) => {
-      if (url.startsWith("/api/audio-guide/products")) return new Response(JSON.stringify({ products: [] }), { status: 200 });
+      if (url.startsWith("/api/orders/products")) return new Response(JSON.stringify({ products: [] }), { status: 200 });
       return new Response(JSON.stringify({ order_id: "multi-order", created: true, delivery_status: "pending" }), { status: 201 });
     });
     vi.stubGlobal("fetch", fetchMock);
