@@ -21,6 +21,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { PERU_DEPARTMENTS, validateOrderInput } from "@/lib/orders/fields";
 import { ORDERS_CHANGED_EVENT } from "@/components/orders/order-history";
 import { buildPrefill, type OrderFormValues } from "@/lib/orders/prefill";
+import { priceToCents } from "@/lib/orders/items";
+import { OrderItemsEditor, draftFromLegacy, emptyOrderItem, itemsForSubmission, moneyDisplay, type DraftOrderItem } from "./order-items-editor";
 
 /** A member of the account who can be the commercial seller. `id` is the member's user id (stable across renames). */
 export interface OrderSeller {
@@ -40,6 +42,7 @@ interface Props {
   contact: { id: string; name?: string | null; phone?: string | null };
   conversationId?: string | null;
   sellers: OrderSeller[];
+  multiproductEnabled?: boolean;
 }
 
 type Step = "form" | "preview";
@@ -57,11 +60,13 @@ const FIELD_LABELS: { key: keyof OrderFormValues; label: string; optional?: bool
 
 // "Confirmar pedido". Opening the dialog starts ONE order: the `request_key` is generated here and reused by every submit of this dialog, so a
 // double click, a slow network retry or a re-render can never create a second order. Closing and reopening starts a new one (a new sale).
-export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId, sellers }: Props) {
+export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId, sellers, multiproductEnabled = false }: Props) {
   const t = useTranslations("Orders");
   const [step, setStep] = useState<Step>("form");
   const [values, setValues] = useState<OrderFormValues>(() => buildPrefill(contact, []));
   const [sellerId, setSellerId] = useState("");
+  const [multiMode, setMultiMode] = useState(false);
+  const [items, setItems] = useState<DraftOrderItem[]>(() => [emptyOrderItem()]);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const requestKey = useRef<string>("");
@@ -74,6 +79,8 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
     inFlight.current = false;
     setStep("form");
     setSellerId("");
+    setMultiMode(false);
+    setItems([emptyOrderItem()]);
     setServerErrors({});
     setValues(buildPrefill(contact, []));
     let cancelled = false;
@@ -100,7 +107,9 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
     };
   }, [open, contact]);
 
-  const validation = useMemo(() => validateOrderInput(values), [values]);
+  const validation = useMemo(() => validateOrderInput(multiMode && multiproductEnabled
+    ? { ...values, items: itemsForSubmission(items) }
+    : values), [values, multiMode, multiproductEnabled, items]);
   const errors = { ...(validation.errors as Record<string, string>), ...serverErrors };
   const canReview = validation.ok && sellerId !== "";
 
@@ -120,6 +129,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ...values,
+          ...(multiMode && multiproductEnabled ? { items: itemsForSubmission(items) } : {}),
           request_key: requestKey.current,
           seller_user_id: sellerId,
           contact_id: contact.id,
@@ -166,7 +176,31 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
 
         {step === "form" ? (
           <div className="grid gap-3">
-            {FIELD_LABELS.map(({ key, label, optional, multiline }) => (
+            {multiproductEnabled ? (
+              <div className="flex flex-wrap items-center gap-2 rounded-md bg-muted/40 p-2">
+                <Button type="button" variant="outline" size="sm" onClick={() => {
+                  if (multiMode) setMultiMode(false);
+                  else {
+                    setItems([draftFromLegacy(values)]);
+                    setMultiMode(true);
+                  }
+                  setServerErrors({});
+                }}>
+                  {multiMode ? t("lineSingleMode") : t("lineMultiMode")}
+                </Button>
+                {multiMode ? <span className="text-xs text-muted-foreground">{t("lineEditableHint")}</span> : null}
+              </div>
+            ) : null}
+            {multiMode && multiproductEnabled && values.price && values.quantity !== "1" ? (
+              <p className="text-xs text-muted-foreground">{t("linePrefillTotalHint")}</p>
+            ) : null}
+            {FIELD_LABELS.map(({ key, label, optional, multiline }) =>
+              multiMode && multiproductEnabled && key === "product" ? (
+                <OrderItemsEditor key="items" items={items} onChange={(next) => {
+                  setItems(next);
+                  setServerErrors((e) => ({ ...e, items: "" }));
+                }} error={errors.items ? t(("errors." + errors.items) as never) : null} />
+              ) : multiMode && multiproductEnabled && (key === "quantity" || key === "price") ? null : (
               <div key={key} className="grid gap-1">
                 <Label htmlFor={`order-${key}`}>
                   {t(label as never)}
@@ -258,6 +292,16 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
                   ))
                 : null}
             </dl>
+            {multiMode && multiproductEnabled && validation.value?.items ? (
+              <div className="grid gap-1 rounded-md border p-3" data-testid="order-lines-preview">
+                <p className="font-medium">{t("lineItemsHeading")}</p>
+                {validation.value.items.map((item, index) => (
+                  <p key={index} className="text-sm">
+                    {item.quantity} x {item.product_name} · {moneyDisplay(priceToCents(item.unit_price) * item.quantity)}
+                  </p>
+                ))}
+              </div>
+            ) : null}
             <p className="text-xs text-muted-foreground">{t("previewConfirmedAt")} · {t("previewStatus")}</p>
             <DialogFooter>
               <Button variant="outline" disabled={submitting} onClick={() => setStep("form")}>
