@@ -77,7 +77,7 @@ function ProductNameInput({
     const controller = new AbortController();
     const timeout = setTimeout(async () => {
       try {
-        const url = "/api/audio-guide/products?q=" + encodeURIComponent(item.product_name.trim());
+        const url = "/api/orders/products?q=" + encodeURIComponent(item.product_name.trim());
         const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
         if (!response.ok) throw new Error("catalog_unavailable");
         const body = (await response.json()) as { products?: CatalogProduct[] };
