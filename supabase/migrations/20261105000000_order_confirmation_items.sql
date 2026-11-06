@@ -3,6 +3,11 @@
 -- No historical orders are rewritten or backfilled with invented unit prices.
 -- Old callers (no items key) retain the exact legacy create semantics.
 
+-- This gate is OFF by default for every account, including existing ones.
+-- Enabling it for Keyler is a separate audited operational step.
+ALTER TABLE public.order_integration_settings
+  ADD COLUMN IF NOT EXISTS multiproduct_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+
 ALTER TABLE public.order_confirmations
   ADD CONSTRAINT order_confirmations_id_account_unique UNIQUE (id, account_id);
 
@@ -73,6 +78,7 @@ DECLARE
   v_line_qty INTEGER;
   v_line_unit NUMERIC(12,2);
   v_line_catalog UUID;
+  v_multiproduct_enabled BOOLEAN := FALSE;
   v_summary TEXT := '';
   v_total_units INTEGER := 0;
   v_total_price NUMERIC := 0;
@@ -105,6 +111,15 @@ BEGIN
   -- Structured clients must send 1-20 items; recompute and verify the header
   -- before the insert so the InkaClick text/quantity/price can never diverge.
   IF p_fields ? 'items' THEN
+    -- Check at the database boundary, using the authenticated account, not
+    -- a caller-supplied account name or UI flag. The legacy path stays active.
+    SELECT COALESCE(st.multiproduct_enabled, FALSE)
+      INTO v_multiproduct_enabled
+      FROM public.order_integration_settings st
+     WHERE st.account_id = p_account;
+    IF NOT COALESCE(v_multiproduct_enabled, FALSE) THEN
+      RAISE EXCEPTION 'multiproduct_disabled' USING ERRCODE = '42501';
+    END IF;
     IF jsonb_typeof(v_items) IS DISTINCT FROM 'array'
        OR jsonb_array_length(v_items) NOT BETWEEN 1 AND 20 THEN
       RAISE EXCEPTION 'invalid_order_items' USING ERRCODE = '22023';
