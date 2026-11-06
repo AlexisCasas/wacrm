@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { SheetsApi } from './google-client'
-import { HEADERS, KEY_COLUMN_INDEX, ProjectionError, projectOrder, toCents, type ItemInput, type OrderInput } from './layout'
+import { HEADERS, KEY_COLUMN_INDEX, ProjectionError, compareRow, projectOrder, toCents, type Cell, type ItemInput, type OrderInput } from './layout'
 import { loadDestination } from './exporter'
 
 // Read-only comparison DB <-> sheet. Output is aggregate counters plus order UUIDs of differences (no names, phones, DNIs or amounts per customer).
@@ -9,7 +9,7 @@ export interface ReconcileReport {
   eligibleOrders: number; eligibleLines: number; eligibleUnits: number; eligibleCents: number
   sheetOrders: number; sheetLines: number; sheetUnits: number; sheetCents: number
   missingKeys: string[]; extraKeys: string[]; duplicateKeys: string[]
-  orderAmountMismatches: string[]; lineMismatches: string[]; projectionErrors: string[]
+  orderAmountMismatches: string[]; lineMismatches: string[]; contentMismatches: string[]; projectionErrors: string[]
   excludedOrders: number; excludedByReason: Record<string, number>
   notAcknowledgedOrders: number; beforeEligibleSince: number
   jobsByStatus: Record<string, number>
@@ -42,12 +42,12 @@ export async function reconcileAccount(admin: SupabaseClient, api: SheetsApi, ac
 
   const r: ReconcileReport = {
     eligibleOrders: 0, eligibleLines: 0, eligibleUnits: 0, eligibleCents: 0, sheetOrders: 0, sheetLines: 0, sheetUnits: 0, sheetCents: 0,
-    missingKeys: [], extraKeys: [], duplicateKeys: [], orderAmountMismatches: [], lineMismatches: [], projectionErrors: [],
+    missingKeys: [], extraKeys: [], duplicateKeys: [], orderAmountMismatches: [], lineMismatches: [], contentMismatches: [], projectionErrors: [],
     excludedOrders: 0, excludedByReason: {}, notAcknowledgedOrders: 0, beforeEligibleSince: 0, jobsByStatus: {}, differences: 0,
   }
   for (const e of exports) r.jobsByStatus[e.status] = (r.jobsByStatus[e.status] ?? 0) + 1
 
-  const expected = new Map<string, { qty: number; cents: number; orderId: string }>()
+  const expected = new Map<string, { qty: number; cents: number; orderId: string; cells: Cell[] }>()
   for (const o of all) {
     if (o.delivery_status !== 'acknowledged') { r.notAcknowledgedOrders++; continue }
     if (since && o.confirmed_at < since) { r.beforeEligibleSince++; continue }
@@ -56,7 +56,7 @@ export async function reconcileAccount(admin: SupabaseClient, api: SheetsApi, ac
     try {
       const p = projectOrder(o, byOrder.get(o.id) ?? [], '')
       r.eligibleOrders++; r.eligibleLines += p.lines.length; r.eligibleUnits += p.units; r.eligibleCents += p.totalCents
-      for (const l of p.lines) expected.set(l.key, { qty: l.units, cents: l.cents, orderId: o.id })
+      for (const l of p.lines) expected.set(l.key, { qty: l.units, cents: l.cents, orderId: o.id, cells: l.cells })
     } catch (e) { r.projectionErrors.push(`${o.id}:${e instanceof ProjectionError ? e.code : 'error'}`) }
   }
 
@@ -78,13 +78,16 @@ export async function reconcileAccount(admin: SupabaseClient, api: SheetsApi, ac
     const exp = expected.get(key)
     if (!exp) { r.extraKeys.push(key); continue }
     if (exp.qty !== qty || exp.cents !== cents) r.lineMismatches.push(key)
+    // Every commercial and technical column (product, seller, dates, destination, hash, ...) must equal the projection. Names of columns only, never values.
+    const diffs = compareRow(exp.cells, row)
+    if (diffs.length) r.contentMismatches.push(`${key}:${diffs.join('|')}`)
   }
   r.sheetOrders = sheetOrders.size
   for (const k of expected.keys()) if (!seen.has(k)) r.missingKeys.push(k)
   const perOrder = new Map<string, number>()
   for (const e of expected.values()) perOrder.set(e.orderId, (perOrder.get(e.orderId) ?? 0) + e.cents)
   for (const [id, c] of perOrder) if (orderCents.has(id) && orderCents.get(id) !== c) r.orderAmountMismatches.push(id)
-  r.differences = r.missingKeys.length + r.extraKeys.length + r.duplicateKeys.length + r.lineMismatches.length + r.orderAmountMismatches.length + r.projectionErrors.length
+  r.differences = r.missingKeys.length + r.extraKeys.length + r.duplicateKeys.length + r.lineMismatches.length + r.contentMismatches.length + r.orderAmountMismatches.length + r.projectionErrors.length
     + Math.abs(r.eligibleLines - r.sheetLines) + Math.abs(r.eligibleUnits - r.sheetUnits) + Math.abs(r.eligibleCents - r.sheetCents) + Math.abs(r.eligibleOrders - r.sheetOrders)
   return r
 }

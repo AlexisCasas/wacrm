@@ -4,6 +4,7 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { GoogleSheetsClient, readGoogleCredentials } from '@/lib/orders/sheets/google-client'
 import { runSheetsExport } from '@/lib/orders/sheets/exporter'
 import { reconcileAccount } from '@/lib/orders/sheets/reconcile'
+import { classifyExport, classifyReconcile, overall, type AccountOutcome } from '@/lib/orders/sheets/status'
 
 // Google Sheets export tick. Independent of the InkaClick outbox (/api/orders/cron): a failure here never touches an order or its delivery.
 // Global switch: without ORDERS_SHEETS_EXPORT_ENABLED=true plus the service-account env vars it does nothing. Per account: order_sheet_destinations.enabled.
@@ -25,20 +26,29 @@ export async function GET(request: Request) {
     if (error) throw new Error(error.message)
     const api = new GoogleSheetsClient(creds)
     const accounts: Record<string, unknown> = {}
+    const outcomes: AccountOutcome[] = []
     for (const { account_id } of (data ?? []) as { account_id: string }[]) {
       // One account failing must not stop the others.
       try {
-        if (mode === 'sync') accounts[account_id] = await runSheetsExport(admin, api, account_id)
+        if (mode === 'sync') {
+          const r = await runSheetsExport(admin, api, account_id)
+          accounts[account_id] = r
+          outcomes.push({ account: account_id, ...classifyExport(r) })
+        }
         else {
           const r = await reconcileAccount(admin, api, account_id)
-          accounts[account_id] = { ...r, missingKeys: r.missingKeys.slice(0, 20), extraKeys: r.extraKeys.slice(0, 20), duplicateKeys: r.duplicateKeys.slice(0, 20), lineMismatches: r.lineMismatches.slice(0, 20) }
+          outcomes.push({ account: account_id, ...classifyReconcile(r) })
+          accounts[account_id] = { ...r, missingKeys: r.missingKeys.slice(0, 20), extraKeys: r.extraKeys.slice(0, 20), duplicateKeys: r.duplicateKeys.slice(0, 20), lineMismatches: r.lineMismatches.slice(0, 20), contentMismatches: r.contentMismatches.slice(0, 20) }
         }
       } catch (e) {
         console.error('[orders-sheets] account failed:', account_id, e instanceof Error ? e.message : 'unknown')
         accounts[account_id] = { error: 'account_failed' }
+        outcomes.push({ account: account_id, status: 'attention', reasons: ['account_failed'] })
       }
     }
-    return NextResponse.json({ enabled: true, mode, accounts })
+    // HTTP 200 only when nothing needs a person: the host cron script logs and alerts on any other status.
+    const o = overall(outcomes)
+    return NextResponse.json({ enabled: true, mode, status: o.status, attention: outcomes.filter((x) => x.status === 'attention').map((x) => ({ account: x.account, reasons: x.reasons })), accounts }, { status: o.http })
   } catch (error) {
     console.error('[orders-sheets] failed:', error instanceof Error ? error.message : 'unknown')
     return NextResponse.json({ error: 'sheets export failed' }, { status: 500 })

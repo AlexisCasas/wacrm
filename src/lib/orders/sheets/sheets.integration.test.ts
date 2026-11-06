@@ -86,7 +86,9 @@ describe.skipIf(!E2E)('Sheets export (isolated DB)', { timeout: 90_000 }, () => 
   it('Sheets down: the commercial order is untouched, job backs off, then recovers; dead after max attempts and requeue works', async () => {
     const id = order(A, { price: 50, qty: 1 }); const before = sql(`select md5(o::text) from order_confirmations o where id='${id}'`)
     const sheet = new FakeSheet(); sheet.fault = 'always_503'
-    for (let i = 0; i < 8; i++) { await run(sheet); makeDue() }
+    for (let i = 0; i < 7; i++) { await run(sheet); makeDue() }
+    const last = await run(sheet)
+    expect(last).toMatchObject({ dead: 1, deadOutstanding: 1 })
     expect(sql(`select status||':'||attempts from order_sheet_exports`)).toBe('dead:8')
     expect(sql(`select md5(o::text) from order_confirmations o where id='${id}'`)).toBe(before)   // delivery_status, inkaclick fields: unchanged
     sheet.fault = 'none'; expect((await run(sheet)).claimed).toBe(0)
@@ -144,5 +146,48 @@ describe.skipIf(!E2E)('Sheets export (isolated DB)', { timeout: 90_000 }, () => 
     const sheet = new FakeSheet(); await run(sheet); expect(sheet.data).toHaveLength(1)
     expect((await reconcileAccount(db, sheet, A))).toMatchObject({ differences: 0, beforeEligibleSince: 1 })
     expect(sql(`select has_function_privilege('anon','order_sheet_claim(uuid,uuid,integer,integer,integer)','execute')::text||has_function_privilege('authenticated','order_sheet_enqueue(uuid,integer)','execute')::text||has_function_privilege('service_role','order_sheet_enqueue(uuid,integer)','execute')::text`)).toBe('falsefalsetrue')
+  })
+
+  // ---- regression tests for the review of PR #82 ----
+  it('reconcile detects a changed product or seller even when quantity and price are untouched', async () => {
+    order(A, { price: 50, qty: 1, product: 'Producto A', seller: 'Vendedor Uno' }); order(A, { price: 70, qty: 2, product: 'Producto B', seller: 'Vendedor Uno' }); order(A, { price: 90, qty: 3, product: 'Producto C' })
+    const sheet = new FakeSheet(); await run(sheet)
+    expect((await reconcileAccount(db, sheet, A)).differences).toBe(0)
+    sheet.data[0][HEADERS.indexOf('Producto')] = 'Producto ALTERADO'
+    sheet.data[1][HEADERS.indexOf('Vendedor')] = 'Otro Vendedor'
+    sheet.data[2][HEADERS.indexOf('Hash de fila')] = 'deadbeef'
+    const rep = await reconcileAccount(db, sheet, A)
+    expect(rep.lineMismatches).toHaveLength(0); expect(rep.contentMismatches).toHaveLength(3); expect(rep.differences).toBe(3)
+    expect(rep.contentMismatches.join(' ')).toMatch(/Producto/); expect(rep.contentMismatches.join(' ')).toMatch(/Vendedor/); expect(rep.contentMismatches.join(' ')).toMatch(/Hash de fila/)
+    expect(JSON.stringify(rep)).not.toContain('ALTERADO'); expect(JSON.stringify(rep)).not.toContain('Otro Vendedor')   // names of columns only, no values
+  })
+
+  it('an existing key whose row was altered is NOT marked exported and is never overwritten', async () => {
+    order(A, { price: 145, qty: 2, items: [['P1', 1, 95], ['P2', 1, 50]] })
+    const sheet = new FakeSheet(); sheet.fault = 'apply_then_fail'
+    await run(sheet)                                                    // both lines are in the sheet, the job is still pending
+    sheet.data[0][HEADERS.indexOf('Producto')] = 'EDITADO A MANO'      // somebody edits line 1 before the retry
+    const snapshot = JSON.stringify(sheet.data); makeDue()
+    const r = await run(sheet)
+    expect(r).toMatchObject({ exported: 0, mismatched: 1, appendedLines: 0, deadOutstanding: 1 })
+    expect(JSON.stringify(sheet.data)).toBe(snapshot)                  // not repaired, not overwritten, not appended
+    expect(sql(`select status||':'||last_error_code from order_sheet_exports`)).toBe('dead:row_content_mismatch')
+    expect(sql(`select count(*) from order_sheet_events where event = 'row_content_mismatch' and detail::text not like '%EDITADO%'`)).toBe('1')
+  })
+
+  it('an altered existing line also blocks appending the missing lines of the same order', async () => {
+    order(A, { price: 145, qty: 2, items: [['P1', 1, 95], ['P2', 1, 50]] })
+    const sheet = new FakeSheet(); await run(sheet)
+    const first = sheet.data[0]; sheet.data = [first.slice() as never]; first[HEADERS.indexOf('Vendedor')] = 'Cambiado'
+    sheet.data = [first]                                                // only line 1 present, and altered
+    sql(`update order_sheet_exports set status = 'pending', exported_lines = null, exported_at = null`)
+    const r = await run(sheet)
+    expect(r.mismatched).toBe(1); expect(sheet.data).toHaveLength(1)
+  })
+
+  it('two accounts cannot be configured with the same spreadsheet file', () => {
+    expect(() => sql(`insert into order_sheet_destinations (account_id, spreadsheet_id, enabled) values ('${B}','${SPREAD}',false)`)).toThrow(/duplicate key|unique/i)
+    sql(`insert into order_sheet_destinations (account_id, spreadsheet_id, enabled) values ('${B}','${'U'.repeat(30)}',false)`)   // a different file is fine
+    expect(() => sql(`update order_sheet_destinations set spreadsheet_id = '${SPREAD}' where account_id = '${B}'`)).toThrow(/duplicate key|unique/i)
   })
 })

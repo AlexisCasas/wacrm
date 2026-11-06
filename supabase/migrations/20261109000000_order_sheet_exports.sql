@@ -14,7 +14,9 @@ CREATE TABLE public.order_sheet_destinations (
   -- single-writer lease with a fencing token: one worker at a time appends to a given spreadsheet
   lease_token UUID,
   lease_expires_at TIMESTAMPTZ,
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- contract: one spreadsheet file per account. Two accounts can never be pointed at the same file (the lease is per account, so sharing a file would let them write in parallel).
+  CONSTRAINT order_sheet_destinations_spreadsheet_unique UNIQUE (spreadsheet_id)
 );
 
 CREATE TABLE public.order_sheet_exports (

@@ -2,6 +2,7 @@
 # PREPARED, NOT INSTALLED. Every 2 minutes: export acknowledged orders to Google Sheets (GET /api/orders/sheets-export/cron). Independent of wacrm-orders-cron.sh (InkaClick).
 # Install only with authorization:  copy to /usr/local/bin/wacrm-orders-sheets-cron.sh (0755) and add /etc/cron.d/wacrm-orders-sheets (see below). Stop: rm /etc/cron.d/wacrm-orders-sheets
 #   */2 * * * * root flock -n /var/lock/wacrm-orders-sheets.lock /usr/local/bin/wacrm-orders-sheets-cron.sh >> /var/log/wacrm-orders-sheets-cron.log 2>&1
+# Exit code != 0 (HTTP 500) means ATTENTION: a failed account, layout mismatch, altered row, dead jobs or reconciliation differences. Expected retries stay HTTP 200 (status "retrying").
 # One log line per run: counters only (no names, DNI, phones, no spreadsheet ids).
 MODE="${1:-sync}"
 CONTAINER="wacrm-app-1"

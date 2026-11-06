@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { HEADERS, KEY_COLUMN_INDEX, ProjectionError, columnLetter, limaSerial, projectOrder, toCents, type OrderInput } from './layout'
+import { HEADERS, KEY_COLUMN_INDEX, ProjectionError, columnLetter, compareRow, limaSerial, projectOrder, toCents, type OrderInput } from './layout'
 
 const base: OrderInput = {
   id: '11111111-1111-4111-8111-111111111111', account_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', confirmed_at: '2026-11-04T15:30:05.000Z',
@@ -53,4 +53,28 @@ describe('projectOrder', () => {
 describe('helpers', () => {
   it('toCents is exact', () => { expect(toCents('0.10') + toCents('0.20')).toBe(30); expect(toCents(95)).toBe(9500); expect(() => toCents('1.234')).toThrow() })
   it('columnLetter', () => { expect([0, 25, 26, 27].map(columnLetter)).toEqual(['A', 'Z', 'AA', 'AB']); expect(columnLetter(KEY_COLUMN_INDEX)).toBe('Q') })
+})
+
+describe('compareRow (regression: changes that keep quantity and price must be detected)', () => {
+  const cells = () => projectOrder(base, [], 'ts').lines[0].cells
+  const col = (n: string) => HEADERS.indexOf(n)
+  it('identical rows (even with another export timestamp and trailing blanks dropped) are equal', () => {
+    const a = cells(), b = [...a]; b[col('Exportado (UTC)')] = 'otra fecha'
+    expect(compareRow(a, b)).toEqual([])
+    expect(compareRow(a, a.slice(0, col('Precio unitario')).concat(['', 'tradicional', a[col('Cuenta')], '', a[col('Hash de fila')], 'x', 1]))).toEqual([])
+  })
+  it.each(['Producto', 'Vendedor', 'Destino', 'Agencia', 'Nombre completo', 'DNI', 'Estado de pedido', 'Cantidad', 'Precio', 'Tipo', 'Cuenta'])('detects a change in only %s', (name) => {
+    const a = cells(), b = [...a]; b[col(name)] = typeof a[col(name)] === 'number' ? (a[col(name)] as number) + 1 : 'ALTERADO'
+    expect(compareRow(a, b)).toContain(name)
+  })
+  it('detects an altered fingerprint, a shifted date and extra columns', () => {
+    const a = cells(); let b = [...a]; b[col('Hash de fila')] = 'deadbeef'; expect(compareRow(a, b)).toEqual(['Hash de fila'])
+    b = [...a]; b[col('Fecha y hora')] = (a[col('Fecha y hora')] as number) + 1 / 86400 * 60; expect(compareRow(a, b)).toEqual(['Fecha y hora'])
+    b = [...a]; b[col('Fecha y hora')] = (a[col('Fecha y hora')] as number) + 1e-9; expect(compareRow(a, b)).toEqual([])
+    expect(compareRow(a, [...a, 'sobrante'])).toEqual(['(columnas extra)'])
+  })
+  it('never returns cell values, only column names', () => {
+    const a = cells(), b = [...a]; b[col('Nombre completo')] = 'Persona Real'
+    expect(JSON.stringify(compareRow(a, b))).not.toContain('Persona')
+  })
 })

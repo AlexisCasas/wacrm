@@ -1,7 +1,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { nextAttemptDelayMs, MAX_ATTEMPTS } from '../backoff'
 import { SheetsError, type SheetsApi } from './google-client'
-import { HEADERS, KEY_COLUMN_INDEX, ProjectionError, columnLetter, projectOrder, type ItemInput, type OrderInput, type ProjectedOrder } from './layout'
+import { indexRows } from './plan'
+import { HEADERS, ProjectionError, compareRow, projectOrder, type ItemInput, type OrderInput, type ProjectedOrder } from './layout'
 
 // Sheets export worker. Order of operations is what makes it safe:
 //   discover (pull) -> take the destination lease -> claim jobs -> RE-READ the sheet -> append only the lines that are missing -> RE-READ and verify -> mark done.
@@ -18,9 +19,11 @@ export interface ExportResult {
   appendedLines: number
   retried: number
   dead: number
+  mismatched: number          // jobs quarantined because an existing row differs from its projection
+  deadOutstanding: number     // jobs currently dead for this account (needs a person), not just this run
   error?: string
 }
-export const emptyResult = (enabled: boolean): ExportResult => ({ enabled, discovered: 0, claimed: 0, exported: 0, alreadyPresent: 0, appendedLines: 0, retried: 0, dead: 0 })
+export const emptyResult = (enabled: boolean): ExportResult => ({ enabled, discovered: 0, claimed: 0, exported: 0, alreadyPresent: 0, appendedLines: 0, retried: 0, dead: 0, mismatched: 0, deadOutstanding: 0 })
 
 interface Destination { account_id: string; spreadsheet_id: string; registry_tab: string; enabled: boolean }
 interface Job { order_id: string; attempts: number }
@@ -38,12 +41,6 @@ export async function loadDestination(admin: SupabaseClient, accountId: string):
 export async function checkLayout(api: SheetsApi, d: Destination): Promise<void> {
   const header = await api.headerRow(d.spreadsheet_id, d.registry_tab)
   for (let i = 0; i < HEADERS.length; i++) if ((header[i] ?? '') !== HEADERS[i]) throw new SheetsError('layout_mismatch', true)
-}
-
-function keyCount(values: string[]): Map<string, number> {
-  const m = new Map<string, number>()
-  for (const v of values) if (v) m.set(v, (m.get(v) ?? 0) + 1)
-  return m
 }
 
 async function loadOrders(admin: SupabaseClient, ids: string[]): Promise<{ orders: Map<string, OrderInput>; items: Map<string, ItemInput[]> }> {
@@ -79,7 +76,6 @@ export async function runSheetsExport(
 
   try {
     await checkLayout(api, dest)
-    const keyCol = columnLetter(KEY_COLUMN_INDEX)
     for (let b = 0; b < (opts.maxBatches ?? 10); b++) {
       const claim = await admin.rpc('order_sheet_claim', { p_account: accountId, p_token: token, p_limit: opts.batch ?? 50, p_lock_seconds: 240, p_max_attempts: MAX_ATTEMPTS })
       if (claim.error) throw new Error(`order_sheet_claim failed: ${claim.error.message}`)
@@ -90,7 +86,7 @@ export async function runSheetsExport(
       const fail = async (job: Job, code: string, permanent: boolean, retryAfterMs?: number) => {
         const delay = Math.ceil(nextAttemptDelayMs(job.attempts, retryAfterMs, opts.random) / 1000)
         const r = await admin.rpc('order_sheet_fail', { p_order: job.order_id, p_token: token, p_code: code, p_retry_in_seconds: delay, p_permanent: permanent, p_max_attempts: MAX_ATTEMPTS })
-        if (r.data === 'dead') result.dead++; else result.retried++
+        if (r.data === 'dead') result.dead++; else if (r.data === 'pending') result.retried++
         await logEvent(admin, accountId, r.data === 'dead' ? 'job_dead' : 'job_retry', code, { attempts: job.attempts }, job.order_id)
       }
 
@@ -106,21 +102,37 @@ export async function runSheetsExport(
       if (live.length === 0) continue
 
       try {
-        const before = keyCount(await api.column(dest.spreadsheet_id, dest.registry_tab, keyCol))
-        const toWrite = live.flatMap((j) => projected.get(j.order_id)!.lines.filter((l) => !before.has(l.key)))
-        for (const j of live) if (projected.get(j.order_id)!.lines.every((l) => before.has(l.key))) result.alreadyPresent++
+        const before = indexRows(await api.rows(dest.spreadsheet_id, dest.registry_tab))
+        // An existing key must carry exactly the projected content. A divergent row is never overwritten and never counted as exported.
+        const blocked = new Map<string, string[]>()
+        for (const j of live) for (const l of projected.get(j.order_id)!.lines) {
+          const row = before.first.get(l.key)
+          if (!row) continue
+          const diffs = compareRow(l.cells, row)
+          if (diffs.length) blocked.set(j.order_id, [...(blocked.get(j.order_id) ?? []), ...diffs])
+        }
+        const writable = live.filter((j) => !blocked.has(j.order_id))
+        for (const j of live) if (blocked.has(j.order_id)) {
+          result.mismatched++
+          await logEvent(admin, accountId, 'row_content_mismatch', 'row_content_mismatch', { columns: [...new Set(blocked.get(j.order_id))] }, j.order_id)
+          await fail(j, 'row_content_mismatch', true)
+        }
+        const toWrite = writable.flatMap((j) => projected.get(j.order_id)!.lines.filter((l) => !before.first.has(l.key)))
+        for (const j of writable) if (projected.get(j.order_id)!.lines.every((l) => before.first.has(l.key))) result.alreadyPresent++
         if (toWrite.length > 0) {
           const renewed = await admin.rpc('order_sheet_renew', { p_account: accountId, p_token: token, p_lease_seconds: 240 })
           if (renewed.error || renewed.data !== true) throw new SheetsError('lease_lost', true)
           await api.append(dest.spreadsheet_id, dest.registry_tab, toWrite.map((l) => l.cells))
           result.appendedLines += toWrite.length
         }
-        const after = keyCount(await api.column(dest.spreadsheet_id, dest.registry_tab, keyCol))
-        for (const job of live) {
+        const after = indexRows(await api.rows(dest.spreadsheet_id, dest.registry_tab))
+        for (const job of writable) {
           const p = projected.get(job.order_id)!
-          const counts = p.lines.map((l) => after.get(l.key) ?? 0)
-          if (counts.some((c) => c > 1)) { await logEvent(admin, accountId, 'duplicate_detected', 'duplicate_key', {}, job.order_id); await fail(job, 'duplicate_key', true); continue }
-          if (counts.some((c) => c === 0)) { await fail(job, 'verify_missing', false); continue }
+          const present = p.lines.map((l) => after.count.get(l.key) ?? 0)
+          if (present.some((c) => c > 1)) { await logEvent(admin, accountId, 'duplicate_detected', 'duplicate_key', {}, job.order_id); await fail(job, 'duplicate_key', true); continue }
+          if (present.some((c) => c === 0)) { await fail(job, 'verify_missing', false); continue }
+          const bad = p.lines.flatMap((l) => compareRow(l.cells, after.first.get(l.key)!))
+          if (bad.length) { result.mismatched++; await logEvent(admin, accountId, 'row_content_mismatch', 'row_content_mismatch', { columns: [...new Set(bad)] }, job.order_id); await fail(job, 'row_content_mismatch', true); continue }
           const ok = await admin.rpc('order_sheet_complete', { p_order: job.order_id, p_token: token, p_lines: p.lines.length, p_units: p.units, p_total: p.totalCents / 100 })
           if (ok.error || ok.data !== true) throw new SheetsError('lease_lost', true)
           result.exported++
@@ -140,5 +152,7 @@ export async function runSheetsExport(
   } finally {
     await admin.rpc('order_sheet_release', { p_account: accountId, p_token: token })
   }
+  const dead = await admin.from('order_sheet_exports').select('order_id', { count: 'exact', head: true }).eq('account_id', accountId).eq('status', 'dead')
+  result.deadOutstanding = dead.count ?? 0
   return result
 }

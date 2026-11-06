@@ -130,3 +130,23 @@ export function columnLetter(index: number): string {
   return s
 }
 export const quoteTab = (name: string): string => `'${name.replace(/'/g, "''")}'`
+
+// Deterministic comparison of a sheet row against its projection. Returns the HEADER NAMES of the columns that differ (never values: they can be personal data).
+// 'Exportado (UTC)' is the only column allowed to differ (it records when the row was written).
+const EXPORTED_AT = HEADERS.indexOf('Exportado (UTC)')
+const blank = (v: Cell | undefined): boolean => v === undefined || v === null || v === ''
+// Numbers compare with a tolerance far below one second (5.8e-6 days) so a serial date survives a round trip through Sheets; text compares exactly.
+const same = (a: Cell | undefined, b: Cell | undefined): boolean => {
+  if (blank(a) || blank(b)) return blank(a) && blank(b)
+  if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) < 1e-6
+  return String(a) === String(b)
+}
+export function compareRow(expected: Cell[], actual: Cell[]): string[] {
+  const diffs: string[] = []
+  for (let i = 0; i < HEADERS.length; i++) {
+    if (i === EXPORTED_AT) continue
+    if (!same(expected[i], actual[i])) diffs.push(HEADERS[i])
+  }
+  if (actual.length > HEADERS.length && actual.slice(HEADERS.length).some((v) => !blank(v))) diffs.push('(columnas extra)')
+  return diffs
+}
