@@ -91,9 +91,10 @@ export function WhatsappUsageWidget() {
           value={formatCost(
             data.summary.estimatedCost,
             data.currency,
-            t('costUnavailable')
+            t('costUnavailable'),
+            2
           )}
-          hint={data.currency ? data.currency : t('noCurrency')}
+          hint={data.currency ?? undefined}
           icon={BadgeDollarSign}
         />
         <UsageMetric
@@ -263,15 +264,17 @@ function formatCount(value: number): string {
   return new Intl.NumberFormat().format(value);
 }
 
+// `maxFractionDigits` only shortens what is DISPLAYED (the summary card shows 2 decimals); the value Meta returned is never changed.
 function formatCost(
   value: number | null,
   currency: string | null,
-  unavailable: string
+  unavailable: string,
+  maxFractionDigits = 6
 ): string {
   if (value === null) return unavailable;
   const amount = new Intl.NumberFormat(undefined, {
     minimumFractionDigits: 2,
-    maximumFractionDigits: 6,
+    maximumFractionDigits: maxFractionDigits,
   }).format(value);
   return currency ? `${amount} ${currency}` : amount;
 }

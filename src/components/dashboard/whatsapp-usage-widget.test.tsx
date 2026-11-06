@@ -85,12 +85,45 @@ describe('WhatsappUsageWidget', () => {
     expect(screen.getByText('73')).toBeInTheDocument();
     expect(screen.getByText('2.19')).toBeInTheDocument();
     expect(screen.getByText('101,389')).toBeInTheDocument();
-    expect(screen.getByText('noCurrency')).toBeInTheDocument();
+    // no currency is invented and the old "Meta did not report the currency" hint is gone from the card
+    expect(screen.queryByText('noCurrency')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'viewDetail' }));
     expect(await screen.findByText('detailTitle')).toBeInTheDocument();
     expect(screen.getByText('REGULAR')).toBeInTheDocument();
     expect(screen.getByText('SERVICE')).toBeInTheDocument();
+  });
+
+  it.each([
+    [40.4803, '40.48'],
+    [2.19, '2.19'],
+    [0, '0.00'],
+    [40.4851, '40.49'],
+    [1234.5, '1,234.50'],
+  ])('the cost card shows %s as %s (2 decimals, no currency)', async (cost, shown) => {
+    vi.mocked(fetch).mockReturnValue(
+      jsonResponse({ ...READY, summary: { ...READY.summary, estimatedCost: cost }, breakdown: [] })
+    );
+    renderWidget();
+    await screen.findByText('paidMessages');
+    const card = screen.getByText('estimatedCost').closest('div')!.parentElement as HTMLElement;
+    expect(card).toHaveTextContent(shown);
+    expect(card.textContent).not.toMatch(/USD|PEN|S\/|\$/);
+    expect(card.textContent).not.toMatch(/noCurrency/);
+  });
+
+  it('the detail table keeps the full precision Meta returned', async () => {
+    vi.mocked(fetch).mockReturnValue(
+      jsonResponse({
+        ...READY,
+        summary: { ...READY.summary, estimatedCost: 40.4803 },
+        breakdown: [{ pricingType: 'REGULAR', category: 'SERVICE', volume: 5, cost: 40.4803 }],
+      })
+    );
+    renderWidget();
+    await screen.findByText('paidMessages');
+    fireEvent.click(screen.getByRole('button', { name: 'viewDetail' }));
+    expect(await screen.findByText('40.4803')).toBeInTheDocument();
   });
 
   it('renders a valid zero/empty state', async () => {
