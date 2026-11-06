@@ -145,6 +145,22 @@ describe('WhatsappUsageWidget', () => {
     expect(card.textContent).not.toContain('USD');
   });
 
+  it('every metric card explains itself with a discreet secondary line', async () => {
+    vi.mocked(fetch).mockReturnValue(jsonResponse(READY));
+    renderWidget();
+    await screen.findByText('paidMessages');
+    for (const [label, hint] of [
+      ['paidMessages', 'paidMessagesHint'],
+      ['estimatedCost', 'estimatedCostHint'],
+      ['freeCustomerService', 'freeCustomerServiceHint'],
+      ['freeEntryPoint', 'freeEntryPointHint'],
+    ]) {
+      const card = screen.getByText(label).closest('div')!.parentElement as HTMLElement;
+      expect(card).toContainElement(screen.getByText(hint));
+      expect(screen.getByText(hint)).toHaveClass('text-muted-foreground', 'text-xs');
+    }
+  });
+
   it('renders a valid zero/empty state', async () => {
     vi.mocked(fetch).mockReturnValue(
       jsonResponse({

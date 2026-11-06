@@ -85,6 +85,7 @@ export function WhatsappUsageWidget() {
         <UsageMetric
           label={t('paidMessages')}
           value={formatCount(data.summary.paidMessages)}
+          hint={t('paidMessagesHint')}
           icon={BadgeDollarSign}
         />
         <UsageMetric
@@ -94,16 +95,19 @@ export function WhatsappUsageWidget() {
             data.currency,
             t('costUnavailable')
           )}
+          hint={t('estimatedCostHint')}
           icon={BadgeDollarSign}
         />
         <UsageMetric
           label={t('freeCustomerService')}
           value={formatCount(data.summary.freeCustomerService)}
+          hint={t('freeCustomerServiceHint')}
           icon={Gift}
         />
         <UsageMetric
           label={t('freeEntryPoint')}
           value={formatCount(data.summary.freeEntryPoint)}
+          hint={t('freeEntryPointHint')}
           icon={MousePointerClick}
         />
       </div>
