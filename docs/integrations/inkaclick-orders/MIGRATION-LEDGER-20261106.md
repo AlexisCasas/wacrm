@@ -69,3 +69,38 @@ Resultado documentado tras migración: tabla existente, MD5 `a2bd25dd51bd5a7b8e7
 El despliegue del código **no constituye autorización de activación** de Keyler. La habilitación puntual de `multiproduct_enabled` requiere una validación de interfaz y un paso independiente, ya que el envío a InkaClick está activo.
 
 Este cambio al ledger es únicamente documental y no requiere reconstruir ni redeplegar la imagen de producción.
+
+
+## Activación exclusiva de Keyler — 2026-11-06, 13:06:20.745 UTC
+
+**Estado operativo comunicado:** el wrapper transaccional de activación de Keyler terminó con \`ACTIVATION CHECKS PASSED\`, \`COMMIT\` y código 0. Una segunda sesión verificó que **solo la cuenta de Keyler** tiene \`multiproduct_enabled = TRUE\`. No se modificaron \`enabled\` ni \`confirm_enabled\`, que permanecen en \`TRUE\`. Se actualizó únicamente \`multiproduct_enabled\` y \`updated_at\` de una fila. No hubo cambios en otras cuentas, permisos, Flows ni en la configuración de InkaClick.
+
+| Control | Resultado reportado |
+|---|---|
+| Revalidación previa al COMMIT | 7/7 PASS |
+| Tabla \`order_integration_settings\` | Una fila cambiada; una sola cuenta con multiproducto habilitado |
+| Versión de función \`create_order_confirmation\` | MD5 \`a2bd25dd51bd5a7b8e715935e4f121ae\` |
+| Imagen desplegada | \`wacrm-app:multiproduct-c2d03f16\`, healthy, 0 reinicios |
+| Pedidos antes y después de activar | 219 → 219, misma huella MD5 |
+| Líneas \`order_confirmation_items\` | 0 → 0 |
+| Entregas anteriores | 217 → 217 |
+| Cron de InkaClick | 3/3 respuestas 200 tras la activación, sin rechazos nuevos |
+| Flows, automatizaciones y mensajes | Operativos, sin regresión atribuida a la activación |
+
+**Precisiones históricas:** los 10 pedidos adicionales respecto de los 209 registrados tras el despliegue fueron confirmaciones tradicionales legítimas **antes** de activar el interruptor. Las cifras del bloque anterior siguen siendo el corte correspondiente al momento del despliegue, no una fotografía actual. Los contadores de pedidos, mensajes y Flows pueden seguir variando por operación comercial normal.
+
+### QA funcional pendiente
+
+La activación del flag **no equivale al cierre funcional**. Falta revisar desde una sesión de asesor de Keyler, **sin confirmar pedidos**: aparición del editor tras recargar, cambio entre modo tradicional y multiproducto, añadir/editar/eliminar líneas, cantidades/precios/subtotales, sugerencias del catálogo y escritura manual, validación y vista previa. No pulsar el botón final \`Confirmar pedido\`: la entrega real a InkaClick está habilitada.
+
+El monitoreo de solo lectura y el guion de QA están en el servidor, bajo \`/opt/backups/wacrm/multiproduct-c2d03f16-deploy/keyler-activation/\`. No publicar aquí secretos, credenciales ni datos de clientes.
+
+### Rollback funcional
+
+Si la funcionalidad presenta un problema, el procedimiento probado revierte **solo** \`multiproduct_enabled\` para Keyler sin modificar \`enabled\` ni \`confirm_enabled\`:
+
+```bash
+MODE=commit CONFIRM=yes /opt/backups/wacrm/multiproduct-c2d03f16-deploy/keyler-activation/keyler-multiproduct.sh rollback
+```
+
+Revisar el estado real antes de repetir cualquier comando que haya devuelto resultado incierto. Este rollback no elimina pedidos existentes ni revierte el esquema.
