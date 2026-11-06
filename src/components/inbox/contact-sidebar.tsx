@@ -353,7 +353,7 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated, onContact
           </div>
 
           {/* Where the customer came from (Meta ad attribution) */}
-          <ContactAdOrigin key={contact.id} contactId={contact.id} />
+          <ContactAdOrigin key={`ad-origin:${contact.id}`} contactId={contact.id} />
 
           {/* Divider */}
           <div className="my-4 border-t border-border" />
