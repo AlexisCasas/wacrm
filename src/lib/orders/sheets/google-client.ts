@@ -37,6 +37,7 @@ export interface SheetsApi {
   headerRow(spreadsheetId: string, tab: string): Promise<string[]>
   column(spreadsheetId: string, tab: string, colLetter: string): Promise<string[]>
   rows(spreadsheetId: string, tab: string): Promise<Cell[][]>
+  writeRange(spreadsheetId: string, tab: string, a1: string, values: Cell[][]): Promise<void>
   append(spreadsheetId: string, tab: string, rows: Cell[][]): Promise<void>
 }
 
@@ -116,6 +117,14 @@ export class GoogleSheetsClient implements SheetsApi {
     const res = await this.api(`/v4/spreadsheets/${encodeURIComponent(id)}/values/${range}?majorDimension=ROWS&valueRenderOption=UNFORMATTED_VALUE`)
     const json = (await res.json()) as { values?: Cell[][] }
     return json.values ?? []
+  }
+
+  // Overwrites a small fixed range (used only for the server-written cells of the control tab). RAW: text stays text, numbers stay numbers.
+  async writeRange(id: string, tab: string, a1: string, values: Cell[][]): Promise<void> {
+    const range = encodeURIComponent(`${quoteTab(tab)}!${a1}`)
+    await this.api(`/v4/spreadsheets/${encodeURIComponent(id)}/values/${range}?valueInputOption=RAW`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ majorDimension: 'ROWS', values }),
+    })
   }
 
   private sheetIds = new Map<string, number>()

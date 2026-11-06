@@ -4,11 +4,14 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { GoogleSheetsClient, readGoogleCredentials } from '@/lib/orders/sheets/google-client'
 import { runSheetsExport } from '@/lib/orders/sheets/exporter'
 import { reconcileAccount } from '@/lib/orders/sheets/reconcile'
+import { publishControl } from '@/lib/orders/sheets/control'
+import { loadDestination } from '@/lib/orders/sheets/exporter'
 import { classifyExport, classifyReconcile, overall, type AccountOutcome } from '@/lib/orders/sheets/status'
 
 // Google Sheets export tick. Independent of the InkaClick outbox (/api/orders/cron): a failure here never touches an order or its delivery.
 // Global switch: without ORDERS_SHEETS_EXPORT_ENABLED=true plus the service-account env vars it does nothing. Per account: order_sheet_destinations.enabled.
-//   GET ?mode=sync (default)  export due orders        GET ?mode=reconcile  read-only DB<->sheet comparison (aggregates and order ids only)
+//   GET ?mode=sync (default)  export due orders        GET ?mode=reconcile  DB<->sheet comparison (aggregates and order ids only); it also writes the
+//   figures of the pass to the sheet's control tab (never anywhere else); ?publish=0 keeps it strictly read-only.
 export async function GET(request: Request) {
   const expected = process.env.AUTOMATION_CRON_SECRET
   if (!expected) return NextResponse.json({ error: 'cron not configured' }, { status: 503 })
@@ -37,6 +40,11 @@ export async function GET(request: Request) {
         }
         else {
           const r = await reconcileAccount(admin, api, account_id)
+          // Publish the figures to the control tab (default). The sheet's status turns SIN CONCILIAR / VENCIDA if this stops happening.
+          if (new URL(request.url).searchParams.get('publish') !== '0') {
+            const dest = await loadDestination(admin, account_id)
+            if (dest) await publishControl(api, dest.spreadsheet_id, r, Date.now())
+          }
           outcomes.push({ account: account_id, ...classifyReconcile(r) })
           accounts[account_id] = { ...r, missingKeys: r.missingKeys.slice(0, 20), extraKeys: r.extraKeys.slice(0, 20), duplicateKeys: r.duplicateKeys.slice(0, 20), lineMismatches: r.lineMismatches.slice(0, 20), contentMismatches: r.contentMismatches.slice(0, 20) }
         }

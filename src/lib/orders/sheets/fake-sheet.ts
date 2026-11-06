@@ -8,9 +8,15 @@ export class FakeSheet implements SheetsApi {
   data: Cell[][] = []
   fault: Fault = 'none'
   appends = 0
+  written: { tab: string; a1: string; values: Cell[][] }[] = []
+  failWrite = false
   async headerRow(): Promise<string[]> { return this.header }
   async column(): Promise<string[]> { return this.data.map((r) => String(r[KEY_COLUMN_INDEX] ?? '')) }
   async rows(): Promise<Cell[][]> { return this.data.map((r) => [...r]) }
+  async writeRange(_id: string, tab: string, a1: string, values: Cell[][]): Promise<void> {
+    if (this.failWrite) throw new SheetsError('google_5xx', true, 503)
+    this.written.push({ tab, a1, values: values.map((r) => [...r]) })
+  }
   async append(_id: string, _tab: string, rows: Cell[][]): Promise<void> {
     this.appends++
     if (this.fault === 'always_503') throw new SheetsError('google_5xx', true, 503)
