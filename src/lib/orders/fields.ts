@@ -1,5 +1,7 @@
 // "Confirmar pedido": validation and normalisation of the 13 business fields. Pure, no I/O.
 import { validateOrderItems, type OrderItem } from './items'
+import { normalizePrice } from './money'
+export { normalizePrice } from './money'
 //
 // Evidence behind what is required (InkaClick `confirmed_orders`, 4 054 orders, 2026-10-31):
 //   * DNI is empty in 0.4 % and not 8 digits in 2.9 %: optional, with a warning (InkaClick only links a customer DNI when it has 8 digits).
@@ -67,16 +69,6 @@ export function normalizePeruPhone(raw: unknown): string | null {
 }
 
 /** "150", "150.5", "150,50" -> "150.50". Rejects <= 0, more than two decimals, thousands separators and anything non numeric. */
-export function normalizePrice(raw: unknown): string | null {
-  const s = typeof raw === 'number' ? String(raw) : text(raw).replace(',', '.')
-  const m = /^(\d{1,7})(?:\.(\d{1,2}))?$/.exec(s)
-  if (!m) return null
-  const whole = m[1].replace(/^0+(?=\d)/, '')
-  const fraction = (m[2] ?? '').padEnd(2, '0')
-  if (Number(whole) === 0 && Number(fraction) === 0) return null
-  return `${whole}.${fraction}`
-}
-
 export function validateOrderInput(input: OrderInput): OrderValidation {
   const errors: OrderValidation['errors'] = {}
   const warnings: OrderValidation['warnings'] = {}
