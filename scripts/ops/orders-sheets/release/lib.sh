@@ -20,6 +20,8 @@ SA_JSON=/root/.config/wacrm-secrets/google-sa.json
 ENV_FILE=/opt/apps/wacrm/.env.local
 TABLES="order_sheet_destinations order_sheet_exports order_sheet_exclusions order_sheet_events"
 FUNCS="order_sheet_enqueue order_sheet_acquire order_sheet_renew order_sheet_release order_sheet_claim order_sheet_complete order_sheet_fail order_sheet_requeue"
+APPLY_SIG='public.apply_whatsapp_message_status(uuid,text,text,timestamptz)'
+STATUS_FNS="apply_whatsapp_message_status','whatsapp_status_can_advance','whatsapp_status_rank"
 MAX_BACKUP_AGE_MIN=720
 COMPOSE_BASE="-p wacrm -f /opt/apps/wacrm/docker-compose.yml -f /opt/apps/wacrm/docker-compose.prod.yml -f /opt/apps/wacrm/docker-compose.bsuid-vars.yml"
 DBC=supabase-db
@@ -34,3 +36,4 @@ tbl_count() { RO "select count(*) from pg_tables where schemaname='public' and t
 fn_count()  { RO "select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'order_sheet%'"; }
 # Calls the cron endpoint of the running app from inside the container (credentials never leave the container's environment). Prints "HTTP <status> <first 600 chars>".
 cron_call() { docker exec -e MODE="$1" wacrm-app-1 node -e "fetch('http://127.0.0.1:3000/api/orders/sheets-export/cron?mode='+process.env.MODE,{headers:{'x-cron-secret':process.env.AUTOMATION_CRON_SECRET},signal:AbortSignal.timeout(140000)}).then(async r=>{const t=await r.text();console.log('HTTP '+r.status+' '+t.slice(0,600))}).catch(e=>console.log('ERR '+e.name))"; }
+sfn_count() { RO "select count(*) from pg_proc where proname in ('$STATUS_FNS')"; }
