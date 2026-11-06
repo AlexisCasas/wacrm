@@ -7,6 +7,7 @@ import { resolveInboundIdentity } from '@/lib/whatsapp/resolve-sender-identity'
 import { resolveInboundContact } from '@/lib/contacts/resolve-identity'
 import { pairContact } from '@/lib/whatsapp/pair-contact'
 import { messageRef } from '@/lib/whatsapp/message-ref'
+import { normalizeMetaStatus, parseMetaTimestamp } from '@/lib/whatsapp/message-status'
 import { auditExternalEventHeld, externalEventsHeldForContact } from '@/lib/webhooks/pilot-hold'
 import { isBsuidPilotEnabledWithScopes } from '@/lib/whatsapp/bsuid-pilot'
 import { bsuidFlowScope, getDbPilotScopes } from '@/lib/whatsapp/bsuid-flow-auth'
@@ -306,10 +307,14 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
         console.log('[webhook] payload shape', JSON.stringify({ field: change.field, shape: describeShape(value) }))
       }
 
-      // Handle status updates
-      if (value.statuses) {
-        for (const status of value.statuses) {
-          await handleStatusUpdate(status)
+      // Handle status updates. The account is derived from the business number named in the signed payload (exactly like inbound
+      // messages below) and EVERY write is scoped to it: `messages.message_id` is not unique across accounts.
+      if (value.statuses?.length) {
+        const statusAccountId = await resolveStatusAccountId(value.metadata?.phone_number_id)
+        if (statusAccountId) {
+          for (const status of value.statuses) {
+            await handleStatusUpdate(status, statusAccountId)
+          }
         }
       }
 
@@ -387,130 +392,84 @@ async function processWebhook(body: { entry?: WhatsAppWebhookEntry[] }) {
   }
 }
 
-// The happy-path status ladder — pending → sent → delivered → read →
-// replied. Webhook replays must never regress a recipient back down
-// this ladder.
-//
-// `failed` is NOT on this ladder. It's a terminal side branch that is
-// only valid from the early states (pending / sent) — once Meta has
-// delivered or the user has read or replied, a later "failed" status
-// event is a bug in Meta's pipeline or a spoof attempt and must be
-// ignored.
-const RECIPIENT_STATUS_LADDER = [
-  'pending',
-  'sent',
-  'delivered',
-  'read',
-  'replied',
-] as const
+/**
+ * Which account owns the business number a status event is about. Same rule as the inbound branch: `whatsapp_config.phone_number_id` is
+ * UNIQUE, so exactly one row is expected; zero or several mean the event cannot be attributed and NOTHING is written or notified.
+ * Never logs a customer identifier (only the business number id, as the inbound branch already does).
+ */
+async function resolveStatusAccountId(phoneNumberId: unknown): Promise<string | null> {
+  if (typeof phoneNumberId !== 'string' || phoneNumberId === '') {
+    console.error('[webhook] status event not applied: payload carries no phone_number_id')
+    return null
+  }
+  const { data: rows, error } = await supabaseAdmin()
+    .from('whatsapp_config')
+    .select('account_id')
+    .eq('phone_number_id', phoneNumberId)
+  if (error) {
+    console.error('[webhook] status event not applied: whatsapp_config lookup failed', { phone_number_id: phoneNumberId, code: error.code })
+    return null
+  }
+  if (!rows || rows.length === 0) {
+    console.error('[webhook] status event not applied: no whatsapp_config for phone_number_id', { phone_number_id: phoneNumberId })
+    return null
+  }
+  if (rows.length > 1) {
+    console.error('[webhook] status event not applied: phone_number_id is claimed by more than one account', {
+      phone_number_id: phoneNumberId,
+      configs: rows.length,
+    })
+    return null
+  }
+  return (rows[0] as { account_id: string }).account_id
+}
 
-function ladderLevel(s: string): number {
-  const idx = (RECIPIENT_STATUS_LADDER as readonly string[]).indexOf(s)
-  return idx < 0 ? -1 : idx
+interface AppliedMessageStatus {
+  r_message_id: string
+  r_conversation_id: string
+  r_contact_id: string | null
+  r_previous_status: string | null
+  r_new_status: string
 }
 
 /**
- * Can a recipient transition from `current` to `incoming`?
- *   - Along the ladder, only forward moves are allowed.
- *   - `failed` is accepted only from `pending` or `sent`; it's refused
- *     once the recipient has reached any of the success states.
+ * Apply one Meta status event. The write is a single database call (`apply_whatsapp_message_status`, migration 20261108000000) that is
+ *   - scoped to `accountId` (messages through their conversation, broadcast recipients through their broadcast),
+ *   - forward-only and atomic (a late, replayed or concurrent event can never move a status backwards; `failed` only from the early states
+ *     and terminal afterwards), and
+ *   - applied to outbound rows only.
+ * External subscribers are notified only for rows that really changed, always on `accountId`.
  */
-function isValidStatusTransition(current: string, incoming: string): boolean {
-  if (incoming === 'failed') {
-    return current === 'pending' || current === 'sent'
-  }
-  if (current === 'failed') {
-    return false // failed is terminal
-  }
-  const ci = ladderLevel(current)
-  const ii = ladderLevel(incoming)
-  if (ii < 0) return false // unknown incoming status
-  if (ci < 0) return true // unknown current — accept anything on the ladder
-  return ii > ci
-}
-
-async function handleStatusUpdate(status: WhatsAppWebhookStatus) {
-  // 1) Mirror onto messages (legacy behavior) — Meta's status values
-  //    already match the CHECK constraint on messages.status. No
-  //    `.select()`: message_id is NOT unique (migration 009 — Meta ids
-  //    repeat across numbers), so this updates 0..N rows and must not
-  //    assume a single row.
-  const { error: msgErr } = await supabaseAdmin()
-    .from('messages')
-    .update({ status: status.status })
-    .eq('message_id', status.id)
-
-  if (msgErr) {
-    console.error('Error updating message status:', msgErr)
+async function handleStatusUpdate(status: WhatsAppWebhookStatus, accountId: string) {
+  const normalized = normalizeMetaStatus(status.status)
+  if (!normalized) {
+    // e.g. a value Meta adds later. Ignored on purpose; the raw value is capped and printable-only.
+    console.warn('[webhook] status event ignored: unsupported status', { status: String(status.status).replace(/[^\w.-]/g, '').slice(0, 24) })
+    return
   }
 
-  // Webhook fan-out for this status change happens at the END of this
-  // handler (after the broadcast mirror below), so a slow subscriber
-  // endpoint can't delay the broadcast_recipients update.
+  const { data, error } = await supabaseAdmin().rpc('apply_whatsapp_message_status', {
+    p_account_id: accountId,
+    p_wamid: status.id,
+    p_status: normalized,
+    p_event_at: parseMetaTimestamp(status.timestamp)?.toISOString() ?? null,
+  })
+  if (error) {
+    // Deliberately NOT the whole error object: its `details` can echo a full message row (text, URLs).
+    console.error('Error applying message status:', { code: error.code, message: error.message, message_ref: messageRef(status.id) })
+    return
+  }
 
-  // 2) Mirror onto broadcast_recipients via whatsapp_message_id
-  //    (added in migration 003). The aggregate trigger on
-  //    broadcast_recipients re-derives the parent broadcast's
-  //    sent/delivered/read/failed counts automatically.
-  const tsIso = new Date(parseInt(status.timestamp) * 1000).toISOString()
-
-  const { data: recipient, error: recFetchErr } = await supabaseAdmin()
-    .from('broadcast_recipients')
-    .select('id, status')
-    .eq('whatsapp_message_id', status.id)
-    .maybeSingle()
-
-  if (recFetchErr) {
-    console.error('Error fetching broadcast recipient:', recFetchErr)
-  } else if (
-    recipient &&
-    // Guard transitions — forward-only on the success ladder, and
-    // `failed` only from pre-delivered states.
-    isValidStatusTransition(recipient.status, status.status)
-  ) {
-    const update: Record<string, unknown> = { status: status.status }
-    if (status.status === 'sent' && !('sent_at' in update)) update.sent_at = tsIso
-    if (status.status === 'delivered') update.delivered_at = tsIso
-    if (status.status === 'read') update.read_at = tsIso
-
-    const { error: recUpdateErr } = await supabaseAdmin()
-      .from('broadcast_recipients')
-      .update(update)
-      .eq('id', recipient.id)
-
-    if (recUpdateErr) {
-      console.error('Error updating broadcast recipient status:', recUpdateErr)
+  for (const row of (data ?? []) as AppliedMessageStatus[]) {
+    if (await externalEventsHeldForContact(supabaseAdmin(), accountId, row.r_contact_id ?? undefined)) {
+      await auditExternalEventHeld(supabaseAdmin(), accountId, row.r_contact_id ?? undefined, 'message.status_updated')
+      continue
     }
-  }
-
-  // 3) Webhook fan-out for messages we store (inbox / API sends).
-  //    Runs last so a slow subscriber can't delay the mirrors above.
-  //    Bounded to one row (message_id isn't unique) purely to resolve
-  //    the owning account for delivery.
-  const { data: msgRow } = await supabaseAdmin()
-    .from('messages')
-    .select('conversation_id, conversations(account_id, contact_id)')
-    .eq('message_id', status.id)
-    .limit(1)
-    .maybeSingle()
-
-  if (msgRow) {
-    const conv = msgRow.conversations as { account_id: string; contact_id?: string } | null
-    const accountId = conv?.account_id
-    if (accountId && (await externalEventsHeldForContact(supabaseAdmin(), accountId, conv?.contact_id))) {
-      await auditExternalEventHeld(supabaseAdmin(), accountId, conv?.contact_id, 'message.status_updated')
-    } else if (accountId) {
-      await dispatchWebhookEvent(
-        supabaseAdmin(),
-        accountId,
-        'message.status_updated',
-        {
-          whatsapp_message_id: status.id,
-          conversation_id: msgRow.conversation_id,
-          status: status.status,
-        }
-      )
-    }
+    await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.status_updated', {
+      whatsapp_message_id: status.id,
+      conversation_id: row.r_conversation_id,
+      status: row.r_new_status,
+    })
   }
 }
 

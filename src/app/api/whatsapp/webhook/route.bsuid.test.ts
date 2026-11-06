@@ -212,6 +212,8 @@ describe('webhook: events without a usable identity', () => {
 
 describe('webhook: status events for a BSUID recipient', () => {
   it('are accepted without recipient_id and update the message by its id only', async () => {
+    // A message belongs to a conversation of the account (the write is scoped through it).
+    h.db.tables.conversations.push({ id: 'c1', account_id: ACC_A, contact_id: 'ct-1' })
     h.db.tables.messages.push({ id: 'm1', conversation_id: 'c1', message_id: 'wamid.OUT1', status: 'sent', sender_type: 'bot' })
     const body = { entry: [{ id: 'waba', changes: [{ field: 'messages', value: { metadata: { phone_number_id: PN_A }, statuses: [{ id: 'wamid.OUT1', status: 'delivered', timestamp: '1700000002', recipient_user_id: BSUID }], contacts: [{ user_id: BSUID }] } }] }] }
     await run({ text: async () => JSON.stringify(body), headers: { get: () => 'sha256=stub' } } as unknown as Request)
