@@ -63,8 +63,9 @@ export async function POST(request: Request) {
     if (error) {
       // Switched off for this account, or the confirmer lacks the role (also enforced here, in SQL, as a second layer).
       if (error.code === '42501') {
-        const off = error.message === 'feature_disabled'
-        return NextResponse.json({ error: off ? 'feature_disabled' : 'forbidden' }, { status: 403 })
+        const code = error.message === 'feature_disabled' ? 'feature_disabled'
+          : error.message === 'multiproduct_disabled' ? 'multiproduct_disabled' : 'forbidden'
+        return NextResponse.json({ error: code }, { status: 403 })
       }
       // Ownership / seller violations are the caller's mistake (and must not reveal other accounts); everything else is ours.
       const client = error.code === '22023' || /does not belong|not a member/.test(error.message)
