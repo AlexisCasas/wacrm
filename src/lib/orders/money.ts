@@ -1,7 +1,7 @@
 // One shared price validator, used by legacy and multiproduct orders.
 // Preserve previous currency syntax and rounding rules.
 export function normalizePrice(raw: unknown): string | null {
-  const s = typeof raw === 'number' ? String(raw) : text(raw).replace(',', '.')
+  const s = typeof raw === 'number' ? String(raw) : typeof raw === 'string' ? raw.replace(/\r\n/g, '\n').trim().replace(',', '.') : ''
   const m = /^(\d{1,7})(?:\.(\d{1,2}))?$/.exec(s)
   if (!m) return null
   const whole = m[1].replace(/^0+(?=\d)/, '')
