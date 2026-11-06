@@ -3,6 +3,7 @@
 import { ContactPhoneLine } from "@/components/contacts/contact-phone-line";
 import { InboxContactFields } from "./contact-fields-editor";
 import { ContactAutomationToggle } from "./contact-automation-toggle";
+import { ContactAdOrigin } from "./contact-ad-origin";
 import { contactLabel, hasPhone } from "@/lib/contacts/display";
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { createClient } from "@/lib/supabase/client";
@@ -350,6 +351,9 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated, onContact
               </div>
             )}
           </div>
+
+          {/* Where the customer came from (Meta ad attribution) */}
+          <ContactAdOrigin key={contact.id} contactId={contact.id} />
 
           {/* Divider */}
           <div className="my-4 border-t border-border" />

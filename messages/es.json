@@ -464,6 +464,16 @@
       "send": "Enviar plantilla"
     },
     "sidebar": {
+      "originTitle": "Origen del cliente",
+      "originMetaAd": "Publicidad en Meta",
+      "originAd": "Anuncio",
+      "originEntry": "Entrada",
+      "originEntryValue": "Click a WhatsApp",
+      "originPlatform": "Plataforma",
+      "originViewAd": "Ver anuncio",
+      "originNone": "Sin atribución de anuncio",
+      "originFacebook": "Facebook",
+      "originInstagram": "Instagram",
       "fieldsTitle": "Datos del contacto",
       "fieldsStandard": "Datos estándar",
       "fieldsCustom": "Campos personalizados",

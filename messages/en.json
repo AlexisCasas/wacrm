@@ -464,6 +464,16 @@
       "send": "Send template"
     },
     "sidebar": {
+      "originTitle": "Customer origin",
+      "originMetaAd": "Meta ad",
+      "originAd": "Ad",
+      "originEntry": "Entry",
+      "originEntryValue": "Click to WhatsApp",
+      "originPlatform": "Platform",
+      "originViewAd": "View ad",
+      "originNone": "No ad attribution",
+      "originFacebook": "Facebook",
+      "originInstagram": "Instagram",
       "fieldsTitle": "Contact fields",
       "fieldsStandard": "Standard details",
       "fieldsCustom": "Custom fields",

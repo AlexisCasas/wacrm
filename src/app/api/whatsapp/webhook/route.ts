@@ -21,6 +21,8 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { captureAdAttribution } from '@/lib/whatsapp/ad-attribution'
+import type { AdReferral } from '@/lib/whatsapp/ad-referral'
 import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
@@ -86,6 +88,8 @@ interface WhatsAppMessage {
   button?: { text?: string; payload?: string }
   /** Present when the customer swipe-replies to one of our messages. */
   context?: { id: string }
+  /** Click-to-WhatsApp ad that opened the conversation (see lib/whatsapp/ad-referral.ts). Only on the first message of an ad click. */
+  referral?: AdReferral
 }
 
 /** Every field is optional in Meta's contract: a user with a username has no `wa_id`, and no profile at all is possible. */
@@ -858,6 +862,11 @@ async function processMessage(
       hasPhone(contactRecord) ? message.id : messageRef(message.id)
     )
     return
+  }
+
+  // Ad attribution ("Origen del cliente"). Additive and isolated: only on a genuine first insert, never throws, never changes how the message is processed.
+  if (message.referral) {
+    await captureAdAttribution(supabaseAdmin(), { accountId, contactId: contactRecord.id, referral: message.referral })
   }
 
   // Update conversation. The unread bump is done DB-side (migration 037's
