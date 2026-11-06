@@ -196,7 +196,7 @@ BEGIN
       )
       SELECT v_id, p_account, j.ord::SMALLINT,
              NULLIF(j.obj->>'catalog_product_id', '')::UUID,
-             j.obj->>'product_name',
+             btrim(j.obj->>'product_name'),
              (j.obj->>'quantity')::INTEGER,
              (j.obj->>'unit_price')::NUMERIC(12,2)
         FROM jsonb_array_elements(v_items) WITH ORDINALITY AS j(obj, ord);
