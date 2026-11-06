@@ -6,6 +6,7 @@ const settingsRead = vi.fn();
 const productsRead = vi.fn();
 const queriedAccounts = vi.fn();
 const queriedProducts = vi.fn();
+const searchedProductNames = vi.fn();
 
 vi.mock("@/lib/auth/account", () => ({
   requireRole: (...args: unknown[]) => requireRole(...args),
@@ -22,7 +23,7 @@ vi.mock("@/lib/flows/admin-client", () => ({
       : { select: () => {
         const chain = {
           eq: (...args: unknown[]) => { queriedProducts(...args); return chain; },
-          ilike: () => chain,
+          ilike: (...args: unknown[]) => { searchedProductNames(...args); return chain; },
           order: () => chain,
           limit: () => productsRead(),
         };
@@ -41,6 +42,7 @@ beforeEach(() => {
   productsRead.mockReset();
   queriedAccounts.mockReset();
   queriedProducts.mockReset();
+  searchedProductNames.mockReset();
   requireRole.mockResolvedValue({ accountId: ACCOUNT });
   settingsRead.mockResolvedValue({ data: { confirm_enabled: true, multiproduct_enabled: false }, error: null });
   productsRead.mockResolvedValue({ data: [{ id: "p-1", display_name: "Tetera", active: true }], error: null });
@@ -70,6 +72,19 @@ describe("GET /api/orders/products", () => {
     expect(queriedProducts).toHaveBeenCalledWith("account_id", ACCOUNT);
     expect(queriedProducts).toHaveBeenCalledWith("active", true);
     expect(r.headers.get("cache-control")).toBe("private, no-store");
+  });
+
+  it("removes PostgREST asterisk wildcards before searching and rejects wildcard-only queries", async () => {
+    settingsRead.mockResolvedValue({ data: { confirm_enabled: true, multiproduct_enabled: true }, error: null });
+    const r = await query("Gui*ca");
+    expect(r.status).toBe(200);
+    expect(searchedProductNames).toHaveBeenCalledWith("display_name", "%Guica%");
+    expect(searchedProductNames.mock.calls[0][1]).not.toContain("*");
+    searchedProductNames.mockClear();
+    const onlyWildcards = await query("*****");
+    expect(onlyWildcards.status).toBe(200);
+    expect(await onlyWildcards.json()).toEqual({ products: [] });
+    expect(searchedProductNames).not.toHaveBeenCalled();
   });
 
   it("skips catalog queries for too-short or too-long input", async () => {
