@@ -9,7 +9,13 @@ import { Label } from "@/components/ui/label";
 import { normalizePrice } from "@/lib/orders/money";
 import { priceToCents } from "@/lib/orders/items";
 
+// Stable identity prevents stale catalog suggestions transferring to a
+// different line after another line is removed. This is UI-only metadata.
+let nextDraftRow = 0;
+const nextRowId = () => "line-" + (++nextDraftRow);
+
 export interface DraftOrderItem {
+  row_id?: string;
   product_name: string;
   quantity: string;
   unit_price: string;
@@ -17,6 +23,7 @@ export interface DraftOrderItem {
 }
 
 export const emptyOrderItem = (): DraftOrderItem => ({
+  row_id: nextRowId(),
   product_name: "",
   quantity: "1",
   unit_price: "",
@@ -41,6 +48,7 @@ export function draftFromLegacy(values: { product: string; quantity: string; pri
   const q = /^[0-9]{1,5}$/.test(values.quantity.trim()) && Number(values.quantity) > 0 && Number(values.quantity) <= 10000
     ? values.quantity.trim() : "1";
   return {
+    row_id: nextRowId(),
     product_name: values.product.includes("\n") ? "" : values.product.trim(),
     quantity: q,
     unit_price: q === "1" ? values.price : "",
@@ -164,7 +172,7 @@ export function OrderItemsEditor({ items, onChange, error }: Props) {
         </Button>
       </div>
       {items.map((item, index) => (
-        <div key={index} className="grid gap-2 rounded-md border bg-muted/20 p-2" data-testid={"order-item-" + index}>
+        <div key={item.row_id ?? index} className="grid gap-2 rounded-md border bg-muted/20 p-2" data-testid={"order-item-" + index}>
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium">{t("lineNumber", { number: index + 1 })}</span>
             <Button type="button" variant="ghost" size="sm" aria-label={t("lineRemove")} disabled={items.length === 1}
