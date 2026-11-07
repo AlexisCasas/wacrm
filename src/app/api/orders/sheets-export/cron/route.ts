@@ -56,7 +56,7 @@ export async function GET(request: Request) {
           outcomes.push({ account: account_id, ...classifyReconcileRun(run) })
           attempts = Math.max(attempts, run.attempts)
           accounts[account_id] = {
-            attempts: run.attempts, recoveredAfterRetry: run.recoveredAfterRetry, history: run.history,
+            attempts: run.attempts, recoveredAfterRetry: run.recoveredAfterRetry, syncIssues: run.syncIssues, history: run.history,
             sync: run.sync && { exported: run.sync.exported, appendedLines: run.sync.appendedLines, retried: run.sync.retried, mismatched: run.sync.mismatched, deadOutstanding: run.sync.deadOutstanding, skipped: run.sync.skipped, error: run.sync.error },
             ...r, missingKeys: r.missingKeys.slice(0, 20), extraKeys: r.extraKeys.slice(0, 20), duplicateKeys: r.duplicateKeys.slice(0, 20), lineMismatches: r.lineMismatches.slice(0, 20), contentMismatches: r.contentMismatches.slice(0, 20),
           }

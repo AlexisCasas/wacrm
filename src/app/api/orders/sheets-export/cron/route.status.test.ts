@@ -45,8 +45,8 @@ describe('cron route observability (regression)', () => {
 })
 
 describe('reconcile mode publishes to the control tab (server-written figures)', () => {
-  const clean = { differences: 0, missingKeys: [], extraKeys: [], duplicateKeys: [], lineMismatches: [], contentMismatches: [], orderAmountMismatches: [], projectionErrors: [], jobsByStatus: {} }
-  const lag = { ...clean, missingKeys: ['o:1'], differences: 4 }
+  const clean = { eligibleLines: 1, sheetLines: 1, differences: 0, missingKeys: [], extraKeys: [], duplicateKeys: [], lineMismatches: [], contentMismatches: [], orderAmountMismatches: [], projectionErrors: [], jobsByStatus: {} }
+  const lag = { ...clean, eligibleLines: 2, missingKeys: ['o:1'], differences: 4 }
   const prep = () => { runSheetsExport.mockResolvedValue(emptyResult(true)); loadDestination.mockResolvedValue({ spreadsheet_id: 'S'.repeat(30) }); publishControl.mockResolvedValue(undefined) }
   it('publishes one pass per account and answers 200 when there are no differences', async () => {
     env(); prep(); reconcileAccount.mockResolvedValue(clean)
