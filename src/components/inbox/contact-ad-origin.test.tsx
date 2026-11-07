@@ -5,25 +5,36 @@ import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import { ContactAdOrigin } from "./contact-ad-origin";
 
 vi.mock("next-intl", () => ({
-  useTranslations: () => (key: string) =>
-    ({
+  useTranslations: () => (key: string, params?: Record<string, string>) =>
+    (({
       originTitle: "ORIGEN DEL CLIENTE", originMetaAd: "Publicidad en Meta", originAd: "Anuncio", originDetail: "Detalle", originEntry: "Entrada", originEntryValue: "Click a WhatsApp",
       originPlatform: "Plataforma", originViewAd: "Ver anuncio", originNone: "Sin atribución de anuncio", originFacebook: "Facebook", originInstagram: "Instagram",
-    })[key] ?? key,
+      originFepWindow: "Ventana gratis de Meta", originFepActive: "Ventana gratis de Meta activa", originFepRemaining: "{time} restantes", originFepEnded: "Ventana gratuita finalizada",
+    }) as Record<string, string>)[key]?.replace("{time}", params?.time ?? "") ?? key,
 }));
 
 const h = vi.hoisted(() => ({
   rows: {} as Record<string, { headline: string | null; body?: string | null; source_url: string | null }>,
   selects: [] as string[],
   fail: false,
+  /** whatsapp_message_pricing rows (already filtered to free_entry_point, ordered by the database) per contact; `fepFail` makes that read fail. */
+  fep: {} as Record<string, { expiration_at: string | null }[]>,
+  fepFail: false,
+  fepQueries: [] as { eq: Record<string, string>; order?: [string, unknown]; limit?: number }[],
 }));
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
     from: (table: string) => {
       const f: Record<string, string> = {};
       const b: Record<string, unknown> = {
-        select: (cols: string) => (h.selects.push(`${table}:${cols}`), b),
+        select: (cols: string) => (h.selects.push(`${table}:${cols}`), table === "whatsapp_message_pricing" && h.fepQueries.push({ eq: f }), b),
         eq: (k: string, v: string) => ((f[k] = v), b),
+        order: (col: string, opts: unknown) => ((h.fepQueries.at(-1)!.order = [col, opts]), b),
+        limit: (n: number) => {
+          const q = h.fepQueries.at(-1)!;
+          q.limit = n;
+          return Promise.resolve(h.fepFail ? { data: null, error: { message: "x" } } : { data: h.fep[q.eq.contact_id] ?? [], error: null });
+        },
         maybeSingle: () => Promise.resolve(h.fail ? { data: null, error: { message: "x" } } : { data: h.rows[f.contact_id] ?? null, error: null }),
       };
       return b;
@@ -31,7 +42,7 @@ vi.mock("@/lib/supabase/client", () => ({
   }),
 }));
 
-beforeEach(() => { h.rows = {}; h.selects = []; h.fail = false; });
+beforeEach(() => { h.rows = {}; h.selects = []; h.fail = false; h.fep = {}; h.fepFail = false; h.fepQueries = []; });
 afterEach(() => cleanup());
 
 describe("ContactAdOrigin", () => {
@@ -79,11 +90,11 @@ describe("ContactAdOrigin", () => {
     expect(await screen.findByText("Sin atribución de anuncio")).toBeTruthy();
     expect(screen.queryByText(/Publicidad en Meta|orgánic|directo|Facebook|Instagram/)).toBeNull();
   });
-  it("reads only headline and source_url: technical ids never reach the browser", async () => {
+  it("reads only headline, body and source_url (+ the window's expiration): technical ids never reach the browser", async () => {
     h.rows.c1 = { headline: "X", source_url: null };
     render(<ContactAdOrigin contactId="c1" />);
     await screen.findByText(/Publicidad en Meta/);
-    expect(h.selects).toEqual(["contact_ad_attributions:headline, body, source_url"]);
+    expect(h.selects).toEqual(["contact_ad_attributions:headline, body, source_url", "whatsapp_message_pricing:expiration_at"]);
   });
   it("a failed read shows nothing instead of claiming there is no attribution", async () => {
     h.fail = true;
@@ -125,5 +136,76 @@ describe("ContactAdOrigin", () => {
     rerender(<ContactAdOrigin contactId="b" />);
     await waitFor(() => expect(screen.getByText("Sin atribución de anuncio")).toBeTruthy());
     expect(screen.queryByText(/Anuncio A/)).toBeNull();
+  });
+});
+
+describe("ContactAdOrigin: Meta free-entry-point window (only Meta's own evidence)", () => {
+  const AD = { headline: "InkaClick", body: "Taladro inalámbrico", source_url: null };
+  const inMs = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+  it("an active window with Meta's expiration shows the exact time left", async () => {
+    h.rows.c1 = AD; h.fep.c1 = [{ expiration_at: inMs(2 * 86400_000 + 14 * 3600_000 + 30_000) }];
+    render(<ContactAdOrigin contactId="c1" />);
+    expect(await screen.findByText(/🟢 Ventana gratis de Meta$/)).toBeTruthy();
+    expect(screen.getByText("2 d 14 h restantes")).toBeTruthy();
+    expect(screen.getAllByText("ORIGEN DEL CLIENTE")).toHaveLength(1);
+  });
+  it("under 6 hours left: orange and minutes", async () => {
+    h.rows.c1 = AD; h.fep.c1 = [{ expiration_at: inMs(3 * 3600_000 + 20 * 60_000 + 30_000) }];
+    render(<ContactAdOrigin contactId="c1" />);
+    expect(await screen.findByText(/🟠 Ventana gratis de Meta$/)).toBeTruthy();
+    expect(screen.getByText("3 h 20 min restantes")).toBeTruthy();
+  });
+  it("a real expiration in the past: 'Ventana gratuita finalizada', no time left", async () => {
+    h.rows.c1 = AD; h.fep.c1 = [{ expiration_at: inMs(-3600_000) }];
+    render(<ContactAdOrigin contactId="c1" />);
+    expect(await screen.findByText("Ventana gratuita finalizada")).toBeTruthy();
+    expect(screen.queryByText(/restantes/)).toBeNull();
+  });
+  it("Meta confirmed the window but sent no end: 'activa' alone, no invented time, never 'finalizada'", async () => {
+    h.rows.c1 = AD; h.fep.c1 = [{ expiration_at: null }];
+    render(<ContactAdOrigin contactId="c1" />);
+    expect(await screen.findByText("🟢 Ventana gratis de Meta activa")).toBeTruthy();
+    expect(screen.queryByText(/restantes|finalizada/)).toBeNull();
+  });
+  it("only the referral, no Meta confirmation: no window line at all", async () => {
+    h.rows.c1 = AD;
+    render(<ContactAdOrigin contactId="c1" />);
+    await screen.findByText(/Publicidad en Meta/);
+    expect(screen.queryByText(/Ventana|restantes|finalizada/)).toBeNull();
+  });
+  it("a contact without advertising shows no window and does not even read it", async () => {
+    h.fep.nobody = [{ expiration_at: inMs(3600_000) }];
+    render(<ContactAdOrigin contactId="nobody" />);
+    expect(await screen.findByText("Sin atribución de anuncio")).toBeTruthy();
+    expect(screen.queryByText(/Ventana|restantes/)).toBeNull();
+    expect(h.fepQueries).toHaveLength(0);
+  });
+  it("a failed window read leaves the line out instead of claiming anything", async () => {
+    h.rows.c1 = AD; h.fep.c1 = [{ expiration_at: inMs(3600_000) }]; h.fepFail = true;
+    render(<ContactAdOrigin contactId="c1" />);
+    await screen.findByText(/Publicidad en Meta/);
+    expect(screen.queryByText(/Ventana|restantes|finalizada/)).toBeNull();
+  });
+  it("reads ONE window of the contact: free_entry_point rows only, the latest expiration first, one row (never summed)", async () => {
+    h.rows.c1 = AD; h.fep.c1 = [{ expiration_at: inMs(2 * 3600_000 + 30_000) }];
+    render(<ContactAdOrigin contactId="c1" />);
+    await screen.findByText("2 h 0 min restantes");
+    expect(h.fepQueries).toEqual([{ eq: { contact_id: "c1", pricing_type: "free_entry_point" }, order: ["expiration_at", { ascending: false, nullsFirst: false }], limit: 1 }]);
+  });
+  it("the counter reaches zero by itself and turns into 'Ventana gratuita finalizada'", async () => {
+    h.rows.c1 = AD; h.fep.c1 = [{ expiration_at: inMs(1500) }];
+    render(<ContactAdOrigin contactId="c1" />);
+    expect(await screen.findByText("1 min restantes")).toBeTruthy();
+    expect(await screen.findByText("Ventana gratuita finalizada", {}, { timeout: 4000 })).toBeTruthy();
+    expect(screen.queryByText(/restantes/)).toBeNull();
+  });
+  it("switching to a contact without a window never keeps the previous contact's window", async () => {
+    h.rows.a = AD; h.fep.a = [{ expiration_at: inMs(3600_000 * 30) }]; h.rows.b = AD;
+    const { rerender } = render(<ContactAdOrigin contactId="a" />);
+    await screen.findByText(/restantes/);
+    rerender(<ContactAdOrigin key="b" contactId="b" />);
+    await waitFor(() => expect(screen.queryByText(/restantes/)).toBeNull());
+    expect(screen.queryByText(/Ventana/)).toBeNull();
   });
 });

@@ -11,6 +11,8 @@ const h = vi.hoisted(() => ({
   configLookups: [] as [string, string][],
   rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
   rpcResult: { data: [] as unknown[], error: null as null | { code: string; message: string; details?: string } },
+  /** Per-function override of rpcResult (e.g. a failing pricing write next to a working status write). */
+  rpcByName: {} as Record<string, { data: unknown; error: null | { code: string; message: string } }>,
   unexpectedTables: [] as string[],
   dispatch: vi.fn(),
   heldFor: new Set<string>(),
@@ -41,7 +43,7 @@ vi.mock('@supabase/supabase-js', () => ({
     },
     rpc(name: string, args: Record<string, unknown>) {
       h.rpcCalls.push({ name, args })
-      return Promise.resolve(h.rpcResult)
+      return Promise.resolve(h.rpcByName[name] ?? h.rpcResult)
     },
   }),
 }))
@@ -69,7 +71,7 @@ const WAMID = 'wamid.HBgMNTE5MDAwMDAwMDAxFQIAERgSQTFCMkMzRDRFNUY2QTdCOA=='
 const PHONE_A = '111111111111111'
 const PHONE_B = '222222222222222'
 
-type St = { id?: string; status: string; timestamp?: string }
+type St = { id?: string; status: string; timestamp?: string; pricing?: Record<string, unknown>; conversation?: Record<string, unknown> }
 function body(phone: string | undefined, statuses: St[]) {
   return JSON.stringify({
     entry: [{
@@ -79,7 +81,7 @@ function body(phone: string | undefined, statuses: St[]) {
         value: {
           messaging_product: 'whatsapp',
           metadata: phone === undefined ? {} : { display_phone_number: '51900000000', phone_number_id: phone },
-          statuses: statuses.map((s) => ({ id: s.id ?? WAMID, status: s.status, timestamp: s.timestamp ?? '1793970000', recipient_id: '51900000001' })),
+          statuses: statuses.map((s) => ({ id: s.id ?? WAMID, status: s.status, timestamp: s.timestamp ?? '1793970000', recipient_id: '51900000001', ...(s.pricing ? { pricing: s.pricing } : {}), ...(s.conversation ? { conversation: s.conversation } : {}) })),
         },
       }],
     }],
@@ -199,5 +201,79 @@ describe('status webhook: tenant attribution and scoped, forward-only write (PR-
     })
     await deliver(raw)
     expect(h.rpcCalls.map((c) => [c.args.p_account_id, c.args.p_wamid, c.args.p_status])).toEqual([['acc-A', 'wamid.1', 'sent'], ['acc-A', 'wamid.2', 'read'], ['acc-B', 'wamid.3', 'delivered']])
+  })
+})
+
+describe('status webhook: free entry point evidence (additive, best effort)', () => {
+  const FEP = { billable: false, pricing_model: 'PMP', type: 'free_entry_point', category: 'service' }
+  const AD_CONVERSATION = { id: 'c', expiration_timestamp: '1794000000', origin: { type: 'referral_conversion' } }
+  const pricingCalls = () => h.rpcCalls.filter((c) => c.name === 'record_whatsapp_message_pricing')
+  const statusCalls = () => h.rpcCalls.filter((c) => c.name === 'apply_whatsapp_message_status')
+
+  beforeEach(() => {
+    h.configsByPhone = { [PHONE_A]: [{ account_id: 'acc-A' }], [PHONE_B]: [{ account_id: 'acc-B' }] }
+    h.configLookups = []; h.rpcCalls = []; h.unexpectedTables = []; h.heldFor = new Set(); h.rpcByName = {}
+    h.rpcResult = { data: [], error: null }
+    h.dispatch.mockReset(); h.audit.mockReset()
+    errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    warns = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+  })
+  afterEach(() => { errors.mockRestore(); warns.mockRestore() })
+
+  it('free_entry_point + Meta expiration: stores both for the account of the payload and still applies the normal status', async () => {
+    h.rpcByName.apply_whatsapp_message_status = { data: [applied()], error: null }
+    expect(await deliver(body(PHONE_A, [{ status: 'sent', pricing: FEP, conversation: AD_CONVERSATION }]))).toBe(200)
+    expect(pricingCalls()).toEqual([{ name: 'record_whatsapp_message_pricing', args: { p_account_id: 'acc-A', p_wamid: WAMID, p_type: 'free_entry_point', p_category: 'service', p_expiration: new Date(1794000000 * 1000).toISOString() } }])
+    expect(statusCalls()).toHaveLength(1)
+    expect(statusCalls()[0].args).toMatchObject({ p_account_id: 'acc-A', p_status: 'sent' })
+    expect(h.dispatch).toHaveBeenCalledTimes(1)
+    expect(h.unexpectedTables).toEqual([])
+  })
+
+  it('free_entry_point without an expiration: stores the type only (no end is invented)', async () => {
+    await deliver(body(PHONE_A, [{ status: 'delivered', pricing: FEP }]))
+    expect(pricingCalls()[0].args).toMatchObject({ p_type: 'free_entry_point', p_expiration: null })
+  })
+
+  it('regular, free_customer_service and no pricing at all store nothing and change nothing else', async () => {
+    await deliver(body(PHONE_A, [
+      { status: 'delivered', pricing: { billable: true, type: 'regular', category: 'marketing' } },
+      { status: 'delivered', id: 'wamid.2', pricing: { billable: false, type: 'free_customer_service', category: 'service' } },
+      { status: 'read', id: 'wamid.3' },
+    ]))
+    expect(pricingCalls()).toHaveLength(0)
+    expect(statusCalls()).toHaveLength(3)
+  })
+
+  it('each event of one message carries its half (sent: conversation, delivered: pricing): both reach the database, which merges them', async () => {
+    await deliver(body(PHONE_A, [{ status: 'sent', conversation: AD_CONVERSATION }, { status: 'delivered', pricing: FEP }]))
+    expect(pricingCalls().map((c) => [c.args.p_type, c.args.p_expiration])).toEqual([[null, new Date(1794000000 * 1000).toISOString()], ['free_entry_point', null]])
+  })
+
+  it('a failing or throwing pricing write never prevents the normal status from being applied and notified', async () => {
+    h.rpcByName.record_whatsapp_message_pricing = { data: null, error: { code: '42501', message: 'row says secret text' } }
+    h.rpcByName.apply_whatsapp_message_status = { data: [applied()], error: null }
+    expect(await deliver(body(PHONE_A, [{ status: 'delivered', pricing: FEP }]))).toBe(200)
+    expect(statusCalls()).toHaveLength(1)
+    expect(h.dispatch).toHaveBeenCalledTimes(1)
+    expect(JSON.stringify(errors.mock.calls)).not.toContain('secret text')
+  })
+
+  it('a replay sends the same upsert again (the database makes it idempotent) and changes nothing else', async () => {
+    const raw = body(PHONE_A, [{ status: 'delivered', pricing: FEP }])
+    await deliver(raw); await deliver(raw)
+    expect(pricingCalls()).toHaveLength(2)
+    expect(pricingCalls()[0].args).toEqual(pricingCalls()[1].args)
+  })
+
+  it('the account always comes from the signed payload number: another account\'s number is scoped to ITS account', async () => {
+    await deliver(body(PHONE_B, [{ status: 'delivered', pricing: FEP }]))
+    expect(pricingCalls()[0].args.p_account_id).toBe('acc-B')
+  })
+
+  it('an unknown number stores nothing', async () => {
+    h.configsByPhone = {}
+    await deliver(body(PHONE_A, [{ status: 'delivered', pricing: FEP }]))
+    expect(h.rpcCalls).toHaveLength(0)
   })
 })

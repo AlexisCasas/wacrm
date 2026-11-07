@@ -22,6 +22,7 @@ import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { captureAdAttribution } from '@/lib/whatsapp/ad-attribution'
+import { captureMessagePricing } from '@/lib/whatsapp/message-pricing'
 import type { AdReferral } from '@/lib/whatsapp/ad-referral'
 import {
   handleTemplateWebhookChange,
@@ -107,6 +108,10 @@ interface WhatsAppWebhookStatus {
   /** Omitted when the message went to a BSUID and the phone cannot be shown. */
   recipient_id?: string
   recipient_user_id?: string
+  /** Billing of the message (only on `sent` and one of `delivered` / `read`). `type` "free_entry_point" = free inside an open ad (FEP) window. */
+  pricing?: { billable?: boolean; pricing_model?: string; type?: string; category?: string; subtype?: string }
+  /** Conversation of the message. `expiration_timestamp` (unix seconds, string) only on `sent`; from API v24.0 the object is omitted unless it is an FEP one. */
+  conversation?: { id?: string; expiration_timestamp?: string; origin?: { type?: string } }
 }
 
 interface WhatsAppWebhookEntry {
@@ -445,6 +450,9 @@ interface AppliedMessageStatus {
  * External subscribers are notified only for rows that really changed, always on `accountId`.
  */
 async function handleStatusUpdate(status: WhatsAppWebhookStatus, accountId: string) {
+  // Free-entry-point evidence (additive, best effort, never throws): independent of the status handling below.
+  await captureMessagePricing(supabaseAdmin(), accountId, status)
+
   const normalized = normalizeMetaStatus(status.status)
   if (!normalized) {
     // e.g. a value Meta adds later. Ignored on purpose; the raw value is capped and printable-only.
