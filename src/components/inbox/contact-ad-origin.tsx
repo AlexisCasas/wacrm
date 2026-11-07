@@ -31,7 +31,7 @@ const MAX_TIMEOUT_MS = 2_147_483_647;
  * headline, the ad text (body) and the ad URL are selected, so technical ids (source_id, ctwa_clid) never reach the browser. No row = "Sin atribución de anuncio" (nothing is
  * assumed: not organic, not direct). The platform is shown only when the ad URL's host says so; "Ver anuncio" only for a real https Meta URL.
  * The free-entry-point window is shown ONLY with Meta's own evidence (status webhooks): "activa" with the exact time left when Meta sent the
- * expiration, "activa" alone when it confirmed the window but sent no end, "finalizada" only after a real expiration passed, nothing otherwise; the length
+ * expiration, "Meta confirmó envío sin costo" alone (no time, no "activa") when it confirmed a free message but sent no end, "finalizada" only after a real expiration passed, nothing otherwise; the length
  * of a window is never assumed. The clock runs in the browser from the stored expiration (once a minute and once at the expiry), with no further reads.
  * Keyed by contact id by the sidebar and the state remembers which contact it was loaded for, so a previous contact's origin is never shown.
  */
@@ -110,7 +110,7 @@ export function ContactAdOrigin({ contactId }: ContactAdOriginProps) {
           {detail && <p className="line-clamp-2 break-words" title={detail}>{t("originDetail")}: {detail}</p>}
           <p>{t("originEntry")}: {t("originEntryValue")}</p>
           {platform && <p>{t("originPlatform")}: {platform === "instagram" ? t("originInstagram") : t("originFacebook")}</p>}
-          {fepWindow.kind === "active_unknown_end" && <p className="font-medium text-foreground">🟢 {t("originFepActive")}</p>}
+          {fepWindow.kind === "free_confirmed" && <p className="font-medium text-foreground">{t("originFepConfirmed")}</p>}
           {fepWindow.kind === "countdown" && (
             <>
               <p className="font-medium text-foreground">{fepWindow.endingSoon ? "🟠" : "🟢"} {t("originFepWindow")}</p>

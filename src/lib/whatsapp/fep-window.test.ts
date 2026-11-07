@@ -29,13 +29,16 @@ describe("extractFepEvidence", () => {
     expect(extractFepEvidence({ conversation: { expiration_timestamp: EXP } })).toBeNull();
     expect(extractFepEvidence({ pricing: { type: "regular" }, conversation: { expiration_timestamp: EXP, origin: { type: "marketing" } } })).toBeNull();
   });
-  it("FEP pricing next to an ordinary conversation never borrows that conversation's expiration", () => {
-    expect(extractFepEvidence({ pricing: { type: "free_entry_point" }, conversation: { expiration_timestamp: EXP, origin: { type: "service" } } })?.expiresAt).toBeTruthy();
+  it("FEP pricing next to an ORDINARY conversation never borrows its expiration (that is the 24 h customer service window, a different window)", () => {
+    for (const origin of [{ type: "service" }, { type: "utility" }, { type: "marketing" }, undefined]) {
+      const e = extractFepEvidence({ pricing: { type: "free_entry_point", category: "service" }, conversation: { expiration_timestamp: EXP, origin } });
+      expect(e).toEqual({ pricingType: "free_entry_point", pricingCategory: "service", expiresAt: null });
+    }
   });
   it("garbage is dropped, never thrown", () => {
     expect(extractFepEvidence({ pricing: { type: "FREE ENTRY; DROP" } })).toBeNull();
     expect(extractFepEvidence({ pricing: { type: "free_entry_point", category: 5 }, conversation: { expiration_timestamp: "soon" } })).toEqual({ pricingType: "free_entry_point", pricingCategory: null, expiresAt: null });
-    expect(extractFepEvidence({ pricing: { type: "free_entry_point" }, conversation: { expiration_timestamp: -1 } })?.expiresAt).toBeNull();
+    expect(extractFepEvidence({ pricing: { type: "free_entry_point" }, conversation: { expiration_timestamp: -1, origin: { type: "referral_conversion" } } })?.expiresAt).toBeNull();
   });
 });
 
@@ -43,7 +46,7 @@ describe("fepWindowState", () => {
   const NOW = Date.parse("2026-11-07T00:00:00Z");
   const at = (ms: number) => ({ expiration_at: new Date(NOW + ms).toISOString() });
   it("no Meta evidence: nothing", () => expect(fepWindowState(null, NOW)).toEqual({ kind: "none" }));
-  it("confirmed but Meta sent no end: active, no time", () => expect(fepWindowState({ expiration_at: null }, NOW)).toEqual({ kind: "active_unknown_end" }));
+  it("FEP pricing but Meta sent no end: only \"Meta confirmed a free message\" (no time left, no claim that a window is open)", () => expect(fepWindowState({ expiration_at: null }, NOW)).toEqual({ kind: "free_confirmed" }));
   it("a future expiration: the exact time left", () => expect(fepWindowState(at(2 * 86400_000 + 14 * 3600_000), NOW)).toEqual({ kind: "countdown", remainingMs: 2 * 86400_000 + 14 * 3600_000, endingSoon: false }));
   it("under 6 hours: ending soon", () => {
     expect(fepWindowState(at(FEP_ENDING_SOON_MS - 1), NOW)).toMatchObject({ kind: "countdown", endingSoon: true });

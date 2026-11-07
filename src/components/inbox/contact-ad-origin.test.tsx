@@ -9,7 +9,7 @@ vi.mock("next-intl", () => ({
     (({
       originTitle: "ORIGEN DEL CLIENTE", originMetaAd: "Publicidad en Meta", originAd: "Anuncio", originDetail: "Detalle", originEntry: "Entrada", originEntryValue: "Click a WhatsApp",
       originPlatform: "Plataforma", originViewAd: "Ver anuncio", originNone: "Sin atribución de anuncio", originFacebook: "Facebook", originInstagram: "Instagram",
-      originFepWindow: "Ventana gratis de Meta", originFepActive: "Ventana gratis de Meta activa", originFepRemaining: "{time} restantes", originFepEnded: "Ventana gratuita finalizada",
+      originFepWindow: "Ventana gratis de Meta", originFepConfirmed: "Meta confirmó envío sin costo", originFepRemaining: "{time} restantes", originFepEnded: "Ventana gratuita finalizada",
     }) as Record<string, string>)[key]?.replace("{time}", params?.time ?? "") ?? key,
 }));
 
@@ -162,11 +162,14 @@ describe("ContactAdOrigin: Meta free-entry-point window (only Meta's own evidenc
     expect(await screen.findByText("Ventana gratuita finalizada")).toBeTruthy();
     expect(screen.queryByText(/restantes/)).toBeNull();
   });
-  it("Meta confirmed the window but sent no end: 'activa' alone, no invented time, never 'finalizada'", async () => {
+  it("FEP pricing but no expiration from Meta: 'Meta confirmó envío sin costo' and nothing else (no 'activa', no counter, no 'finalizada', no colored window)", async () => {
     h.rows.c1 = AD; h.fep.c1 = [{ expiration_at: null }];
     render(<ContactAdOrigin contactId="c1" />);
-    expect(await screen.findByText("🟢 Ventana gratis de Meta activa")).toBeTruthy();
-    expect(screen.queryByText(/restantes|finalizada/)).toBeNull();
+    expect(await screen.findByText("Meta confirmó envío sin costo")).toBeTruthy();
+    expect(screen.queryByText(/activa/i)).toBeNull();
+    expect(screen.queryByText(/restantes|min|\d+ [dh]\b/)).toBeNull();
+    expect(screen.queryByText(/finalizada|Ventana gratis/)).toBeNull();
+    expect(screen.queryByText(/🟢|🟠/)).toBeNull();
   });
   it("only the referral, no Meta confirmation: no window line at all", async () => {
     h.rows.c1 = AD;

@@ -469,7 +469,7 @@
       "originAd": "Anuncio",
       "originDetail": "Detalle",
       "originFepWindow": "Ventana gratis de Meta",
-      "originFepActive": "Ventana gratis de Meta activa",
+      "originFepConfirmed": "Meta confirmó envío sin costo",
       "originFepRemaining": "{time} restantes",
       "originFepEnded": "Ventana gratuita finalizada",
       "originEntry": "Entrada",

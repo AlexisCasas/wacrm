@@ -235,6 +235,11 @@ describe('status webhook: free entry point evidence (additive, best effort)', ()
     expect(pricingCalls()[0].args).toMatchObject({ p_type: 'free_entry_point', p_expiration: null })
   })
 
+  it('free_entry_point next to an ordinary 24 h conversation never takes that conversation\'s expiration as the window end', async () => {
+    await deliver(body(PHONE_A, [{ status: 'sent', pricing: FEP, conversation: { id: 'c', expiration_timestamp: '1794000000', origin: { type: 'service' } } }]))
+    expect(pricingCalls()[0].args).toMatchObject({ p_type: 'free_entry_point', p_expiration: null })
+  })
+
   it('regular, free_customer_service and no pricing at all store nothing and change nothing else', async () => {
     await deliver(body(PHONE_A, [
       { status: 'delivered', pricing: { billable: true, type: 'regular', category: 'marketing' } },

@@ -469,7 +469,7 @@
       "originAd": "Ad",
       "originDetail": "Detail",
       "originFepWindow": "Meta free window",
-      "originFepActive": "Meta free window active",
+      "originFepConfirmed": "Meta confirmed a free message",
       "originFepRemaining": "{time} left",
       "originFepEnded": "Free window ended",
       "originEntry": "Entry",

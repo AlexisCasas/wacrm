@@ -28,4 +28,24 @@ describe("captureMessagePricing", () => {
     expect(JSON.stringify(spy.mock.calls)).not.toMatch(/secret|wamid/);
     spy.mockRestore();
   });
+
+  it("logs only the STRUCTURE of a free_entry_point status: flags and enum values, never the message id, timestamps or any other value", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    await captureMessagePricing(rpcOk() as never, "acc-1", { ...FEP, status: "sent" });
+    await captureMessagePricing(rpcOk() as never, "acc-1", { id: "wamid.Y", status: "delivered", pricing: { type: "free_entry_point", category: "service" } });
+    expect(info.mock.calls).toEqual([
+      ["[webhook] free_entry_point status structure", { status: "sent", has_conversation: true, has_expiration_timestamp: true, conversation_origin_type: "referral_conversion", expiration_stored: true }],
+      ["[webhook] free_entry_point status structure", { status: "delivered", has_conversation: false, has_expiration_timestamp: false, conversation_origin_type: null, expiration_stored: false }],
+    ]);
+    expect(JSON.stringify(info.mock.calls)).not.toMatch(/wamid|1794000000|2026/);
+    info.mockRestore();
+  });
+  it("logs nothing for statuses that are not free_entry_point", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    await captureMessagePricing(rpcOk() as never, "acc-1", { id: "w", pricing: { type: "regular", category: "marketing" } });
+    await captureMessagePricing(rpcOk() as never, "acc-1", { id: "w", pricing: { type: "free_customer_service" } });
+    await captureMessagePricing(rpcOk() as never, "acc-1", { id: "w", conversation: { expiration_timestamp: "1794000000", origin: { type: "referral_conversion" } } });
+    expect(info).not.toHaveBeenCalled();
+    info.mockRestore();
+  });
 });

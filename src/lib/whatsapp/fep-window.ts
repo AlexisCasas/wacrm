@@ -25,7 +25,8 @@ const token = (v: unknown): string | null => (typeof v === "string" && /^[a-z_]{
 
 /**
  * FEP evidence of one status event, or null when it carries none (a regular / free_customer_service message, no pricing at all, ...).
- * Evidence is `pricing.type = free_entry_point`, or an expiration inside a conversation Meta itself marks as opened by an ad (`referral_conversion`):
+ * Evidence is `pricing.type = free_entry_point` (alone it only says Meta treated THAT message as free), or an expiration inside a conversation Meta itself
+ * marks as opened by an ad (`referral_conversion`):
  * `sent` carries the conversation and `delivered` / `read` the pricing, so the two halves of one message are merged by the database.
  * Never throws; every field is optional and a malformed one is dropped.
  */
@@ -34,7 +35,9 @@ export function extractFepEvidence(status: MetaStatusPricingFields): MessagePric
   const pricingCategory = token(status.pricing?.category);
   const isFepPricing = pricingType === FEP_PRICING_TYPE;
   const isAdConversation = token(status.conversation?.origin?.type) === FEP_ORIGIN_TYPE;
-  const expiresAt = isFepPricing || isAdConversation ? parseMetaTimestamp(status.conversation?.expiration_timestamp) : null;
+  // The only end Meta gives for an FEP window is the expiration of the conversation it marks as opened by an ad. Any other conversation (before API v24.0
+  // Meta sends one for EVERY message: the 24-hour customer service window) is a different window and is never read as the FEP end.
+  const expiresAt = isAdConversation ? parseMetaTimestamp(status.conversation?.expiration_timestamp) : null;
   if (!isFepPricing && !(isAdConversation && expiresAt)) return null;
   return { pricingType: isFepPricing ? pricingType : null, pricingCategory: isFepPricing ? pricingCategory : null, expiresAt };
 }
@@ -46,14 +49,17 @@ export const FEP_ENDING_SOON_MS = 6 * 60 * 60 * 1000;
 
 export type FepWindowState =
   | { kind: "none" }
-  | { kind: "active_unknown_end" }
+  | { kind: "free_confirmed" }
   | { kind: "countdown"; remainingMs: number; endingSoon: boolean }
   | { kind: "ended" };
 
-/** `row` is the contact's chosen FEP row (pricing_type already = free_entry_point), or null when Meta never confirmed one. */
+/**
+ * Priority of what is known: (1) a real Meta expiration -> current state + counter; (2) `free_entry_point` pricing WITHOUT an expiration -> only "Meta
+ * confirmed a free message" (nothing about time left or whether a window is still open); (3) no pricing -> nothing.
+ * `row` is the contact's chosen FEP row (pricing_type already = free_entry_point), or null when Meta never confirmed one. */
 export function fepWindowState(row: { expiration_at: string | null } | null, nowMs: number): FepWindowState {
   if (!row) return { kind: "none" };
-  if (row.expiration_at == null) return { kind: "active_unknown_end" };
+  if (row.expiration_at == null) return { kind: "free_confirmed" };
   const end = Date.parse(row.expiration_at);
   if (Number.isNaN(end)) return { kind: "none" };
   const remainingMs = end - nowMs;
