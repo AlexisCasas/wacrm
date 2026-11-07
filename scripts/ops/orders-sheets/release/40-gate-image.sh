@@ -8,10 +8,11 @@ MAX_IN_10M=${MAX_IN_10M:-15}; MAX_OUT_10M=${MAX_OUT_10M:-150}; MAX_IN_2M=${MAX_I
 git -C $REPO fetch -q origin main 2>/dev/null
 echo "== A. the image corresponds to the code integrated in main"
 if [ $DRY -eq 1 ]; then M=$DRYRUN_MERGE_COMMIT; echo "     (DRY RUN: pretending $M is main's tip)"; else M=$(git -C $REPO rev-parse origin/main); fi
-P82=$(gh api repos/AlexisCasas/wacrm/pulls/82 --jq 'select(.merged==true).merge_commit_sha' 2>/dev/null)
-chk "PR #82 (Sheets export) is merged into main" "$([ -n "$P82" ] && echo yes || echo no)" yes
-chk "the dashboard commit running in production (13d12e06) is contained in main" "$(git -C $REPO merge-base --is-ancestor 13d12e06 $M 2>/dev/null && echo yes || echo no)" yes
-chk "PR #81 code (71261e9f) is contained in main" "$(git -C $REPO merge-base --is-ancestor 71261e9f $M 2>/dev/null && echo yes || echo no)" yes
+for pr in $REQUIRE_PRS; do
+  mc=$(gh api repos/AlexisCasas/wacrm/pulls/$pr --jq 'select(.merged==true).merge_commit_sha' 2>/dev/null)
+  chk "PR #$pr is merged into main" "$([ -n "$mc" ] && echo yes || echo no)" yes
+done
+for c in $REQUIRE_COMMITS; do chk "commit $c (code that production runs) is contained in main" "$(git -C $REPO merge-base --is-ancestor $c $M 2>/dev/null && echo yes || echo no)" yes; done
 IMG_REV=$(docker image inspect $NEW_IMAGE --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null)
 IMG_TREE=$(docker image inspect $NEW_IMAGE --format '{{index .Config.Labels "io.wacrm.source-tree"}}' 2>/dev/null)
 chk "candidate image exists with the recorded id" "$(docker image inspect $NEW_IMAGE --format '{{.Id}}' 2>/dev/null)" "$(cat $D/NEW_IMAGE_ID 2>/dev/null)"
@@ -28,7 +29,7 @@ chk "2 test orders excluded" "$(RO "select count(*) from order_sheet_exclusions 
 chk "service-account JSON exists, mode 600" "$(stat -c %a $SA_JSON 2>/dev/null)" 600
 chk "service-account JSON has the expected structure (no values printed)" "$(python3 -I -c "import json;d=json.load(open('$SA_JSON'));print('ok' if d.get('type')=='service_account' and d.get('client_email','').endswith('.iam.gserviceaccount.com') and d.get('private_key','').startswith('-----BEGIN PRIVATE KEY-----') else 'bad')")" ok
 chk "env file is mode 600" "$(stat -c %a $ENV_FILE)" 600
-chk "definitive sheet is registered with enabled=false (or not yet registered)" "$(RO "select count(*) from order_sheet_destinations where enabled")" 0
+chk "enabled Sheets destinations = ${EXPECT_DESTINATIONS_ENABLED}" "$(RO "select count(*) from order_sheet_destinations where enabled")" "$EXPECT_DESTINATIONS_ENABLED"
 echo "== C. rollback is ready"
 chk "running image = the one archived for rollback" "$(docker inspect wacrm-app-1 --format '{{.Image}}')" $OLD_IMAGE_ID
 chk "rollback archive checksum" "$(cd $D/image && sha256sum -c SHA256SUMS --quiet >/dev/null 2>&1 && echo ok)" ok

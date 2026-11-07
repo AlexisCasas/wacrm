@@ -46,4 +46,14 @@ describe('release evidence', () => {
     expect(s).toContain('evidence/postcheck'); expect(s).toContain('EXPECT_IMAGE'); expect(s).toContain('t0_complete')
     expect(existsSync(join(REL, 'lib.sh'))).toBe(true)
   })
+  it('release.conf overrides the per-release values and the defaults stay those of the first release', () => {
+    const d = dir()
+    expect(sh(d, 'echo "$OLD_IMAGE|$REQUIRE_PRS|$REQUIRE_COMMITS|$EXPECT_DESTINATIONS_ENABLED"').trim()).toBe('wacrm-app:meta-pricing-13d12e06|82|13d12e06 71261e9f|0')
+    writeFileSync(join(d, 'release.conf'), 'OLD_IMAGE=wacrm-app:fep-window-7beb4f50\nREQUIRE_PRS="82 83 84 85 86"\nEXPECT_DESTINATIONS_ENABLED=1\n')
+    expect(sh(d, 'echo "$OLD_IMAGE|$REQUIRE_PRS|$EXPECT_DESTINATIONS_ENABLED"').trim()).toBe('wacrm-app:fep-window-7beb4f50|82 83 84 85 86|1')
+  })
+  it('the image gate takes its required history and destination count from the profile, not from literals', () => {
+    const g = readFileSync(join(REL, '40-gate-image.sh'), 'utf8')
+    expect(g).toContain('$REQUIRE_PRS'); expect(g).toContain('$REQUIRE_COMMITS'); expect(g).toContain('$EXPECT_DESTINATIONS_ENABLED'); expect(g).not.toContain('pulls/82 ')
+  })
 })
