@@ -102,11 +102,20 @@ SELECT id AS e3 FROM meta_capi_events WHERE status='sending' LIMIT 1 \gset
 SELECT pg_temp.chk('attempts exhausted becomes dead', meta_capi_finish(:'e3', 1, 'retry', 500, 'http_500', 'x', now(), 1) = 'dead');
 SELECT pg_temp.chk('fresh enqueue after sent/failed/dead does not resurrect events', meta_capi_enqueue() = 0);
 
+DO $$ DECLARE a uuid := (SELECT account_id FROM profiles WHERE user_id='a1000000-0000-4000-8000-000000000001'); BEGIN
+  BEGIN UPDATE meta_capi_settings SET test_event_code = 'bad code!' WHERE account_id = a; PERFORM pg_temp.chk('test_event_code format is validated', false);
+  EXCEPTION WHEN check_violation THEN PERFORM pg_temp.chk('test_event_code format is validated', true); END;
+END $$;
+
 -- 5. hourly limit + auth circuit breaker + manual kill switch
 INSERT INTO order_confirmations (id, account_id, contact_id, confirmed_at, customer_name, phone, product, quantity, price, destination, seller_name, confirmed_by_name, request_key)
  VALUES ('d0000000-0000-4000-8000-000000000007', :'acct_a','c0000000-0000-4000-8000-0000000000a3', now(),'C','51900000003','Gel',1,30.00,'Lima','V','QA','k7'),
         ('d0000000-0000-4000-8000-000000000008', :'acct_a','c0000000-0000-4000-8000-0000000000a3', now(),'C','51900000003','Gel',1,31.00,'Lima','V','QA','k8');
 SELECT pg_temp.chk('new orders are queued', meta_capi_enqueue() = 2);
+UPDATE meta_capi_settings SET test_event_code = 'TEST12345' WHERE account_id = :'acct_a';
+SELECT pg_temp.chk('claim returns the test_event_code of the account', (SELECT count(*) = 1 AND bool_and(test_event_code = 'TEST12345') FROM meta_capi_claim(1,1,6)));
+UPDATE meta_capi_settings SET test_event_code = NULL WHERE account_id = :'acct_a';
+UPDATE meta_capi_events SET status='pending', locked_until=NULL, next_attempt_at=now() WHERE status='sending';
 UPDATE meta_capi_settings SET hourly_limit = 1 WHERE account_id = :'acct_a';
 SELECT pg_temp.chk('hourly limit: attempts in the last hour already exceed it => nothing claimed', (SELECT count(*) FROM meta_capi_claim(10,120,6)) = 0);
 UPDATE meta_capi_settings SET hourly_limit = 2000 WHERE account_id = :'acct_a';

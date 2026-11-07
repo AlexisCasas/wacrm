@@ -42,6 +42,20 @@ describe('payload (official Business Messaging shape)', () => {
   })
 })
 
+describe('test_event_code (test mode)', () => {
+  it('is added to the body only when set, so production traffic never carries it', () => {
+    expect(buildCapiBody(row({ test_event_code: 'TEST12345' })).test_event_code).toBe('TEST12345')
+    expect(buildCapiBody(row({ test_event_code: null }))).not.toHaveProperty('test_event_code')
+    expect(buildCapiBody(row())).not.toHaveProperty('test_event_code')
+  })
+  it('the worker forwards the account\'s code from the claimed row (mocked fetch)', async () => {
+    const { admin } = fakeAdmin([row({ test_event_code: 'TEST999' })])
+    const f = vi.fn().mockResolvedValue(json(200, {}))
+    await runCapiWorker(admin, { enabled: true, fetchImpl: f, decryptToken: () => TOKEN })
+    expect(JSON.parse((f.mock.calls[0][1] as RequestInit).body as string).test_event_code).toBe('TEST999')
+  })
+})
+
 describe('sendCapiEvent classification (mocked fetch)', () => {
   it('sends the token in the Authorization header, never in the URL', async () => {
     const f = vi.fn().mockResolvedValue(json(200, { events_received: 1 }))

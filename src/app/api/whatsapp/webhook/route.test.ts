@@ -40,6 +40,10 @@ const h = vi.hoisted(() => ({
     /** Rows upserted into contact_ad_attributions (ad attribution), and the error the next one resolves with. */
     adUpserts: [] as { row: Record<string, unknown>; options: unknown }[],
     adUpsertError: null as { code: string } | null,
+    /** Rows upserted into contact_ad_clicks (click history for Meta conversions), the error the next one resolves with, and whether it throws. */
+    clickUpserts: [] as { row: Record<string, unknown>; options: unknown }[],
+    clickUpsertError: null as { code: string } | null,
+    clickUpsertThrows: false,
   },
 }))
 
@@ -168,6 +172,14 @@ vi.mock('@supabase/supabase-js', () => ({
             upsert: (row: Record<string, unknown>, options: unknown) => {
               h.state.adUpserts.push({ row, options })
               return Promise.resolve({ error: h.state.adUpsertError })
+            },
+          }
+        case 'contact_ad_clicks':
+          return {
+            upsert: (row: Record<string, unknown>, options: unknown) => {
+              if (h.state.clickUpsertThrows) throw new Error('click history unavailable')
+              h.state.clickUpserts.push({ row, options })
+              return Promise.resolve({ error: h.state.clickUpsertError })
             },
           }
         default:
@@ -319,6 +331,9 @@ beforeEach(() => {
   h.state.contactInsertCalls = []
   h.state.adUpserts = []
   h.state.adUpsertError = null
+  h.state.clickUpserts = []
+  h.state.clickUpsertError = null
+  h.state.clickUpsertThrows = false
   mockGetMediaUrl.mockResolvedValue({
     url: 'https://lookaside.fbsbx.com/whatsapp/abc',
     mimeType: 'image/jpeg',
@@ -845,3 +860,50 @@ describe('inbound webhook: ad attribution ("Origen del cliente")', () => {
     expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
   })
 })
+
+describe('inbound webhook: ad click history (Meta conversions) does not affect message processing', () => {
+  const AD = { source_type: 'ad', source_id: '120000000000001', headline: 'Taladro', ctwa_clid: 'clid-1' }
+
+  it('records the click for that account/contact, idempotent per ctwa_clid, next to the unchanged first attribution', async () => {
+    await runWebhook({ ...TEXT_MESSAGE, referral: AD })
+    expect(h.state.clickUpserts).toHaveLength(1)
+    expect(h.state.clickUpserts[0].row).toMatchObject({ account_id: 'acc-1', contact_id: 'contact-1', ctwa_clid: 'clid-1', source_id: '120000000000001' })
+    expect(h.state.clickUpserts[0].options).toEqual({ onConflict: 'account_id,contact_id,ctwa_clid', ignoreDuplicates: true })
+    expect(h.state.adUpserts).toHaveLength(1)
+    expect(h.state.upsertCalls).toHaveLength(1)
+    expect(h.state.rpcCalls).toHaveLength(1)
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    expect(h.dispatchWebhookEvent).toHaveBeenCalledTimes(1)
+  })
+
+  it('no referral, organic post, replayed delivery or referral without ctwa_clid: nothing is recorded', async () => {
+    await runWebhook()
+    await runWebhook({ ...TEXT_MESSAGE, referral: { ...AD, source_type: 'post' } })
+    await runWebhook({ ...TEXT_MESSAGE, referral: { source_type: 'ad', source_id: '1' } })
+    h.state.messageUpsertResult = []
+    await runWebhook({ ...TEXT_MESSAGE, referral: AD })
+    expect(h.state.clickUpserts).toHaveLength(0)
+  })
+
+  it('a failing or throwing click write never breaks the message, the conversation update or the Flows dispatch', async () => {
+    for (const mode of ['error', 'throw'] as const) {
+      h.dispatchInboundToFlows.mockClear()
+      h.state.upsertCalls.length = 0
+      h.state.rpcCalls.length = 0
+      h.state.clickUpsertError = mode === 'error' ? { code: '42501' } : null
+      h.state.clickUpsertThrows = mode === 'throw'
+      await runWebhook({ ...TEXT_MESSAGE, id: `wamid.${mode}`, referral: AD })
+      expect(h.state.upsertCalls).toHaveLength(1)
+      expect(h.state.rpcCalls).toHaveLength(1)
+      expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('the click is recorded AFTER the message insert: a failed insert records nothing', async () => {
+    h.state.messageUpsertResult = []
+    await runWebhook({ ...TEXT_MESSAGE, referral: AD })
+    expect(h.state.clickUpserts).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).not.toHaveBeenCalled()
+  })
+})
+

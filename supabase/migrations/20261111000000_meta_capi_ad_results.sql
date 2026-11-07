@@ -44,6 +44,8 @@ CREATE TABLE public.meta_capi_settings (
   access_token_enc TEXT,
   api_version TEXT NOT NULL DEFAULT 'v27.0',
   partner_agent TEXT NOT NULL DEFAULT 'wacrm',
+  -- Events Manager "Test events" code. While set, every event is sent with it (test traffic, not counted as production). Clear it to go live.
+  test_event_code TEXT,
   currency TEXT NOT NULL DEFAULT 'PEN',
   send_order_created BOOLEAN NOT NULL DEFAULT FALSE,
   send_purchase BOOLEAN NOT NULL DEFAULT FALSE,
@@ -58,6 +60,7 @@ CREATE TABLE public.meta_capi_settings (
     (dataset_id IS NULL OR dataset_id ~ '^[0-9]{6,25}$') AND (waba_id IS NULL OR waba_id ~ '^[0-9]{6,25}$')
   ),
   CONSTRAINT meta_capi_settings_version CHECK (api_version ~ '^v[0-9]{2}\.[0-9]$'),
+  CONSTRAINT meta_capi_settings_test_code CHECK (test_event_code IS NULL OR test_event_code ~ '^[A-Za-z0-9_-]{1,64}$'),
   CONSTRAINT meta_capi_settings_currency CHECK (currency ~ '^[A-Z]{3}$'),
   CONSTRAINT meta_capi_settings_limits CHECK (max_click_age_days BETWEEN 1 AND 90 AND hourly_limit BETWEEN 1 AND 2000),
   -- Switching on requires complete credentials and an explicit activation instant (only orders confirmed after it are ever reported).
@@ -123,7 +126,7 @@ REVOKE ALL ON TABLE public.contact_ad_clicks, public.meta_capi_settings, public.
 GRANT ALL ON TABLE public.contact_ad_clicks, public.meta_capi_settings, public.meta_capi_events, public.meta_capi_attempts TO service_role;
 GRANT SELECT ON TABLE public.contact_ad_clicks, public.meta_capi_events, public.meta_capi_attempts TO authenticated;
 GRANT SELECT (account_id, enabled, dataset_id, waba_id, api_version, partner_agent, currency, send_order_created, send_purchase, send_order_canceled,
-              max_click_age_days, hourly_limit, activated_at, disabled_reason, disabled_at, updated_at)
+              test_event_code, max_click_age_days, hourly_limit, activated_at, disabled_reason, disabled_at, updated_at)
   ON public.meta_capi_settings TO authenticated;
 
 CREATE POLICY contact_ad_clicks_select ON public.contact_ad_clicks FOR SELECT USING (public.is_account_member(account_id, 'agent'));
@@ -183,7 +186,7 @@ END $$;
 
 CREATE FUNCTION public.meta_capi_claim(p_limit INTEGER DEFAULT 20, p_lease_seconds INTEGER DEFAULT 120, p_max_attempts INTEGER DEFAULT 6)
 RETURNS TABLE (id UUID, account_id UUID, event_name TEXT, event_id TEXT, ctwa_clid TEXT, event_time TIMESTAMPTZ, value NUMERIC, currency TEXT,
-               attempts INTEGER, dataset_id TEXT, waba_id TEXT, access_token_enc TEXT, api_version TEXT, partner_agent TEXT)
+               attempts INTEGER, dataset_id TEXT, waba_id TEXT, access_token_enc TEXT, api_version TEXT, partner_agent TEXT, test_event_code TEXT)
 LANGUAGE plpgsql SET search_path = public AS $$
 BEGIN
   RETURN QUERY
@@ -212,7 +215,7 @@ BEGIN
     RETURNING e.*
   )
   SELECT u.id, u.account_id, u.event_name, u.event_id, u.ctwa_clid, u.event_time, u.value, u.currency, u.attempts,
-         s.dataset_id, s.waba_id, s.access_token_enc, s.api_version, s.partner_agent
+         s.dataset_id, s.waba_id, s.access_token_enc, s.api_version, s.partner_agent, s.test_event_code
   FROM upd u JOIN public.meta_capi_settings s ON s.account_id = u.account_id;
 END $$;
 

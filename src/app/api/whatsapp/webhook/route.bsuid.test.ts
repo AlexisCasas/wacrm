@@ -640,3 +640,18 @@ describe('webhook: phase 4A — reception enabled through the database scope', (
     expect(h.db.tables.contacts.filter((x) => x.account_id === ACC_B)).toHaveLength(0)
   })
 })
+
+describe('webhook: ad click history with a BSUID contact (no phone)', () => {
+  it('stores the click and the first attribution against the BSUID contact, per account, and keeps every later click', async () => {
+    const ref = (id: string, clid: string) => ({ source_type: 'ad', source_id: id, ctwa_clid: clid, headline: 'Oferta' })
+    await run(deliver([text({ from_user_id: BSUID, referral: ref('AD1', 'CLID-1') })], [{ user_id: BSUID, profile: { name: 'Ana' } }]))
+    await run(deliver([text({ from_user_id: BSUID, referral: ref('AD2', 'CLID-2') })], [{ user_id: BSUID }]))
+    const [contact] = h.db.tables.contacts
+    expect(h.db.tables.messages).toHaveLength(2)
+    // (the in-memory db does not emulate ON CONFLICT DO NOTHING; first-wins is covered by the PK in the SQL QA and by the upsert options in route.test.ts)
+    expect(h.db.tables.contact_ad_attributions.every((a) => a.contact_id === contact.id && a.account_id === ACC_A)).toBe(true)
+    expect(h.db.tables.contact_ad_attributions[0]).toMatchObject({ contact_id: contact.id, account_id: ACC_A, source_id: 'AD1' })
+    expect(h.db.tables.contact_ad_clicks.map((c) => [c.contact_id, c.account_id, c.ctwa_clid])).toEqual([[contact.id, ACC_A, 'CLID-1'], [contact.id, ACC_A, 'CLID-2']])
+  })
+})
+

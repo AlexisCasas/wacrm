@@ -17,6 +17,8 @@ export interface CapiRow {
   waba_id: string
   api_version: string
   partner_agent: string
+  /** Events Manager "Test events" code; when present the body carries it so Meta treats the call as test traffic. */
+  test_event_code?: string | null
 }
 
 export type CapiOutcome =
@@ -43,6 +45,7 @@ export function buildCapiBody(row: CapiRow) {
       },
     ],
     partner_agent: row.partner_agent,
+    ...(row.test_event_code ? { test_event_code: row.test_event_code } : {}),
   }
 }
 

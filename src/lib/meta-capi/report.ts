@@ -18,6 +18,8 @@ export interface AdsReport {
   verified_sales: { available: false; reason: string }
   /** ROAS needs ad spend, which WACRM does not have. */
   roas: { available: false; reason: string }
+  /** Whether conversions are being sent to Meta for this account. null = not visible to the caller. Informational only. */
+  meta_capi: { enabled: boolean; test_mode: boolean } | null
 }
 
 const num = (v: unknown) => (typeof v === 'number' ? v : Number(v ?? 0)) || 0
@@ -54,5 +56,6 @@ export function buildAdsReport(rows: unknown[], from: string, to: string): AdsRe
     },
     verified_sales: { available: false, reason: 'InkaClick todavía no informa pago/entrega; "Pedido confirmado" no es una venta cobrada.' },
     roas: { available: false, reason: 'No hay inversión publicitaria confiable en WACRM.' },
+    meta_capi: null,
   }
 }

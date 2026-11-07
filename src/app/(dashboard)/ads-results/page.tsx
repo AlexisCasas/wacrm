@@ -17,19 +17,23 @@ const money = (n: number) => new Intl.NumberFormat('es-PE', { minimumFractionDig
 export default function AdsResultsPage() {
   const [days, setDays] = useState<(typeof RANGES)[number]>(30)
   const [report, setReport] = useState<AdsReport | null>(null)
-  const [error, setError] = useState(false)
+  const [error, setError] = useState<null | 'forbidden' | 'failed'>(null)
 
   const load = useCallback(async () => {
     setReport(null)
-    setError(false)
+    setError(null)
     const to = new Date()
     const from = new Date(to.getTime() - days * 86_400_000)
     try {
       const res = await fetch(`/api/ads/results?from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`)
+      if (res.status === 401 || res.status === 403) {
+        setError('forbidden')
+        return
+      }
       if (!res.ok) throw new Error('bad status')
       setReport((await res.json()) as AdsReport)
     } catch {
-      setError(true)
+      setError('failed')
     }
   }, [days])
 
@@ -50,11 +54,17 @@ export default function AdsResultsPage() {
         </div>
       </div>
 
-      {error && <p className="text-sm text-destructive">No se pudo cargar el reporte.</p>}
+      {error === 'forbidden' && <p className="text-sm text-muted-foreground">No tienes permisos para ver los resultados de anuncios.</p>}
+      {error === 'failed' && <p className="text-sm text-destructive">No se pudo cargar el reporte.</p>}
       {!report && !error && <Loader2 className="h-5 w-5 animate-spin" aria-label="Cargando" />}
 
       {report && (
         <>
+          <p className="text-xs text-muted-foreground" data-testid="capi-status">
+            {report.meta_capi?.enabled
+              ? `Envío de conversiones a Meta: activo${report.meta_capi.test_mode ? ' (modo de prueba)' : ''}.`
+              : 'Envío de conversiones a Meta: desactivado. Este reporte funciona igual.'}
+          </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             <Stat label="Contactos atribuidos" value={String(report.totals.contacts)} />
             <Stat label="Pedidos confirmados (con anuncio)" value={String(report.totals.attributed_orders)} />
