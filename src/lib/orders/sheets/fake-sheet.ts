@@ -17,6 +17,12 @@ export class FakeSheet implements SheetsApi {
     if (this.failWrite) throw new SheetsError('google_5xx', true, 503)
     this.written.push({ tab, a1, values: values.map((r) => [...r]) })
   }
+  formulaWrites: { tab: string; a1: string; values: Cell[][] }[] = []
+  async writeFormulas(_id: string, tab: string, a1: string, values: Cell[][]): Promise<void> {
+    if (this.failWrite) throw new SheetsError('google_5xx', true, 503)
+    this.formulaWrites.push({ tab, a1, values: values.map((r) => [...r]) })
+  }
+  async formulas(): Promise<Cell[][]> { return [] }
   async append(_id: string, _tab: string, rows: Cell[][]): Promise<void> {
     this.appends++
     if (this.fault === 'always_503') throw new SheetsError('google_5xx', true, 503)

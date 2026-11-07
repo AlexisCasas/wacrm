@@ -35,5 +35,19 @@ tree_of() { git -C $REPO rev-parse "$1^{tree}" 2>/dev/null; }
 tbl_count() { RO "select count(*) from pg_tables where schemaname='public' and tablename in ('order_sheet_destinations','order_sheet_exports','order_sheet_exclusions','order_sheet_events')"; }
 fn_count()  { RO "select count(*) from pg_proc where pronamespace='public'::regnamespace and proname like 'order_sheet%'"; }
 # Calls the cron endpoint of the running app from inside the container (credentials never leave the container's environment). Prints "HTTP <status> <first 600 chars>".
-cron_call() { docker exec -e MODE="$1" wacrm-app-1 node -e "fetch('http://127.0.0.1:3000/api/orders/sheets-export/cron?mode='+process.env.MODE,{headers:{'x-cron-secret':process.env.AUTOMATION_CRON_SECRET},signal:AbortSignal.timeout(140000)}).then(async r=>{const t=await r.text();console.log('HTTP '+r.status+' '+t.slice(0,600))}).catch(e=>console.log('ERR '+e.name))"; }
+cron_call() { docker exec -e MODE="$1" wacrm-app-1 node -e "fetch('http://127.0.0.1:3000/api/orders/sheets-export/cron?mode='+process.env.MODE,{headers:{'x-cron-secret':process.env.AUTOMATION_CRON_SECRET},signal:AbortSignal.timeout(process.env.MODE==='reconcile'?280000:140000)}).then(async r=>{const t=await r.text();console.log('HTTP '+r.status+' '+t.slice(0,600))}).catch(e=>console.log('ERR '+e.name))"; }
 sfn_count() { RO "select count(*) from pg_proc where proname in ('$STATUS_FNS')"; }
+
+# --- evidence handling (used by 50-swap-image.sh and 60-postchecks.sh) -------------------------------------------------------------------------
+# Evidence files are never overwritten or truncated by a later run: the previous copy moves to $D/evidence/previous/<name>.<UTC timestamp>.
+keep_prev() { [ -s "$1" ] || return 0; mkdir -p "$D/evidence/previous"; mv "$1" "$D/evidence/previous/$(basename "$1").$(date -u +%Y%m%dT%H%M%SZ)"; }
+# containers-before.txt = NAMES ONLY, sorted (what 60-postchecks.sh compares); containers-before-swap.txt = name, image, status (tab separated, for the record).
+record_containers() {
+  keep_prev "$D/containers-before.txt"; keep_prev "$D/containers-before-swap.txt"
+  docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}' > "$D/containers-before-swap.txt" || return 1
+  cut -f1 "$D/containers-before-swap.txt" | sort > "$D/containers-before.txt"
+}
+# T0.txt is started EMPTY first and only ever appended to afterwards, so no later line can erase an earlier one.
+T0_KEYS=("T0 fnmd5=" "T0 export tables=" "T0 orders=" "T0 cutoff=" "T0 switches=")
+t0_start() { keep_prev "$D/T0.txt"; keep_prev "$D/T0-statuses.txt"; : > "$D/T0.txt"; }
+t0_complete() { for k in "${T0_KEYS[@]}"; do grep -q "^$k" "$D/T0.txt" 2>/dev/null || { echo "T0 evidence incomplete: missing '$k'"; return 1; }; done; }

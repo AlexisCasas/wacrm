@@ -5,17 +5,21 @@
 . "$(dirname "$0")/lib.sh"; need_confirm
 unset DRYRUN_MERGE_COMMIT          # a dry-run pretend-merge must never reach a real swap
 "$(dirname "$0")/40-gate-image.sh" || { echo "image gate is NO-GO: nothing was changed"; exit 1; }
+keep_prev $D/new-image-override.yml; keep_prev $D/rollback-image-override.yml
 printf 'services:\n  app:\n    image: %s\n' "$NEW_IMAGE" > $D/new-image-override.yml
 printf 'services:\n  app:\n    image: %s\n' "$OLD_IMAGE" > $D/rollback-image-override.yml
 "$(dirname "$0")/45-prepare-env.sh" || { echo "env preparation failed: nothing was swapped"; exit 1; }
+t0_start    # empty T0.txt first: every line below is appended, none can truncate another
 RO "select 'T0 fnmd5='||string_agg(proname||'='||md5(prosrc), ',' order by proname) from pg_proc where proname in ('$STATUS_FNS')" | tee -a $D/T0.txt
 RO "select 'T0 export tables='||count(*) from pg_tables where schemaname='public' and tablename like 'order_sheet%'" | tee -a $D/T0.txt
-docker ps -a --format '{{.Names}}\t{{.Image}}\t{{.Status}}' > $D/containers-before-swap.txt
+record_containers || { echo "could not record the container list: nothing was swapped"; exit 1; }
 # T0 evidence ---------------------------------------------------------------------------------------------------------
-RO "select 'T0 orders='||count(*)||' items='||(select count(*) from order_confirmation_items)||' fp='||md5(string_agg(id::text||customer_name||product||quantity||price||delivery_status||coalesce(inkaclick_order_id::text,''), ',' order by id)) from order_confirmations" | tee $D/T0.txt
+RO "select 'T0 orders='||count(*)||' items='||(select count(*) from order_confirmation_items)||' fp='||md5(string_agg(id::text||customer_name||product||quantity||price||delivery_status||coalesce(inkaclick_order_id::text,''), ',' order by id)) from order_confirmations" | tee -a $D/T0.txt
 RO "select 'T0 cutoff='||max(confirmed_at) from order_confirmations" | tee -a $D/T0.txt
 RO "select 'T0 switches='||string_agg(account_id||':'||enabled||'/'||confirm_enabled||'/'||multiproduct_enabled||'@'||updated_at, ';') from order_integration_settings" | tee -a $D/T0.txt
 RO "select id||'|'||status from messages where sender_type<>'customer' and created_at>now()-interval '3 hours' order by id" > $D/T0-statuses.txt; echo "T0 statuses recorded: $(wc -l < $D/T0-statuses.txt) outbound messages" | tee -a $D/T0.txt
+
+t0_complete || { echo "T0 evidence is incomplete: nothing was swapped"; exit 1; }
 # slot: second 10-20 of a minute whose number mod 5 is 1, 2 or 3
 for i in $(seq 1 400); do s=$((10#$(date -u +%S))); m=$((10#$(date -u +%M))); r=$((m % 5)); if [ $s -ge 10 ] && [ $s -le 20 ] && [ $r -ge 1 ] && [ $r -le 3 ]; then break; fi; sleep 0.5; done
 log "swap -> $NEW_IMAGE (slot $(date -u +%T), Lima $(TZ=America/Lima date +%H:%M:%S))"

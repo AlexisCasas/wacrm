@@ -19,3 +19,11 @@ Complemento recomendado: un **latido externo** (p. ej. Healthchecks.io o un ntfy
 
 ## Qué se necesita para activarlo
 1. Elegir el servicio y crear el webhook (o tema ntfy). 2. Guardar la URL en el archivo indicado (modo 600). 3. Instalar el cron de salud (`80-install-cron.sh`, otra autorización). 4. Probar provocando una alerta controlada en la hoja QA o con `SHEETS_HEALTH_CMD` simulado.
+
+## Conciliación endurecida (PR de endurecimiento)
+- **Sync antes de comparar.** `?mode=reconcile` primero exporta lo pendiente y después compara, de modo que un pedido reconocido desde el último tick de 2 min ya está en la hoja.
+- **Reintento acotado solo para desfases.** Si quedan diferencias y son únicamente filas faltantes/sobrantes (crecimiento), espera 45 s, vuelve a exportar y a comparar, como máximo 2 veces (≤ 3 comparaciones, ~2 min). Si se aclara: `ok` con `recoveredAfterRetry:true`. Si persiste: `attention` / `persistent_lag`.
+- **Nunca se reintenta ni se suaviza** (atención inmediata): `duplicate_keys`, `altered_rows` (contenido, línea o importe), `projection_errors`, `dead_jobs`, `row_content_mismatch` (fila en cuarentena) y `layout_mismatch`.
+- El log del cron de reconcile muestra `attempts` (1 = limpio a la primera).
+- **Hoja de Control:** el estado compara la hoja EN VIVO (columna B) con lo que vio la última conciliación (columna D). Crecimiento legítimo → `PENDIENTE DE CONCILIAR` (con detalle en B12); menos filas, un duplicado en vivo o una diferencia del servidor → `HAY DIFERENCIAS`; «Sin diferencias» solo si la hoja no cambió desde la última pasada. Vigencia recomendada: 1,5 h.
+- **Aplicar las fórmulas** (paso explícito, no lo hace ningún cron): `node scripts/ops/orders-sheets/apply-control-formulas.mjs --sheet <id>` (simulación por defecto); `CONFIRM=yes … --apply` escribe solo F1:F6, B10:B12, A11:A12 (nunca C2:D7, B9, C13:C15 ni el registro). Fuente única: `src/lib/orders/sheets/control-formulas.json`.
