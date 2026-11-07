@@ -1,4 +1,4 @@
-// Isolated QA of public.record_whatsapp_message_pricing + whatsapp_message_pricing (migration 20261111000000): merge of sent / delivered / read, idempotent
+// Isolated QA of public.record_whatsapp_message_pricing + whatsapp_message_pricing (migration 20261107004404): merge of sent / delivered / read, idempotent
 // replay, tenant scope and constraints. Real Postgres of the throwaway QA stack; SYNTHETIC data only.
 // Skipped unless QA_E2E=1; refuses to run unless NEXT_PUBLIC_SUPABASE_URL is a loopback address.
 import { execFileSync } from 'node:child_process'

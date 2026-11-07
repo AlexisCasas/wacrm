@@ -1,5 +1,5 @@
 -- ============================================================
--- 20261111000000_whatsapp_message_pricing
+-- 20261107004404_whatsapp_message_pricing
 --
 -- "Ventana gratuita de Meta" (free entry point, Click-to-WhatsApp ads): Meta says in its STATUS webhooks whether a message was free because it was sent
 -- inside an open FEP window (`statuses[].pricing.type = "free_entry_point"`) and, when it does, when that conversation expires
