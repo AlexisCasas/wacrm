@@ -37,6 +37,9 @@ const h = vi.hoisted(() => ({
      * before ever reaching this table.
      */
     contactInsertCalls: [] as Record<string, unknown>[],
+    /** Rows upserted into contact_ad_attributions (ad attribution), and the error the next one resolves with. */
+    adUpserts: [] as { row: Record<string, unknown>; options: unknown }[],
+    adUpsertError: null as { code: string } | null,
   },
 }))
 
@@ -158,6 +161,13 @@ vi.mock('@supabase/supabase-js', () => ({
                     error: null,
                   }),
               }
+            },
+          }
+        case 'contact_ad_attributions':
+          return {
+            upsert: (row: Record<string, unknown>, options: unknown) => {
+              h.state.adUpserts.push({ row, options })
+              return Promise.resolve({ error: h.state.adUpsertError })
             },
           }
         default:
@@ -307,6 +317,8 @@ beforeEach(() => {
   h.state.storageUploads = []
   h.state.storageUploadError = null
   h.state.contactInsertCalls = []
+  h.state.adUpserts = []
+  h.state.adUpsertError = null
   mockGetMediaUrl.mockResolvedValue({
     url: 'https://lookaside.fbsbx.com/whatsapp/abc',
     mimeType: 'image/jpeg',
@@ -770,5 +782,66 @@ describe('inbound webhook: sender identity resolution (P1 Fase 2)', () => {
     )
 
     warnSpy.mockRestore()
+  })
+})
+
+describe('inbound webhook: ad attribution ("Origen del cliente")', () => {
+  const AD = {
+    source_type: 'ad',
+    source_id: '120000000000001',
+    source_url: 'https://www.instagram.com/p/abc/',
+    headline: 'Taladro inalámbrico 20V',
+    ctwa_clid: 'clid-1',
+  }
+
+  it('a first message with an ad referral stores it for that contact and account (first wins), without touching the normal processing', async () => {
+    await runWebhook({ ...TEXT_MESSAGE, referral: AD })
+
+    expect(h.state.adUpserts).toHaveLength(1)
+    expect(h.state.adUpserts[0].row).toMatchObject({
+      contact_id: 'contact-1',
+      account_id: 'acc-1',
+      source_type: 'ad',
+      source_id: '120000000000001',
+      headline: 'Taladro inalámbrico 20V',
+      ctwa_clid: 'clid-1',
+    })
+    expect(h.state.adUpserts[0].options).toEqual({ onConflict: 'contact_id', ignoreDuplicates: true })
+    // Existing behaviour is identical to a message without a referral.
+    expect(h.state.upsertCalls).toHaveLength(1)
+    expect(h.state.rpcCalls).toHaveLength(1)
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+    expect(h.dispatchWebhookEvent).toHaveBeenCalledTimes(1)
+  })
+
+  it('a message without a referral never writes attribution (so a later plain message cannot clear the origin)', async () => {
+    await runWebhook()
+    expect(h.state.adUpserts).toHaveLength(0)
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
+  })
+
+  it('a later message with ANOTHER ad is sent as insert-if-absent, so the first attribution is kept (V1)', async () => {
+    await runWebhook({ ...TEXT_MESSAGE, referral: AD })
+    await runWebhook({ ...TEXT_MESSAGE, id: 'wamid.TEST2', referral: { ...AD, source_id: '999', headline: 'Otro anuncio' } })
+    expect(h.state.adUpserts).toHaveLength(2)
+    for (const call of h.state.adUpserts) expect(call.options).toEqual({ onConflict: 'contact_id', ignoreDuplicates: true })
+  })
+
+  it('a replayed delivery does not touch attribution', async () => {
+    h.state.messageUpsertResult = []
+    await runWebhook({ ...TEXT_MESSAGE, referral: AD })
+    expect(h.state.adUpserts).toHaveLength(0)
+  })
+
+  it('an organic post referral is not advertising and is not stored', async () => {
+    await runWebhook({ ...TEXT_MESSAGE, referral: { ...AD, source_type: 'post' } })
+    expect(h.state.adUpserts).toHaveLength(0)
+  })
+
+  it('a failing attribution write never breaks the message', async () => {
+    h.state.adUpsertError = { code: '42501' }
+    await runWebhook({ ...TEXT_MESSAGE, referral: AD })
+    expect(h.state.upsertCalls).toHaveLength(1)
+    expect(h.dispatchInboundToFlows).toHaveBeenCalledTimes(1)
   })
 })
