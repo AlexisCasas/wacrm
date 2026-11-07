@@ -18,7 +18,7 @@ services:
         org.opencontainers.image.revision: "$SHA"
         org.opencontainers.image.source: "https://github.com/AlexisCasas/wacrm"
         io.wacrm.source-tree: "$TREE"
-        io.wacrm.release: "keyler-sheets (PR #82 + meta-pricing dashboard + PR #81 code)"
+        io.wacrm.release: "$RELEASE_LABEL"
 EOT
 log "build start $SHA tree $TREE"
 docker compose -p wacrm-build --project-directory $WT --env-file $ENV_FILE -f $WT/docker-compose.yml -f $D/build-override.yml build app > $D/build.log 2>&1; rc=$?
@@ -26,5 +26,5 @@ docker compose -p wacrm-build --project-directory $WT --env-file $ENV_FILE -f $W
 docker tag wacrm-build-app $NEW_IMAGE
 docker image inspect $NEW_IMAGE --format '{{.Id}}' > $D/NEW_IMAGE_ID
 docker image inspect $NEW_IMAGE --format 'id={{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}} tree={{index .Config.Labels "io.wacrm.source-tree"}}' | tee -a $D/deploy.log
-mkdir -p $D/image; docker save $NEW_IMAGE | gzip -6 > $D/image/wacrm-app_sheets-keyler-$S8.tar.gz; (cd $D/image && sha256sum *.tar.gz > SHA256SUMS)
+mkdir -p $D/image; docker save $NEW_IMAGE | gzip -6 > $D/image/wacrm-app_${NEW_IMAGE#wacrm-app:}.tar.gz; (cd $D/image && sha256sum *.tar.gz > SHA256SUMS)
 log "build OK -> $NEW_IMAGE (a safety archive was saved; the 04:13 UTC prune removes UNUSED images older than 24 h)"

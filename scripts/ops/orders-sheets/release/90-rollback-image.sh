@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Rolls the app back to wacrm-app:meta-pricing-13d12e06 (the image running before this deploy: dashboard, WITHOUT the PR #81 status code and WITHOUT Sheets). If the 04:13 UTC prune removed it, it is
+# Rolls the app back to $OLD_IMAGE (the image running before this deploy; see lib.sh / release.conf). If the 04:13 UTC prune removed it, it is
 # reloaded from the verified docker-save archive first. NO database change is involved or needed: the old code ignores the new functions and
 # behaves exactly as before with the migration applied (verified). Requires CONFIRM=yes. Does not touch any switch of any account.
 . "$(dirname "$0")/lib.sh"; need_confirm

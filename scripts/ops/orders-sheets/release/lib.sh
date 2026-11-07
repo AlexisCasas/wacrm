@@ -23,6 +23,11 @@ FUNCS="order_sheet_enqueue order_sheet_acquire order_sheet_renew order_sheet_rel
 APPLY_SIG='public.apply_whatsapp_message_status(uuid,text,text,timestamptz)'
 STATUS_FNS="apply_whatsapp_message_status','whatsapp_status_can_advance','whatsapp_status_rank"
 MAX_BACKUP_AGE_MIN=720
+# Per-release profile: a release that is not the first Sheets release (image-only, other rollback target, other required history) puts its values in $D/release.conf.
+# It is sourced here, so every numbered script sees them. Recognised: NEW_IMAGE OLD_IMAGE OLD_IMAGE_ID OLD_IMAGE_TAR PREV_OVERRIDE REPO RELEASE_LABEL
+# REQUIRE_PRS (space separated PR numbers that must be merged) REQUIRE_COMMITS (commits that must be ancestors of main) EXPECT_DESTINATIONS_ENABLED (default 0).
+REQUIRE_PRS=82; REQUIRE_COMMITS="13d12e06 71261e9f"; EXPECT_DESTINATIONS_ENABLED=0; RELEASE_LABEL="keyler-sheets (PR #82 + meta-pricing dashboard + PR #81 code)"
+[ -f "$D/release.conf" ] && . "$D/release.conf"
 COMPOSE_BASE="-p wacrm -f /opt/apps/wacrm/docker-compose.yml -f /opt/apps/wacrm/docker-compose.prod.yml -f /opt/apps/wacrm/docker-compose.bsuid-vars.yml"
 DBC=supabase-db
 RO()  { docker exec -e PGOPTIONS='-c default_transaction_read_only=on -c statement_timeout=20000' $DBC psql -U postgres -d postgres -At -F ' | ' -v ON_ERROR_STOP=1 -c "$1"; }
