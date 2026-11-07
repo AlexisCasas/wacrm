@@ -58,6 +58,8 @@ import { TemplatePicker } from "./template-picker";
 import { AiThreadBanner } from "./ai-thread-banner";
 import { buildReplyPreview, type ReplyQuoteData } from "./reply-quote";
 import { renderTemplateBody } from "@/lib/whatsapp/template-body";
+import { useContactFepWindow } from "@/hooks/use-contact-fep-window";
+import { formatRemaining } from "@/lib/whatsapp/fep-window";
 import { toast } from "sonner";
 import { useCan } from "@/hooks/use-can";
 import { FlowStartPicker } from "./flow-start-picker";
@@ -291,6 +293,7 @@ export function MessageThread({
   }, []);
 
   // 24-hour session timer
+  const { fepWindow } = useContactFepWindow(contact?.id);
   const sessionInfo = useMemo(() => {
     if (!messages.length) return { expired: false, remaining: "" };
 
@@ -1118,7 +1121,10 @@ export function MessageThread({
             )}
           >
             <Clock className="h-3 w-3" />
-            {sessionInfo.remaining}
+            {/* Same Meta free-window countdown as the sidebar "ORIGEN DEL CLIENTE" (display only: with an active Meta window it is shown even after the 24h session expired; sessionInfo.expired still drives every rule). */}
+            {fepWindow.kind === "countdown"
+              ? tTimer("fepRemaining", { time: formatRemaining(fepWindow.remainingMs) })
+              : sessionInfo.remaining}
           </Badge>
         </div>
 

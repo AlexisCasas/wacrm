@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useState } from "react";
 
 import { MessageThread } from "./message-thread";
+import { formatRemaining } from "@/lib/whatsapp/fep-window";
 import type { Contact, Conversation, Message } from "@/types";
 
 const h = vi.hoisted(() => {
@@ -26,9 +27,11 @@ const h = vi.hoisted(() => {
 const resizeObservers: Array<() => void> = [];
 
 vi.mock("next-intl", () => ({
-  useTranslations: () => (key: string) => key,
+  useTranslations: () => (key: string, params?: { time?: string }) => (params?.time ? `${key}:${params.time}` : key),
   useLocale: () => "en",
 }));
+const fepHook = vi.hoisted(() => ({ fepWindow: { kind: "none" } as { kind: string; remainingMs?: number; endingSoon?: boolean } }));
+vi.mock("@/hooks/use-contact-fep-window", () => ({ useContactFepWindow: () => ({ state: null, fepWindow: fepHook.fepWindow }) }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ user: { id: "agent-1" } }) }));
 vi.mock("@/hooks/use-can", () => ({ useCan: () => false }));
 vi.mock("@/hooks/use-presence", () => ({
@@ -78,7 +81,9 @@ vi.mock("./message-composer", () => ({
     onSendInteractive,
     onOpenTemplates,
     replyTo,
+    sessionExpired,
   }: {
+    sessionExpired?: boolean;
     onSend: (text: string) => void;
     onSendMedia: (payload: { kind: "image"; mediaUrl: string; path: string }) => void;
     onSendInteractive: (payload: { body: string }) => void;
@@ -90,6 +95,7 @@ vi.mock("./message-composer", () => ({
       <button onClick={() => onSendMedia({ kind: "image", mediaUrl: "https://media.test/image", path: "image" })}>send-media</button>
       <button onClick={() => onSendInteractive({ body: "interactive" })}>send-interactive</button>
       <button onClick={onOpenTemplates}>open-template</button>
+      <span data-testid="composer-session-expired">{String(sessionExpired)}</span>
       {replyTo && <span data-testid="composer-reply-media">{`${replyTo.contentType}:${replyTo.mediaUrl}`}</span>}
     </>
   ),
@@ -494,5 +500,62 @@ describe("MessageThread scroll follow", () => {
     metrics.setHeight(1_200);
     await act(async () => fireEvent.click(view.getByText("replace-temporary")));
     expect(scroll.scrollTop).toBe(120);
+  });
+});
+
+describe("MessageThread session badge vs Meta free window", () => {
+  afterEach(() => { fepHook.fepWindow = { kind: "none" }; });
+  const recent = (): Message => ({ ...message("m-recent"), created_at: new Date(Date.now() - 60_000).toISOString() });
+
+  it("shows the same time as the sidebar countdown (formatRemaining of the shared hook value)", async () => {
+    fepHook.fepWindow = { kind: "countdown", remainingMs: (6 * 1440 + 23 * 60) * 60_000, endingSoon: false };
+    render(<MessageThread {...threadProps([recent()])} />);
+    expect(await screen.findByText("fepRemaining:6 d 23 h")).toBeTruthy();
+    expect(screen.queryByText(/xhRemaining/)).toBeNull();
+  });
+
+  it("follows the countdown when the shared value changes", async () => {
+    fepHook.fepWindow = { kind: "countdown", remainingMs: (6 * 1440 + 23 * 60) * 60_000, endingSoon: false };
+    const { rerender } = render(<MessageThread {...threadProps([recent()])} />);
+    expect(await screen.findByText("fepRemaining:6 d 23 h")).toBeTruthy();
+    fepHook.fepWindow = { kind: "countdown", remainingMs: (6 * 1440 + 22 * 60) * 60_000, endingSoon: false };
+    rerender(<MessageThread {...threadProps([recent()])} />);
+    expect(await screen.findByText("fepRemaining:6 d 22 h")).toBeTruthy();
+  });
+
+  it("keeps the 24h label when there is no Meta countdown (none, confirmed or ended)", async () => {
+    for (const kind of ["none", "free_confirmed", "ended"]) {
+      cleanup();
+      fepHook.fepWindow = { kind };
+      render(<MessageThread {...threadProps([recent()])} />);
+      expect(await screen.findByText(/xhRemaining|xmRemaining/)).toBeTruthy();
+    }
+  });
+
+  it("24h session expired + active Meta window: badge shows the Meta time (same as the sidebar) while sending rules stay in expired mode", async () => {
+    fepHook.fepWindow = { kind: "countdown", remainingMs: (2 * 1440 + 3 * 60) * 60_000, endingSoon: false };
+    const old: Message = { ...message("m-old"), created_at: new Date(Date.now() - 30 * 3600_000).toISOString() };
+    render(<MessageThread {...threadProps([old])} />);
+    expect(await screen.findByText(`fepRemaining:${formatRemaining(fepHook.fepWindow.remainingMs!)}`)).toBeTruthy();
+    expect(screen.getByText("fepRemaining:2 d 3 h")).toBeTruthy();
+    expect(screen.queryByText("expired")).toBeNull();
+    expect(screen.getByTestId("composer-session-expired").textContent).toBe("true");
+  });
+
+  it("24h session expired and NO active Meta window: keeps the previous 'expired' badge", async () => {
+    for (const kind of ["none", "free_confirmed", "ended"]) {
+      cleanup();
+      fepHook.fepWindow = { kind };
+      const old: Message = { ...message("m-old"), created_at: new Date(Date.now() - 30 * 3600_000).toISOString() };
+      render(<MessageThread {...threadProps([old])} />);
+      expect(await screen.findByText("expired")).toBeTruthy();
+    }
+  });
+
+  it("composer stays enabled-mode (not expired) inside the 24h session with an active Meta window", async () => {
+    fepHook.fepWindow = { kind: "countdown", remainingMs: 3 * 1440 * 60_000, endingSoon: false };
+    render(<MessageThread {...threadProps([recent()])} />);
+    expect(await screen.findByText("fepRemaining:3 d 0 h")).toBeTruthy();
+    expect(screen.getByTestId("composer-session-expired").textContent).toBe("false");
   });
 });

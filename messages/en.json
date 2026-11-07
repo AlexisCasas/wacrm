@@ -349,6 +349,7 @@
       "expired": "Expired",
       "xhRemaining": "{hours}h remaining",
       "xmRemaining": "{minutes}m remaining",
+      "fepRemaining": "{time} remaining",
       "noCustomerMessages": "No customer messages"
     },
     "composer": {

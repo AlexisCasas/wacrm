@@ -349,6 +349,7 @@
       "expired": "Expirada",
       "xhRemaining": "quedan {hours}h",
       "xmRemaining": "quedan {minutes}m",
+      "fepRemaining": "quedan {time}",
       "noCustomerMessages": "Sin mensajes del cliente"
     },
     "composer": {
