@@ -43,3 +43,8 @@ Con esto el exportador queda **apagado**: destino `enabled=false`, sin cron.
 
 ## Criterios GO
 Gate de migración GO, ensayo en copia `REHEARSAL PASS` con el sha256 exacto, `31-verify` PASS, gate de imagen GO (árbol de `main` = árbol de la imagen, actividad baja, sin pedidos pendientes ni entregas en vuelo), `60-postchecks` PASS a 0/10/30 min. NO-GO ante cualquier FAIL, un pedido pendiente, tráfico por encima de umbral o un `dead`.
+
+## Evidencias (50 y 60)
+- `50-swap-image.sh` escribe `containers-before.txt` (solo nombres, lo que compara `60`) y `containers-before-swap.txt` (nombre, imagen, estado); `T0.txt` se crea vacío y solo se añade, y el swap se aborta si le falta alguna línea. Una repetición archiva lo anterior en `evidence/previous/<nombre>.<UTC>`.
+- `60-postchecks.sh` guarda cada ejecución en `evidence/postcheck/postcheck-<UTC>.txt` y `NOW-statuses-<UTC>.txt`. Si otra versión sustituyó la imagen después del release, declararlo: `EXPECT_IMAGE=… EXPECT_IMAGE_ID=… EXPECT_REVISION=… ./60-postchecks.sh`.
+- `orders-sheets-cron.sh reconcile` admite ~5 min (sync + comparación + hasta 2 reintentos).

@@ -6,6 +6,8 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { runSheetsExport } from './exporter'
 import { reconcileAccount } from './reconcile'
+import { reconcileWithRetry } from './reconcile-run'
+import { classifyReconcileRun } from './status'
 import type { SheetsApi } from './google-client'
 import { FakeSheet } from './fake-sheet'
 import { HEADERS, KEY_COLUMN_INDEX } from './layout'
@@ -183,6 +185,53 @@ describe.skipIf(!E2E)('Sheets export (isolated DB)', { timeout: 90_000 }, () => 
     sql(`update order_sheet_exports set status = 'pending', exported_lines = null, exported_at = null`)
     const r = await run(sheet)
     expect(r.mismatched).toBe(1); expect(sheet.data).toHaveLength(1)
+  })
+
+  describe('scheduled reconciliation: sync first, bounded retry for lag only', () => {
+    const pass = (api: SheetsApi, beforeFirstCompare?: () => void) => {
+      let first = true
+      return reconcileWithRetry({
+        sync: () => run(api),
+        reconcile: async () => { if (first && beforeFirstCompare) { beforeFirstCompare(); first = false } else first = false; return reconcileAccount(db, api, A) },
+        sleep: async () => { makeDue() },
+      }, { retries: 2, delayMs: 0 })
+    }
+    it('an order acknowledged since the last tick is exported by the pre-sync: clean on the first comparison', async () => {
+      const sheet = new FakeSheet(); order(A, { price: 10, qty: 1 }); await run(sheet)
+      order(A, { price: 20, qty: 2 })                                   // acknowledged, not yet exported
+      const r = await pass(sheet)
+      expect(r).toMatchObject({ attempts: 1, recoveredAfterRetry: false }); expect(r.report.differences).toBe(0)
+      expect(classifyReconcileRun(r).status).toBe('ok')
+    })
+    it('an order acknowledged between the sync and the comparison is lag: recovered on the retry', async () => {
+      const sheet = new FakeSheet(); order(A, { price: 10, qty: 1 }); await run(sheet)
+      const r = await pass(sheet, () => { order(A, { price: 30, qty: 3 }) })
+      expect(r).toMatchObject({ attempts: 2, recoveredAfterRetry: true }); expect(r.history[0].lagOnly).toBe(true); expect(r.report.differences).toBe(0)
+      expect(classifyReconcileRun(r)).toEqual({ status: 'ok', reasons: [] })
+    })
+    it('lag that does not clear (Sheets keeps failing) is NOT hidden', async () => {
+      const sheet = new FakeSheet(); sheet.fault = 'always_503'; order(A, { price: 10, qty: 1 })
+      const r = await pass(sheet)
+      expect(r.attempts).toBe(3); expect(r.report.missingKeys).toHaveLength(1)
+      expect(classifyReconcileRun(r)).toEqual({ status: 'attention', reasons: ['persistent_lag'] })
+    })
+    it('a dead job and an altered row are attention at once, never retried', async () => {
+      const sheet = new FakeSheet(); const ok = order(A, { price: 10, qty: 1 }); await run(sheet)
+      sheet.data[0][HEADERS.indexOf('Producto')] = 'Otro producto'
+      const bad = order(A, { price: 145, qty: 2, items: [['P1', 1, 95], ['P2', 1, 50]] })
+      sql(`alter table order_confirmations disable trigger user; update order_confirmations set price = 150 where id = '${bad}'; alter table order_confirmations enable trigger user`)
+      const r = await pass(sheet)
+      expect(r.attempts).toBe(1)
+      expect(classifyReconcileRun(r).status).toBe('attention')
+      expect(classifyReconcileRun(r).reasons).toEqual(expect.arrayContaining(['altered_rows', 'dead_jobs']))
+      void ok
+    })
+    it('duplicates are attention at once', async () => {
+      const sheet = new FakeSheet(); order(A, { price: 10, qty: 1 }); await run(sheet)
+      sheet.data.push([...sheet.data[0]])
+      const r = await pass(sheet)
+      expect(r.attempts).toBe(1); expect(classifyReconcileRun(r).reasons).toContain('duplicate_keys')
+    })
   })
 
   it('two accounts cannot be configured with the same spreadsheet file', () => {

@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "tab": "Control de conciliación",
+  "cells": [
+    { "a1": "F1", "value": "Cambio desde la última conciliación" },
+    { "a1": "F2", "formula": "=IF(D2=\"\",\"\",B2-D2)" },
+    { "a1": "F3", "formula": "=IF(D3=\"\",\"\",B3-D3)" },
+    { "a1": "F4", "formula": "=IF(D4=\"\",\"\",B4-D4)" },
+    { "a1": "F5", "formula": "=IF(D5=\"\",\"\",ROUND(B5-D5,2))" },
+    { "a1": "F6", "formula": "=IF(D6=\"\",\"\",B6-D6)" },
+    { "a1": "B10", "formula": "=IF(B9=\"\",\"SIN CONCILIAR\",IF(NOW()-B9>B11/24,\"CONCILIACIÓN VENCIDA\",IF(C15>0,\"TRABAJOS EN ERROR\",IF(OR(SUMPRODUCT(ABS(E2:E7))<>0,B6>0,MIN(F2:F4)<0,N(F5)<0),\"HAY DIFERENCIAS\",IF(OR(MAX(F2:F4)>0,N(F5)>0),\"PENDIENTE DE CONCILIAR\",\"Sin diferencias\")))))" },
+    { "a1": "A11", "value": "Vigencia máxima de la conciliación (horas)" },
+    { "a1": "B11", "value": 1.5 },
+    { "a1": "A12", "value": "Detalle del estado" },
+    { "a1": "B12", "formula": "=IF(B10=\"PENDIENTE DE CONCILIAR\",\"Hay pedidos nuevos desde la última conciliación: +\"&MAX(N(F2),0)&\" pedidos y +\"&MAX(N(F3),0)&\" líneas. Se concilian en la próxima pasada (cada 30 min).\",IF(B10=\"Sin diferencias\",\"Conciliación vigente de las \"&TEXT(B9,\"hh:mm\")&\" (hora de Lima); la hoja no cambió desde entonces.\",IF(B10=\"HAY DIFERENCIAS\",\"La hoja y la base de datos no coinciden: revisar el informe de la conciliación; no corregir a mano.\",IF(B10=\"TRABAJOS EN ERROR\",\"Hay pedidos que no se pudieron exportar (fila 15).\",\"La conciliación automática no ha corrido a tiempo.\"))))" }
+  ]
+}

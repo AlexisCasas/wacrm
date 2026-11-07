@@ -38,6 +38,9 @@ export interface SheetsApi {
   column(spreadsheetId: string, tab: string, colLetter: string): Promise<string[]>
   rows(spreadsheetId: string, tab: string): Promise<Cell[][]>
   writeRange(spreadsheetId: string, tab: string, a1: string, values: Cell[][]): Promise<void>
+  // USER_ENTERED: strings that start with '=' are stored as formulas. Used only for the control tab's own formulas, never for order data.
+  writeFormulas(spreadsheetId: string, tab: string, a1: string, values: Cell[][]): Promise<void>
+  formulas(spreadsheetId: string, tab: string, a1: string): Promise<Cell[][]>
   append(spreadsheetId: string, tab: string, rows: Cell[][]): Promise<void>
 }
 
@@ -125,6 +128,20 @@ export class GoogleSheetsClient implements SheetsApi {
     await this.api(`/v4/spreadsheets/${encodeURIComponent(id)}/values/${range}?valueInputOption=RAW`, {
       method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ majorDimension: 'ROWS', values }),
     })
+  }
+
+  async writeFormulas(id: string, tab: string, a1: string, values: Cell[][]): Promise<void> {
+    const range = encodeURIComponent(`${quoteTab(tab)}!${a1}`)
+    await this.api(`/v4/spreadsheets/${encodeURIComponent(id)}/values/${range}?valueInputOption=USER_ENTERED`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ majorDimension: 'ROWS', values }),
+    })
+  }
+
+  // Cell contents as typed (formulas as text), used to show what would change before the control tab's formulas are touched.
+  async formulas(id: string, tab: string, a1: string): Promise<Cell[][]> {
+    const range = encodeURIComponent(`${quoteTab(tab)}!${a1}`)
+    const res = await this.api(`/v4/spreadsheets/${encodeURIComponent(id)}/values/${range}?majorDimension=ROWS&valueRenderOption=FORMULA`)
+    return ((await res.json()) as { values?: Cell[][] }).values ?? []
   }
 
   private sheetIds = new Map<string, number>()

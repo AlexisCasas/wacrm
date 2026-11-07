@@ -3,14 +3,20 @@
 # (changed history, regressions, stuck or failed deliveries, the OLD error signature, cross-account symptoms), not for frozen numbers.
 # Run right after the swap and again after ~10 minutes of real traffic. Needs T0 files from 50-swap-image.sh.
 . "$(dirname "$0")/lib.sh"
+# Every run keeps its own transcript and status snapshot under $D/evidence/postcheck/ (nothing from an earlier run is overwritten).
+RUN_TS=$(date -u +%Y%m%dT%H%M%SZ); EVD=$D/evidence/postcheck; mkdir -p "$EVD"; exec > >(tee "$EVD/postcheck-$RUN_TS.txt") 2>&1
+# Image identity defaults to this release's candidate. If ANOTHER release replaced the app afterwards, say so explicitly:
+#   EXPECT_IMAGE=<tag> EXPECT_IMAGE_ID=<sha256:...> EXPECT_REVISION=<commit> ./60-postchecks.sh
+WANT_IMAGE=${EXPECT_IMAGE:-$NEW_IMAGE}; WANT_ID=${EXPECT_IMAGE_ID:-$(cat $D/NEW_IMAGE_ID)}; WANT_REV=${EXPECT_REVISION:-$CAND_SHA}
 SW=$(docker inspect wacrm-app-1 --format '{{.State.StartedAt}}'); SWS=${SW%%.*}Z
 echo "== app (started $SW)"
-chk "image" "$(docker inspect wacrm-app-1 --format '{{.Config.Image}}')" $NEW_IMAGE
-chk "image id" "$(docker inspect wacrm-app-1 --format '{{.Image}}')" "$(cat $D/NEW_IMAGE_ID)"
-chk "revision label" "$(docker image inspect $NEW_IMAGE --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" $CAND_SHA
+chk "image" "$(docker inspect wacrm-app-1 --format '{{.Config.Image}}')" "$WANT_IMAGE"
+chk "image id" "$(docker inspect wacrm-app-1 --format '{{.Image}}')" "$WANT_ID"
+chk "revision label" "$(docker image inspect "$WANT_IMAGE" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" "$WANT_REV"
 chk "health" "$(docker inspect wacrm-app-1 --format '{{.State.Health.Status}}')" healthy
 chk "restarts" "$(docker inspect wacrm-app-1 --format '{{.RestartCount}}')" 0
 chk "other containers: same names" "$(docker ps -a --format '{{.Names}}' | sort | diff -q - $D/containers-before.txt >/dev/null && echo same)" same
+chk "T0 evidence from 50-swap-image.sh is complete (a missing line would make the comparisons below meaningless)" "$(t0_complete >/dev/null && echo ok)" ok
 echo "== database objects and switches (must be exactly as after the migration / before the swap)"
 chk "3 status functions exist" "$(sfn_count)" 3
 chk "status function bodies unchanged since T0" "$(RO "select 'T0 fnmd5='||string_agg(proname||'='||md5(prosrc), ',' order by proname) from pg_proc where proname in ('$STATUS_FNS')")" "$(grep '^T0 fnmd5=' $D/T0.txt | tail -1)"
@@ -43,8 +49,8 @@ echo "     unsupported-status warnings (Meta values the app does not store): $(e
 # (The id list can be thousands of UUIDs: the query goes through stdin; if the current statuses cannot be read the check FAILS, it never passes silently.)
 IDS=$(cut -d'|' -f1 $D/T0-statuses.txt | head -20000 | sed "s/.*/'&'/" | paste -sd,)
 if [ -n "$IDS" ]; then
-  echo "select id||'|'||status from messages where id::text in ($IDS)" | ROF | sort > $D/NOW-statuses.txt; RC=${PIPESTATUS[1]}
-  python3 -I - "$D/T0-statuses.txt" "$D/NOW-statuses.txt" "$RC" <<'PY'
+  echo "select id||'|'||status from messages where id::text in ($IDS)" | ROF | sort > "$EVD/NOW-statuses-$RUN_TS.txt"; RC=${PIPESTATUS[1]}
+  python3 -I - "$D/T0-statuses.txt" "$EVD/NOW-statuses-$RUN_TS.txt" "$RC" <<'PY'
 import sys
 rank={"sending":0,"sent":1,"delivered":2,"read":3,"failed":9}
 t0=dict(l.strip().split("|",1) for l in open(sys.argv[1]) if "|" in l)
