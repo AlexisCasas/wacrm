@@ -209,6 +209,7 @@
       "expired": "만료됨",
       "xhRemaining": "{hours}시간 남음",
       "xmRemaining": "{minutes}분 남음",
+      "fepRemaining": "{time} 남음",
       "noCustomerMessages": "고객 메시지 없음"
     },
     "composer": {
