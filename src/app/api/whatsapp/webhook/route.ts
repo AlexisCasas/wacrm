@@ -22,6 +22,7 @@ import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
 import { captureAdAttribution } from '@/lib/whatsapp/ad-attribution'
+import { recordAdClick } from '@/lib/whatsapp/ad-click-history'
 import { captureMessagePricing } from '@/lib/whatsapp/message-pricing'
 import type { AdReferral } from '@/lib/whatsapp/ad-referral'
 import {
@@ -875,6 +876,8 @@ async function processMessage(
   // Ad attribution ("Origen del cliente"). Additive and isolated: only on a genuine first insert, never throws, never changes how the message is processed.
   if (message.referral) {
     await captureAdAttribution(supabaseAdmin(), { accountId, contactId: contactRecord.id, referral: message.referral })
+    // Additive click history for Meta conversions (best effort, never throws).
+    await recordAdClick(supabaseAdmin(), { accountId, contactId: contactRecord.id, referral: message.referral })
   }
 
   // Update conversation. The unread bump is done DB-side (migration 037's
