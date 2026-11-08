@@ -18,7 +18,8 @@ export function ConfirmOrderButton({ contact, conversationId }: Props) {
   const t = useTranslations("Orders");
   const [sellers, setSellers] = useState<OrderSeller[] | null>(null);
   const [multiproductEnabled, setMultiproductEnabled] = useState(false);
-  const [productTagsRequired, setProductTagsRequired] = useState(false);
+  // Legacy DB switch product_tags_required now enforces Audio guide product IDs.
+  const [catalogRequired, setCatalogRequired] = useState(false);
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -31,7 +32,7 @@ export function ConfirmOrderButton({ contact, conversationId }: Props) {
         if (!cancelled) {
           setSellers(body.enabled === true ? (body.sellers ?? []) : []);
           setMultiproductEnabled(body.enabled === true && body.multiproduct_enabled === true);
-          setProductTagsRequired(body.enabled === true && body.product_tags_required === true);
+          setCatalogRequired(body.enabled === true && body.product_tags_required === true);
         }
       } catch {
         /* hidden */
@@ -49,7 +50,7 @@ export function ConfirmOrderButton({ contact, conversationId }: Props) {
         <ClipboardCheck className="mr-1 size-4" />
         {t("confirmButton")}
       </Button>
-      <ConfirmOrderDialog open={open} onOpenChange={setOpen} contact={contact} conversationId={conversationId} sellers={sellers} multiproductEnabled={multiproductEnabled} productTagsRequired={productTagsRequired} />
+      <ConfirmOrderDialog open={open} onOpenChange={setOpen} contact={contact} conversationId={conversationId} sellers={sellers} multiproductEnabled={multiproductEnabled} catalogRequired={catalogRequired} />
     </>
   );
 }
