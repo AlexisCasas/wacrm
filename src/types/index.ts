@@ -131,6 +131,8 @@ export interface Contact {
 
 export interface Tag {
   id: string;
+  /** Admin-curated flag for the confirmed-order product selector. */
+  is_order_product?: boolean;
   user_id: string;
   name: string;
   color: string;
