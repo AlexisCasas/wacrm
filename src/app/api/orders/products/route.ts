@@ -31,23 +31,9 @@ export async function GET(request: Request) {
 
     const literal = q.replace(/[\\%_]/g, (char) => "\\" + char);
 
-    // In strict mode the catalogue is an explicit commercial subset of tags:
-    // operational statuses (Avisados, En destino, etc.) never appear by default.
-    if (settings.product_tags_required === true) {
-      const { data: tags, error: tagsError } = await admin
-        .from("tags")
-        .select("id, name")
-        .eq("account_id", accountId)
-        .eq("is_order_product", true)
-        .ilike("name", "%" + literal + "%")
-        .order("name")
-        .limit(20);
-      if (tagsError) return NextResponse.json({ error: "catalog_unavailable" }, { status: 500, headers: NO_STORE });
-      return NextResponse.json({
-        products: (tags ?? []).map((tag) => ({ id: tag.id, display_name: tag.name, active: true })),
-      }, { headers: NO_STORE });
-    }
-
+    // Both legacy picker and strict mode use the same existing
+    // "Audios por producto" catalogue; strictness is enforced on selection
+    // and server-side confirmation, never by treating contact tags as goods.
     // Product names live in the per-account audio_guide_products catalog. This
     // endpoint does NOT require voice-note functionality to be switched on.
     // Escaping search wildcards avoids unintended broad matches.
@@ -58,7 +44,7 @@ export async function GET(request: Request) {
       .eq("active", true)
       .ilike("display_name", "%" + literal + "%")
       .order("display_name")
-      .limit(10);
+      .limit(20);
 
     if (error) return NextResponse.json({ error: "catalog_unavailable" }, { status: 500, headers: NO_STORE });
     return NextResponse.json({ products: data ?? [] }, { headers: NO_STORE });
