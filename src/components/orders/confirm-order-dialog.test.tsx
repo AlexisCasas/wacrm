@@ -26,9 +26,9 @@ import { toast } from "sonner";
 const sellers = [{ id: "11111111-1111-4111-8111-111111111111", name: "Vendedor Uno" }];
 const contact = { id: "22222222-2222-4222-8222-222222222222", name: "Cliente Sintetico", phone: "900000001" };
 
-function setup(multiproductEnabled = false, productTagsRequired = false) {
+function setup(multiproductEnabled = false, catalogRequired = false) {
   const onOpenChange = vi.fn();
-  render(<ConfirmOrderDialog open onOpenChange={onOpenChange} contact={contact} conversationId="33333333-3333-4333-8333-333333333333" sellers={sellers} multiproductEnabled={multiproductEnabled} productTagsRequired={productTagsRequired} />);
+  render(<ConfirmOrderDialog open onOpenChange={onOpenChange} contact={contact} conversationId="33333333-3333-4333-8333-333333333333" sellers={sellers} multiproductEnabled={multiproductEnabled} catalogRequired={catalogRequired} />);
   return { onOpenChange };
 }
 const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
