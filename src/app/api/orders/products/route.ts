@@ -29,7 +29,7 @@ export async function GET(request: Request) {
     if (q.length < 2 || q.length > 120)
       return NextResponse.json({ products: [] }, { headers: NO_STORE });
 
-    const literal = q.replace(/[\\\\%_]/g, (char) => "\\\\" + char);
+    const literal = q.replace(/[\\%_]/g, (char) => "\\" + char);
 
     // In strict mode the catalogue is an explicit commercial subset of tags:
     // operational statuses (Avisados, En destino, etc.) never appear by default.
