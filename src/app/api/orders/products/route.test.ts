@@ -74,6 +74,18 @@ describe("GET /api/orders/products", () => {
     expect(r.headers.get("cache-control")).toBe("private, no-store");
   });
 
+  it("strict mode searches only marked account product tags (even for single orders)", async () => {
+    settingsRead.mockResolvedValue({ data: { confirm_enabled: true, multiproduct_enabled: false, product_tags_required: true }, error: null });
+    productsRead.mockResolvedValue({ data: [{ id: "tag-1", name: "Cargador Xiaomi" }], error: null });
+    const response = await GET(new Request("http://example.invalid/api/orders/products?q=Cargador&account_id=other"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ products: [{ id: "tag-1", display_name: "Cargador Xiaomi", active: true }] });
+    expect(queriedProducts).toHaveBeenCalledWith("account_id", ACCOUNT);
+    expect(queriedProducts).toHaveBeenCalledWith("is_order_product", true);
+    expect(searchedProductNames).toHaveBeenCalledWith("name", "%Cargador%");
+    expect(queriedProducts).not.toHaveBeenCalledWith("active", true);
+  });
+
   it("removes PostgREST asterisk wildcards before searching and rejects wildcard-only queries", async () => {
     settingsRead.mockResolvedValue({ data: { confirm_enabled: true, multiproduct_enabled: true }, error: null });
     const r = await query("Gui*ca");
