@@ -22,7 +22,7 @@ import { PERU_DEPARTMENTS, validateOrderInput } from "@/lib/orders/fields";
 import { ORDERS_CHANGED_EVENT } from "@/components/orders/order-history";
 import { buildPrefill, type OrderFormValues } from "@/lib/orders/prefill";
 import { priceToCents } from "@/lib/orders/items";
-import { OrderItemsEditor, StrictProductTagPicker, draftFromLegacy, emptyOrderItem, itemsForSubmission, moneyDisplay, type DraftOrderItem } from "./order-items-editor";
+import { OrderItemsEditor, StrictCatalogProductPicker, draftFromLegacy, emptyOrderItem, itemsForSubmission, moneyDisplay, type DraftOrderItem } from "./order-items-editor";
 
 /** A member of the account who can be the commercial seller. `id` is the member's user id (stable across renames). */
 export interface OrderSeller {
@@ -66,7 +66,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
   const [step, setStep] = useState<Step>("form");
   const [values, setValues] = useState<OrderFormValues>(() => buildPrefill(contact, []));
   const [sellerId, setSellerId] = useState("");
-  const [productTagId, setProductTagId] = useState("");
+  const [catalogProductId, setCatalogProductId] = useState("");
   const [multiMode, setMultiMode] = useState(false);
   const [items, setItems] = useState<DraftOrderItem[]>(() => [emptyOrderItem()]);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
@@ -81,7 +81,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
     inFlight.current = false;
     setStep("form");
     setSellerId("");
-    setProductTagId("");
+    setCatalogProductId("");
     setMultiMode(false);
     setItems([emptyOrderItem()]);
     setServerErrors({});
@@ -118,8 +118,8 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
   const activeServerErrors = Object.fromEntries(Object.entries(serverErrors).filter(([, message]) => Boolean(message)));
   const errors = { ...(validation.errors as Record<string, string>), ...activeServerErrors };
   const selectedFromCatalog = !productTagsRequired || (multiMode && multiproductEnabled
-    ? items.every((item) => Boolean(item.product_tag_id))
-    : Boolean(productTagId));
+    ? items.every((item) => Boolean(item.catalog_product_id))
+    : Boolean(catalogProductId));
   const canReview = validation.ok && sellerId !== "" && selectedFromCatalog;
 
   const set = (key: keyof OrderFormValues, value: string) => {
@@ -139,9 +139,8 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
         body: JSON.stringify({
           ...values,
           ...(multiMode && multiproductEnabled
-            ? { items: itemsForSubmission(items).map((item, index) => productTagsRequired
-                ? { ...item, product_tag_id: items[index].product_tag_id } : item) }
-            : productTagsRequired ? { product_tag_id: productTagId } : {}),
+            ? { items: itemsForSubmission(items) }
+            : productTagsRequired ? { catalog_product_id: catalogProductId } : {}),
           request_key: requestKey.current,
           seller_user_id: sellerId,
           contact_id: contact.id,
@@ -194,12 +193,12 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
                   if (multiMode) {
                     setMultiMode(false);
                     if (productTagsRequired) {
-                      setProductTagId("");
+                      setCatalogProductId("");
                       set("product", "");
                     }
                   } else {
                     const draft = draftFromLegacy(values);
-                    if (productTagsRequired && productTagId) draft.product_tag_id = productTagId;
+                    if (productTagsRequired && catalogProductId) draft.catalog_product_id = catalogProductId;
                     setItems([draft]);
                     setMultiMode(true);
                   }
@@ -226,8 +225,8 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
                   {optional ? <span className="ml-1 text-muted-foreground">({t("optional")})</span> : null}
                 </Label>
                 {key === "product" && productTagsRequired ? (
-                  <StrictProductTagPicker value={values.product} selectedId={productTagId} onSelect={(product) => {
-                    setProductTagId(product.id);
+                  <StrictCatalogProductPicker value={values.product} selectedId={catalogProductId} onSelect={(product) => {
+                    setCatalogProductId(product.id);
                     set("product", product.display_name);
                   }} />
                 ) : multiline ? (
@@ -241,7 +240,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
                     aria-invalid={!!err(key)}
                   />
                 )}
-                {key === "product" && productTagsRequired && !productTagId ? (
+                {key === "product" && productTagsRequired && !catalogProductId ? (
                   <p className="text-xs text-muted-foreground">{t("lineCatalogRequired")}</p>
                 ) : null}
                 {err(key) ? <p className="text-xs text-destructive">{err(key)}</p> : null}
