@@ -43,7 +43,8 @@ interface Props {
   conversationId?: string | null;
   sellers: OrderSeller[];
   multiproductEnabled?: boolean;
-  productTagsRequired?: boolean;
+  /** Restrict product choices to active audio_guide_products (legacy DB flag). */
+  catalogRequired?: boolean;
 }
 
 type Step = "form" | "preview";
@@ -61,7 +62,7 @@ const FIELD_LABELS: { key: keyof OrderFormValues; label: string; optional?: bool
 
 // "Confirmar pedido". Opening the dialog starts ONE order: the `request_key` is generated here and reused by every submit of this dialog, so a
 // double click, a slow network retry or a re-render can never create a second order. Closing and reopening starts a new one (a new sale).
-export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId, sellers, multiproductEnabled = false, productTagsRequired = false }: Props) {
+export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId, sellers, multiproductEnabled = false, catalogRequired = false }: Props) {
   const t = useTranslations("Orders");
   const [step, setStep] = useState<Step>("form");
   const [values, setValues] = useState<OrderFormValues>(() => buildPrefill(contact, []));
@@ -117,7 +118,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
   // Keep client-side feedback visible while an item/field remains invalid.
   const activeServerErrors = Object.fromEntries(Object.entries(serverErrors).filter(([, message]) => Boolean(message)));
   const errors = { ...(validation.errors as Record<string, string>), ...activeServerErrors };
-  const selectedFromCatalog = !productTagsRequired || (multiMode && multiproductEnabled
+  const selectedFromCatalog = !catalogRequired || (multiMode && multiproductEnabled
     ? items.every((item) => Boolean(item.catalog_product_id))
     : Boolean(catalogProductId));
   const canReview = validation.ok && sellerId !== "" && selectedFromCatalog;
@@ -140,7 +141,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
           ...values,
           ...(multiMode && multiproductEnabled
             ? { items: itemsForSubmission(items) }
-            : productTagsRequired ? { catalog_product_id: catalogProductId } : {}),
+            : catalogRequired ? { catalog_product_id: catalogProductId } : {}),
           request_key: requestKey.current,
           seller_user_id: sellerId,
           contact_id: contact.id,
@@ -192,13 +193,13 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
                 <Button type="button" variant="outline" size="sm" onClick={() => {
                   if (multiMode) {
                     setMultiMode(false);
-                    if (productTagsRequired) {
+                    if (catalogRequired) {
                       setCatalogProductId("");
                       set("product", "");
                     }
                   } else {
                     const draft = draftFromLegacy(values);
-                    if (productTagsRequired && catalogProductId) draft.catalog_product_id = catalogProductId;
+                    if (catalogRequired && catalogProductId) draft.catalog_product_id = catalogProductId;
                     setItems([draft]);
                     setMultiMode(true);
                   }
@@ -217,14 +218,14 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
                 <OrderItemsEditor key="items" items={items} onChange={(next) => {
                   setItems(next);
                   setServerErrors((e) => ({ ...e, items: "" }));
-                }} error={errors.items ? t(("errors." + errors.items) as never) : null} strictCatalog={productTagsRequired} />
+                }} error={errors.items ? t(("errors." + errors.items) as never) : null} strictCatalog={catalogRequired} />
               ) : multiMode && multiproductEnabled && (key === "quantity" || key === "price") ? null : (
               <div key={key} className="grid gap-1">
                 <Label htmlFor={`order-${key}`}>
                   {t(label as never)}
                   {optional ? <span className="ml-1 text-muted-foreground">({t("optional")})</span> : null}
                 </Label>
-                {key === "product" && productTagsRequired ? (
+                {key === "product" && catalogRequired ? (
                   <StrictCatalogProductPicker value={values.product} selectedId={catalogProductId} onSelect={(product) => {
                     setCatalogProductId(product.id);
                     set("product", product.display_name);
@@ -240,7 +241,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
                     aria-invalid={!!err(key)}
                   />
                 )}
-                {key === "product" && productTagsRequired && !catalogProductId ? (
+                {key === "product" && catalogRequired && !catalogProductId ? (
                   <p className="text-xs text-muted-foreground">{t("lineCatalogRequired")}</p>
                 ) : null}
                 {err(key) ? <p className="text-xs text-destructive">{err(key)}</p> : null}
