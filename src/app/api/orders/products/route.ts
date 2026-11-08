@@ -15,19 +15,36 @@ export async function GET(request: Request) {
     const admin = supabaseAdmin();
     const { data: settings, error: settingsError } = await admin
       .from("order_integration_settings")
-      .select("confirm_enabled, multiproduct_enabled")
+      .select("confirm_enabled, multiproduct_enabled, product_tags_required")
       .eq("account_id", accountId)
       .maybeSingle();
 
     if (settingsError) return NextResponse.json({ error: "catalog_unavailable" }, { status: 500, headers: NO_STORE });
-    if (!settings?.confirm_enabled || !settings?.multiproduct_enabled)
-      return NextResponse.json({ error: "multiproduct_disabled" }, { status: 403, headers: NO_STORE });
+    if (!settings?.confirm_enabled || (!settings.multiproduct_enabled && !settings.product_tags_required))
+      return NextResponse.json({ error: "catalog_disabled" }, { status: 403, headers: NO_STORE });
 
     // PostgREST treats '*' as an ILIKE wildcard even though PostgreSQL uses '%'.
     // Drop asterisks before constructing the LIKE pattern; preserve tenant scoping.
     const q = (new URL(request.url).searchParams.get("q") ?? "").replace(/\*/g, "").trim();
     if (q.length < 2 || q.length > 120)
       return NextResponse.json({ products: [] }, { headers: NO_STORE });
+
+    // In strict mode the catalogue is an explicit commercial subset of tags:
+    // operational statuses (Avisados, En destino, etc.) never appear by default.
+    if (settings.product_tags_required === true) {
+      const { data: tags, error: tagsError } = await admin
+        .from("tags")
+        .select("id, name")
+        .eq("account_id", accountId)
+        .eq("is_order_product", true)
+        .ilike("name", "%" + literal + "%")
+        .order("name")
+        .limit(20);
+      if (tagsError) return NextResponse.json({ error: "catalog_unavailable" }, { status: 500, headers: NO_STORE });
+      return NextResponse.json({
+        products: (tags ?? []).map((tag) => ({ id: tag.id, display_name: tag.name, active: true })),
+      }, { headers: NO_STORE });
+    }
 
     // Product names live in the per-account audio_guide_products catalog. This
     // endpoint does NOT require voice-note functionality to be switched on.
