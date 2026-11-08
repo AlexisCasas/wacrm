@@ -138,9 +138,9 @@ describe("ConfirmOrderDialog", () => {
   });
 
   it("requires a selected commercial product tag in single mode; prefilled free text is not sufficient", async () => {
-    const TAG = "44444444-4444-4444-8444-444444444444";
+    const CATALOG_ID = "44444444-4444-4444-8444-444444444444";
     vi.stubGlobal("fetch", vi.fn(async (url: string) => (
-      new Response(JSON.stringify({ products: [{ id: TAG, display_name: "Cargador Xiaomi", active: true }] }), { status: 200 })
+      new Response(JSON.stringify({ products: [{ id: CATALOG_ID, display_name: "Cargador Xiaomi", active: true }] }), { status: 200 })
     )));
     setup(true, true);
     await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
@@ -154,10 +154,10 @@ describe("ConfirmOrderDialog", () => {
     expect(screen.getByText("orderDescription")).toBeTruthy(); // Notes remain a separate free-text field.
   });
 
-  it("strict multiple items cannot be reviewed if any line lacks a selected tag", async () => {
-    const TAG = "44444444-4444-4444-8444-444444444444";
+  it("strict multiple items cannot be reviewed if any line lacks a selected catalogue product", async () => {
+    const CATALOG_ID = "44444444-4444-4444-8444-444444444444";
     vi.stubGlobal("fetch", vi.fn(async () => (
-      new Response(JSON.stringify({ products: [{ id: TAG, display_name: "Cargador Xiaomi", active: true }] }), { status: 200 })
+      new Response(JSON.stringify({ products: [{ id: CATALOG_ID, display_name: "Cargador Xiaomi", active: true }] }), { status: 200 })
     )));
     setup(true, true);
     await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
