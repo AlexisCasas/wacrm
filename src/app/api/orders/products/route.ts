@@ -21,13 +21,15 @@ export async function GET(request: Request) {
 
     if (settingsError) return NextResponse.json({ error: "catalog_unavailable" }, { status: 500, headers: NO_STORE });
     if (!settings?.confirm_enabled || (!settings.multiproduct_enabled && !settings.product_tags_required))
-      return NextResponse.json({ error: "catalog_disabled" }, { status: 403, headers: NO_STORE });
+      return NextResponse.json({ error: "multiproduct_disabled" }, { status: 403, headers: NO_STORE });
 
     // PostgREST treats '*' as an ILIKE wildcard even though PostgreSQL uses '%'.
     // Drop asterisks before constructing the LIKE pattern; preserve tenant scoping.
     const q = (new URL(request.url).searchParams.get("q") ?? "").replace(/\*/g, "").trim();
     if (q.length < 2 || q.length > 120)
       return NextResponse.json({ products: [] }, { headers: NO_STORE });
+
+    const literal = q.replace(/[\\\\%_]/g, (char) => "\\\\" + char);
 
     // In strict mode the catalogue is an explicit commercial subset of tags:
     // operational statuses (Avisados, En destino, etc.) never appear by default.
@@ -49,7 +51,6 @@ export async function GET(request: Request) {
     // Product names live in the per-account audio_guide_products catalog. This
     // endpoint does NOT require voice-note functionality to be switched on.
     // Escaping search wildcards avoids unintended broad matches.
-    const literal = q.replace(/[\\%_]/g, (char) => "\\" + char);
     const { data, error } = await admin
       .from("audio_guide_products")
       .select("id, display_name, active")
