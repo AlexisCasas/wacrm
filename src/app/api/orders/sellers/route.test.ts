@@ -57,7 +57,7 @@ describe('GET /api/orders/sellers', () => {
     expect(eqAccount).toHaveBeenCalledWith('account_id', ACCOUNT)
   })
 
-  it('exposes product tag enforcement only for the caller account', async () => {
+  it('exposes strict Audio guide catalog enforcement only for the caller account', async () => {
     maybeSingle.mockResolvedValue({ data: { confirm_enabled: true, multiproduct_enabled: true, product_tags_required: true }, error: null })
     rpc.mockResolvedValue({ data: [], error: null })
     const body = await (await GET()).json()
