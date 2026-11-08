@@ -1,81 +1,109 @@
-# Selectores de producto desde etiquetas comerciales — release controlado
+# Selector de productos desde "Audios por producto" — corrección PR #90
 
-## Problema
-WACRM permitia editar un nombre arbitrario en el formulario de pedido individual
-y en cada linea de multiproducto. Eso crea variantes en los reportes de ventas.
-El buscador previo de multiproducto consultaba `audio_guide_products`, que es
-un catalogo distinto de las etiquetas de producto usadas por ventas.
+## Fuente autorizada (aclaración del cliente, 08/11/2026)
 
-## Modelo
-- `tags.is_order_product = FALSE` por defecto: no se incluyen estados de
-  logistica o etiquetas operativas por accidente.
-- Los administradores clasifican las etiquetas existentes usando el distintivo
-  **Producto** en Configuracion > Campos y etiquetas. No se crea otra etiqueta.
-- `order_integration_settings.product_tags_required = FALSE` por defecto:
-  otras cuentas y sus pedidos legados no cambian.
-- Cuando el flag es TRUE, el pedido individual y TODAS las lineas multiproducto
-  requieren `product_tag_id` presente y valido dentro de la cuenta de sesion.
-- La API convierte el ID en el nombre canonico del tag en el momento de guardar;
-  ignora cualquier nombre enviado por el navegador. Precios siempre manuales.
-- La descripcion del pedido continua libre. Pedidos ya confirmados no se alteran.
-- Los IDs de etiquetas NO se confunden con IDs de `audio_guide_products`.
-  La estructura de envio hacia InkaClick sigue identica.
+**No usar etiquetas de contacto.** La única fuente de productos permitidos es la
+lista existente de la pantalla `/audio-guide`, tabla PostgreSQL
+`public.audio_guide_products` (id, account_id, product_key, display_name, active).
 
-## No modificar
-- Etiquetas de contactos, automatizaciones, flows, medios, mensajes,
-  plantillas WhatsApp y receptor InkaClick.
-- `multiproduct_enabled`, `confirm_enabled`, `enabled` y outbox existentes.
-- Nombres, importes y lineas historicos.
+El cliente elige en esa pantalla los productos que vende. Un producto no necesita
+tener una grabación de voz para que aparezca: se requiere `active=TRUE`.
+Los estados de logística, etiquetas de interés, campos personalizados y nombres
+históricos de órdenes NO constituyen catálogo.
 
-## Checklist de liberacion — VPS de WACRM, NO Supabase de InkaClick
-1. **Preflight de solo lectura:** validar SHA exacto que corre en VPS, rama
-   desplegada, integridad de migraciones, outbox, estado del monitor y backup
-   verificable. No mezclar con otras releases que esten pendientes.
-2. Ejecutar una QA de migracion sobre copia aislada; aplicar solo
-   `20261112000000_order_product_tag_selector.sql` con respaldo y registro.
-3. Desplegar frontend + API WACRM del commit aprobado con flag FALSE.
-   Verificar rutas del modal antiguo, multi, mensajes y outbox.
-4. Con rol admin de la cuenta real de Keyler, marcar **Producto** sobre las
-   etiquetas comerciales correctas; verificar listado y que estados como
-   Avisados, En destino, Entregado no aparecen. Esto no debe crear etiquetas.
-5. Comprobar que las etiquetas cubren todos los productos vendidos. Si el
-   catalogo esta incompleto, NO activar el modo estricto.
-6. Validar `account_id` de Keyler desde `profiles` + `accounts`, no por
-   nombre visible. Tomar un respaldo y registrar la cifra exacta de tags.
-7. Activar **solo esa cuenta**, si `confirm_enabled = true` y >0 productos
-   clasificados. Ejemplo parametrizado en transaccion:
+## Compatibilidad de la migración YA instalada en VPS
+
+La migración original `20261112000000_order_product_tag_selector.sql` ya fue
+aplicada al PostgreSQL de WACRM en el despliegue productivo `33e3cb33`.
+Esa migración añadió dos columnas con valores FALSE. **No se debe repetir ni
+alterar el archivo histórico aplicado.** Su columna
+`tags.is_order_product` y su índice son obsoletos y no se usan en el nuevo
+código; su limpieza, si se requiere, será un correctivo futuro separado.
+
+Se reutiliza por compatibilidad la columna ya instalada
+`order_integration_settings.product_tags_required` como bandera de
+*selección estricta desde audio_guide_products*. El nombre es histórico,
+pero **no implica etiquetas**: todo el código la interpreta como
+`catalogo_de_productos_obligatorio`. No se necesitan migraciones nuevas.
+
+## Contrato funcional
+
+- Sin la bandera: comportamiento legado, sin regresión, incluyendo el selector
+  opcional multiproducto desde `audio_guide_products`.
+- Con la bandera TRUE: producto único exige `catalog_product_id` válido,
+  y cada línea multiproducto exige su propio `catalog_product_id`.
+- El GET `/api/orders/products?q=...` lista SOLO productos activos de la
+  cuenta de la sesión (no admite `account_id` del navegador), desde
+  `audio_guide_products`. Búsqueda por nombre y orden alfabético.
+- El POST `/api/orders/confirm` resuelve todos los IDs contra
+  `audio_guide_products` filtrando por cuenta y `active=true`.
+  Ignora los nombres enviados y guarda el `display_name` oficial.
+  Para múltiples productos preserva `catalog_product_id` en
+  `order_confirmation_items`; el RPC actual también comprueba pertenencia
+  y estado activo. No se crea ni modifica ningún producto ni nota de audio.
+- La descripción, precios, cantidades, vendedor, outbox e integración InkaClick
+  conservan las reglas previas.
+- La lista visible en `/audio-guide` es autoridad; para agregar un artículo
+  nuevo, usar `Nuevo producto` en ese módulo, no el formulario de pedidos.
+
+## Despliegue correctivo (VPS, ejecución por Claude Code)
+
+1. Registrar el SHA y estado real del contenedor `wacrm-app`, migraciones,
+   versionado del código y salud. Última imagen reportada:
+   `wacrm-app:product-tags-33e3cb33`. Sin cambios sobre otros módulos.
+2. Verificar backup existente: `/opt/backups/wacrm/product-tags-pr90-deploy/db/`,
+   chequeo de SHA y capacidad de volver a la imagen 33e3cb33.
+3. En worktree aislado con la HEAD actual de PR #90:
+   `npm ci`, `npm run lint`, `npm run typecheck`,
+   `npm test` y `npm run build`. Corregir solo el alcance #90.
+4. **No repetir migración 20261112000000**. Corroborar ambas columnas
+   existentes y `product_tags_required=FALSE` en Keyler.
+5. Compilar imagen del nuevo commit, smoke aislado, swap controlado, T+0/T+10,
+   sin tocar el servicio activo hasta aprobación de todos los gates.
+6. Identificar cuenta de Keyler de manera independiente en la DB; cuenta
+   reportada previamente `4d04a2e0-62b8-4508-a046-4b125aa2e8db`.
+   Verificar el catálogo con:
+   ```sql
+   SELECT id, display_name, active
+   FROM public.audio_guide_products
+   WHERE account_id = '4d04a2e0-62b8-4508-a046-4b125aa2e8db'::uuid
+   ORDER BY display_name;
+   ```
+   Comparar nombres de la pantalla, comprobar que existan productos activos
+   y ausencia de duplicados sospechosos. **No se requiere clasificar tags**.
+7. Si la cuenta y lista están verificadas, activar exclusivamente Keyler:
    ```sql
    BEGIN;
    UPDATE public.order_integration_settings s
-   SET product_tags_required = TRUE, updated_at = NOW()
-   WHERE s.account_id = :'keyler_account_id'
-     AND s.confirm_enabled = TRUE
-     AND EXISTS (
-       SELECT 1 FROM public.tags t
-       WHERE t.account_id = s.account_id AND t.is_order_product = TRUE
-     )
-   RETURNING account_id, product_tags_required;
-   -- Revisar que devuelva exactamente UNA fila.
-   ROLLBACK; -- usar COMMIT solo durante la activacion autorizada.
+      SET product_tags_required=TRUE, updated_at=NOW()
+    WHERE s.account_id='4d04a2e0-62b8-4508-a046-4b125aa2e8db'::uuid
+      AND s.confirm_enabled=TRUE
+      AND EXISTS (
+        SELECT 1 FROM public.audio_guide_products p
+        WHERE p.account_id=s.account_id AND p.active=TRUE
+      )
+    RETURNING account_id, product_tags_required;
+   -- VALIDAR EXACTAMENTE UNA FILA antes de COMMIT.
+   COMMIT;
    ```
-8. QA manual: pedido unico con selector, multiples lineas con selector,
-   precios y descripciones libres, busqueda sin resultados, error de catalogo,
-   tag desmarcado o eliminado entre preview y confirm, reintento de request_key,
-   lectura del pedido en InkaClick, calculos del Excel.
-9. Revisar 422/500 y cola de envios. Cerrar release solo con QA real PASS.
+   Si no devuelve una fila, ROLLBACK y diagnosticar. Resto de cuentas en FALSE.
+8. QA autenticado con datos sintéticos: producto único y múltiple, búsqueda de
+   existentes, rechazo de texto arbitrario, id ajeno o inactivo, selección
+   seguida de baja del producto, precio, cantidad y descripción libres,
+   idempotencia `request_key`, receptor InkaClick, cola, mensaje y Flows.
+   Evitar crear entregas reales no deseadas: usar entorno aislado o
+   desactivar entrega (held) bajo control si se necesita una inserción.
+9. Registrar T+0/T+10/T+30, SHA/imagen activa, catálogo activo, flag y
+   resultados. Fusionar PR #90 a main solo tras validación.
 
-## Rollback
-Primero desactivar solo la bandera de Keyler:
+## Rollback de flag y de imagen
+
+Primero:
 ```sql
 UPDATE public.order_integration_settings
-SET product_tags_required = FALSE, updated_at = NOW()
-WHERE account_id = :'keyler_account_id';
+SET product_tags_required=FALSE, updated_at=NOW()
+WHERE account_id='4d04a2e0-62b8-4508-a046-4b125aa2e8db'::uuid;
 ```
-Si la UI/API presenta un defecto, volver a la imagen anterior con las columnas
-aditivas preservadas. No borrar tags ni rehacer pedidos historicos.
-
-## Control de riesgos
-Unicamente el admin puede marcar etiquetas en la API PATCH, que valida
-`account_id` de sesion. El GET y el POST validan por cuenta de sesion,
-no aceptan un account_id enviado por el cliente. Si falla la consulta del
-catalogo se bloquea la confirmacion, no se habilita entrada libre.
+Luego, si hay fallas, volver a imagen previa verificada. Las columnas
+históricas y los registros de audio permanecen intactos. Nunca borrar los
+productos ni editar sus nombres para resolver problemas de confirmación.
