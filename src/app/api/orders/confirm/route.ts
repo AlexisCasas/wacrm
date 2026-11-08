@@ -3,7 +3,7 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateOrderInput } from '@/lib/orders/fields'
-import { collectProductTagIds, snapshotOrderProducts } from '@/lib/orders/product-tags'
+import { collectCatalogProductIds, snapshotCatalogProducts } from '@/lib/orders/product-catalog'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -44,21 +44,22 @@ export async function POST(request: Request) {
 
     let trustedInput: Record<string, unknown> = body
     if (settings?.product_tags_required) {
-      const selection = collectProductTagIds(body)
+      const selection = collectCatalogProductIds(body)
       if (!selection.ok) return NextResponse.json({
         error: 'validation_failed', errors: { [selection.field]: 'invalid_catalog_product' },
       }, { status: 422 })
 
-      // Server-side authority: active commercial tags from THIS account only.
-      // The submitted product name is ignored; canonical names are snapshotted.
-      const { data: tags, error: tagsError } = await admin
-        .from('tags')
-        .select('id, name')
+      // Existing "Audios por producto" catalogue is the ONLY authority.
+      // No tag or audio recording is required, only an active catalog product
+      // in the authenticated account. Names are snapshotted server-side.
+      const { data: products, error: catalogError } = await admin
+        .from('audio_guide_products')
+        .select('id, display_name, active')
         .eq('account_id', accountId)
-        .eq('is_order_product', true)
+        .eq('active', true)
         .in('id', selection.ids)
-      if (tagsError) return NextResponse.json({ error: 'catalog_unavailable' }, { status: 500 })
-      const trusted = snapshotOrderProducts(body, tags ?? [])
+      if (catalogError) return NextResponse.json({ error: 'catalog_unavailable' }, { status: 500 })
+      const trusted = snapshotCatalogProducts(body, products ?? [])
       if (!trusted.ok) return NextResponse.json({
         error: 'validation_failed', errors: { [trusted.field]: 'invalid_catalog_product' },
       }, { status: 422 })
