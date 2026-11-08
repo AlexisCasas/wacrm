@@ -1,7 +1,7 @@
 // Strict commercial product selection for manual order confirmation.
 // The caller supplies tag IDs, never trusted product names. Names are
 // snapshotted from account-scoped, admin-curated tags by the API.
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface CommercialTag { id: string; name: string }
 
