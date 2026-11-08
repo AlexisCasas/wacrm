@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { Loader2, Plus, Tag as TagIcon, X } from 'lucide-react';
+import { Loader2, PackageCheck, Plus, Tag as TagIcon, X } from 'lucide-react';
 import { createClient } from '@/lib/supabase/client';
 import { useAuth } from '@/hooks/use-auth';
 import { Button } from '@/components/ui/button';
@@ -44,6 +44,7 @@ export function TagManager() {
   const [tagToDelete, setTagToDelete] = useState<Tag | null>(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [updatingProductTagId, setUpdatingProductTagId] = useState<string | null>(null);
   const [newTagName, setNewTagName] = useState('');
   const [selectedColor, setSelectedColor] = useState(PRESET_TAG_COLORS[3].value);
 
@@ -121,6 +122,27 @@ export function TagManager() {
     }
   }
 
+  // Classification is server-authorized (admin+) and account-scoped. It
+  // never adds another tag or changes the contact/Flow tag associations.
+  async function toggleOrderProduct(tag: Tag) {
+    if (updatingProductTagId) return;
+    setUpdatingProductTagId(tag.id);
+    try {
+      const next = tag.is_order_product !== true;
+      const response = await fetch('/api/tags/' + encodeURIComponent(tag.id) + '/product', {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ is_order_product: next }),
+      });
+      if (!response.ok) throw new Error('product_tag_update_failed');
+      setTags((current) => current.map((row) => row.id === tag.id ? { ...row, is_order_product: next } : row));
+    } catch {
+      toast.error(t('productTagToggleError'));
+    } finally {
+      setUpdatingProductTagId(null);
+    }
+  }
+
   function confirmDelete(tag: Tag) {
     setTagToDelete(tag);
     setDeleteDialogOpen(true);
@@ -185,6 +207,21 @@ export function TagManager() {
                       style={{ backgroundColor: tag.color }}
                     />
                     {tag.name}
+                    <button
+                      type="button"
+                      onClick={() => toggleOrderProduct(tag)}
+                      disabled={updatingProductTagId === tag.id}
+                      aria-pressed={tag.is_order_product === true}
+                      aria-label={t('productTagToggleAria', { name: tag.name })}
+                      title={t('productTagToggleHint')}
+                      className={cn(
+                        'ml-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-semibold',
+                        tag.is_order_product ? 'bg-emerald-600 text-white dark:bg-emerald-500' : 'bg-muted text-muted-foreground',
+                      )}
+                    >
+                      <PackageCheck className="size-3" />
+                      {t('productTagShort')}
+                    </button>
                     <button
                       type="button"
                       onClick={() => confirmDelete(tag)}
