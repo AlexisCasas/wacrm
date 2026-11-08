@@ -10,16 +10,16 @@ const rpc = vi.fn()
 const requireRole = vi.fn()
 const featureRead = vi.fn()
 const featureEq = vi.fn()
-const tagRead = vi.fn()
-const tagEq = vi.fn()
+const catalogRead = vi.fn()
+const catalogEq = vi.fn()
 vi.mock('@/lib/auth/account', () => ({ requireRole: (...a: unknown[]) => requireRole(...a), toErrorResponse: (e: Error) => new Response(JSON.stringify({ error: e.message }), { status: e.message === 'forbidden' ? 403 : 500 }) }))
 vi.mock('@/lib/flows/admin-client', () => ({
   supabaseAdmin: () => ({
     rpc,
     from: (table: string) => table === 'order_integration_settings'
       ? { select: () => ({ eq: (...args: unknown[]) => { featureEq(...args); return { maybeSingle: featureRead } } }) }
-      : table === 'tags' ? { select: () => {
-          const chain = { eq: (...args: unknown[]) => { tagEq(...args); return chain }, in: () => tagRead() }
+      : table === 'audio_guide_products' ? { select: () => {
+          const chain = { eq: (...args: unknown[]) => { catalogEq(...args); return chain }, in: () => catalogRead() }
           return chain
         } }
       : { select: () => ({ eq: () => ({ eq: () => ({ single: async () => ({ data: { delivery_status: 'pending' } }) }) }) }) },
@@ -37,10 +37,10 @@ beforeEach(() => {
   requireRole.mockReset()
   featureRead.mockReset()
   featureEq.mockReset()
-  tagRead.mockReset()
-  tagEq.mockReset()
+  catalogRead.mockReset()
+  catalogEq.mockReset()
   featureRead.mockResolvedValue({ data: { multiproduct_enabled: false, product_tags_required: false }, error: null })
-  tagRead.mockResolvedValue({ data: [], error: null })
+  catalogRead.mockResolvedValue({ data: [], error: null })
   requireRole.mockResolvedValue({ supabase: { from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { full_name: 'Asesor Uno' } }) }) }) }) }) }, accountId: ACCOUNT, userId: USER })
 })
 
@@ -152,8 +152,8 @@ describe('POST /api/orders/confirm', () => {
     expect(await res.json()).toEqual({ error: 'multiproduct_disabled' })
   })
 
-  const PRODUCT_TAG = '11111111-1111-4111-8111-111111111111'
-  const OTHER_TAG = '22222222-2222-4222-8222-222222222222'
+  const PRODUCT_CATALOG_ID = '11111111-1111-4111-8111-111111111111'
+  const OTHER_CATALOG_ID = '22222222-2222-4222-8222-222222222222'
 
   it('rejects free-text single orders when the strict account flag is enabled', async () => {
     featureRead.mockResolvedValue({ data: { multiproduct_enabled: true, product_tags_required: true }, error: null })
@@ -163,34 +163,34 @@ describe('POST /api/orders/confirm', () => {
     expect(rpc).not.toHaveBeenCalled()
   })
 
-  it('snapshots authoritative product tag names for strict single and multiple orders', async () => {
+  it('snapshots authoritative audio-guide product names for strict single and multiple orders', async () => {
     featureRead.mockResolvedValue({ data: { multiproduct_enabled: true, product_tags_required: true }, error: null })
-    tagRead.mockResolvedValue({ data: [{ id: PRODUCT_TAG, name: 'Cargador Xiaomi' }, { id: OTHER_TAG, name: 'Guitarra VOZZEX' }], error: null })
+    catalogRead.mockResolvedValue({ data: [{ id: PRODUCT_CATALOG_ID, display_name: 'Cargador Xiaomi', active: true }, { id: OTHER_CATALOG_ID, display_name: 'Guitarra VOZZEX', active: true }], error: null })
     rpc.mockResolvedValue({ data: [{ order_id: 'o-1', created: true }], error: null })
-    const single = await post({ ...valid, product: 'Cargador Xiomi', product_tag_id: PRODUCT_TAG })
+    const single = await post({ ...valid, product: 'Cargador Xiomi', catalog_product_id: PRODUCT_CATALOG_ID })
     expect(single.status).toBe(201)
     expect(rpc.mock.calls[0][1].p_fields.product).toBe('Cargador Xiaomi')
-    expect(tagEq).toHaveBeenCalledWith('account_id', ACCOUNT)
-    expect(tagEq).toHaveBeenCalledWith('is_order_product', true)
+    expect(catalogEq).toHaveBeenCalledWith('account_id', ACCOUNT)
+    expect(catalogEq).toHaveBeenCalledWith('active', true)
 
     rpc.mockClear()
     const multiSelected = [
-      { product_name: 'fake', product_tag_id: PRODUCT_TAG, quantity: 1, unit_price: '95' },
-      { product_name: 'not matching', product_tag_id: OTHER_TAG, quantity: 2, unit_price: '150' },
+      { product_name: 'fake', catalog_product_id: PRODUCT_CATALOG_ID, quantity: 1, unit_price: '95' },
+      { product_name: 'not matching', catalog_product_id: OTHER_CATALOG_ID, quantity: 2, unit_price: '150' },
     ]
     const several = await post({ ...valid, items: multiSelected })
     expect(several.status).toBe(201)
     expect(rpc.mock.calls[0][1].p_fields).toMatchObject({
       product: '1 x Cargador Xiaomi\n2 x Guitarra VOZZEX', quantity: 3, price: '395.00',
-      items: [{ product_name: 'Cargador Xiaomi', catalog_product_id: null },
-              { product_name: 'Guitarra VOZZEX', catalog_product_id: null }],
+      items: [{ product_name: 'Cargador Xiaomi', catalog_product_id: PRODUCT_CATALOG_ID },
+              { product_name: 'Guitarra VOZZEX', catalog_product_id: OTHER_CATALOG_ID }],
     })
   })
 
-  it('rejects a deleted, unclassified, or other-account product tag without writing', async () => {
+  it('rejects an inactive, absent, or other-account audio-guide product without writing', async () => {
     featureRead.mockResolvedValue({ data: { multiproduct_enabled: true, product_tags_required: true }, error: null })
-    tagRead.mockResolvedValue({ data: [], error: null })
-    const res = await post({ ...valid, product_tag_id: OTHER_TAG })
+    catalogRead.mockResolvedValue({ data: [], error: null })
+    const res = await post({ ...valid, catalog_product_id: OTHER_CATALOG_ID })
     expect(res.status).toBe(422)
     expect((await res.json()).errors).toMatchObject({ product: 'invalid_catalog_product' })
     expect(rpc).not.toHaveBeenCalled()
