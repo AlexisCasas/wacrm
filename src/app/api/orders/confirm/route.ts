@@ -3,6 +3,7 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { validateOrderInput } from '@/lib/orders/fields'
+import { collectProductTagIds, snapshotOrderProducts } from '@/lib/orders/product-tags'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -28,7 +29,43 @@ export async function POST(request: Request) {
     const contactId = typeof body.contact_id === 'string' && UUID.test(body.contact_id) ? body.contact_id : null
     const conversationId = typeof body.conversation_id === 'string' && UUID.test(body.conversation_id) ? body.conversation_id : null
 
-    const validation = validateOrderInput(body)
+    const admin = supabaseAdmin()
+    // Always derive the account from the session. The strict selector is
+    // explicitly opt-in and therefore does not affect other accounts.
+    const { data: settings, error: featureError } = await admin
+      .from('order_integration_settings')
+      .select('multiproduct_enabled, product_tags_required')
+      .eq('account_id', accountId)
+      .maybeSingle()
+    if (featureError) return NextResponse.json({ error: 'Could not load order settings' }, { status: 500 })
+    if (Object.prototype.hasOwnProperty.call(body, 'items') && !settings?.multiproduct_enabled) {
+      return NextResponse.json({ error: 'multiproduct_disabled' }, { status: 403 })
+    }
+
+    let trustedInput: Record<string, unknown> = body
+    if (settings?.product_tags_required) {
+      const selection = collectProductTagIds(body)
+      if (!selection.ok) return NextResponse.json({
+        error: 'validation_failed', errors: { [selection.field]: 'invalid_catalog_product' },
+      }, { status: 422 })
+
+      // Server-side authority: active commercial tags from THIS account only.
+      // The submitted product name is ignored; canonical names are snapshotted.
+      const { data: tags, error: tagsError } = await admin
+        .from('tags')
+        .select('id, name')
+        .eq('account_id', accountId)
+        .eq('is_order_product', true)
+        .in('id', selection.ids)
+      if (tagsError) return NextResponse.json({ error: 'catalog_unavailable' }, { status: 500 })
+      const trusted = snapshotOrderProducts(body, tags ?? [])
+      if (!trusted.ok) return NextResponse.json({
+        error: 'validation_failed', errors: { [trusted.field]: 'invalid_catalog_product' },
+      }, { status: 422 })
+      trustedInput = trusted.value
+    }
+
+    const validation = validateOrderInput(trustedInput)
     if (!validation.ok || !validation.value) {
       return NextResponse.json({ error: 'validation_failed', errors: validation.errors, warnings: validation.warnings }, { status: 422 })
     }
@@ -36,20 +73,6 @@ export async function POST(request: Request) {
     // Snapshot of who confirmed (survives a later profile rename or removal, like the F1 message author).
     const { data: profile } = await supabase.from('profiles').select('full_name').eq('user_id', userId).eq('account_id', accountId).maybeSingle()
     const actorName = (profile?.full_name as string | null)?.trim() || 'Asesor no identificado'
-
-    const admin = supabaseAdmin()
-    // Fail closed: the server derives accountId from the authenticated session.
-    // This separate switch gates only the structured-item path. Legacy single
-    // orders remain governed by confirm_enabled exactly as before.
-    if (validation.value.items !== undefined) {
-      const { data: settings, error: featureError } = await admin
-        .from('order_integration_settings')
-        .select('multiproduct_enabled')
-        .eq('account_id', accountId)
-        .maybeSingle()
-      if (featureError) return NextResponse.json({ error: 'Could not load order settings' }, { status: 500 })
-      if (!settings?.multiproduct_enabled) return NextResponse.json({ error: 'multiproduct_disabled' }, { status: 403 })
-    }
     const { data, error } = await admin.rpc('create_order_confirmation', {
       p_account: accountId,
       p_contact: contactId,
