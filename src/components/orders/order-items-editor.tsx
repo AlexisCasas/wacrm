@@ -20,7 +20,6 @@ export interface DraftOrderItem {
   quantity: string;
   unit_price: string;
   catalog_product_id: string | null;
-  product_tag_id?: string | null;
 }
 
 export const emptyOrderItem = (): DraftOrderItem => ({
@@ -29,7 +28,6 @@ export const emptyOrderItem = (): DraftOrderItem => ({
   quantity: "1",
   unit_price: "",
   catalog_product_id: null,
-  product_tag_id: null,
 });
 
 export function subtotalCents(item: DraftOrderItem): number | null {
@@ -55,8 +53,7 @@ export function draftFromLegacy(values: { product: string; quantity: string; pri
     quantity: q,
     unit_price: q === "1" ? values.price : "",
     catalog_product_id: null,
-    product_tag_id: null,
-  };
+    };
 }
 
 export const itemsForSubmission = (items: DraftOrderItem[]) => items.map((item) => ({
@@ -160,9 +157,9 @@ function CatalogPicker({
   );
 }
 
-/** Strict single-product control: selected tag ID is tracked independently
+/** Strict single-product control: selected catalogue ID is tracked independently
  * from the visible snapshot name; a contact prefill is NEVER authoritative. */
-export function StrictProductTagPicker({
+export function StrictCatalogProductPicker({
   value, selectedId, onSelect,
 }: {
   value: string;
@@ -247,7 +244,7 @@ function ProductNameInput({
           if (strictCatalog) return;
           setOptions([]);
           setUnavailable(false);
-          change({ product_name: e.target.value, catalog_product_id: null, product_tag_id: null });
+          change({ product_name: e.target.value, catalog_product_id: null });
         }}
       />
       {catalogOpen ? (
@@ -257,15 +254,14 @@ function ProductNameInput({
           onSelect={(product) => {
             change({
               product_name: product.display_name,
-              catalog_product_id: strictCatalog ? null : product.id,
-              product_tag_id: strictCatalog ? product.id : null,
+              catalog_product_id: product.id,
             });
             setOptions([]);
             setUnavailable(false);
             setCatalogOpen(false);
           }}
         />
-      ) : (strictCatalog ? item.product_tag_id : item.catalog_product_id) ? (
+      ) : item.catalog_product_id ? (
         <p className="text-xs text-muted-foreground">{t("lineFromCatalog")}</p>
       ) : shown && options.length > 0 ? (
         <div className="grid max-h-40 gap-1 overflow-y-auto rounded-md border bg-popover p-1" data-testid={"order-catalog-options-" + index}>
@@ -286,7 +282,7 @@ function ProductNameInput({
       ) : shown && unavailable ? (
         <p className="text-xs text-muted-foreground">{t("lineCatalogUnavailable")}</p>
       ) : null}
-      {strictCatalog && !item.product_tag_id ? (
+      {strictCatalog && !item.catalog_product_id ? (
         <p className="text-xs text-muted-foreground">{t("lineCatalogRequired")}</p>
       ) : null}
     </div>
