@@ -15,6 +15,7 @@ import {
   GitBranch,
   LayoutDashboard,
   LogOut,
+  Megaphone,
   MessageSquare,
   Mic,
   Radio,
@@ -106,6 +107,9 @@ const navItems: NavItem[] = [
 // Shown only to accounts the server enabled for voice notes (see useAudioGuideEnabled).
 const audioGuideNavItem: NavItem = { href: "/audio-guide", labelKey: "audioGuide", icon: Mic };
 
+// Ad results (read-only report). Same visibility rule as its API: agent role or higher.
+const adsResultsNavItem: NavItem = { href: "/ads-results", labelKey: "adsResults", icon: Megaphone };
+
 const bottomNavItems = [
   { href: "/settings", labelKey: "settings", icon: Settings },
 ];
@@ -125,7 +129,9 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const totalUnread = useTotalUnread();
   const unreadNotifications = useUnreadNotifications();
   const audioGuideEnabled = useAudioGuideEnabled();
-  const visibleNavItems = audioGuideEnabled ? [...navItems, audioGuideNavItem] : navItems;
+  const canSeeAdsResults = accountRole === "owner" || accountRole === "admin" || accountRole === "agent";
+  const baseNavItems = canSeeAdsResults ? [...navItems, adsResultsNavItem] : navItems;
+  const visibleNavItems = audioGuideEnabled ? [...baseNavItems, audioGuideNavItem] : baseNavItems;
   // Only surface the account-name strip when it actually carries
   // information. A solo user's personal account is named after them
   // (the 017 signup trigger seeds it from `full_name`), so showing it
