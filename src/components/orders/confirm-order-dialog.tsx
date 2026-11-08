@@ -22,7 +22,7 @@ import { PERU_DEPARTMENTS, validateOrderInput } from "@/lib/orders/fields";
 import { ORDERS_CHANGED_EVENT } from "@/components/orders/order-history";
 import { buildPrefill, type OrderFormValues } from "@/lib/orders/prefill";
 import { priceToCents } from "@/lib/orders/items";
-import { OrderItemsEditor, draftFromLegacy, emptyOrderItem, itemsForSubmission, moneyDisplay, type DraftOrderItem } from "./order-items-editor";
+import { OrderItemsEditor, StrictProductTagPicker, draftFromLegacy, emptyOrderItem, itemsForSubmission, moneyDisplay, type DraftOrderItem } from "./order-items-editor";
 
 /** A member of the account who can be the commercial seller. `id` is the member's user id (stable across renames). */
 export interface OrderSeller {
@@ -43,6 +43,7 @@ interface Props {
   conversationId?: string | null;
   sellers: OrderSeller[];
   multiproductEnabled?: boolean;
+  productTagsRequired?: boolean;
 }
 
 type Step = "form" | "preview";
@@ -60,11 +61,12 @@ const FIELD_LABELS: { key: keyof OrderFormValues; label: string; optional?: bool
 
 // "Confirmar pedido". Opening the dialog starts ONE order: the `request_key` is generated here and reused by every submit of this dialog, so a
 // double click, a slow network retry or a re-render can never create a second order. Closing and reopening starts a new one (a new sale).
-export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId, sellers, multiproductEnabled = false }: Props) {
+export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId, sellers, multiproductEnabled = false, productTagsRequired = false }: Props) {
   const t = useTranslations("Orders");
   const [step, setStep] = useState<Step>("form");
   const [values, setValues] = useState<OrderFormValues>(() => buildPrefill(contact, []));
   const [sellerId, setSellerId] = useState("");
+  const [productTagId, setProductTagId] = useState("");
   const [multiMode, setMultiMode] = useState(false);
   const [items, setItems] = useState<DraftOrderItem[]>(() => [emptyOrderItem()]);
   const [serverErrors, setServerErrors] = useState<Record<string, string>>({});
@@ -79,6 +81,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
     inFlight.current = false;
     setStep("form");
     setSellerId("");
+    setProductTagId("");
     setMultiMode(false);
     setItems([emptyOrderItem()]);
     setServerErrors({});
@@ -114,7 +117,10 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
   // Keep client-side feedback visible while an item/field remains invalid.
   const activeServerErrors = Object.fromEntries(Object.entries(serverErrors).filter(([, message]) => Boolean(message)));
   const errors = { ...(validation.errors as Record<string, string>), ...activeServerErrors };
-  const canReview = validation.ok && sellerId !== "";
+  const selectedFromCatalog = !productTagsRequired || (multiMode && multiproductEnabled
+    ? items.every((item) => Boolean(item.product_tag_id))
+    : Boolean(productTagId));
+  const canReview = validation.ok && sellerId !== "" && selectedFromCatalog;
 
   const set = (key: keyof OrderFormValues, value: string) => {
     setValues((v) => ({ ...v, [key]: value }));
@@ -123,7 +129,7 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
 
   async function submit() {
     // Hard guard against double activation, independent of the button's disabled state.
-    if (inFlight.current || !validation.ok) return;
+    if (inFlight.current || !canReview) return;
     inFlight.current = true;
     setSubmitting(true);
     try {
@@ -132,7 +138,10 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ...values,
-          ...(multiMode && multiproductEnabled ? { items: itemsForSubmission(items) } : {}),
+          ...(multiMode && multiproductEnabled
+            ? { items: itemsForSubmission(items).map((item, index) => productTagsRequired
+                ? { ...item, product_tag_id: items[index].product_tag_id } : item) }
+            : productTagsRequired ? { product_tag_id: productTagId } : {}),
           request_key: requestKey.current,
           seller_user_id: sellerId,
           contact_id: contact.id,
@@ -182,9 +191,16 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
             {multiproductEnabled ? (
               <div className="flex flex-wrap items-center gap-2 rounded-md bg-muted/40 p-2">
                 <Button type="button" variant="outline" size="sm" onClick={() => {
-                  if (multiMode) setMultiMode(false);
-                  else {
-                    setItems([draftFromLegacy(values)]);
+                  if (multiMode) {
+                    setMultiMode(false);
+                    if (productTagsRequired) {
+                      setProductTagId("");
+                      set("product", "");
+                    }
+                  } else {
+                    const draft = draftFromLegacy(values);
+                    if (productTagsRequired && productTagId) draft.product_tag_id = productTagId;
+                    setItems([draft]);
                     setMultiMode(true);
                   }
                   setServerErrors({});
@@ -202,14 +218,19 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
                 <OrderItemsEditor key="items" items={items} onChange={(next) => {
                   setItems(next);
                   setServerErrors((e) => ({ ...e, items: "" }));
-                }} error={errors.items ? t(("errors." + errors.items) as never) : null} />
+                }} error={errors.items ? t(("errors." + errors.items) as never) : null} strictCatalog={productTagsRequired} />
               ) : multiMode && multiproductEnabled && (key === "quantity" || key === "price") ? null : (
               <div key={key} className="grid gap-1">
                 <Label htmlFor={`order-${key}`}>
                   {t(label as never)}
                   {optional ? <span className="ml-1 text-muted-foreground">({t("optional")})</span> : null}
                 </Label>
-                {multiline ? (
+                {key === "product" && productTagsRequired ? (
+                  <StrictProductTagPicker value={values.product} selectedId={productTagId} onSelect={(product) => {
+                    setProductTagId(product.id);
+                    set("product", product.display_name);
+                  }} />
+                ) : multiline ? (
                   <Textarea id={`order-${key}`} rows={2} value={values[key]} onChange={(e) => set(key, e.target.value)} aria-invalid={!!err(key)} />
                 ) : (
                   <Input
@@ -220,6 +241,9 @@ export function ConfirmOrderDialog({ open, onOpenChange, contact, conversationId
                     aria-invalid={!!err(key)}
                   />
                 )}
+                {key === "product" && productTagsRequired && !productTagId ? (
+                  <p className="text-xs text-muted-foreground">{t("lineCatalogRequired")}</p>
+                ) : null}
                 {err(key) ? <p className="text-xs text-destructive">{err(key)}</p> : null}
                 {key === "dni" && validation.warnings.dni ? <p className="text-xs text-muted-foreground">{t("warningDni")}</p> : null}
               </div>
