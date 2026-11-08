@@ -13,16 +13,16 @@ export async function GET() {
 
     const { data: settings, error: settingsError } = await admin
       .from('order_integration_settings')
-      .select('confirm_enabled, multiproduct_enabled')
+      .select('confirm_enabled, multiproduct_enabled, product_tags_required')
       .eq('account_id', accountId)
       .maybeSingle()
     if (settingsError) return NextResponse.json({ error: 'Could not load the order settings' }, { status: 500 })
-    if (!settings?.confirm_enabled) return NextResponse.json({ enabled: false, multiproduct_enabled: false, sellers: [] })
+    if (!settings?.confirm_enabled) return NextResponse.json({ enabled: false, multiproduct_enabled: false, product_tags_required: false, sellers: [] })
 
     const { data, error } = await admin.rpc('order_seller_candidates', { p_account: accountId })
     if (error) return NextResponse.json({ error: 'Could not load sellers' }, { status: 500 })
     const sellers = ((data ?? []) as { user_id: string; name: string }[]).map((m) => ({ id: m.user_id, name: m.name }))
-    return NextResponse.json({ enabled: true, multiproduct_enabled: settings.multiproduct_enabled === true, sellers })
+    return NextResponse.json({ enabled: true, multiproduct_enabled: settings.multiproduct_enabled === true, product_tags_required: settings.product_tags_required === true, sellers })
   } catch (error) {
     return toErrorResponse(error)
   }

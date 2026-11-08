@@ -36,9 +36,9 @@ describe('GET /api/orders/sellers', () => {
 
   it('feature OFF (no settings row, or confirm_enabled false): enabled=false and no roster is read or returned', async () => {
     maybeSingle.mockResolvedValue({ data: null, error: null })
-    expect(await (await GET()).json()).toEqual({ enabled: false, multiproduct_enabled: false, sellers: [] })
+    expect(await (await GET()).json()).toEqual({ enabled: false, multiproduct_enabled: false, product_tags_required: false, sellers: [] })
     maybeSingle.mockResolvedValue({ data: { confirm_enabled: false }, error: null })
-    expect(await (await GET()).json()).toEqual({ enabled: false, multiproduct_enabled: false, sellers: [] })
+    expect(await (await GET()).json()).toEqual({ enabled: false, multiproduct_enabled: false, product_tags_required: false, sellers: [] })
     expect(rpc).not.toHaveBeenCalled()
   })
 
@@ -46,14 +46,22 @@ describe('GET /api/orders/sellers', () => {
     maybeSingle.mockResolvedValue({ data: { confirm_enabled: true }, error: null })
     rpc.mockResolvedValue({ data: [{ user_id: OWNER, name: 'Titular', account_role: 'owner' }, { user_id: NEWBIE, name: 'Miembro', account_role: 'agent' }], error: null })
     const body = await (await GET()).json()
-    expect(body).toEqual({ enabled: true, multiproduct_enabled: false, sellers: [{ id: OWNER, name: 'Titular' }, { id: NEWBIE, name: 'Miembro' }] })
+    expect(body).toEqual({ enabled: true, multiproduct_enabled: false, product_tags_required: false, sellers: [{ id: OWNER, name: 'Titular' }, { id: NEWBIE, name: 'Miembro' }] })
     expect(JSON.stringify(body)).not.toContain('account_role')
   })
 
   it('only exposes the multiproduct flag for the current account; it remains disabled by default', async () => {
     maybeSingle.mockResolvedValue({ data: { confirm_enabled: true, multiproduct_enabled: true }, error: null })
     rpc.mockResolvedValue({ data: [], error: null })
-    expect(await (await GET()).json()).toMatchObject({ enabled: true, multiproduct_enabled: true })
+    expect(await (await GET()).json()).toMatchObject({ enabled: true, multiproduct_enabled: true, product_tags_required: false })
+    expect(eqAccount).toHaveBeenCalledWith('account_id', ACCOUNT)
+  })
+
+  it('exposes strict Audio guide catalog enforcement only for the caller account', async () => {
+    maybeSingle.mockResolvedValue({ data: { confirm_enabled: true, multiproduct_enabled: true, product_tags_required: true }, error: null })
+    rpc.mockResolvedValue({ data: [], error: null })
+    const body = await (await GET()).json()
+    expect(body.product_tags_required).toBe(true)
     expect(eqAccount).toHaveBeenCalledWith('account_id', ACCOUNT)
   })
 

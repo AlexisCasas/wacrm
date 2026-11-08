@@ -10,12 +10,18 @@ const rpc = vi.fn()
 const requireRole = vi.fn()
 const featureRead = vi.fn()
 const featureEq = vi.fn()
+const catalogRead = vi.fn()
+const catalogEq = vi.fn()
 vi.mock('@/lib/auth/account', () => ({ requireRole: (...a: unknown[]) => requireRole(...a), toErrorResponse: (e: Error) => new Response(JSON.stringify({ error: e.message }), { status: e.message === 'forbidden' ? 403 : 500 }) }))
 vi.mock('@/lib/flows/admin-client', () => ({
   supabaseAdmin: () => ({
     rpc,
     from: (table: string) => table === 'order_integration_settings'
       ? { select: () => ({ eq: (...args: unknown[]) => { featureEq(...args); return { maybeSingle: featureRead } } }) }
+      : table === 'audio_guide_products' ? { select: () => {
+          const chain = { eq: (...args: unknown[]) => { catalogEq(...args); return chain }, in: () => catalogRead() }
+          return chain
+        } }
       : { select: () => ({ eq: () => ({ eq: () => ({ single: async () => ({ data: { delivery_status: 'pending' } }) }) }) }) },
   }),
 }))
@@ -31,7 +37,10 @@ beforeEach(() => {
   requireRole.mockReset()
   featureRead.mockReset()
   featureEq.mockReset()
-  featureRead.mockResolvedValue({ data: { multiproduct_enabled: false }, error: null })
+  catalogRead.mockReset()
+  catalogEq.mockReset()
+  featureRead.mockResolvedValue({ data: { multiproduct_enabled: false, product_tags_required: false }, error: null })
+  catalogRead.mockResolvedValue({ data: [], error: null })
   requireRole.mockResolvedValue({ supabase: { from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { full_name: 'Asesor Uno' } }) }) }) }) }) }, accountId: ACCOUNT, userId: USER })
 })
 
@@ -141,6 +150,50 @@ describe('POST /api/orders/confirm', () => {
     const res = await post({ ...valid, items: multi })
     expect(res.status).toBe(403)
     expect(await res.json()).toEqual({ error: 'multiproduct_disabled' })
+  })
+
+  const PRODUCT_CATALOG_ID = '11111111-1111-4111-8111-111111111111'
+  const OTHER_CATALOG_ID = '22222222-2222-4222-8222-222222222222'
+
+  it('rejects free-text single orders when the strict account flag is enabled', async () => {
+    featureRead.mockResolvedValue({ data: { multiproduct_enabled: true, product_tags_required: true }, error: null })
+    const response = await post({ ...valid, product: 'Cargador Xiomi' })
+    expect(response.status).toBe(422)
+    expect((await response.json()).errors).toMatchObject({ product: 'invalid_catalog_product' })
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
+  it('snapshots authoritative audio-guide product names for strict single and multiple orders', async () => {
+    featureRead.mockResolvedValue({ data: { multiproduct_enabled: true, product_tags_required: true }, error: null })
+    catalogRead.mockResolvedValue({ data: [{ id: PRODUCT_CATALOG_ID, display_name: 'Cargador Xiaomi', active: true }, { id: OTHER_CATALOG_ID, display_name: 'Guitarra VOZZEX', active: true }], error: null })
+    rpc.mockResolvedValue({ data: [{ order_id: 'o-1', created: true }], error: null })
+    const single = await post({ ...valid, product: 'Cargador Xiomi', catalog_product_id: PRODUCT_CATALOG_ID })
+    expect(single.status).toBe(201)
+    expect(rpc.mock.calls[0][1].p_fields.product).toBe('Cargador Xiaomi')
+    expect(catalogEq).toHaveBeenCalledWith('account_id', ACCOUNT)
+    expect(catalogEq).toHaveBeenCalledWith('active', true)
+
+    rpc.mockClear()
+    const multiSelected = [
+      { product_name: 'fake', catalog_product_id: PRODUCT_CATALOG_ID, quantity: 1, unit_price: '95' },
+      { product_name: 'not matching', catalog_product_id: OTHER_CATALOG_ID, quantity: 2, unit_price: '150' },
+    ]
+    const several = await post({ ...valid, items: multiSelected })
+    expect(several.status).toBe(201)
+    expect(rpc.mock.calls[0][1].p_fields).toMatchObject({
+      product: '1 x Cargador Xiaomi\n2 x Guitarra VOZZEX', quantity: 3, price: '395.00',
+      items: [{ product_name: 'Cargador Xiaomi', catalog_product_id: PRODUCT_CATALOG_ID },
+              { product_name: 'Guitarra VOZZEX', catalog_product_id: OTHER_CATALOG_ID }],
+    })
+  })
+
+  it('rejects an inactive, absent, or other-account audio-guide product without writing', async () => {
+    featureRead.mockResolvedValue({ data: { multiproduct_enabled: true, product_tags_required: true }, error: null })
+    catalogRead.mockResolvedValue({ data: [], error: null })
+    const res = await post({ ...valid, catalog_product_id: OTHER_CATALOG_ID })
+    expect(res.status).toBe(422)
+    expect((await res.json()).errors).toMatchObject({ product: 'invalid_catalog_product' })
+    expect(rpc).not.toHaveBeenCalled()
   })
 
   it('warns about a malformed DNI but still creates the order', async () => {

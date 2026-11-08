@@ -53,7 +53,7 @@ export function draftFromLegacy(values: { product: string; quantity: string; pri
     quantity: q,
     unit_price: q === "1" ? values.price : "",
     catalog_product_id: null,
-  };
+    };
 }
 
 export const itemsForSubmission = (items: DraftOrderItem[]) => items.map((item) => ({
@@ -74,10 +74,11 @@ interface CatalogProduct {
  * This panel is mounted only while open, so stale suggestions cannot leak
  * between different products or survive closing the picker. */
 function CatalogPicker({
-  index, onSelect,
+  index, onSelect, strict = false,
 }: {
-  index: number;
+  index: number | string;
   onSelect: (product: CatalogProduct) => void;
+  strict?: boolean;
 }) {
   const t = useTranslations("Orders");
   const [query, setQuery] = useState("");
@@ -134,9 +135,9 @@ function CatalogPicker({
       ) : status === "loading" || status === "idle" ? (
         <p role="status" className="text-xs text-muted-foreground">{t("lineCatalogSearching")}</p>
       ) : status === "error" ? (
-        <p role="status" className="text-xs text-muted-foreground">{t("lineCatalogUnavailable")}</p>
+        <p role="status" className="text-xs text-muted-foreground">{t(strict ? "lineCatalogUnavailableStrict" : "lineCatalogUnavailable")}</p>
       ) : options.length === 0 ? (
-        <p role="status" className="text-xs text-muted-foreground">{t("lineCatalogNoResults")}</p>
+        <p role="status" className="text-xs text-muted-foreground">{t(strict ? "lineCatalogNoResultsStrict" : "lineCatalogNoResults")}</p>
       ) : (
         <div className="grid max-h-48 gap-1 overflow-y-auto rounded-md border bg-popover p-1" data-testid={"order-catalog-search-results-" + index}>
           {options.map((product) => (
@@ -151,17 +152,38 @@ function CatalogPicker({
           ))}
         </div>
       )}
-      <p className="text-xs text-muted-foreground">{t("lineCatalogManualHint")}</p>
+      <p className="text-xs text-muted-foreground">{t(strict ? "lineCatalogRequired" : "lineCatalogManualHint")}</p>
+    </div>
+  );
+}
+
+/** Strict single-product control: selected catalogue ID is tracked independently
+ * from the visible snapshot name; a contact prefill is NEVER authoritative. */
+export function StrictCatalogProductPicker({
+  value, selectedId, onSelect,
+}: {
+  value: string;
+  selectedId: string;
+  onSelect: (product: CatalogProduct) => void;
+}) {
+  const t = useTranslations("Orders");
+  return (
+    <div className="grid gap-2" data-testid="strict-single-product-picker">
+      <Input id="order-product" value={value} readOnly aria-label={t("product")}
+        placeholder={t("lineCatalogSelectPlaceholder")} />
+      {selectedId ? <p className="text-xs text-muted-foreground">{t("lineFromCatalog")}</p> : null}
+      <CatalogPicker index="single" onSelect={onSelect} strict />
     </div>
   );
 }
 
 function ProductNameInput({
-  item, index, change,
+  item, index, change, strictCatalog = false,
 }: {
   item: DraftOrderItem;
   index: number;
   change: (patch: Partial<DraftOrderItem>) => void;
+  strictCatalog?: boolean;
 }) {
   const t = useTranslations("Orders");
   const [options, setOptions] = useState<CatalogProduct[]>([]);
@@ -169,7 +191,7 @@ function ProductNameInput({
   const [catalogOpen, setCatalogOpen] = useState(false);
 
   useEffect(() => {
-    if (catalogOpen || item.catalog_product_id || item.product_name.trim().length < 2) return;
+    if (strictCatalog || catalogOpen || item.catalog_product_id || item.product_name.trim().length < 2) return;
     const controller = new AbortController();
     const timeout = setTimeout(async () => {
       try {
@@ -192,9 +214,9 @@ function ProductNameInput({
       clearTimeout(timeout);
       controller.abort();
     };
-  }, [item.product_name, item.catalog_product_id, catalogOpen]);
+  }, [item.product_name, item.catalog_product_id, catalogOpen, strictCatalog]);
 
-  const shown = !item.catalog_product_id && item.product_name.trim().length >= 2;
+  const shown = !strictCatalog && !item.catalog_product_id && item.product_name.trim().length >= 2;
   return (
     <div className="grid gap-1 sm:col-span-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -216,7 +238,10 @@ function ProductNameInput({
         value={item.product_name}
         maxLength={150}
         autoComplete="off"
+        readOnly={strictCatalog}
+        placeholder={strictCatalog ? t("lineCatalogSelectPlaceholder") : undefined}
         onChange={(e) => {
+          if (strictCatalog) return;
           setOptions([]);
           setUnavailable(false);
           change({ product_name: e.target.value, catalog_product_id: null });
@@ -225,8 +250,12 @@ function ProductNameInput({
       {catalogOpen ? (
         <CatalogPicker
           index={index}
+          strict={strictCatalog}
           onSelect={(product) => {
-            change({ product_name: product.display_name, catalog_product_id: product.id });
+            change({
+              product_name: product.display_name,
+              catalog_product_id: product.id,
+            });
             setOptions([]);
             setUnavailable(false);
             setCatalogOpen(false);
@@ -253,6 +282,9 @@ function ProductNameInput({
       ) : shown && unavailable ? (
         <p className="text-xs text-muted-foreground">{t("lineCatalogUnavailable")}</p>
       ) : null}
+      {strictCatalog && !item.catalog_product_id ? (
+        <p className="text-xs text-muted-foreground">{t("lineCatalogRequired")}</p>
+      ) : null}
     </div>
   );
 }
@@ -261,9 +293,10 @@ interface Props {
   items: DraftOrderItem[];
   onChange: (items: DraftOrderItem[]) => void;
   error?: string | null;
+  strictCatalog?: boolean;
 }
 
-export function OrderItemsEditor({ items, onChange, error }: Props) {
+export function OrderItemsEditor({ items, onChange, error, strictCatalog = false }: Props) {
   const t = useTranslations("Orders");
   const subtotals = items.map(subtotalCents);
   const total = subtotals.every((amount) => amount !== null)
@@ -292,7 +325,7 @@ export function OrderItemsEditor({ items, onChange, error }: Props) {
             </Button>
           </div>
           <div className="grid gap-2 sm:grid-cols-2">
-            <ProductNameInput item={item} index={index} change={(patch) => change(index, patch)} />
+            <ProductNameInput item={item} index={index} change={(patch) => change(index, patch)} strictCatalog={strictCatalog} />
             <div className="grid gap-1">
               <Label htmlFor={"order-item-quantity-" + index}>{t("lineQuantity")}</Label>
               <Input id={"order-item-quantity-" + index} value={item.quantity} inputMode="numeric"

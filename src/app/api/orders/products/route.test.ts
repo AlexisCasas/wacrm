@@ -74,6 +74,18 @@ describe("GET /api/orders/products", () => {
     expect(r.headers.get("cache-control")).toBe("private, no-store");
   });
 
+  it("strict mode searches the ACTIVE audio-guide products of the session account, even for single orders", async () => {
+    settingsRead.mockResolvedValue({ data: { confirm_enabled: true, multiproduct_enabled: false, product_tags_required: true }, error: null });
+    productsRead.mockResolvedValue({ data: [{ id: "catalog-1", display_name: "Amoladora 710W", active: true }], error: null });
+    const response = await GET(new Request("http://example.invalid/api/orders/products?q=Amoladora&account_id=other"));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ products: [{ id: "catalog-1", display_name: "Amoladora 710W", active: true }] });
+    expect(queriedProducts).toHaveBeenCalledWith("account_id", ACCOUNT);
+    expect(queriedProducts).toHaveBeenCalledWith("active", true);
+    expect(searchedProductNames).toHaveBeenCalledWith("display_name", "%Amoladora%");
+    expect(queriedProducts).not.toHaveBeenCalledWith("is_order_product", true);
+  });
+
   it("removes PostgREST asterisk wildcards before searching and rejects wildcard-only queries", async () => {
     settingsRead.mockResolvedValue({ data: { confirm_enabled: true, multiproduct_enabled: true }, error: null });
     const r = await query("Gui*ca");
