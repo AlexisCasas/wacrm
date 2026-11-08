@@ -26,9 +26,9 @@ import { toast } from "sonner";
 const sellers = [{ id: "11111111-1111-4111-8111-111111111111", name: "Vendedor Uno" }];
 const contact = { id: "22222222-2222-4222-8222-222222222222", name: "Cliente Sintetico", phone: "900000001" };
 
-function setup(multiproductEnabled = false) {
+function setup(multiproductEnabled = false, productTagsRequired = false) {
   const onOpenChange = vi.fn();
-  render(<ConfirmOrderDialog open onOpenChange={onOpenChange} contact={contact} conversationId="33333333-3333-4333-8333-333333333333" sellers={sellers} multiproductEnabled={multiproductEnabled} />);
+  render(<ConfirmOrderDialog open onOpenChange={onOpenChange} contact={contact} conversationId="33333333-3333-4333-8333-333333333333" sellers={sellers} multiproductEnabled={multiproductEnabled} productTagsRequired={productTagsRequired} />);
   return { onOpenChange };
 }
 const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value;
@@ -135,6 +135,42 @@ describe("ConfirmOrderDialog", () => {
     expect(value("order-item-product-0")).toBe("Producto manual");
     expect(value("order-item-unit-price-0")).toBe("150");
     expect(fetchMock.mock.calls.every(([url]) => url.startsWith("/api/orders/products"))).toBe(true);
+  });
+
+  it("requires a selected commercial product tag in single mode; prefilled free text is not sufficient", async () => {
+    const TAG = "44444444-4444-4444-8444-444444444444";
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => (
+      new Response(JSON.stringify({ products: [{ id: TAG, display_name: "Cargador Xiaomi", active: true }] }), { status: 200 })
+    )));
+    setup(true, true);
+    await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
+    expect((document.getElementById("order-product") as HTMLInputElement).readOnly).toBe(true);
+    await pickSeller();
+    expect(screen.getByText("review").closest("button")).toBeDisabled();
+    fireEvent.change(document.getElementById("order-catalog-search-single")!, { target: { value: "Cargador" } });
+    fireEvent.click(await screen.findByText("Cargador Xiaomi"));
+    expect(value("order-product")).toBe("Cargador Xiaomi");
+    expect(screen.getByText("review").closest("button")).not.toBeDisabled();
+    expect(screen.getByText("orderDescription")).toBeTruthy(); // Notes remain a separate free-text field.
+  });
+
+  it("strict multiple items cannot be reviewed if any line lacks a selected tag", async () => {
+    const TAG = "44444444-4444-4444-8444-444444444444";
+    vi.stubGlobal("fetch", vi.fn(async () => (
+      new Response(JSON.stringify({ products: [{ id: TAG, display_name: "Cargador Xiaomi", active: true }] }), { status: 200 })
+    )));
+    setup(true, true);
+    await waitFor(() => expect(value("order-product")).toBe("Nivel laser"));
+    fireEvent.click(screen.getByText("lineMultiMode"));
+    await pickSeller();
+    expect((document.getElementById("order-item-product-0") as HTMLInputElement).readOnly).toBe(true);
+    expect(screen.getByText("review").closest("button")).toBeDisabled();
+    fireEvent.click(screen.getByText("lineCatalogBrowse"));
+    fireEvent.change(document.getElementById("order-catalog-search-0")!, { target: { value: "Cargador" } });
+    fireEvent.click(await screen.findByText("Cargador Xiaomi"));
+    expect(screen.getByText("review").closest("button")).not.toBeDisabled();
+    fireEvent.click(screen.getByText("lineAdd"));
+    expect(screen.getByText("review").closest("button")).toBeDisabled();
   });
 
   it("keeps multi-item controls hidden for accounts without the feature", async () => {
