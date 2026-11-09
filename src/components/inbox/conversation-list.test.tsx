@@ -33,20 +33,40 @@ vi.mock("next-intl", () => ({
 const h = vi.hoisted(() => ({
   tagsCatalog: [] as { id: string; name: string; color: string }[],
   tagsFetchCount: 0,
+  contactSearchRows: [] as Conversation[],
+  messageSearchRows: [] as Conversation[],
+  searchedRanges: [] as { source: "contact" | "message"; from: number; to: number }[],
+  contactSearchFilters: [] as string[],
 }));
 
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
     from: (table: string) => {
+      let source: "normal" | "contact" | "message" = "normal";
       const builder = {
         select: () => builder,
         eq: () => builder,
-        order: () => {
+        order: () => builder,
+        or: (filters: string) => {
+          source = "contact";
+          h.contactSearchFilters.push(filters);
+          return builder;
+        },
+        ilike: () => {
+          source = "message";
+          return builder;
+        },
+        range: (from: number, to: number) => {
+          const rows = source === "contact" ? h.contactSearchRows : h.messageSearchRows;
+          if (source !== "normal") h.searchedRanges.push({ source, from, to });
+          return Promise.resolve({ data: rows.slice(from, to + 1), error: null });
+        },
+        then: (resolve: (result: unknown) => unknown) => {
           if (table === "tags") {
             h.tagsFetchCount++;
-            return Promise.resolve({ data: h.tagsCatalog, error: null });
+            return Promise.resolve({ data: h.tagsCatalog, error: null }).then(resolve);
           }
-          return Promise.resolve({ data: [], error: null });
+          return Promise.resolve({ data: [], error: null }).then(resolve);
         },
       };
       return builder;
@@ -57,6 +77,10 @@ vi.mock("@/lib/supabase/client", () => ({
 beforeEach(() => {
   h.tagsCatalog = [];
   h.tagsFetchCount = 0;
+  h.contactSearchRows = [];
+  h.messageSearchRows = [];
+  h.searchedRanges = [];
+  h.contactSearchFilters = [];
 });
 
 function contact(name: string) {
@@ -161,6 +185,53 @@ describe('ConversationList — "Needs human" indicator (test #17, #18)', () => {
     renderList([NORMAL_CONV]);
     expect(await screen.findByText("Normal Person")).toBeInTheDocument();
     expect(screen.queryByTitle("needsHumanAttention")).not.toBeInTheDocument();
+  });
+});
+
+describe("ConversationList — database-backed search", () => {
+  it("finds a phone match after the first 1,000 contact matches", async () => {
+    const firstThousand = Array.from({ length: 1_000 }, (_, index) =>
+      conv({
+        id: `conv-${index}`,
+        contact_id: `ct-${index}`,
+        contact: contact(`Other ${index}`),
+      }),
+    );
+    const misael = conv({
+      id: "conv-misael",
+      contact_id: "ct-misael",
+      contact: {
+        ...contact("Misael"),
+        phone: "51981629790",
+        account_id: "acct-1",
+      } as NonNullable<Conversation["contact"]>,
+    });
+    h.contactSearchRows = [...firstThousand, misael];
+    const onConversationsLoaded = vi.fn();
+
+    render(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={onConversationsLoaded}
+      />,
+    );
+    await waitFor(() => expect(onConversationsLoaded).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText("searchPlaceholder"), {
+      target: { value: "981629790" },
+    });
+
+    await waitFor(() => {
+      const latest = onConversationsLoaded.mock.calls.at(-1)?.[0] as Conversation[];
+      expect(latest.some((conversation) => conversation.id === "conv-misael")).toBe(true);
+    });
+    expect(h.searchedRanges).toContainEqual({ source: "contact", from: 0, to: 999 });
+    expect(h.searchedRanges).toContainEqual({ source: "contact", from: 1000, to: 1999 });
+    expect(h.contactSearchFilters).toContain(
+      "name.ilike.%981629790%,phone.ilike.%981629790%,wa_username.ilike.%981629790%",
+    );
   });
 });
 

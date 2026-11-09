@@ -111,11 +111,73 @@ export function ConversationList({
     let cancelled = false;
 
     (async () => {
-      const { data, error } = await supabase
-        .from("conversations")
-        .select(INBOX_CONVERSATION_SELECT)
-        .eq("contact.blocked", false)
-        .order("last_message_at", { ascending: false });
+      const term = search.trim();
+      const baseQuery = () =>
+        supabase
+          .from("conversations")
+          .select(INBOX_CONVERSATION_SELECT)
+          .eq("contact.blocked", false)
+          .order("last_message_at", { ascending: false });
+
+      type InboxRows = Parameters<typeof normalizeConversations>[0];
+      type InboxQueryError = {
+        message: string;
+        details?: string | null;
+        hint?: string | null;
+        code?: string | null;
+      };
+      let data: InboxRows | null = null;
+      let error: InboxQueryError | null = null;
+
+      if (!term) {
+        ({ data, error } = await baseQuery());
+      } else {
+        // PostgREST caps an un-ranged response (commonly at 1,000 rows).
+        // Search in the database instead of filtering the already-capped
+        // Inbox load, and page each branch so a matching conversation cannot
+        // disappear merely because it falls after that cap.
+        const PAGE_SIZE = 1_000;
+        const fetchAll = async (query: ReturnType<typeof baseQuery>) => {
+          const rows: InboxRows = [];
+          for (let from = 0; ; from += PAGE_SIZE) {
+            const { data: page, error: pageError } = await query.range(
+              from,
+              from + PAGE_SIZE - 1,
+            );
+            if (pageError) throw pageError;
+            rows.push(...(page ?? []));
+            if ((page?.length ?? 0) < PAGE_SIZE) return rows;
+          }
+        };
+
+        const pattern = `%${term}%`;
+        try {
+          // PostgREST cannot OR predicates from an embedded table and the
+          // parent table in one expression. Keep the pre-existing criteria
+          // by querying each side and de-duplicating conversations below.
+          const [contactMatches, messageMatches] = await Promise.all([
+            fetchAll(
+              baseQuery().or(
+                `name.ilike.${pattern},phone.ilike.${pattern},wa_username.ilike.${pattern}`,
+                { referencedTable: "contact" },
+              ),
+            ),
+            fetchAll(baseQuery().ilike("last_message_text", pattern)),
+          ]);
+          const unique = new Map<string, (typeof contactMatches)[number]>();
+          for (const conversation of [...contactMatches, ...messageMatches]) {
+            unique.set(conversation.id, conversation);
+          }
+          data = Array.from(unique.values());
+        } catch (searchError) {
+          error = {
+            message:
+              searchError instanceof Error
+                ? searchError.message
+                : "Failed to search conversations",
+          };
+        }
+      }
 
       if (cancelled) return;
 
@@ -143,7 +205,7 @@ export function ConversationList({
     // `resyncToken` is included so the parent can force a refetch when
     // the realtime channel reconnects or the tab regains focus — catches
     // up on any events sent while the WS was disconnected or throttled.
-  }, [resyncToken]);
+  }, [resyncToken, search]);
 
   // Tag definitions for the filter picker — loaded once (labels/colours
   // stay stable regardless of which conversations happen to be loaded),
