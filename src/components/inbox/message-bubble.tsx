@@ -302,7 +302,25 @@ export function MessageBubble({
           >
             {time}
           </span>
-          {isAgent && <StatusIcon status={message.status} />}
+          {isAgent && (message.status === "failed" ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  role="img"
+                  tabIndex={0}
+                  className="inline-flex cursor-help"
+                  aria-label={t("deliveryFailed")}
+                >
+                  <StatusIcon status={message.status} />
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="top" className="max-w-xs break-words">
+                <div>{t("deliveryFailed")}</div>
+                {message.delivery_error_code != null && <div>Meta: {message.delivery_error_code}</div>}
+                {message.delivery_error_title && <div>{message.delivery_error_title}</div>}
+              </TooltipContent>
+            </Tooltip>
+          ) : <StatusIcon status={message.status} />)}
         </div>
       </div>
       {message.sender_type === "agent" && (

@@ -253,6 +253,7 @@
       "quickReplySaveError": "빠른 답장을 저장하지 못했습니다."
     },
     "bubble": {
+      "deliveryFailed": "메시지를 전달하지 못했습니다",
       "photo": "사진",
       "video": "동영상",
       "audio": "오디오",
