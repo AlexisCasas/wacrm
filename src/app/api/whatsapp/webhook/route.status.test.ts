@@ -131,7 +131,7 @@ describe('status webhook: tenant attribution and scoped, forward-only write (PR-
 
   it('records only a sanitized Meta failure code/title and never stores raw private error details', async () => {
     h.rpcResult = { data: [applied('conv-1', 'contact-1', 'failed')], error: null }
-    await deliver(body(PHONE_A, [{ status: 'failed', errors: [{ code: 131026, title: 'Message not delivered\\n', message: 'private phone 519000', error_data: { details: 'private content' } }] }]))
+    await deliver(body(PHONE_A, [{ status: 'failed', errors: [{ code: 131026, title: 'Message not delivered\n', message: 'private phone 519000', error_data: { details: 'private content' } }] }]))
     const calls = h.rpcCalls.filter((c) => c.name === 'record_whatsapp_delivery_failure')
     expect(calls).toEqual([{
       name: 'record_whatsapp_delivery_failure',
