@@ -399,6 +399,7 @@
       "micAccessDenied": "Acceso al micrófono denegado o no disponible."
     },
     "bubble": {
+      "deliveryFailed": "No se pudo entregar el mensaje",
       "photo": "Foto",
       "video": "Video",
       "audio": "Audio",

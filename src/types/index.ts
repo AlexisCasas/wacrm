@@ -252,6 +252,9 @@ export interface Message {
   template_name?: string;
   message_id?: string;
   status: MessageStatus;
+  /** Optional Meta webhook failure reason; populated only after the additive migration. */
+  delivery_error_code?: number | null;
+  delivery_error_title?: string | null;
   created_at: string;
   reply_to_message_id?: string;
   /**

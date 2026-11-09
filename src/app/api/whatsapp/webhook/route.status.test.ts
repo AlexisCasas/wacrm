@@ -71,7 +71,7 @@ const WAMID = 'wamid.HBgMNTE5MDAwMDAwMDAxFQIAERgSQTFCMkMzRDRFNUY2QTdCOA=='
 const PHONE_A = '111111111111111'
 const PHONE_B = '222222222222222'
 
-type St = { id?: string; status: string; timestamp?: string; pricing?: Record<string, unknown>; conversation?: Record<string, unknown> }
+type St = { id?: string; status: string; timestamp?: string; pricing?: Record<string, unknown>; conversation?: Record<string, unknown>; errors?: unknown[] }
 function body(phone: string | undefined, statuses: St[]) {
   return JSON.stringify({
     entry: [{
@@ -81,7 +81,7 @@ function body(phone: string | undefined, statuses: St[]) {
         value: {
           messaging_product: 'whatsapp',
           metadata: phone === undefined ? {} : { display_phone_number: '51900000000', phone_number_id: phone },
-          statuses: statuses.map((s) => ({ id: s.id ?? WAMID, status: s.status, timestamp: s.timestamp ?? '1793970000', recipient_id: '51900000001', ...(s.pricing ? { pricing: s.pricing } : {}), ...(s.conversation ? { conversation: s.conversation } : {}) })),
+          statuses: statuses.map((s) => ({ id: s.id ?? WAMID, status: s.status, timestamp: s.timestamp ?? '1793970000', recipient_id: '51900000001', ...(s.pricing ? { pricing: s.pricing } : {}), ...(s.conversation ? { conversation: s.conversation } : {}), ...(s.errors ? { errors: s.errors } : {}) })),
         },
       }],
     }],
@@ -127,6 +127,25 @@ describe('status webhook: tenant attribution and scoped, forward-only write (PR-
     for (const [i, conv] of ['conv-1', 'conv-2'].entries()) {
       expect(h.dispatch.mock.calls[i].slice(1)).toEqual(['acc-B', 'message.status_updated', { whatsapp_message_id: WAMID, conversation_id: conv, status: 'delivered' }])
     }
+  })
+
+  it('records only a sanitized Meta failure code/title and never stores raw private error details', async () => {
+    h.rpcResult = { data: [applied('conv-1', 'contact-1', 'failed')], error: null }
+    await deliver(body(PHONE_A, [{ status: 'failed', errors: [{ code: 131026, title: 'Message not delivered\n', message: 'private phone 519000', error_data: { details: 'private content' } }] }]))
+    const calls = h.rpcCalls.filter((c) => c.name === 'record_whatsapp_delivery_failure')
+    expect(calls).toEqual([{
+      name: 'record_whatsapp_delivery_failure',
+      args: { p_account_id: 'acc-A', p_wamid: WAMID, p_code: 131026, p_title: 'Message not delivered' },
+    }])
+    expect(JSON.stringify(calls)).not.toContain('private phone')
+    expect(JSON.stringify(calls)).not.toContain('private content')
+  })
+
+  it('does not create a failure reason for delivered statuses or malformed Meta errors', async () => {
+    h.rpcResult = { data: [applied('conv-1', 'c1', 'delivered')], error: null }
+    await deliver(body(PHONE_A, [{ status: 'delivered', errors: [{ code: 131026, title: 'ignored' }] }]))
+    await deliver(body(PHONE_A, [{ status: 'failed', errors: [{ code: 'not-a-number', title: 'ignored' }] }]))
+    expect(h.rpcCalls.filter((c) => c.name === 'record_whatsapp_delivery_failure')).toHaveLength(0)
   })
 
   it('a stale / replayed / refused event (the write changed nothing) sends NO notification', async () => {

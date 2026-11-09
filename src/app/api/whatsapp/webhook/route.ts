@@ -8,6 +8,7 @@ import { resolveInboundContact } from '@/lib/contacts/resolve-identity'
 import { pairContact } from '@/lib/whatsapp/pair-contact'
 import { messageRef } from '@/lib/whatsapp/message-ref'
 import { normalizeMetaStatus, parseMetaTimestamp } from '@/lib/whatsapp/message-status'
+import { recordMetaDeliveryFailure } from '@/lib/whatsapp/delivery-failure'
 import { auditExternalEventHeld, externalEventsHeldForContact } from '@/lib/webhooks/pilot-hold'
 import { isBsuidPilotEnabledWithScopes } from '@/lib/whatsapp/bsuid-pilot'
 import { bsuidFlowScope, getDbPilotScopes } from '@/lib/whatsapp/bsuid-flow-auth'
@@ -113,6 +114,8 @@ interface WhatsAppWebhookStatus {
   pricing?: { billable?: boolean; pricing_model?: string; type?: string; category?: string; subtype?: string }
   /** Conversation of the message. `expiration_timestamp` (unix seconds, string) only on `sent`; from API v24.0 the object is omitted unless it is an FEP one. */
   conversation?: { id?: string; expiration_timestamp?: string; origin?: { type?: string } }
+  /** Meta's failure metadata; raw error messages and error_data are intentionally not retained. */
+  errors?: unknown
 }
 
 interface WhatsAppWebhookEntry {
@@ -471,6 +474,16 @@ async function handleStatusUpdate(status: WhatsAppWebhookStatus, accountId: stri
     // Deliberately NOT the whole error object: its `details` can echo a full message row (text, URLs).
     console.error('Error applying message status:', { code: error.code, message: error.message, message_ref: messageRef(status.id) })
     return
+  }
+
+  // Capture a bounded code/title for future failed STATUS webhooks (including idempotent replays).
+  // This isolated best-effort RPC never changes the message status or blocks other webhook processing.
+  if (normalized === 'failed') {
+    await recordMetaDeliveryFailure(supabaseAdmin(), {
+      accountId,
+      wamid: status.id,
+      errors: status.errors,
+    })
   }
 
   for (const row of (data ?? []) as AppliedMessageStatus[]) {
