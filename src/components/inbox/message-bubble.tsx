@@ -304,15 +304,12 @@ export function MessageBubble({
           </span>
           {isAgent && (message.status === "failed" ? (
             <Tooltip>
-              <TooltipTrigger asChild>
-                <span
-                  role="img"
-                  tabIndex={0}
-                  className="inline-flex cursor-help"
-                  aria-label={t("deliveryFailed")}
-                >
-                  <StatusIcon status={message.status} />
-                </span>
+              <TooltipTrigger
+                className="inline-flex cursor-help"
+                aria-label={t("deliveryFailed")}
+                title={t("deliveryFailed")}
+              >
+                <StatusIcon status={message.status} />
               </TooltipTrigger>
               <TooltipContent side="top" className="max-w-xs break-words">
                 <div>{t("deliveryFailed")}</div>

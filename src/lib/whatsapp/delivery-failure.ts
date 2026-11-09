@@ -14,7 +14,7 @@ export function normalizeMetaDeliveryFailure(errors: unknown): DeliveryFailureRe
     const e = item as { code?: unknown; title?: unknown }
     if (typeof e.code !== 'number' || !Number.isSafeInteger(e.code) || e.code < 1 || e.code > 999999) continue
     const title = typeof e.title === 'string'
-      ? e.title.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)
+      ? e.title.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').replace(/\d{7,}/g, '#').trim().slice(0, 160)
       : ''
     return { code: e.code, title: title || null }
   }

@@ -11,6 +11,19 @@ describe('Meta delivery failure metadata', () => {
     expect(result).toEqual({ code: 131026, title: 'Not delivered to recipient' })
     expect(JSON.stringify(result)).not.toContain('51900000000')
   })
+  it('masks long numbers in titles before they reach the inbox', () => {
+    const result = normalizeMetaDeliveryFailure([{
+      code: 131026,
+      title: 'Delivery blocked for 51939665944, contact +51987654321',
+      message: 'private metadata',
+    }])
+    expect(result).toEqual({
+      code: 131026,
+      title: 'Delivery blocked for #, contact +#',
+    })
+    expect(JSON.stringify(result)).not.toContain('51939665944')
+    expect(JSON.stringify(result)).not.toContain('51987654321')
+  })
   it('rejects missing or malformed reasons', () => {
     for (const val of [null, {}, [], [{ code: '131026' }], [{ code: 0 }], [{ code: 1.5 }]]) {
       expect(normalizeMetaDeliveryFailure(val)).toBeNull()

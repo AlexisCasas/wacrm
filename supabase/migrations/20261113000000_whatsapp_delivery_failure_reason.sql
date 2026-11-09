@@ -37,7 +37,7 @@ BEGIN
      SET delivery_error_code = COALESCE(m.delivery_error_code, p_code),
          delivery_error_title = COALESCE(
            m.delivery_error_title,
-           left(nullif(btrim(regexp_replace(coalesce(p_title, ''), '[[:cntrl:]]', ' ', 'g')), ''), 160)
+           left(nullif(btrim(regexp_replace(regexp_replace(coalesce(p_title, ''), '[[:cntrl:]]', ' ', 'g'), '[0-9]{7,}', '#', 'g')), ''), 160)
          )
     FROM public.conversations c
    WHERE c.id = m.conversation_id
