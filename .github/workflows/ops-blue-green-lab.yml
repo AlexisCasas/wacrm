@@ -38,6 +38,13 @@ jobs:
             -f ops/deploy/candidate.override.yml \
             config --format json > /tmp/wacrm-qa-config.json
           node -e 'const c=require("/tmp/wacrm-qa-config.json"); const a=c.services.app.networks.edge_proxy.aliases; if(JSON.stringify(a)!==JSON.stringify(["qa-candidate"])){console.error(a);process.exit(1)}'
+      - name: Reject home-page readiness on new candidates
+        shell: bash
+        run: |
+          if READY_PATH=/ bash ops/deploy/deploy.sh node:20-alpine > /tmp/readiness-reject.log 2>&1; then
+            echo 'OPS LAB FAIL: redirected home page was accepted as readiness'; exit 1
+          fi
+          grep -q 'not a database readiness gate' /tmp/readiness-reject.log
       - name: Preserve 12 inflight requests while swapping alias
         shell: bash
         run: |
