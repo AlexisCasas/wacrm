@@ -12,11 +12,10 @@ shorter than the drain Next.js recommends for `after()` work.
 1. Start the candidate from the **live container's own compose files** (read from its labels; only the image changes), with a private alias.
 2. Readiness gate: `GET /api/health/ready` (needs the DB) must return 200 `READY_PASSES` times in a row, from inside the container.
 3. DNS check from a throwaway container on `edge_proxy`: private alias -> candidate only; `wacrm-app` -> old only.
-4. Candidate gets the public alias `wacrm-app`: Docker DNS now returns both IPs (Caddy dials them in turn: a refused connect falls through to the next).
+4. Candidate gets the public alias `wacrm-app`: Docker DNS may return both IPs. This is **not** load balancing, nor does it guarantee that Caddy retries webhook POSTs.
 5. Dual-serve window (`DRAIN_SECONDS`), candidate re-checked.
-6. `docker stop -t 40` on the old container: SIGTERM, Next stops accepting, finishes in-flight requests **and pending `after()` callbacks**
-   (documented in `node_modules/next/dist/docs/01-app/02-guides/self-hosting.md`), exits; Docker DNS drops it. It is **kept stopped** for rollback.
-7. Names swapped (`old -> wacrm-app-1-prev-<ts>`, `candidate -> wacrm-app-1`) because the host crons run `docker exec wacrm-app-1 ...`.
+6. `docker stop -t 40` on the old container: Next receives SIGTERM and is given a bounded drain interval. After stopping, the old image is disconnected from the edge network **with force** and reconnected under a private-only alias for rollback; an isolated Docker preflight checks this behavior before the first candidate starts.
+7. Names swapped (`old -> wacrm-app-1-prev-<ts>`, `candidate -> wacrm-app-1`) with bounded rename retries, because host crons use `docker exec wacrm-app-1`. A persistent rename failure remains an operator incident (do not silently restore the live name to a stopped container).
 
 The old container is deliberately **not** disconnected from the network first: that severs its in-flight connections.
 `lab-alias-flip.sh` shows it (isolated throwaway network, 12 slow requests in flight when the old one is stopped, ~50 req/s of keep-alive traffic):
@@ -45,13 +44,13 @@ ops/deploy/rollback.sh --execute                  # if needed
 - Validate `docker compose version` (**>=2.24.4** for `!override`) and `docker compose ... config` against the *actual* live overlays and environment. `deploy.sh` enforces the Compose configuration check before mutations.
 - Verify `edge_proxy`, shared Caddy reverse proxy, available memory/disk, live Compose project labels, candidate image checksum, all host/cron dependencies and the DB-backed rollback probe; take and verify a backup before the execute window.
 - Rehearse dual-service window with synthetic/test traffic and the **actual Caddy** before an execute approval. The isolated lab has sometimes shown a dropped keep-alive socket, so a successful isolated trial alone is not sufficient. Do not retry non-idempotent POST webhooks unless delivery/idempotency can be proven. Stop on any 502 or lost webhook acknowledgement.
-- The deployed state file `last.env` is published **only after successful name swap**. An aborted candidate keeps the previously known-good rollback pointer.
+- The deployed state file `last.env` is published **only after the name swap**. If the old image could not be parked privately, the cutover is marked `ROLLBACK_DISABLED=1`, the script fails loudly, and automated rollback refuses to start. Such an incident requires manual correction before another deploy.
 - **No production command, Caddy edit, shared Dentalpin change, restart or migration is authorized by merging this PR.** Run `--execute` only under a separate explicit approval.
 
 ## Rollback
-`rollback.sh` starts the stopped previous container (it rejoins `edge_proxy` with its aliases), waits for readiness, lets both serve,
-then stops the failed release (kept as `wacrm-app-1-failed-<ts>`). Any failure **before** step 6 of deploy leaves the old container serving
-and removes the candidate. State of the last deploy: `/opt/backups/wacrm/deploy-state/last.env`.
+**Deployment guard:** `--execute` first runs `lab-private-rollback.sh` on the actual Docker Engine using a disposable Docker network, then continues only if the stopped-backup can be reconnected with a private alias. That test does not replace the read-only Caddy/port/cron preflight or separate production authorization.
+
+`rollback.sh` **refuses** to restart a previous image that still has the public alias. The backup must be parked privately by `deploy.sh`; it starts without the public alias, passes DB-backed readiness (including legacy REST fallback), and **only then** receives the public alias. Any failed pre-cutover rollback stops and re-parks the backup. The failed release is retained stopped after a successful rollback. A persistent Docker rename failure requires manual repair. State: `/opt/backups/wacrm/deploy-state/last.env`.
 
 ## Confirming the 502s are gone
 `verify-no-502.sh` counts error lines for `/api/whatsapp/webhook` in the Caddy log **only if the log is readable** and requires a successful DB-backed readiness probe. Zero error lines alone is *not proof* that no requests failed: absence of access logs or a logging gap could hide failures. Independently verify Meta delivery statuses and webhook retry counts. Expected: `PASS` for a window that contains a deploy done with this procedure. Compare with the
@@ -62,12 +61,12 @@ For stronger evidence also watch Meta's webhook delivery dashboard (no retries a
 - **Shared Caddy / Dentalpin: untouched.** Only the Caddy *log* is read. The candidate attaches to `edge_proxy` under WACRM's own aliases.
   Throwaway DNS probes run on `edge_proxy` as short-lived containers (`docker run --rm`).
 - **Caddy is untouched by this PR**, but the lab has observed an intermittent keep-alive socket error (1/784 requests in one run, 12/12 slow requests completed). Therefore `zero 502` is **NOT guaranteed by alias rotation alone**. Review the WACRM-only `keepalive off` option in `caddy-hardening.proposed.md`; any Caddy change is a separate decision requiring approval and regression checks for Dentalpin.
-- **Compose project label.** After the first run the live container belongs to project `wacrm-cand-<ts>`, not `wacrm`. From then on deploy only
+- **Compose project label.** After the first run the live container belongs to project `wacrm-cand-<lowercase-ts>`, not `wacrm`. From then on deploy only
   with this script; do not run `docker compose -p wacrm up` for releases (it would try to create a second `wacrm-app-1`).
 - **Crons:** between the two `docker rename`s (~100 ms) `docker exec wacrm-app-1` can fail once; the flock'd per-minute scripts retry next tick.
   Do not deploy inside the first 5 s of a minute if you want zero skipped ticks.
 - **Two app instances briefly run (seconds):** both can receive webhooks/cron calls. Webhook inbound inserts are idempotent
   (`ON CONFLICT (conversation_id, message_id) DO NOTHING`), flow wait claims use leases/compare-and-set, and cron endpoints are idempotent
   claims; the in-process state is per-request. Confirm in staging before the first production run.
-- **Memory:** two Next containers (~160 MB each) for a few seconds; the host has ~5 GB available.
+- **Memory:** measure actual free RAM, swap, image size and peak usage of *two* containers in the mandatory VPS preflight; do not rely on historic ~5 GB availability.
 - **Builds stay off the VPS** (see `docs/ops` build instructions); this script never builds.
