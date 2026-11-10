@@ -28,8 +28,10 @@ container_ip()      { docker inspect -f "{{(index .NetworkSettings.Networks \"$E
 # Fetch READY_PATH from INSIDE a container (no published port is needed). Prints the HTTP status, or 000.
 ready_status() {
   docker exec "$1" node -e "
-    const c=new AbortController(); setTimeout(()=>c.abort(),4000);
-    fetch('http://127.0.0.1:${APP_PORT}${READY_PATH}',{signal:c.signal}).then(r=>{console.log(r.status)}).catch(()=>console.log('000'))" 2>/dev/null || echo 000
+    const c=new AbortController();const t=setTimeout(()=>c.abort(),4000);
+    fetch('http://127.0.0.1:${APP_PORT}${READY_PATH}',{signal:c.signal})
+      .then(r=>{clearTimeout(t);console.log(r.status)})
+      .catch(()=>{clearTimeout(t);console.log('000')})" 2>/dev/null || echo 000
 }
 
 # All addresses a throwaway container on the edge network gets for NAME (what Caddy's dialer would get). One IP per line, sorted.
@@ -38,10 +40,31 @@ resolve_from_edge() {
     require('dns').promises.lookup('$2',{all:true,family:4}).then(r=>console.log(r.map(a=>a.address).sort().join('\n'))).catch(()=>{})" 2>/dev/null
 }
 
-wait_ready() {  # $1 container
-  local passes=0 waited=0
+# Fallback for the first rollback: the old image predates /api/health/ready.
+# Query the SAME accounts REST endpoint with the service-role credentials
+# already present inside that container. Neither tokens nor data are printed.
+# A login redirect/home-page HTTP 200 is deliberately NOT accepted as DB health.
+legacy_db_ready_status() {
+  docker exec "$1" node -e '
+    const base=process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const token=process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if(!base||!token){console.log("503");process.exit(0)}
+    const ctrl=new AbortController();const timer=setTimeout(()=>ctrl.abort(),3000);
+    const url=base.replace(/\/$/,"")+"/rest/v1/accounts?select=id&limit=1";
+    fetch(url,{headers:{apikey:token,Authorization:"Bearer "+token},signal:ctrl.signal})
+      .then(res=>{clearTimeout(timer);console.log(res.status===200?"200":"503")})
+      .catch(()=>{clearTimeout(timer);console.log("000")});
+  ' 2>/dev/null || echo 000
+}
+rollback_ready_status() {
+  local status
+  status="$(ready_status "$1")"
+  if [ "$status" = "200" ]; then echo 200; else legacy_db_ready_status "$1"; fi
+}
+wait_ready() {  # $1 container, optional $2 probe function
+  local passes=0 waited=0 probe="${2:-ready_status}"
   while [ "$waited" -lt "$READY_TIMEOUT" ]; do
-    if container_running "$1" && [ "$(ready_status "$1")" = "200" ]; then passes=$((passes+1)); else passes=0; fi
+    if container_running "$1" && [ "$("$probe" "$1")" = "200" ]; then passes=$((passes+1)); else passes=0; fi
     [ "$passes" -ge "$READY_PASSES" ] && return 0
     sleep 2; waited=$((waited+2))
   done
