@@ -1,6 +1,10 @@
 name: WACRM candidate image (manual, artifact only)
 
 on:
+  pull_request:
+    paths:
+      - ".github/workflows/wacrm-candidate-image.yml"
+      - "docs/ops/CANDIDATE-IMAGE-CI.md"
   workflow_dispatch:
     inputs:
       release_sha:
@@ -16,7 +20,29 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Confirm manual-only candidate packaging policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          flow = Path('.github/workflows/wacrm-candidate-image.yml').read_text()
+          assert 'workflow_dispatch:' in flow
+          assert "if: github.event_name == 'workflow_dispatch'" in flow
+          assert 'docker save' in flow and 'sha256sum' in flow
+          assert 'docker push' not in flow and 'docker load' not in flow
+          assert 'SUPABASE_SERVICE_ROLE_KEY' not in flow and 'META_APP_SECRET' not in flow
+          assert 'WACRM_NEXT_PUBLIC_SUPABASE_ANON_KEY' in flow
+          print('CANDIDATE_MANUAL_ONLY_CONTRACT=PASS')
+          PY
+
   build-candidate:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Public values must match the current production build config.
