@@ -55,6 +55,42 @@ retry_rename() {  # $1 old name, $2 new name
   return 1
 }
 
+# Swap while BOTH instances are still running. This avoids assigning the cron
+# name to a stopped container. On a failed candidate rename, restore the
+# running previous container's name before aborting the candidate.
+# Returns: 0=swapped; 1=old name never moved (or was restored);
+#          2=candidate rename failed but old name restored;
+#          3=unsafe/ambiguous rename failure (manual operator repair);
+#          4=precondition failed.
+swap_running_live_name() {  # $1 previous-name, $2 candidate-name, $3 live-name
+  local previous="$1" candidate="$2" live="$3"
+  container_running "$live" && container_running "$candidate" || return 4
+
+  if ! retry_rename "$live" "$previous"; then
+    # An unsuccessful Docker CLI response can leave an ambiguous final state.
+    # Check both possible names rather than assuming the old one remained.
+    if container_running "$live"; then return 1; fi
+    if container_running "$previous" &&
+       retry_rename "$previous" "$live" &&
+       container_running "$live"; then
+      return 1
+    fi
+    return 3
+  fi
+
+  if retry_rename "$candidate" "$live"; then
+    container_running "$live" || return 3
+    return 0
+  fi
+
+  # The old process is still RUNNING. Return the cron name to that process;
+  # it continues to serve public traffic while the candidate drains.
+  if retry_rename "$previous" "$live" && container_running "$live"; then
+    return 2
+  fi
+  return 3
+}
+
 # Fetch READY_PATH from INSIDE a container (no published port is needed). Prints the HTTP status, or 000.
 ready_status() {
   docker exec "$1" node -e "
