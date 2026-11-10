@@ -12,8 +12,8 @@ Limit -> Sort (created_at DESC, id DESC) -> Bitmap Heap Scan on messages
            Recheck Cond: conversation_id = ...  ->  Bitmap Index Scan on idx_messages_conversation
 ```
 
-`messages` is ~1.5M rows / 501 MB heap / 1000 MB total (rows are ~900 bytes wide). With the composite index the plan becomes a backward
-index scan that stops after 101 rows, regardless of thread length. The page works without the index (correctness does not depend on it);
+`messages` is ~1.5M rows / 501 MB heap / 1000 MB total (rows are ~900 bytes wide). With the proposed DESC composite index, the planner can use a forward index scan
+(or index-only scan where possible) and stop after 101 rows without sorting the full thread. The page works without the index (correctness does not depend on it);
 the index only bounds the cost of long threads.
 
 ## SQL
@@ -31,7 +31,7 @@ Rollback: `DROP INDEX CONCURRENTLY IF EXISTS public.idx_messages_conversation_cr
    a `SHARE UPDATE EXCLUSIVE` lock: reads and writes continue; concurrent index builds wait for older transactions, so step 1 matters.
 4. Verify it is valid: `select indisvalid from pg_index where indexrelid = 'public.idx_messages_conversation_created_id'::regclass;` must be `t`.
    If it is `f` (interrupted build), `DROP INDEX CONCURRENTLY` it and retry.
-5. Confirm the plan with `EXPLAIN` (no ANALYZE): an Index Scan Backward on the new index, no Sort node.
+5. Confirm the plan with `EXPLAIN` (no ANALYZE): an Index Scan using the new composite index (a forward scan for its DESC order), no separate Sort node. Do not require the literal `Backward` keyword.
 6. Optional but recommended separately: `ANALYZE public.messages;` The planner's row estimates for `messages` are stale (`pg_stat_user_tables`
    reports ~28k live tuples against ~1.5M real rows; no autovacuum/autoanalyze has run on it).
 
