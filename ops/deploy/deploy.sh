@@ -154,8 +154,17 @@ if [ "$SWAP_RESULT" != "0" ]; then
   die "CRITICAL: ambiguous Docker rename or precondition failure (code=$SWAP_RESULT); both containers preserved for manual repair; DO NOT retry"
 fi
 # Candidate is now wacrm-app-1, still RUNNING and DB-ready.
-[ "$(ready_status "$LIVE_NAME")" = "200" ] ||
-  die "CRITICAL: candidate lost readiness after name swap; old running as $PREV_NAME; manual intervention required"
+if [ "$(ready_status "$LIVE_NAME")" != "200" ]; then
+  log "CRITICAL: candidate lost readiness after the name swap; restoring running previous release"
+  REVERSE_RESULT=0
+  swap_running_live_name "$CAND" "$PREV_NAME" "$LIVE_NAME" || REVERSE_RESULT=$?
+  if [ "$REVERSE_RESULT" = "0" ]; then
+    docker stop -t "$STOP_GRACE" "$CAND" >/dev/null 2>&1 || true
+    cleanup_candidate
+    die "candidate failed post-swap readiness; previous running image restored as $LIVE_NAME"
+  fi
+  die "CRITICAL: readiness failure and reverse name handoff failed (code=$REVERSE_RESULT); manual intervention required"
+fi
 
 log "7/7 SIGTERM to previous container (grace ${STOP_GRACE}s); candidate remains running under live cron name"
 docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null ||
