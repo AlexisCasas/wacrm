@@ -52,7 +52,12 @@ COMPOSE_ARGS=()
 IFS=',' read -r -a FILES <<<"$FILES_LABEL"
 for f in "${FILES[@]}"; do
   # the previous release's image override is replaced by ours; every other overlay (prod, bsuid-vars, ...) is kept as is
-  case "$f" in */new-image-override.yml) continue ;; esac
+  # When our previous candidate became the live container, its Compose labels
+  # include our old generated image override and candidate overlay. Never
+  # accumulate those overlays: exactly one of each belongs to this release.
+  case "$f" in
+    */new-image-override.yml|"$STATE_DIR"/*-image-override.yml|"$DIR/candidate.override.yml") continue ;;
+  esac
   [ -f "$f" ] || die "compose file from labels not found: $f"
   COMPOSE_ARGS+=(-f "$f")
 done
@@ -68,7 +73,7 @@ log "plan: start $CAND (private alias) -> ready x$READY_PASSES -> DNS check -> a
 cleanup_candidate() {
   log "removing candidate $CAND (old container untouched)"
   docker rm -f "$CAND" >/dev/null 2>&1 || true
-  docker compose -p "wacrm-cand-$TS" down --remove-orphans >/dev/null 2>&1 || true
+  ( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "wacrm-cand-$TS" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" down --remove-orphans ) >/dev/null 2>&1 || true
 }
 
 if [ "$EXECUTE" != "1" ]; then
@@ -86,6 +91,10 @@ YML
   echo "TS=$TS"; echo "OLD_NAME=$OLD"; echo "OLD_IMAGE=$(docker inspect -f '{{.Config.Image}}' "$OLD")"; echo "OLD_IMAGE_ID=$(docker inspect -f '{{.Image}}' "$OLD")"
   echo "NEW_IMAGE=$IMAGE"; echo "CAND=$CAND"
 } >"$STATE_DIR/$TS.env"
+
+# Validate the *final* composed candidate after generating its image override.
+( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "wacrm-cand-$TS" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" config -q ) ||
+  { cleanup_candidate; die "final candidate Compose configuration invalid"; }
 
 log "1/7 starting candidate $CAND"
 ( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "wacrm-cand-$TS" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" up -d --no-build --no-deps app ) || { cleanup_candidate; die "candidate failed to start"; }
