@@ -54,22 +54,37 @@ jobs:
       NEXT_PUBLIC_SITE_URL: ${{ vars.WACRM_NEXT_PUBLIC_SITE_URL }}
       NEXT_PUBLIC_APP_LOCALE: ${{ vars.WACRM_NEXT_PUBLIC_APP_LOCALE || 'en' }}
     steps:
+      # Inputs are untrusted strings: pass through env (never raw expression
+      # interpolation inside a shell script) and validate BEFORE checkout.
+      - name: Validate untrusted release input before checkout
+        id: validated
+        shell: bash
+        env:
+          RELEASE_SHA_INPUT: ${{ inputs.release_sha }}
+          RUN_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          SHA="$RELEASE_SHA_INPUT"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid release SHA"; exit 1; }
+          [ "$RUN_REF" = "refs/heads/main" ] || { echo "Workflow must run from main"; exit 1; }
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
       - name: Checkout exact release SHA
         uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.release_sha }}
+          ref: ${{ steps.validated.outputs.sha }}
           fetch-depth: 0
 
       - name: Gate SHA, main and compile-time public configuration
         id: preflight
         shell: bash
+        env:
+          VERIFIED_SHA: ${{ steps.validated.outputs.sha }}
         run: |
           set -euo pipefail
-          SHA="${{ inputs.release_sha }}"
-          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid SHA"; exit 1; }
+          SHA="$VERIFIED_SHA"
           [ "$(git rev-parse HEAD)" = "$SHA" ] || { echo "Checkout drift"; exit 1; }
           [ "$(git rev-parse origin/main)" = "$SHA" ] || { echo "Release is not the current main HEAD"; exit 1; }
-          [ "${{ github.ref }}" = "refs/heads/main" ] || { echo "Run workflow from main only"; exit 1; }
           [ -n "$NEXT_PUBLIC_SUPABASE_URL" ] && [ -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ] ||
             { echo "Missing production public Supabase configuration in repository vars/secrets"; exit 1; }
           case "$NEXT_PUBLIC_SUPABASE_URL" in https://*) ;; *) echo "Expected HTTPS Supabase URL"; exit 1 ;; esac
