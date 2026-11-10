@@ -25,8 +25,8 @@ describe('Resultados de anuncios page states', () => {
     await waitFor(() => expect(screen.getByText('Oferta')).toBeTruthy())
     expect(screen.getByTestId('capi-status').textContent).toMatch(/activo.*modo de prueba/)
     expect(screen.getByText('Pedidos sin atribución comprobable').nextSibling?.textContent).toBe('3')
-    expect(screen.getByText('25%')).toBeTruthy()
-    expect(screen.getByText('No disponible')).toBeTruthy()
+    expect(screen.getByText('25.0%')).toBeTruthy() // same value as before (25), presented with a consistent decimal
+    expect(screen.queryByText('No disponible')).toBeNull() // "Ventas verificadas" moved to the per-ad detail
   })
   it('no permission (403): shows a permission message, no report', async () => {
     vi.stubGlobal('fetch', reply(403, { error: 'Forbidden' }))
@@ -52,9 +52,9 @@ describe('Resultados de anuncios page states', () => {
     expect(card('Pedidos sin atribución comprobable')).toBe('5')
     expect(card('Importe de pedidos confirmados')).toBe('350.00') // attributed + unattributed, exactly as in production
     for (const gone of ['Consultaron']) expect(screen.queryByText(gone)).toBeNull()
-    const original = screen.getByText('Vista completa por anuncio').closest('[data-slot="card"]')!
-    expect(Array.from(original.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio', 'Contactos', 'Pedidos', 'Importe pedidos', 'Unidades', 'Conversión', 'Productos', 'Ventas verificadas'])
-    expect(Array.from(original.querySelectorAll('tbody td')).map((c) => c.textContent)).toEqual(['OfertaID AD1', '40', '3', '300.00', '4', '5%', 'Laser ×4', 'No disponible'])
+    const original = screen.getByTestId('full-ads')
+    expect(Array.from(original.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio', 'Contactos', 'Pedidos', 'Importe pedidos', 'Unidades', 'Conversión', 'Productos'])
+    expect(Array.from(original.querySelectorAll('tbody td')).map((c) => c.textContent)).toEqual(['OfertaAD1Ver detalle', '40', '3', '300.00', '4', '5.0%', 'Laser ×4'])
     // order: summary, products, then the (here open) full ad table; no drilldown column without the breakdown
     expect(screen.getByTestId('sold-products').compareDocumentPosition(original) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.queryByText(/Ver anuncios/)).toBeNull()
@@ -124,7 +124,7 @@ describe('Resultados de anuncios page states', () => {
     expect(screen.getByRole('button', { name: 'Ver anuncios de Gel' }).textContent).toBe('Ver anuncios (0)')
     expect(screen.queryByTestId('product-ads')).toBeNull()
     expect(screen.queryByText('Importe pedidos')).toBeNull() // full ad table collapsed
-    expect(screen.getByRole('button', { name: /Vista completa por anuncio/ }).getAttribute('aria-expanded')).toBe('false')
+    expect(screen.getByRole('button', { name: /Detalle por anuncio/ }).getAttribute('aria-expanded')).toBe('false')
   })
   it('expanding a product shows its ads (name + ID), the unattributed bucket, reconciles, and does not touch other rows', async () => {
     vi.stubGlobal('fetch', withBreakdown())
@@ -154,15 +154,15 @@ describe('Resultados de anuncios page states', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ver anuncios de Taladro' }))
     expect(screen.getAllByTestId('product-ads')).toHaveLength(1)
   })
-  it('"Vista completa por anuncio" opens on demand and shows EXACTLY the current table, including ads with contacts and no sales', async () => {
+  it('"Detalle por anuncio" opens on demand and shows EXACTLY the current table, including ads with contacts and no sales', async () => {
     vi.stubGlobal('fetch', withBreakdown())
     render(<AdsResultsPage />)
     await screen.findByTestId('sold-products')
-    fireEvent.click(screen.getByRole('button', { name: /Vista completa por anuncio/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Detalle por anuncio/ }))
     const full = screen.getByTestId('full-ads')
-    expect(Array.from(full.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio', 'Contactos', 'Pedidos', 'Importe pedidos', 'Unidades', 'Conversión', 'Productos', 'Ventas verificadas'])
+    expect(Array.from(full.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio', 'Contactos', 'Pedidos', 'Importe pedidos', 'Unidades', 'Conversión', 'Productos'])
     expect(within(full).getByText('Sin ventas')).toBeTruthy() // AD3: 5 contacts, 0 orders
-    expect(within(full).getByText('ID AD3')).toBeTruthy()
+    expect(within(full).getByText('AD3')).toBeTruthy()
     expect(within(full).getByText('Anuncio en estados')).toBeTruthy()
   })
   it('breakdown unavailable (RPC missing/failing): products stay, no Anuncios column, full ad table OPEN like before', async () => {

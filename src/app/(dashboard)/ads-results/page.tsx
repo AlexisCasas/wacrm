@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import type { AdsReport, MetaAdInfo, ProductAdRow } from '@/lib/meta-capi/report'
+import { AdsResultsByAd } from './ads-results-by-ad'
 import { MetaAdsPerformance } from './meta-ads-performance'
 
 const RANGES = [7, 30, 90] as const
@@ -152,60 +153,7 @@ export default function AdsResultsPage() {
             </Card>
           )}
 
-          <Card data-testid="full-ads">
-            <CardHeader>
-              <CardTitle className="text-base">
-                <button
-                  type="button"
-                  className="flex items-center gap-1 text-left"
-                  aria-expanded={fullAdsOpen}
-                  aria-controls="full-ads-body"
-                  onClick={() => setFullAdsOverride(!fullAdsOpen)}
-                >
-                  {fullAdsOpen ? <ChevronDown className="h-4 w-4" aria-hidden /> : <ChevronRight className="h-4 w-4" aria-hidden />}
-                  Vista completa por anuncio
-                </button>
-              </CardTitle>
-            </CardHeader>
-            {fullAdsOpen && (
-            <CardContent className="overflow-x-auto" id="full-ads-body">
-              {report.ads.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Sin contactos ni pedidos atribuidos a anuncios en este periodo.</p>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Anuncio</TableHead>
-                      <TableHead className="text-right">Contactos</TableHead>
-                      <TableHead className="text-right">Pedidos</TableHead>
-                      <TableHead className="text-right">Importe pedidos</TableHead>
-                      <TableHead className="text-right">Unidades</TableHead>
-                      <TableHead className="text-right">Conversión</TableHead>
-                      <TableHead>Productos</TableHead>
-                      <TableHead className="text-right">Ventas verificadas</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {report.ads.map((a) => (
-                      <TableRow key={a.source_id}>
-                        <TableCell>
-                          <AdIdentity sourceId={a.source_id} headline={a.headline} meta={a.meta} />
-                        </TableCell>
-                        <TableCell className="text-right">{a.contacts}</TableCell>
-                        <TableCell className="text-right">{a.orders}</TableCell>
-                        <TableCell className="text-right">{money(a.order_amount)}</TableCell>
-                        <TableCell className="text-right">{a.units}</TableCell>
-                        <TableCell className="text-right">{a.conversion_pct === null ? '—' : `${a.conversion_pct}%`}</TableCell>
-                        <TableCell className="text-xs">{a.products.map((p) => `${p.name} ×${p.units}`).join(', ') || '—'}</TableCell>
-                        <TableCell className="text-right text-muted-foreground">No disponible</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-            )}
-          </Card>
+          <AdsResultsByAd ads={report.ads} open={fullAdsOpen} onToggle={() => setFullAdsOverride(!fullAdsOpen)} />
 
           {report.meta_ads?.configured && <MetaAdsPerformance days={days} />}
 

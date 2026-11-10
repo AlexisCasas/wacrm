@@ -118,7 +118,7 @@ describe('FALLBACK: the existing /ads-results never depends on Meta Ads', () => 
     expect(card('Contactos atribuidos')).toBe('40')
     expect(card('Pedidos confirmados (con anuncio)')).toBe('3')
     expect(screen.getByText('Rendimiento por producto')).toBeTruthy()
-    expect(screen.getByText('Vista completa por anuncio')).toBeTruthy()
+    expect(screen.getByTestId('full-ads')).toBeTruthy()
   }
   it('Meta Ads not configured: no section and NO extra request', async () => {
     const f = router(wacrm(), ok(perf()))

@@ -161,7 +161,7 @@ describe('Rendimiento Meta Ads — extended metrics', () => {
       expect(card('Contactos atribuidos')).toBe('40')
       expect(card('Pedidos confirmados (con anuncio)')).toBe('3')
       expect(screen.getByText('Rendimiento por producto')).toBeTruthy()
-      expect(screen.getByText('Vista completa por anuncio')).toBeTruthy()
+      expect(screen.getByTestId('full-ads')).toBeTruthy()
       unmount()
     }
   })
