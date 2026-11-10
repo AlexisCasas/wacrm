@@ -145,24 +145,71 @@ export async function fetchCatalogPage(
   return out.kind === 'ok' ? { kind: 'ok', ads: out.items, after: out.after } : out
 }
 
-// ---- Ad sets and campaigns (names + status; keyed by Meta ids) ---------------------------------------------------------------------------
-export interface MetaAdset { adset_id: string; name: string | null; campaign_id: string | null; status: string | null; effective_status: string | null }
-export interface MetaCampaign { campaign_id: string; name: string | null; status: string | null; effective_status: string | null }
-export const ADSET_FIELDS = 'id,name,campaign_id,status,effective_status'
-export const CAMPAIGN_FIELDS = 'id,name,status,effective_status'
+// ---- Ad sets and campaigns (names, status + the secondary details confirmed by the live audit; keyed by Meta ids) -----------------------------
+export interface MetaCampaign {
+  campaign_id: string
+  name: string | null
+  status: string | null
+  effective_status: string | null
+  objective: string | null
+  buying_type: string | null
+  /** Meta's minor currency units (PEN: centimos), integers. */
+  daily_budget: number | null
+  lifetime_budget: number | null
+  start_time: string | null
+  stop_time: string | null
+  created_time: string | null
+  updated_time: string | null
+}
+export interface MetaAdset {
+  adset_id: string
+  name: string | null
+  campaign_id: string | null
+  status: string | null
+  effective_status: string | null
+  optimization_goal: string | null
+  billing_event: string | null
+  bid_strategy: string | null
+  daily_budget: number | null
+  lifetime_budget: number | null
+  start_time: string | null
+  end_time: string | null
+  created_time: string | null
+  updated_time: string | null
+}
+export const ADSET_FIELDS = 'id,name,campaign_id,status,effective_status,optimization_goal,billing_event,bid_strategy,daily_budget,lifetime_budget,start_time,end_time,created_time,updated_time'
+export const CAMPAIGN_FIELDS = 'id,name,status,effective_status,objective,buying_type,daily_budget,lifetime_budget,start_time,stop_time,created_time,updated_time'
 const validId = (v: unknown): string | null => {
   const s = str(v)
   return s && /^[0-9]{6,25}$/.test(s) ? s : null
 }
+/** Budgets arrive as integer strings in minor units. Anything else (null, empty, decimals) is "no budget". */
+const budget = (v: unknown): number | null => {
+  const s = typeof v === 'number' ? String(v) : str(v)
+  if (!s || !/^\d{1,15}$/.test(s)) return null
+  const n = Number(s)
+  return Number.isSafeInteger(n) ? n : null
+}
 export function parseAdset(raw: unknown): MetaAdset | null {
   const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
   const id = validId(r?.id)
-  return r && id ? { adset_id: id, name: str(r.name), campaign_id: validId(r.campaign_id), status: str(r.status), effective_status: str(r.effective_status) } : null
+  if (!r || !id) return null
+  return {
+    adset_id: id, name: str(r.name), campaign_id: validId(r.campaign_id), status: str(r.status), effective_status: str(r.effective_status),
+    optimization_goal: str(r.optimization_goal), billing_event: str(r.billing_event), bid_strategy: str(r.bid_strategy),
+    daily_budget: budget(r.daily_budget), lifetime_budget: budget(r.lifetime_budget),
+    start_time: time(r.start_time), end_time: time(r.end_time), created_time: time(r.created_time), updated_time: time(r.updated_time),
+  }
 }
 export function parseCampaign(raw: unknown): MetaCampaign | null {
   const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
   const id = validId(r?.id)
-  return r && id ? { campaign_id: id, name: str(r.name), status: str(r.status), effective_status: str(r.effective_status) } : null
+  if (!r || !id) return null
+  return {
+    campaign_id: id, name: str(r.name), status: str(r.status), effective_status: str(r.effective_status),
+    objective: str(r.objective), buying_type: str(r.buying_type), daily_budget: budget(r.daily_budget), lifetime_budget: budget(r.lifetime_budget),
+    start_time: time(r.start_time), stop_time: time(r.stop_time), created_time: time(r.created_time), updated_time: time(r.updated_time),
+  }
 }
 type EdgeOpts = { apiVersion: string; adAccountId: string; after?: string | null; limit?: number }
 function edgeUrl(edge: string, fields: string, o: EdgeOpts): string {
@@ -241,3 +288,79 @@ export async function fetchAccountTotals(o: Parameters<typeof accountTotalsUrl>[
   const row = parseInsight({ ad_id: '000000', date_start: '2000-01-01', ...(data[0] as object) })
   return row ? { kind: 'ok', totals: { spend: row.spend, impressions: row.impressions, clicks: row.clicks } } : { kind: 'rejected', httpStatus: out.httpStatus, code: 'bad_shape' }
 }
+
+// ---- Aggregated RANGE insights (reach / frequency are NOT additive: they must come from Meta for the whole window) ------------------------------
+export type RangeLevel = 'account' | 'campaign' | 'adset' | 'ad'
+export interface MetaAction { action_type: string; value: string }
+export interface RangeRow {
+  level: RangeLevel
+  /** Campaign / ad set / ad id; for level = account, the numeric Ad Account id. */
+  entity_id: string
+  /** Decimal string exactly as Meta sent it (goes to NUMERIC). */
+  spend: string
+  impressions: number
+  clicks: number
+  reach: number | null
+  frequency: string | null
+  ctr: string | null
+  cpc: string | null
+  cpm: string | null
+  inline_link_clicks: number | null
+  /** Value of the `outbound_click` entry of Meta's outbound_clicks list. */
+  outbound_clicks: number | null
+  /** Meta's `actions` list as-is (valid entries only). action_values is deliberately not requested: the audit found none. */
+  actions: MetaAction[]
+}
+export const RANGE_FIELDS_FULL = 'spend,impressions,clicks,reach,frequency,ctr,cpc,cpm,inline_link_clicks,outbound_clicks,actions'
+/** Fallback when Meta rejects the optional fields: the base metrics still sync. */
+export const RANGE_FIELDS_BASE = 'spend,impressions,clicks,reach,frequency,ctr,cpc,cpm'
+export type RangeVariant = 'full' | 'base'
+const RANGE_ID_FIELD: Record<RangeLevel, string> = { account: 'account_id', campaign: 'campaign_id', adset: 'adset_id', ad: 'ad_id' }
+const DEC_RE = /^\d+(\.\d+)?$/
+const dec = (v: unknown): string | null => (v === undefined || v === null || v === '' ? null : DEC_RE.test(String(v)) ? String(v) : null)
+const ACTION_TYPE_RE = /^[A-Za-z0-9_.:-]{1,120}$/
+
+export function rangeUrl(o: { apiVersion: string; adAccountId: string; level: RangeLevel; since: string; until: string; variant: RangeVariant; after?: string | null; limit?: number }): string {
+  const q = new URLSearchParams({
+    level: o.level,
+    fields: `${RANGE_ID_FIELD[o.level]},${o.variant === 'full' ? RANGE_FIELDS_FULL : RANGE_FIELDS_BASE}`,
+    time_range: JSON.stringify({ since: o.since, until: o.until }), // NO time_increment: one aggregated row per entity for the whole window
+    limit: String(o.limit ?? INSIGHT_PAGE_SIZE),
+  })
+  if (o.after) q.set('after', o.after)
+  return `https://graph.facebook.com/${o.apiVersion}/act_${o.adAccountId}/insights?${q.toString()}`
+}
+export function parseActions(list: unknown): MetaAction[] {
+  if (!Array.isArray(list)) return []
+  const seen = new Set<string>()
+  const out: MetaAction[] = []
+  for (const a of list) {
+    const x = a && typeof a === 'object' ? (a as Record<string, unknown>) : null
+    const t = str(x?.action_type)
+    const v = x?.value === undefined || x?.value === null ? null : String(x.value)
+    if (!t || !ACTION_TYPE_RE.test(t) || v === null || !DEC_RE.test(v) || seen.has(t)) continue // malformed or repeated entries are dropped, never merged
+    seen.add(t)
+    out.push({ action_type: t, value: v })
+  }
+  return out
+}
+export function parseRangeRow(raw: unknown, level: RangeLevel, adAccountId: string): RangeRow | null {
+  const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : null
+  if (!r) return null
+  const entity = level === 'account' ? (validId(String(r.account_id ?? '').replace(/^act_/, '')) ?? adAccountId) : validId(r[RANGE_ID_FIELD[level]])
+  const spend = r.spend === undefined || r.spend === null || r.spend === '' ? '0' : String(r.spend)
+  const impressions = count(r.impressions, 0)
+  const clicks = count(r.clicks, 0)
+  const reach = count(r.reach, null)
+  const link = count(r.inline_link_clicks, null)
+  if (!entity || !DEC_RE.test(spend) || Number.isNaN(impressions) || Number.isNaN(clicks) || Number.isNaN(reach) || Number.isNaN(link)) return null
+  const outboundEntry = Array.isArray(r.outbound_clicks) ? (r.outbound_clicks as unknown[]).find((x) => (x as { action_type?: unknown })?.action_type === 'outbound_click') : undefined
+  const outbound = outboundEntry ? count((outboundEntry as { value?: unknown }).value, null) : null
+  if (Number.isNaN(outbound)) return null
+  return {
+    level, entity_id: entity, spend, impressions: impressions as number, clicks: clicks as number, reach, frequency: dec(r.frequency), ctr: dec(r.ctr), cpc: dec(r.cpc), cpm: dec(r.cpm),
+    inline_link_clicks: link, outbound_clicks: outbound, actions: parseActions(r.actions),
+  }
+}
+export const fetchRangePage = (o: Parameters<typeof rangeUrl>[0], token: string, f: typeof fetch = fetch, t = 30_000) =>
+  graphListPage(rangeUrl(o), token, (raw) => parseRangeRow(raw, o.level, o.adAccountId), f, t)

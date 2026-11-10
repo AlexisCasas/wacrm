@@ -2,7 +2,7 @@
 # Real PostgreSQL QA of the Meta Ads migrations on a DISPOSABLE, ISOLATED database. Nothing here touches production.
 #   * a throw-away container from an image that already exists locally (no pull), NO network at all (--network none: no published port, no route),
 #     no volume (tmpfs data dir), hard CPU/RAM/pids limits and the lowest CPU share, removed on exit;
-#   * round 1: 20261116 -> phase-1 checks -> 20261117 -> phase-2 checks -> JSON export -> rollback drill -> re-apply -> phase-2 again;
+#   * round 1: 20261116 -> phase-1 -> 20261117 -> phase-2 -> JSON export -> 20261118 -> phase-3 -> range JSON export -> rollback drills (118, then 117) -> re-apply both -> phase 2 and 3 again;
 #   * the container is DESTROYED, a second empty one is created and the whole sequence is replayed from scratch (migration replay).
 # Usage: qa/meta-ads/run-sql-qa.sh [outdir]       (needs: docker, the postgres:15-alpine image)
 set -euo pipefail
@@ -12,7 +12,9 @@ OUT="${1:-$(mktemp -d)}"
 IMAGE="${QA_PG_IMAGE:-postgres:15-alpine}"
 M1="$ROOT/supabase/migrations/20261116000000_meta_ads_catalog.sql"
 M2="$ROOT/supabase/migrations/20261117000000_meta_ads_insights.sql"
+M3="$ROOT/supabase/migrations/20261118000000_meta_ads_extended_metrics.sql"
 RB="$ROOT/docs/integrations/meta-ads/ROLLBACK-insights.sql"
+RB3="$ROOT/docs/integrations/meta-ads/ROLLBACK-extended.sql"
 mkdir -p "$OUT"
 case "$IMAGE" in postgres:*) ;; *) echo "refusing unexpected image: $IMAGE" >&2; exit 2 ;; esac
 docker image inspect "$IMAGE" >/dev/null 2>&1 || { echo "image $IMAGE not present locally (this script never pulls)"; exit 2; }
@@ -44,13 +46,17 @@ run_round() { # $1 = round number
     echo "== phase 1 checks"; psql_ < "$HERE/test-phase1.sql"
     echo "== apply 20261117"; psql_ -1 < "$M2"; echo "APPLY_20261117_OK"
     echo "== phase 2 checks"; psql_ < "$HERE/test-phase2.sql"
-    echo "== json export"; psql_ < "$HERE/export-json.sql" | grep '^{' > "$OUT/round$r.json"; echo "EXPORT_OK $(wc -c < "$OUT/round$r.json") bytes"
-    echo "== rollback drill (20261117 only)"; psql_ < "$RB"; psql_ < "$HERE/drill-assert.sql"
-    echo "== re-apply 20261117 after the drill"; psql_ -1 < "$M2"; echo "REAPPLY_20261117_OK"; psql_ < "$HERE/test-phase2.sql"
+    echo "== json export (after 20261117)"; psql_ < "$HERE/export-json.sql" | grep '^{' > "$OUT/round$r.json"; echo "EXPORT_OK $(wc -c < "$OUT/round$r.json") bytes"
+    echo "== apply 20261118"; psql_ -1 < "$M3"; echo "APPLY_20261118_OK"
+    echo "== phase 3 checks"; psql_ < "$HERE/test-phase3.sql"
+    echo "== json export (range)"; psql_ < "$HERE/export-range-json.sql" | grep '^{' > "$OUT/round$r-range.json"; echo "EXPORT_RANGE_OK $(wc -c < "$OUT/round$r-range.json") bytes"
+    echo "== rollback drill: 20261118 only"; psql_ < "$RB3"; psql_ < "$HERE/drill118-assert.sql"
+    echo "== rollback drill: 20261117 too"; psql_ < "$RB"; psql_ < "$HERE/drill-assert.sql"
+    echo "== re-apply 20261117 + 20261118 after the drill"; psql_ -1 < "$M2"; echo "REAPPLY_20261117_OK"; psql_ < "$HERE/test-phase2.sql"; psql_ -1 < "$M3"; echo "REAPPLY_20261118_OK"; psql_ < "$HERE/test-phase3.sql"
   } 2>&1 | grep -v "^$" | tee "$log"
   # no failure marker and the OK markers present
   ! grep -q '^ERROR\|FAIL:' "$log" || { echo "ROUND $r FAILED"; return 1; }
-  for m in APPLY_20261116_OK APPLY_20261117_OK EXPORT_OK REAPPLY_20261117_OK; do grep -q "$m" "$log" || { echo "ROUND $r missing $m"; return 1; }; done
+  for m in APPLY_20261116_OK APPLY_20261117_OK APPLY_20261118_OK EXPORT_OK EXPORT_RANGE_OK REAPPLY_20261117_OK REAPPLY_20261118_OK; do grep -q "$m" "$log" || { echo "ROUND $r missing $m"; return 1; }; done
   echo "ROUND $r PASS: $(grep -c 'PASS:' "$log") checks"
   cleanup
   ! docker ps -a --format '{{.Names}}' | grep -q '^wacrm-sqlqa-' || { echo "container still present"; return 1; }
@@ -59,5 +65,5 @@ run_round() { # $1 = round number
 
 run_round 1
 run_round 2
-cmp "$OUT/round1.json" "$OUT/round2.json" && echo "REPLAY_IDENTICAL_OUTPUT"
+cmp "$OUT/round1.json" "$OUT/round2.json" && cmp "$OUT/round1-range.json" "$OUT/round2-range.json" && echo "REPLAY_IDENTICAL_OUTPUT"
 echo "OUTDIR=$OUT"

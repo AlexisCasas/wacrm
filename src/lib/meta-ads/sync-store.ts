@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { InsightRow, MetaAd, MetaAdset, MetaCampaign } from './client'
+import type { InsightRow, MetaAd, MetaAdset, MetaCampaign, RangeLevel, RangeRow } from './client'
 import type { Job, Reconciliation, SyncAccount, SyncStore } from './sync'
 
 // Supabase (service_role) implementation of the sync store. Only error CODES are surfaced: no messages, rows or request details.
@@ -44,6 +44,25 @@ export function createSupabaseSyncStore(admin: SupabaseClient): SyncStore {
     upsertCampaigns: (accountId: string, rows: MetaCampaign[], nowIso: string) => upsert('meta_ads_campaigns', rows.map((r) => ({ account_id: accountId, ...r, last_synced_at: nowIso })), 'account_id,campaign_id'),
     upsertInsights: (accountId: string, rows: InsightRow[], currency: string, nowIso: string) =>
       upsert('meta_ads_insights_daily', rows.map((r) => ({ account_id: accountId, ...r, currency, synced_at: nowIso })), 'account_id,ad_id,date'),
+    async upsertRange(accountId: string, level: RangeLevel, days: number, since: string, until: string, rows: RangeRow[], currency: string, nowIso: string) {
+      if (rows.length === 0) return
+      // The range row first (actions reference it), then the actions. Every optional column is written explicitly (NULL when absent) so a new window never inherits the previous window's value.
+      await upsert('meta_ads_insights_range', rows.map((r) => ({
+        account_id: accountId, level, entity_id: r.entity_id, days, since, until, spend: r.spend, impressions: r.impressions, clicks: r.clicks, reach: r.reach, frequency: r.frequency,
+        ctr: r.ctr, cpc: r.cpc, cpm: r.cpm, inline_link_clicks: r.inline_link_clicks, outbound_clicks: r.outbound_clicks, currency, synced_at: nowIso,
+      })), 'account_id,level,entity_id,days')
+      await upsert('meta_ads_actions_range', rows.flatMap((r) => r.actions.map((a) => ({
+        account_id: accountId, level, entity_id: r.entity_id, days, action_type: a.action_type, since, until, value: a.value, synced_at: nowIso,
+      }))), 'account_id,level,entity_id,days,action_type')
+    },
+    async pruneRange(accountId: string, level: RangeLevel, days: number, beforeIso: string, includeActions: boolean) {
+      if (includeActions) {
+        const a = await admin.from('meta_ads_actions_range').delete().eq('account_id', accountId).eq('level', level).eq('days', days).lt('synced_at', beforeIso)
+        if (a.error) throw fail('meta_ads_actions_range prune', a.error)
+      }
+      const r = await admin.from('meta_ads_insights_range').delete().eq('account_id', accountId).eq('level', level).eq('days', days).lt('synced_at', beforeIso)
+      if (r.error) throw fail('meta_ads_insights_range prune', r.error)
+    },
     async finishOk(accountId, job: Job, v) {
       const { error } = await admin
         .from('meta_ads_sync_state')

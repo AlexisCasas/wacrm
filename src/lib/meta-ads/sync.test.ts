@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { addDays, dateInTz, JOBS, MAX_PAGES, metaAdsGloballyEnabled, retryDelayMs, runMetaAdsSync, type Job, type Reconciliation, type SyncAccount, type SyncStore } from './sync'
-import type { InsightRow, MetaAd, MetaAdset, MetaCampaign } from './client'
+import type { InsightRow, MetaAd, MetaAdset, MetaCampaign, RangeLevel, RangeRow } from './client'
 
 const A = '4d04a2e0-62b8-4508-a046-4b125aa2e8db'
 const TOKEN = 'EAAFAKE_PLAINTEXT_TOKEN_9876543210'
@@ -24,6 +24,9 @@ function mem(over: Partial<Record<Job, Partial<St>>> = {}, accounts: SyncAccount
   const campaigns = new Map<string, MetaCampaign>()
   const insights = new Map<string, InsightRow & { currency: string }>()
   const recs = new Map<number, Reconciliation & { checkedAt: string }>()
+  const ranges = new Map<string, { level: RangeLevel; entity: string; days: number; since: string; until: string; row: RangeRow; syncedAtMs: number }>()
+  const rangeActions = new Map<string, { value: string; syncedAtMs: number }>()
+  const pruneCalls: { level: string; days: number; includeActions: boolean }[] = []
   const tokenStatus = { v: 'unverified' as string }
   const upsertCalls: Record<string, number[]> = { ads: [], adsets: [], campaigns: [], insights: [] }
   const store: SyncStore = {
@@ -52,6 +55,18 @@ function mem(over: Partial<Record<Job, Partial<St>>> = {}, accounts: SyncAccount
       if (v.coveredTo) st[job].coveredTo = v.coveredTo
     },
     setTokenStatus: async (_a, s) => { tokenStatus.v = s },
+    upsertRange: async (_a, level, days, since, until, rows, _cur, nowIso) => {
+      for (const r of rows) {
+        ranges.set(`${level}|${r.entity_id}|${days}`, { level, entity: r.entity_id, days, since, until, row: r, syncedAtMs: Date.parse(nowIso) })
+        for (const a of r.actions) rangeActions.set(`${level}|${r.entity_id}|${days}|${a.action_type}`, { value: a.value, syncedAtMs: Date.parse(nowIso) })
+      }
+    },
+    pruneRange: async (_a, level, days, beforeIso, includeActions) => {
+      pruneCalls.push({ level, days, includeActions })
+      const before = Date.parse(beforeIso)
+      if (includeActions) for (const [k, v] of rangeActions) if (k.startsWith(`${level}|`) && k.split('|')[2] === String(days) && v.syncedAtMs < before) rangeActions.delete(k)
+      for (const [k, v] of ranges) if (v.level === level && v.days === days && v.syncedAtMs < before) { ranges.delete(k); for (const ak of [...rangeActions.keys()]) if (ak.startsWith(`${k}|`)) rangeActions.delete(ak) }
+    },
     localTotals: async (_a, since, until) => {
       let spend = 0, impressions = 0, clicks = 0
       for (const r of insights.values()) if (r.date >= since && r.date <= until) { spend += Number(r.spend); impressions += r.impressions; clicks += r.clicks }
@@ -60,7 +75,7 @@ function mem(over: Partial<Record<Job, Partial<St>>> = {}, accounts: SyncAccount
     reconciledAt: async () => Object.fromEntries([...recs].map(([n, r]) => [n, r.checkedAt])),
     saveReconciliation: async (_a, rec, nowIso) => { recs.set(rec.windowDays, { ...rec, checkedAt: nowIso }) },
   }
-  return { store, st, ads, adsets, campaigns, insights, recs, tokenStatus, upsertCalls }
+  return { store, st, ads, adsets, campaigns, insights, recs, tokenStatus, upsertCalls, ranges, rangeActions, pruneCalls }
 }
 
 // ---- a fake Meta Graph API ------------------------------------------------------------------------------------------------------------------
@@ -95,6 +110,22 @@ function fakeMeta(o: { data?: Day[]; pageSize?: number; override?: (url: URL) =>
     if (edge === 'campaigns') return list([{ id: campId(1), name: 'Campaña 1', status: 'ACTIVE', effective_status: 'ACTIVE' }])
     const range = JSON.parse(u.searchParams.get('time_range') ?? '{}') as { since: string; until: string }
     const inRange = data.filter((d) => d.date_start >= range.since && d.date_start <= range.until)
+    const lvl = u.searchParams.get('level') as 'account' | 'campaign' | 'adset' | 'ad'
+    if (!u.searchParams.get('time_increment') && (u.searchParams.get('fields') ?? '').includes('reach')) {
+      // AGGREGATED range rows: Meta's reach for the whole window is NOT the sum of the daily reach (here: 80% of it, like the live audit showed a smaller figure)
+      const idKey = { account: 'account_id', campaign: 'campaign_id', adset: 'adset_id', ad: 'ad_id' }[lvl]
+      const groups = new Map<string, Day[]>()
+      for (const d of inRange) { const k = lvl === 'account' ? '409949686293101' : (d as unknown as Record<string, string>)[idKey]; groups.set(k, [...(groups.get(k) ?? []), d]) }
+      const wantActions = (u.searchParams.get('fields') ?? '').includes('actions')
+      const rows = [...groups.entries()].map(([k, ds]) => {
+        const spend = ds.reduce((s, d) => s + Number(d.spend), 0), impressions = ds.reduce((s, d) => s + Number(d.impressions), 0), clicks = ds.reduce((s, d) => s + Number(d.clicks), 0)
+        const reach = Math.floor(ds.reduce((s, d) => s + Number(d.reach ?? 0), 0) * (lvl === 'account' ? 0.6 : 0.8))
+        return { [idKey]: k, spend: spend.toFixed(2), impressions: String(impressions), clicks: String(clicks), reach: String(reach), frequency: (impressions / reach).toFixed(4), ctr: String((clicks / impressions) * 100), cpc: String(spend / clicks), cpm: String((spend / impressions) * 1000),
+          ...(wantActions ? { inline_link_clicks: String(Math.floor(clicks * 0.8)), outbound_clicks: [{ action_type: 'outbound_click', value: String(Math.floor(clicks * 0.7)) }, { action_type: 'something_else', value: '999' }],
+            actions: [{ action_type: 'onsite_conversion.messaging_conversation_started_7d', value: '5' }, { action_type: 'lead', value: '1' }, { action_type: 'onsite_web_lead', value: '1' }, { action_type: 'brand_new_unknown_type', value: '3' }, { action_type: 'bad type!', value: '9' }, { action_type: 'lead', value: '7' }] } : {}) }
+      })
+      return list(rows)
+    }
     if (u.searchParams.get('level') === 'account') {
       if (o.accountTotals) return json({ data: [o.accountTotals] })
       if (inRange.length === 0) return json({ data: [] })
@@ -374,5 +405,144 @@ describe('reconciliation against Meta account totals', () => {
     expect(r.jobs.insights.failed).toBe(1)
     expect(m.insights.size).toBeGreaterThan(0)
     expect(m.recs.size).toBe(0)
+  })
+})
+
+
+describe('ranges (aggregated Meta metrics: reach, frequency, link/outbound clicks, actions)', () => {
+  const runRanges = (m: ReturnType<typeof mem>, f: ReturnType<typeof fakeMeta>, over: object = {}) => runMetaAdsSync(m.store, deps(f, { jobs: ['ranges'], ...over }))
+  const rangeCalls = (f: ReturnType<typeof fakeMeta>) => f.calls.filter((c) => c.pathname.endsWith('/insights') && !c.searchParams.get('time_increment')).filter((c) => !c.searchParams.get('after'))
+
+  it('asks Meta for each window x level (3 x 4 = 12 groups), WITHOUT time_increment, for the N complete days before today; no action_values', async () => {
+    const m = mem()
+    const f = fakeMeta()
+    await runRanges(m, f)
+    const calls = rangeCalls(f)
+    expect(calls).toHaveLength(12)
+    const keys = calls.map((c) => `${c.searchParams.get('level')}:${(JSON.parse(c.searchParams.get('time_range')!) as { since: string }).since}`)
+    for (const since of ['2026-11-03', '2026-10-11', '2026-08-12']) for (const lvl of ['account', 'campaign', 'adset', 'ad']) expect(keys).toContain(`${lvl}:${since}`)
+    for (const c of calls) {
+      expect(JSON.parse(c.searchParams.get('time_range')!).until).toBe('2026-11-09') // today (2026-11-10) never included
+      expect(c.searchParams.get('time_increment')).toBeNull()
+      expect(c.searchParams.get('fields')).toContain('reach,frequency')
+      expect(c.searchParams.get('fields')).not.toContain('action_values')
+    }
+  })
+  it('REACH is stored exactly as Meta returned it for the window and is never rebuilt from the daily rows', async () => {
+    const m = mem()
+    const f = fakeMeta()
+    await runMetaAdsSync(m.store, deps(f, { jobs: ['insights', 'ranges'] }))
+    const daily7 = [...m.insights.values()].filter((r) => r.ad_id === adId(1) && r.date >= '2026-11-03' && r.date <= '2026-11-09').reduce((s, r) => s + (r.reach ?? 0), 0)
+    const range7 = m.ranges.get(`ad|${adId(1)}|7`)!
+    expect(daily7).toBe(900 * 7)
+    expect(range7.row.reach).toBe(Math.floor(900 * 7 * 0.8)) // Meta's aggregate
+    expect(range7.row.reach).not.toBe(daily7)
+    expect(range7.since).toBe('2026-11-03')
+    expect(range7.until).toBe('2026-11-09')
+    // the account's reach is its own aggregate, not the sum of the ads
+    const adsSum = ['1', '2'].reduce((s, n) => s + (m.ranges.get(`ad|${adId(Number(n))}|7`)?.row.reach ?? 0), 0)
+    expect(m.ranges.get('account|409949686293101|7')!.row.reach).not.toBe(adsSum)
+  })
+  it('FREQUENCY is what Meta returned and equals impressions / reach', async () => {
+    const m = mem()
+    await runRanges(m, fakeMeta())
+    for (const r of m.ranges.values()) expect(Math.abs(Number(r.row.frequency) - r.row.impressions / (r.row.reach as number))).toBeLessThan(0.0001)
+  })
+  it('inline_link_clicks and outbound_clicks are separate from clicks; outbound_click is extracted from Meta\'s list (other entries ignored)', async () => {
+    const m = mem()
+    await runRanges(m, fakeMeta())
+    const r = m.ranges.get(`ad|${adId(1)}|7`)!.row
+    expect(r.inline_link_clicks).toBe(Math.floor(r.clicks * 0.8))
+    expect(r.outbound_clicks).toBe(Math.floor(r.clicks * 0.7))
+    expect(r.outbound_clicks).not.toBe(999)
+    expect(r.clicks).toBeGreaterThan(r.inline_link_clicks as number)
+  })
+  it('ACTIONS are stored as Meta named them: unknown types kept, aliases NOT merged, malformed names dropped, repeated type keeps the first value', async () => {
+    const m = mem()
+    await runRanges(m, fakeMeta())
+    const key = (t: string) => `ad|${adId(1)}|7|${t}`
+    expect(m.rangeActions.get(key('onsite_conversion.messaging_conversation_started_7d'))?.value).toBe('5')
+    expect(m.rangeActions.get(key('lead'))?.value).toBe('1')
+    expect(m.rangeActions.get(key('onsite_web_lead'))?.value).toBe('1')
+    expect(m.rangeActions.get(key('brand_new_unknown_type'))?.value).toBe('3')
+    expect(m.rangeActions.has(key('bad type!'))).toBe(false)
+    expect([...m.rangeActions.keys()].filter((k) => k.startsWith(`ad|${adId(1)}|7|`)).length).toBe(4)
+  })
+  it('one request group per window/level is fully paginated', async () => {
+    const m = mem()
+    const f = fakeMeta({ data: daysOf('2026-08-01', TODAY, 5), pageSize: 2 }) // 5 ads, 2 per page
+    await runRanges(m, f)
+    expect([...m.ranges.values()].filter((r) => r.level === 'ad' && r.days === 7)).toHaveLength(5)
+  })
+  it('the window MOVES: a later run replaces the previous window in place (one row per entity+days), and entities that vanished are pruned only after a COMPLETE pass', async () => {
+    const m = mem()
+    await runRanges(m, fakeMeta())
+    const first = m.ranges.get(`ad|${adId(1)}|7`)!
+    expect(first.since).toBe('2026-11-03')
+    m.st.ranges.nextRunAt = 0
+    let t = NOW + 24 * 3_600_000 // next day
+    const only1 = fakeMeta({ data: ALL.filter((d) => d.ad_id === adId(1)) })
+    await runMetaAdsSync(m.store, deps(only1, { jobs: ['ranges'], now: () => (t += 1000) }))
+    const moved = m.ranges.get(`ad|${adId(1)}|7`)!
+    expect(moved.since).toBe('2026-11-04')
+    expect(moved.until).toBe('2026-11-10')
+    expect(m.ranges.has(`ad|${adId(2)}|7`)).toBe(false) // vanished entity pruned after the complete pass
+    expect([...m.ranges.keys()].filter((k) => k.startsWith(`ad|${adId(1)}|7`))).toHaveLength(1)
+  })
+  it('PARTIAL: if a unit fails midway nothing of it is pruned and everything stored before stays', async () => {
+    const m = mem()
+    await runRanges(m, fakeMeta())
+    const before = m.ranges.size
+    m.st.ranges.nextRunAt = 0
+    let n = 0
+    const f = fakeMeta({ override: (u) => (u.searchParams.get('level') === 'ad' && !u.searchParams.get('time_increment') && ++n === 1 ? err(500, 2) : undefined) })
+    const r = await runRanges(m, f)
+    expect(r.jobs.ranges.failed).toBe(1)
+    expect(m.ranges.size).toBe(before)
+    expect(m.st.ranges).toMatchObject({ status: 'error', lastCode: 'meta_2' })
+  })
+  it('OPTIONAL FIELDS rejected by Meta: the unit is retried with the base metrics, so reach/frequency still sync and link/outbound/actions stay empty (never stale)', async () => {
+    const m = mem()
+    await runRanges(m, fakeMeta())
+    expect(m.ranges.get(`ad|${adId(1)}|7`)!.row.inline_link_clicks).not.toBeNull()
+    m.st.ranges.nextRunAt = 0
+    const f = fakeMeta({ override: (u) => (!u.searchParams.get('time_increment') && (u.searchParams.get('fields') ?? '').includes('actions') ? err(400, 100) : undefined) })
+    const r = await runRanges(m, f)
+    expect(r.jobs.ranges.synced).toBe(1)
+    const row = m.ranges.get(`ad|${adId(1)}|7`)!.row
+    expect(row.reach).not.toBeNull()
+    expect(row.frequency).not.toBeNull()
+    expect(row.inline_link_clicks).toBeNull()
+    expect(row.outbound_clicks).toBeNull()
+    expect(row.actions).toEqual([])
+    expect(m.pruneCalls.at(-1)?.includeActions).toBe(false) // a degraded pass never prunes previously stored actions
+  })
+  it('rejected even with the base metrics: the other units are still stored; the job ends as an error to be retried', async () => {
+    const m = mem()
+    const f = fakeMeta({ override: (u) => (u.searchParams.get('level') === 'adset' && !u.searchParams.get('time_increment') && (u.searchParams.get('fields') ?? '').includes('reach') ? err(400, 100) : undefined) })
+    const r = await runRanges(m, f)
+    expect(r.jobs.ranges.failed).toBe(1)
+    expect(m.st.ranges.lastCode).toBe('range_partial_meta_100')
+    expect([...m.ranges.values()].some((x) => x.level === 'ad')).toBe(true)
+    expect([...m.ranges.values()].some((x) => x.level === 'adset')).toBe(false)
+  })
+  it('rate limit aborts the job and keeps backoff; invalid token pauses; neither prunes anything', async () => {
+    const m = mem()
+    await runRanges(m, fakeMeta())
+    const size = m.ranges.size
+    m.st.ranges.nextRunAt = 0
+    await runRanges(m, fakeMeta({ override: () => err(400, 17, { 'retry-after': '900' }) }))
+    expect(m.st.ranges).toMatchObject({ status: 'error', lastCode: 'meta_17' })
+    expect(m.st.ranges.nextRunAt).toBeGreaterThanOrEqual(NOW + 900_000)
+    m.st.ranges.nextRunAt = 0
+    await runRanges(m, fakeMeta({ override: () => err(400, 190) }))
+    expect(m.tokenStatus.v).toBe('invalid')
+    expect(m.st.ranges.status).toBe('paused')
+    expect(m.ranges.size).toBe(size)
+  })
+  it('runs on the insights interval (not the catalog one)', async () => {
+    const m = mem()
+    await runRanges(m, fakeMeta())
+    expect(m.st.ranges.nextRunAt).toBe(NOW + 180 * 60_000)
   })
 })

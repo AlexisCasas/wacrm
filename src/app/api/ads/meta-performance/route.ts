@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { loadExtended } from '@/lib/meta-ads/extended'
 import { buildPerfRows, META_DAYS, metaWindow, sumTotals, syncState, type MetaPerformance } from '@/lib/meta-ads/performance'
 
 // Read-only Meta Ads performance (spend, impressions, clicks + CTR/CPC/CPM) by campaign, ad set and ad, over 7/30/90 complete Meta days.
@@ -42,16 +43,30 @@ export async function GET(request: Request) {
       } catch {
         // optional
       }
+      const base = { campaigns: buildPerfRows(campaigns.data), adsets: buildPerfRows(adsets.data), ads: adRows }
+      const totals = sumTotals(adRows)
+      // OPTIONAL extended layer (aggregated reach / frequency, link + outbound clicks, Meta messaging results, other actions, secondary details). If it is not available
+      // or fails in any way, the response is exactly the base section (the checkpoint behaviour).
+      let extended: Extract<MetaPerformance, { available: true }>['extended'] = null
+      let rows = base
+      try {
+        const ext = await loadExtended(supabase, { accountId, days, since, until, impressions: totals.impressions, ...base })
+        if (ext) {
+          rows = { campaigns: ext.campaigns, adsets: ext.adsets, ads: ext.ads }
+          extended = { available: true, summary: ext.summary }
+        }
+      } catch {
+        // fall back to the base section
+      }
       return NextResponse.json({
         available: true,
         period: { days, since, until, timezone, currency },
         synced_at: st.last_success_at,
         sync: { state: syncState(st, partial), covered_from: st.covered_from, covered_to: st.covered_to, partial },
         reconciliation,
-        totals: sumTotals(adRows),
-        campaigns: buildPerfRows(campaigns.data),
-        adsets: buildPerfRows(adsets.data),
-        ads: adRows,
+        totals,
+        ...rows,
+        extended,
       } satisfies MetaPerformance)
     } catch {
       return off('unavailable')

@@ -1,6 +1,6 @@
 import {
-  fetchAccountTotals, fetchAdsetsPage, fetchCampaignsPage, fetchCatalogPage, fetchInsightsPage,
-  type AccountTotals, type InsightRow, type ListPageOutcome, type MetaAd, type MetaAdset, type MetaCampaign,
+  fetchAccountTotals, fetchAdsetsPage, fetchCampaignsPage, fetchCatalogPage, fetchInsightsPage, fetchRangePage,
+  type AccountTotals, type InsightRow, type ListPageOutcome, type MetaAd, type MetaAdset, type MetaCampaign, type RangeLevel, type RangeRow, type RangeVariant,
 } from './client'
 
 // Meta Ads sync engine: catalog (ads), ad sets, campaigns and DAILY INSIGHTS (level=ad, time_increment=1) + reconciliation against Meta's account totals.
@@ -8,8 +8,10 @@ import {
 // Global switch: META_ADS_ENABLED=true. Per-account switch: meta_ads_settings.enabled (OFF by default). Any failure stays inside this module.
 // Every pass is fully paginated and upserted idempotently. Nothing valid is ever deleted: an error leaves the cached data exactly as it was.
 
-export type Job = 'campaigns' | 'adsets' | 'catalog' | 'insights'
-export const JOBS: Job[] = ['campaigns', 'adsets', 'catalog', 'insights']
+export type Job = 'campaigns' | 'adsets' | 'catalog' | 'insights' | 'ranges'
+export const JOBS: Job[] = ['campaigns', 'adsets', 'catalog', 'insights', 'ranges']
+export const RANGE_DAYS = [7, 30, 90] as const
+export const RANGE_LEVELS: RangeLevel[] = ['account', 'campaign', 'adset', 'ad']
 export const MAX_PAGES = 100
 export const RUN_BUDGET_MS = 90_000
 export const LEASE_SECONDS = 300
@@ -50,6 +52,10 @@ export interface SyncStore {
   upsertAdsets(accountId: string, rows: MetaAdset[], nowIso: string): Promise<void>
   upsertCampaigns(accountId: string, rows: MetaCampaign[], nowIso: string): Promise<void>
   upsertInsights(accountId: string, rows: InsightRow[], currency: string, nowIso: string): Promise<void>
+  /** Stores Meta's aggregated window for each entity (+ its actions). One row per (account, level, entity, days): a new window REPLACES the previous one. */
+  upsertRange(accountId: string, level: RangeLevel, days: number, since: string, until: string, rows: RangeRow[], currency: string, nowIso: string): Promise<void>
+  /** Called ONLY after a unit finished all its pages: removes what that pass did not refresh (entities that disappeared; action types only when the pass fetched actions). */
+  pruneRange(accountId: string, level: RangeLevel, days: number, beforeIso: string, includeActions: boolean): Promise<void>
   finishOk(accountId: string, job: Job, v: { nowIso: string; nextRunAtIso: string; rows: number; pages: number } & Partial<Coverage>): Promise<void>
   finishError(accountId: string, job: Job, v: { nowIso: string; nextRunAtIso: string; failures: number; code: string; paused: boolean } & Partial<Coverage>): Promise<void>
   setTokenStatus(accountId: string, status: 'valid' | 'invalid', nowIso: string): Promise<void>
@@ -238,7 +244,56 @@ async function reconcile(c: Ctx, today: string, from: string | null, to: string 
   }
 }
 
-const RUNNERS: Record<Job, (c: Ctx) => Promise<JobDone>> = { campaigns: runCampaigns, adsets: runAdsets, catalog: runCatalog, insights: runInsights }
+/**
+ * Ranges: Meta's AGGREGATED numbers for the 7/30/90 complete days before today (reach and frequency are not additive, so they are never rebuilt from the daily rows),
+ * per level (account, campaign, adset, ad), one request group per (window, level): 12 groups, fully paginated, upserted idempotently.
+ * If Meta rejects the optional fields (actions / link / outbound clicks) the unit is retried with the base metrics only, so reach/frequency still sync.
+ * A unit that is rejected even then does not stop the others; the job then ends as an error (data stored so far stays) and is retried later.
+ */
+async function runRanges(c: Ctx): Promise<JobDone> {
+  const { acct } = c
+  const today = dateInTz(c.now(), acct.account_timezone)
+  let rows = 0
+  let pages = 0
+  let rejectedCode: string | null = null
+  for (const days of RANGE_DAYS) {
+    const since = addDays(today, -days)
+    const until = addDays(today, -1)
+    for (const level of RANGE_LEVELS) {
+      const unitStart = c.nowIso()
+      const attempt = async (variant: RangeVariant) => {
+        const seen = new Set<string>()
+        const r = await paginate<RangeRow>(
+          c,
+          (after) => fetchRangePage({ ...edge(c), level, since, until, variant, after }, c.token, c.fetchImpl),
+          (x) => x.entity_id,
+          async (items) => {
+            for (const it of items) seen.add(it.entity_id)
+            await c.store.upsertRange(acct.account_id, level, days, since, until, variant === 'full' ? items : items.map((i) => ({ ...i, inline_link_clicks: null, outbound_clicks: null, actions: [] })), acct.currency, c.nowIso())
+          },
+        )
+        pages += r.pages
+        rows += r.rows
+        await c.store.pruneRange(acct.account_id, level, days, unitStart, variant === 'full')
+      }
+      try {
+        await attempt('full')
+      } catch (e) {
+        if (!(e instanceof JobFailure) || e.kind !== 'rejected') throw e // auth / rate limit / outage abort the job (handled by the engine)
+        try {
+          await attempt('base')
+        } catch (e2) {
+          if (!(e2 instanceof JobFailure) || e2.kind !== 'rejected') throw e2
+          rejectedCode = e2.code
+        }
+      }
+    }
+  }
+  if (rejectedCode) throw new JobFailure(`range_partial_${rejectedCode}`, 'rejected', 3_600_000)
+  return { rows, pages }
+}
+
+const RUNNERS: Record<Job, (c: Ctx) => Promise<JobDone>> = { campaigns: runCampaigns, adsets: runAdsets, catalog: runCatalog, insights: runInsights, ranges: runRanges }
 
 type JobOutcome = { kind: 'synced'; rows: number } | { kind: 'skipped' } | { kind: 'failed'; stopAccount: boolean }
 
@@ -275,7 +330,7 @@ async function runJob(
     const done = await RUNNERS[job](ctx)
     // A full pass finished: only now is the data "synced", and only now is the token known to be good.
     await store.setTokenStatus(acct.account_id, 'valid', nowIso())
-    const interval = (job === 'insights' ? acct.insights_interval_minutes : acct.catalog_interval_minutes) * 60_000
+    const interval = (job === 'insights' || job === 'ranges' ? acct.insights_interval_minutes : acct.catalog_interval_minutes) * 60_000
     await store.finishOk(acct.account_id, job, { nowIso: nowIso(), nextRunAtIso: new Date(deps.now() + (done.nextRunInMs ?? interval)).toISOString(), rows: done.rows, pages: done.pages, ...done.coverage })
     return { kind: 'synced', rows: done.rows }
   } catch (e) {
@@ -295,7 +350,7 @@ export async function runMetaAdsSync(
   opts: { enabled?: boolean; fetchImpl?: typeof fetch; decryptToken?: (enc: string) => string; now?: () => number; random?: () => number; jobs?: Job[] } = {},
 ): Promise<SyncRunResult> {
   const zero = (): JobSummary => ({ synced: 0, skipped: 0, failed: 0, rows: 0 })
-  const result: SyncRunResult = { enabled: opts.enabled ?? metaAdsGloballyEnabled(), accounts: 0, synced: 0, skipped: 0, failed: 0, rows: 0, jobs: { campaigns: zero(), adsets: zero(), catalog: zero(), insights: zero() } }
+  const result: SyncRunResult = { enabled: opts.enabled ?? metaAdsGloballyEnabled(), accounts: 0, synced: 0, skipped: 0, failed: 0, rows: 0, jobs: { campaigns: zero(), adsets: zero(), catalog: zero(), insights: zero(), ranges: zero() } }
   if (!result.enabled) return result // global switch off: nothing is read and nothing is called
   const decryptToken = opts.decryptToken ?? (await import('@/lib/whatsapp/encryption')).decrypt
   const now = opts.now ?? Date.now

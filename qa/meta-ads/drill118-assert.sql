@@ -1,0 +1,6 @@
+-- After ROLLBACK-extended.sql: the database must be exactly in the 20261117 state again.
+\set ON_ERROR_STOP on
+SELECT qa.ok('drill118: range objects gone', to_regclass('public.meta_ads_insights_range') IS NULL AND to_regclass('public.meta_ads_actions_range') IS NULL AND to_regprocedure('public.meta_ads_range_metrics(uuid,integer,date,date,text)') IS NULL);
+SELECT qa.ok('drill118: 20261117 objects intact', to_regclass('public.meta_ads_insights_daily') IS NOT NULL AND to_regclass('public.meta_ads_campaigns') IS NOT NULL AND to_regprocedure('public.meta_ads_performance(uuid,date,date,text)') IS NOT NULL);
+SELECT qa.eq('drill118: job CHECK back to four jobs', $q$SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='meta_ads_sync_state_job'$q$, $q$CHECK ((job = ANY (ARRAY['catalog'::text, 'adsets'::text, 'campaigns'::text, 'insights'::text])))$q$);
+SELECT qa.ok('drill118: detail columns removed', NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND ((table_name='meta_ads_campaigns' AND column_name IN ('objective','buying_type','daily_budget','lifetime_budget','start_time','stop_time','created_time','updated_time')) OR (table_name='meta_ads_adsets' AND column_name IN ('optimization_goal','billing_event','bid_strategy','daily_budget','lifetime_budget','start_time','end_time','created_time','updated_time')))));

@@ -40,7 +40,7 @@ beforeEach(() => {
   })
   settings.mockResolvedValue({ data: { account_timezone: 'America/Bogota', currency: 'PEN' }, error: null })
   states.mockResolvedValue({ data: [{ job: 'catalog', status: 'ok' }, { job: 'insights', status: 'ok', last_success_at: '2026-11-10T16:00:00Z', covered_from: '2026-08-12', covered_to: '2026-11-10' }], error: null })
-  rpc.mockImplementation(async (_n: string, a: { p_level: string }) => ({ data: perf(a.p_level), error: null }))
+  rpc.mockImplementation(async (n: string, a: { p_level: string }) => ({ data: n === 'meta_ads_range_metrics' ? [] : perf(a.p_level), error: null }))
 })
 
 describe('GET /api/ads/meta-performance', () => {
@@ -49,7 +49,7 @@ describe('GET /api/ads/meta-performance', () => {
     expect(body.available).toBe(true)
     expect(body.period.days).toBe(7)
     expect(body.period.since < body.period.until).toBe(true)
-    expect(rpc).toHaveBeenCalledTimes(3)
+    expect(rpc).toHaveBeenCalledTimes(7) // 3 performance levels + 4 range levels (empty cache here)
     expect(rpc).toHaveBeenCalledWith('meta_ads_performance', expect.objectContaining({ p_account: A, p_level: 'campaign', p_from: body.period.since, p_to: body.period.until }))
     expect(body.campaigns).toHaveLength(1)
     expect(body.adsets).toHaveLength(1)
@@ -59,6 +59,7 @@ describe('GET /api/ads/meta-performance', () => {
     expect(body.synced_at).toBe('2026-11-10T16:00:00Z')
     expect(body.sync).toMatchObject({ state: 'ok', partial: false })
     expect(body.reconciliation.ok).toBe(true)
+    expect(body.extended).toBeNull() // extended cache empty => exactly the base section
     expect(JSON.stringify(body)).not.toMatch(/reach|token/i)
   })
   it('7, 30 and 90 are accepted; anything else is 400 and nothing is queried', async () => {

@@ -1,17 +1,20 @@
-# Meta Ads — foundation, catalog, ad sets/campaigns and daily insights (phases 1–4)
+# Meta Ads — foundation, catalog, ad sets/campaigns, daily insights and aggregated range metrics (final scope before the first deploy)
 
 Read-only enrichment of `/ads-results` with the REAL ad name, campaign, ad set and status from Meta, plus a separate section **Rendimiento Meta Ads**
 (spend, impressions, clicks, CTR, CPC, CPM by campaign / ad set / ad over 7, 30 and 90 complete Meta days). The Meta Ad ID is `contact_ad_attributions.source_id`
 and is always kept. **Not implemented on purpose:** CPA, ROAS, cost per contact, spend per sold product, Consultaron, per-product conversion, and any reach for
-7/30/90 days (daily reach is stored for information only; it is not additive and is never summed or shown).
+7/30/90 days built from daily rows (daily reach is stored for information only; it is not additive and is never summed).
+
+**Extended layer (migration 20261118):** Meta's AGGREGATED numbers per window (7/30/90 complete days, account / campaign / ad set / ad) are cached in `meta_ads_insights_range` + `meta_ads_actions_range` by the `ranges` sync job (12 request groups per run, not the 115 calls of the audit): reach, frequency, `inline_link_clicks`, `outbound_clicks` (the `outbound_click` entry) and Meta's `actions` (one row per `action_type`; `action_values` is not used: the audit found none). The UI shows Reach / Frecuencia, Clics en enlace, Clics salientes, the five Meta messaging results (`Conversaciones iniciadas (Meta)` = `onsite_conversion.messaging_conversation_started_7d`, `Conexiones de mensajería (Meta)` = `onsite_conversion.total_messaging_connection`, `Primeras respuestas (Meta)` = `onsite_conversion.messaging_first_reply`, `Llegaron a 2 / 3 mensajes (Meta)` = `..._depth_2/3_message_send`) and `Otros resultados Meta` (each `action_type` as Meta names it; lead-like aliases are never added together). These are Meta-reported results, never WACRM contacts, orders or sales. If the extended cache is unavailable the section is exactly the previous one.
 
 ## Pieces
 | Piece | Where |
 |---|---|
+| Extended schema: `meta_ads_insights_range`, `meta_ads_actions_range`, function `meta_ads_range_metrics`, secondary campaign / ad set columns | `supabase/migrations/20261118000000_meta_ads_extended_metrics.sql` (rollback: `ROLLBACK-extended.sql`, FIRST) |
 | Phase 3-4 schema: `meta_ads_campaigns`, `meta_ads_adsets`, `meta_ads_insights_daily` (PK account_id, ad_id, date; NUMERIC spend), `meta_ads_reconciliation`, functions `meta_ads_performance` (read) and `meta_ads_insights_totals` (service_role) | `supabase/migrations/20261117000000_meta_ads_insights.sql` (after 20261116; rollback: `ROLLBACK-insights.sql` first, then `ROLLBACK-catalog.sql`) |
 | Tables `meta_ads_settings` (token, service_role only), `meta_ads_ads` (catalog), `meta_ads_sync_state` + function `ads_results_meta_catalog` | `supabase/migrations/20261116000000_meta_ads_catalog.sql` (rollback: `ROLLBACK-catalog.sql`) |
-| Sync engine: jobs `campaigns`, `adsets`, `catalog`, `insights` (paginated, idempotent upsert, backoff, lease, 90-day backfill, 3-day refresh, reconciliation) | `src/lib/meta-ads/{client,sync,sync-store}.ts`, `src/app/api/meta-ads/cron/route.ts` |
-| Read layer + section | `src/lib/meta-ads/performance.ts`, `src/app/api/ads/meta-performance/route.ts`, `ads-results/meta-ads-performance.tsx` |
+| Sync engine: jobs `campaigns`, `adsets`, `catalog`, `insights`, `ranges` (paginated, idempotent upsert, backoff, lease, 90-day backfill, 3-day refresh, reconciliation) | `src/lib/meta-ads/{client,sync,sync-store}.ts`, `src/app/api/meta-ads/cron/route.ts` |
+| Read layer + section | `src/lib/meta-ads/{performance,extended}.ts`, `src/app/api/ads/meta-performance/route.ts`, `ads-results/meta-ads-performance.tsx` |
 | Enrichment of the report (optional, never blocks it) | `src/lib/meta-ads/enrich.ts`, `src/app/api/ads/results/route.ts`, `ads-results/page.tsx` |
 | Token enrol / rotate / revoke | `scripts/ops/meta-ads/set-token.sh`, `clear-token.sql` |
 
@@ -45,4 +48,4 @@ Revocation: revoke in Meta, then `clear-token.sql` (wipes the ciphertext, disabl
 * Live validation (manual, PowerShell, real token): `campaigns`, `adsets`, `ads` (catalog) and `insights level=ad` endpoints answered correctly. `GET /{ad_id}` and `?ids=` are not used.
 
 ## SQL QA (disposable database)
-`qa/meta-ads/run-sql-qa.sh` applies 20261116 -> 20261117 on an empty, network-less, tmpfs PostgreSQL container with synthetic data (273 checks: types, PK/FK/CHECK, RLS, grants, token isolation, functions, 7/30/90 windows, zero division, reach not summed, id-keyed grouping, rollback drill), destroys it and replays everything on a second empty database. `META_ADS_QA_JSON=<outdir>/round1.json vitest run src/lib/meta-ads/qa-db.test.ts` cross-checks the app read model against the real SQL output.
+`qa/meta-ads/run-sql-qa.sh` applies 20261116 -> 20261117 -> 20261118 on an empty, network-less, tmpfs PostgreSQL container with synthetic data (481 checks per round: types, PK/FK/CHECK, RLS, grants, token isolation, functions, 7/30/90 windows, zero division, reach not summed, id-keyed grouping, rollback drill), destroys it and replays everything on a second empty database. `META_ADS_QA_JSON=<outdir>/round1.json vitest run src/lib/meta-ads/qa-db.test.ts` cross-checks the app read model against the real SQL output.

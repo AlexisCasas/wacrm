@@ -86,10 +86,10 @@ describe('ad sets, campaigns and insights requests', () => {
   it('ad sets: act_<id>/adsets with the validated fields, id/name/campaign_id/status/effective_status mapped', async () => {
     const { adsetsPageUrl, campaignsPageUrl, fetchAdsetsPage, parseAdset } = await import('./client')
     expect(adsetsPageUrl(opts)).toContain('/v27.0/act_409949686293101/adsets?')
-    expect(decodeURIComponent(adsetsPageUrl(opts))).toContain('fields=id,name,campaign_id,status,effective_status')
+    expect(decodeURIComponent(adsetsPageUrl(opts))).toContain('fields=id,name,campaign_id,status,effective_status,optimization_goal,billing_event,bid_strategy,daily_budget,lifetime_budget,start_time,end_time,created_time,updated_time')
     expect(campaignsPageUrl(opts)).toContain('/act_409949686293101/campaigns?')
     const out = await fetchAdsetsPage(opts, TOKEN, json(200, { data: [{ id: '120256298878120285', name: 'RECTIFICADORA', campaign_id: '120256298878110285', status: 'ACTIVE', effective_status: 'ACTIVE' }] }) as unknown as typeof fetch)
-    expect(out).toEqual({ kind: 'ok', after: null, items: [{ adset_id: '120256298878120285', name: 'RECTIFICADORA', campaign_id: '120256298878110285', status: 'ACTIVE', effective_status: 'ACTIVE' }] })
+    expect(out).toEqual({ kind: 'ok', after: null, items: [{ adset_id: '120256298878120285', name: 'RECTIFICADORA', campaign_id: '120256298878110285', status: 'ACTIVE', effective_status: 'ACTIVE', optimization_goal: null, billing_event: null, bid_strategy: null, daily_budget: null, lifetime_budget: null, start_time: null, end_time: null, created_time: null, updated_time: null }] })
     expect(parseAdset({ id: 'x' })).toBeNull()
   })
   it('insights URL: level=ad, time_increment=1, the validated fields, explicit time_range, version from config; no token in the URL', async () => {
