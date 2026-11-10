@@ -278,6 +278,26 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     pass('S14', `8 nested waits due at once, two concurrent workers (${x.resumed} + ${y.resumed}): every contact got each message exactly once, every frame popped exactly once`)
   })
 
+  // Synthetic-time consistency: these recovery tests move the reference message
+  // back 20 min to place it before the stale cursor. The run's persisted
+  // reference timestamps must move by exactly the same amount; otherwise the
+  // P7 fail-closed guard correctly rejects the corrupt reference.
+  const agePersistedSyntheticReferences = async (runId: string) => {
+    const [row] = await rows<{ vars: Record<string, unknown> }>(`select vars from public.flow_runs where id='${runId}'`)
+    const refs = row?.vars?.['$refs']
+    if (!refs || typeof refs !== 'object' || Array.isArray(refs)) throw new Error('synthetic send references missing')
+    const agedRefs = Object.fromEntries(Object.entries(refs).map(([key, value]) => {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid synthetic send reference')
+      const ref = value as Record<string, unknown>
+      const shift = (x: unknown) => {
+        if (typeof x !== 'string' || !Number.isFinite(Date.parse(x))) throw new Error('invalid synthetic reference timestamp')
+        return new Date(Date.parse(x) - 20 * 60_000).toISOString()
+      }
+      return [key, { ...ref, sent_at: shift(ref.sent_at), window_start: shift(ref.window_start) }]
+    }))
+    await psql(`update public.flow_runs set vars='${j({ ...row.vars, ['$refs']: agedRefs })}' where id='${runId}'`)
+  }
+
   // These scenarios test the explicit active recovery path. D1 defaults to dry-run; its
   // safe non-mutating behavior is independently covered in engine.recovery-selection.test.ts.
   it('S15: recovery: a run stranded between "wait consumed" and the first send is resumed; an intent without confirmation is NEVER resent', async () => {
@@ -286,7 +306,7 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
       const w = await world(); const c = await contact(w); await send(w, c); const r = await run(c); await makeDue(r.id)
       const cl = await admin.rpc('claim_due_flow_waits', { p_account_ids: [acctA], p_limit: 50, p_lease_seconds: 300 }); const mine = (cl.data as { run_id: string; claim_token: string }[]).find((x) => x.run_id === r.id)!
       expect((await admin.rpc('consume_flow_wait', { p_account_id: acctA, p_run_id: r.id, p_claim_token: mine.claim_token, p_next_node_key: 'check' })).data).toBe(true)
-      await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.messages set created_at = created_at - interval '20 minutes' where conversation_id='${r.conversation_id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`); return { w, c, r }
+      await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.messages set created_at = created_at - interval '20 minutes' where conversation_id='${r.conversation_id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`); await agePersistedSyntheticReferences(r.id); return { w, c, r }
     }
     // (a) nothing happened after the cursor: safe to resume, the follow-up goes out once
     const a = await strand(); const sa = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' }); expect(sa.resumed).toBeGreaterThanOrEqual(1)
@@ -314,6 +334,7 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     const admin = (await import('./admin-client')).supabaseAdmin(); const w = await world(); const c = await contact(w); await send(w, c); const r = await run(c); await makeDue(r.id)
     const cl = await admin.rpc('claim_due_flow_waits', { p_account_ids: [acctA], p_limit: 50, p_lease_seconds: 300 }); const mine = (cl.data as { run_id: string; claim_token: string }[]).find((x) => x.run_id === r.id)!
     await admin.rpc('consume_flow_wait', { p_account_id: acctA, p_run_id: r.id, p_claim_token: mine.claim_token, p_next_node_key: 'check' }); await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.messages set created_at = created_at - interval '20 minutes' where conversation_id='${r.conversation_id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`)
+    await agePersistedSyntheticReferences(r.id)
     const [p, q] = await Promise.all([engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' }), engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' })])
     if (textsFor(c).length !== 4) {
       const final = await run(c); const ev = await events(r.id)
