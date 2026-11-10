@@ -81,6 +81,12 @@ if [ "$EXECUTE" != "1" ]; then
   exit 0
 fi
 
+# Gate against the REAL Docker Engine before touching the live container.
+# Tests force-disconnect/reconnect of an isolated stopped node container and
+# confirms public DNS does not expose it after restart.
+bash "$DIR/lab-private-rollback.sh" "$IMAGE" ||
+  die "this Docker Engine cannot safely park a stopped image; no live change"
+
 mkdir -p "$STATE_DIR"
 cat >"$IMAGE_OVERRIDE" <<YML
 services:
@@ -127,22 +133,37 @@ for _ in $(seq 1 $((DRAIN_SECONDS/3 > 0 ? DRAIN_SECONDS/3 : 1))); do
   [ "$(ready_status "$CAND")" = "200" ] || { log "candidate lost readiness while serving: stopping it, old keeps serving"; docker stop -t "$STOP_GRACE" "$CAND" >/dev/null 2>&1 || true; cleanup_candidate; die "candidate unhealthy under traffic; rolled back to old only"; }
 done
 
-log "6/7 SIGTERM to the old container (grace ${STOP_GRACE}s): it stops accepting, finishes in-flight requests and pending after() callbacks, then exits. Kept for rollback, not removed."
+log "6/7 SIGTERM to the old container (grace ${STOP_GRACE}s): it stops accepting, finishes in-flight requests and pending after() callbacks, then exits."
 docker stop -t "$STOP_GRACE" "$OLD" >/dev/null
 [ "$(docker inspect -f '{{.State.ExitCode}}' "$OLD")" = "0" ] || log "WARN old container exit code $(docker inspect -f '{{.State.ExitCode}}' "$OLD") (137 = killed after the grace window: raise STOP_GRACE)"
+# The stopped old image must NOT regain the public alias on docker start.
+# The candidate remains live while we prepare a private rollback endpoint.
+PREV_NAME="${OLD}-prev-$TS"
+PARK_OK=1
+if ! park_stopped_previous "$OLD" "$PREV_NAME"; then
+  PARK_OK=0
+  log "CRITICAL: old image could not be parked privately; automatic rollback will be disabled. Candidate still serves traffic."
+fi
 GOT="$(resolve_from_edge "$IMAGE" "$PUBLIC_ALIAS")"
 [ "$GOT" = "$CAND_IP" ] || log "WARN after stopping old: public alias resolves to '$GOT', expected only $CAND_IP"
 
 log "7/7 swapping names so the host crons (docker exec $LIVE_NAME) hit the new container"
-PREV_NAME="${OLD}-prev-$TS"
-docker rename "$OLD" "$PREV_NAME"
-if ! docker rename "$CAND" "$LIVE_NAME"; then
-  log "CRITICAL: candidate rename failed; restoring previous name. Candidate is still serving the public alias."
-  docker rename "$PREV_NAME" "$LIVE_NAME" || log "CRITICAL: manual recovery of live container name required"
-  die "cutover incomplete: inspect containers and service before attempting another deploy"
+if ! retry_rename "$OLD" "$PREV_NAME"; then
+  die "CRITICAL: old name cannot be freed; candidate is live but cron name needs immediate manual repair"
 fi
-echo "PREV_NAME=$PREV_NAME" >>"$STATE_DIR/$TS.env"
+if ! retry_rename "$CAND" "$LIVE_NAME"; then
+  # Never restore LIVE_NAME to a STOPPED old container. That silently breaks crons.
+  die "CRITICAL: candidate is serving, but LIVE_NAME was not assigned after 3 attempts; manual rename required"
+fi
+if [ "$PARK_OK" = "1" ]; then
+  echo "PREV_NAME=$PREV_NAME" >>"$STATE_DIR/$TS.env"
+else
+  echo "ROLLBACK_DISABLED=1" >>"$STATE_DIR/$TS.env"
+fi
 # A failed candidate must never replace the last KNOWN-GOOD rollback target.
 cp "$STATE_DIR/$TS.env" "$STATE_DIR/.last.env.tmp-$TS"
 mv -f "$STATE_DIR/.last.env.tmp-$TS" "$STATE_DIR/last.env"
-log "done. live=$LIVE_NAME image=$IMAGE. Previous container kept stopped as ${OLD}-prev-$TS. Verify: ops/deploy/verify-no-502.sh; roll back: ops/deploy/rollback.sh"
+if [ "$PARK_OK" != "1" ]; then
+  die "cutover serving new image, but rollback is DISABLED; do not run rollback.sh or retry deployment until manual repair"
+fi
+log "done. live=$LIVE_NAME image=$IMAGE. Previous container parked privately and stopped as $PREV_NAME. Verify: ops/deploy/verify-no-502.sh; rollback via ops/deploy/rollback.sh"
