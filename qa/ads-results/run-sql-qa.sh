@@ -16,6 +16,7 @@ psql_ -q < qa/flows-safe-save/bootstrap.sql >/dev/null
 for f in supabase/migrations/*.sql; do psql_ -q -v ON_ERROR_STOP=1 < "$f" >/dev/null 2>&1 || { echo "migration failed: $f" >&2; exit 1; }; done
 echo "== migrations applied (full order by name)"
 # Dependency check on a SECOND fresh database that only has the migrations up to the items table (20261105000000_order_confirmation_items):
+# This cutoff intentionally excludes the independent contacts migration 20261105000001; only the order items prerequisite is required.
 # the new migration must apply there, i.e. it needs nothing created later.
 DB2="adsprod-qa-dep-$ID"; trap 'docker rm -f "$DB2" >/dev/null 2>&1 || true; cleanup' EXIT
 docker run -d --name "$DB2" --network "$NET" -e POSTGRES_PASSWORD=qa "$IMAGE" >/dev/null
