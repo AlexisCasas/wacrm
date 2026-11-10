@@ -47,6 +47,24 @@ jobs:
           bash ops/deploy/lab-rename-handoff.sh
       - name: Pull disposable Node image
         run: docker pull node:20-alpine
+      - name: Refuse candidate with silent dry-run Flows recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ops/deploy/lib.sh
+          PREFIX="qa-flow-recovery-$RANDOM-$"
+          ACTIVE="$PREFIX-active"
+          INACTIVE="$PREFIX-unset"
+          WRONG="$PREFIX-wrong"
+          cleanup() { docker rm -f "$ACTIVE" "$INACTIVE" "$WRONG" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run -d --name "$ACTIVE" -e FLOW_RECOVERY_ACTIVE=true --entrypoint node node:20-alpine -e 'setInterval(()=>{},10000)' >/dev/null
+          docker run -d --name "$INACTIVE" --entrypoint node node:20-alpine -e 'setInterval(()=>{},10000)' >/dev/null
+          docker run -d --name "$WRONG" -e FLOW_RECOVERY_ACTIVE=TRUE --entrypoint node node:20-alpine -e 'setInterval(()=>{},10000)' >/dev/null
+          [ "$(flow_recovery_status "$ACTIVE")" = "active" ]
+          [ "$(flow_recovery_status "$INACTIVE")" = "dry-run" ]
+          [ "$(flow_recovery_status "$WRONG")" = "dry-run" ]
+          echo "OPS_FLOW_RECOVERY_CONTINUITY_GATE=PASS"
       - name: Exercise name handoff on disposable real Docker containers
         shell: bash
         run: |
