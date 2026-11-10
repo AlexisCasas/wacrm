@@ -30,6 +30,10 @@ container_running "$OLD" || die "live container $OLD is not running: this script
 docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE is not loaded on this host"
 [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" != "$(docker inspect -f '{{.Image}}' "$OLD")" ] || die "$IMAGE is already the running image"
 docker network inspect "$EDGE_NETWORK" >/dev/null 2>&1 || die "network $EDGE_NETWORK not found"
+# A deploy is not safe if there is no database-backed rollback readiness
+# for the previous image. The first rollout uses a read-only REST fallback.
+[ "$(rollback_ready_status "$OLD")" = "200" ] ||
+  die "old image has no working DB-backed rollback readiness: first deploy blocked"
 # The base Compose file publishes HOST_PORT:3000. Two instances cannot bind the
 # same host port, and the new candidate deliberately has no host publication.
 # Do not silently retire an endpoint consumed by other host-side integrations.
