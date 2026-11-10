@@ -15,6 +15,11 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
+      - name: Verify Bash syntax of deploy, rollback and audit scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          for script in ops/deploy/*.sh; do bash -n "$script"; done
       - name: Pull disposable Node image
         run: docker pull node:20-alpine
       - name: Verify candidate Compose overlay parses without the public alias
