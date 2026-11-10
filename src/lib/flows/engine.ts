@@ -2511,9 +2511,58 @@ async function resumeOneWait(
 // outcome is unknown is NEVER repeated: the run is ended and the incident is on record.
 // ============================================================
 
-export interface RecoverySummary { examined: number; resumed: number; ambiguous: number; unsafe: number; skipped: number; failed: number }
+/** Recovery never touches a run whose last progress is older than this: it is reported for human review instead (D1). */
+export const RECOVERY_MAX_AGE_SECONDS = 30 * 60;
+/** Upper bound of runs read per window and pass; a window that hits it is reported as truncated. */
+const RECOVERY_SCAN_LIMIT = 500;
+/** Review list cap (the list is part of the cron response). */
+const RECOVERY_REVIEW_CAP = 50;
 
-type EvidenceRow = { event_type: string; node_key: string | null; payload: Record<string, unknown>; created_at: string };
+export type RecoveryMode = "dry-run" | "active";
+/** Recovery only acts when FLOW_RECOVERY_ACTIVE=true. Anything else (including unset) is dry-run: select, assess and report, change nothing. */
+export function recoveryModeFromEnv(): RecoveryMode {
+  return process.env.FLOW_RECOVERY_ACTIVE === "true" ? "active" : "dry-run";
+}
+
+export type RecoveryReviewReason =
+  | "too_old"            // older than RECOVERY_MAX_AGE_SECONDS: never automatic, a person decides
+  | "not_safe"           // within the max age but the evidence says resuming is not safe (unconfirmed send, send after the cursor)
+  | "node_missing"       // the node the cursor points to does not exist any more
+  | "evidence_error";    // the evidence could not be read: nothing is assumed
+
+export interface RecoveryReviewItem {
+  run_id: string;
+  account_id: string;
+  node_key: string | null;
+  age_s: number;
+  reason: RecoveryReviewReason;
+  /** What the event log + outbound messages say about resuming it: only "recoverable" would be safe. */
+  evidence?: "recoverable" | "ambiguous" | "unsafe" | "outbound_since_cursor";
+}
+
+export interface RecoverySummary {
+  examined: number; resumed: number; ambiguous: number; unsafe: number; skipped: number; failed: number;
+  mode?: RecoveryMode;
+  /** Active runs without a wait, quiet for at least minAgeSeconds (both windows). */
+  candidates?: number;
+  /** Of those, runs that legitimately wait for the customer (buttons, lists, input) or for a durable timer: never stranded. */
+  waiting?: number;
+  /** Auto-advancing, within the max age: the ones recovery may act on. */
+  eligible?: number;
+  /** Auto-advancing but older than the max age: excluded from automatic recovery. */
+  too_old?: number;
+  /** Eligible runs whose evidence says resuming is safe (dry-run: what an active pass would resume). */
+  would_resume?: number;
+  truncated?: boolean;
+  review?: RecoveryReviewItem[];
+}
+
+type EvidenceRow = {
+  event_type: string;
+  node_key: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
 
 /** Pure decision, exported for tests. `events` are the run's events NEWER than its last persisted cursor, oldest first. */
 export function classifyStrandedRun(events: EvidenceRow[]): { kind: "recoverable" } | { kind: "ambiguous"; nodeKey: string | null } | { kind: "unsafe" } {
@@ -2528,20 +2577,123 @@ export function classifyStrandedRun(events: EvidenceRow[]): { kind: "recoverable
   return { kind: "recoverable" };
 }
 
-export async function recoverStrandedRuns(options: { accountIds: string[]; minAgeSeconds?: number; limit?: number; db?: AdminClient }): Promise<RecoverySummary> {
+/** Does the conversation hold bot messages after the run's cursor that no message_sent event accounts for? Then a send happened that the log does not confirm. */
+async function hasUnconfirmedOutbound(db: AdminClient, run: FlowRunRow, events: EvidenceRow[]): Promise<boolean> {
+  if (!run.conversation_id) return false;
+  const { count, error } = await db
+    .from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", run.conversation_id).eq("sender_type", "bot").gte("created_at", run.last_advanced_at);
+  if (error) throw new Error("recovery_outbound_lookup_failed");
+  return (count ?? 0) > events.filter((e) => e.event_type === "message_sent").length;
+}
+
+type StrandedAssessment = { kind: "recoverable" } | { kind: "ambiguous"; nodeKey: string | null } | { kind: "unsafe" } | { kind: "outbound_since_cursor" };
+
+/** Evidence for one run: the event log after the cursor, then the conversation's outbound messages. Read-only. */
+async function assessStrandedRun(db: AdminClient, run: FlowRunRow): Promise<StrandedAssessment> {
+  const { data: events, error } = await db
+    .from("flow_run_events").select("event_type, node_key, payload, created_at").eq("flow_run_id", run.id).gt("created_at", run.last_advanced_at).order("created_at", { ascending: true }).order("id", { ascending: true });
+  if (error) throw new Error("recovery_evidence_lookup_failed");
+  const rows = (events ?? []) as EvidenceRow[];
+  const verdict = classifyStrandedRun(rows);
+  if (verdict.kind !== "recoverable") return verdict;
+  if (await hasUnconfirmedOutbound(db, run, rows)) return { kind: "outbound_since_cursor" };
+  return verdict;
+}
+
+/**
+ * Stranded-run recovery (D1). Selection no longer starves: instead of "the 25 oldest quiet runs" (which, with many runs legitimately
+ * waiting for a button tap, were always the same 25 and hid everything after them), the quiet runs are read in two bounded windows
+ * (within / beyond the max age), the node type of each is resolved, and only auto-advancing runs are considered.
+ *   - within the max age AND safe evidence -> eligible (dry-run reports it; active mode resumes it)
+ *   - beyond the max age -> NEVER automatic and its state is NOT changed: it is listed in `review` for a person
+ *   - waiting for the customer / a durable timer -> counted, never touched
+ * In dry-run nothing is written: no cursor take-over, no event, no state change, no send.
+ */
+export async function recoverStrandedRuns(options: { accountIds: string[]; minAgeSeconds?: number; maxAgeSeconds?: number; limit?: number; mode?: RecoveryMode; db?: AdminClient }): Promise<RecoverySummary> {
   const db = options.db ?? supabaseAdmin();
-  const summary: RecoverySummary = { examined: 0, resumed: 0, ambiguous: 0, unsafe: 0, skipped: 0, failed: 0 };
+  const mode = options.mode ?? recoveryModeFromEnv();
+  const summary: RecoverySummary = { examined: 0, resumed: 0, ambiguous: 0, unsafe: 0, skipped: 0, failed: 0, mode, candidates: 0, waiting: 0, eligible: 0, too_old: 0, would_resume: 0, truncated: false, review: [] };
   if (options.accountIds.length === 0) return summary;
-  const cutoff = new Date(Date.now() - (options.minAgeSeconds ?? 300) * 1000).toISOString();
-  const { data, error } = await db
-    .from("flow_runs").select("*").eq("status", "active").is("wait_until", null).lt("last_advanced_at", cutoff).in("account_id", options.accountIds)
-    .order("last_advanced_at", { ascending: true }).limit(options.limit ?? 25);
-  if (error) throw new Error(`stranded run lookup failed: ${error.message}`);
-  for (const row of (data ?? []) as FlowRunRow[]) {
+  // D1 safety boundary is absolute, even for callers passing explicit overrides.
+  // Older runs are for manual review, never automatic recovery.
+  const minAge = Math.min(Math.max(options.minAgeSeconds ?? 300, 0), RECOVERY_MAX_AGE_SECONDS);
+  const maxAge = Math.min(Math.max(options.maxAgeSeconds ?? RECOVERY_MAX_AGE_SECONDS, minAge), RECOVERY_MAX_AGE_SECONDS);
+  const now = Date.now();
+  const quietBefore = new Date(now - minAge * 1000).toISOString();
+  const tooOldBefore = new Date(now - maxAge * 1000).toISOString();
+  const limit = options.limit ?? 25;
+
+  const readWindow = async (window: "recent" | "old"): Promise<FlowRunRow[]> => {
+    let q = db.from("flow_runs").select("*").eq("status", "active").is("wait_until", null).in("account_id", options.accountIds);
+    q = window === "recent" ? q.gte("last_advanced_at", tooOldBefore).lt("last_advanced_at", quietBefore) : q.lt("last_advanced_at", tooOldBefore);
+    const { data, error } = await q.order("last_advanced_at", { ascending: true }).limit(RECOVERY_SCAN_LIMIT);
+    if (error) throw new Error(`stranded run lookup failed: ${error.message}`);
+    const rows = (data ?? []) as FlowRunRow[];
+    if (rows.length >= RECOVERY_SCAN_LIMIT) summary.truncated = true;
+    return rows;
+  };
+  const recent = await readWindow("recent");
+  const old = await readWindow("old");
+  summary.candidates = recent.length + old.length;
+
+  const nodeCache = new Map<string, Map<string, FlowNodeRow>>();
+  const nodesOf = async (flowId: string) => {
+    let nodes = nodeCache.get(flowId);
+    if (!nodes) { nodes = await loadAllNodes(db, flowId); nodeCache.set(flowId, nodes); }
+    return nodes;
+  };
+  const review = (run: FlowRunRow, reason: RecoveryReviewReason, evidence?: RecoveryReviewItem["evidence"]) => {
+    if (summary.review!.length < RECOVERY_REVIEW_CAP) {
+      summary.review!.push({ run_id: run.id, account_id: run.account_id, node_key: run.current_node_key ?? null, age_s: Math.round((now - new Date(run.last_advanced_at).getTime()) / 1000), reason, ...(evidence ? { evidence } : {}) });
+    }
+  };
+  /** "auto" = the cursor sits on a node the engine advances by itself, so a quiet run there is stranded; "waiting" = legitimately parked. */
+  const nature = async (run: FlowRunRow): Promise<"auto" | "waiting" | "missing"> => {
+    if (!run.current_node_key) return "missing";
+    const node = (await nodesOf(currentFlowIdOf(run))).get(run.current_node_key);
+    if (!node) return "missing";
+    if (!isAutoAdvancing(node.node_type) || (node.node_type === "delay" && isDurableWaitConfig(node.config))) return "waiting";
+    return "auto";
+  };
+
+  for (const run of old) {
     try {
-      const outcome = await recoverOneStrandedRun(db, row);
+      const kind = await nature(run);
+      if (kind === "waiting") { summary.waiting! += 1; continue; }
+      if (kind === "missing") { summary.skipped += 1; review(run, "node_missing"); continue; }
+      summary.too_old! += 1;
+      let evidence: RecoveryReviewItem["evidence"] | undefined;
+      try { evidence = (await assessStrandedRun(db, run)).kind; } catch { /* the item is still reported, without evidence */ }
+      review(run, "too_old", evidence);
+    } catch (err) {
+      summary.failed += 1;
+      console.error("[flows] stranded run review failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  let acted = 0;
+  for (const run of recent) {
+    if (acted >= limit) break;
+    try {
+      const kind = await nature(run);
+      if (kind === "waiting") { summary.waiting! += 1; continue; }
+      if (kind === "missing") { summary.skipped += 1; review(run, "node_missing"); continue; }
+      summary.eligible! += 1;
+      if (mode === "dry-run") {
+        let verdict: StrandedAssessment;
+        try { verdict = await assessStrandedRun(db, run); } catch { review(run, "evidence_error"); summary.failed += 1; continue; }
+        if (verdict.kind === "recoverable") summary.would_resume! += 1;
+        else if (verdict.kind === "ambiguous") summary.ambiguous += 1;
+        else summary.unsafe += 1;
+        if (verdict.kind !== "recoverable") review(run, "not_safe", verdict.kind);
+        summary.examined += 1;
+        acted += 1;
+        continue;
+      }
+      const outcome = await recoverOneStrandedRun(db, run);
       summary.examined += outcome === "skipped" ? 0 : 1;
       summary[outcome] += 1;
+      acted += 1;
     } catch (err) {
       summary.failed += 1;
       console.error("[flows] stranded run recovery threw:", err instanceof Error ? err.message : err);
@@ -2557,16 +2709,13 @@ async function recoverOneStrandedRun(db: AdminClient, run: FlowRunRow): Promise<
   const node = nodes.get(run.current_node_key);
   // Runs that legitimately wait for the customer (buttons, lists, collect_input) are not stranded, however long they have been quiet.
   if (!node || !isAutoAdvancing(node.node_type) || (node.node_type === "delay" && isDurableWaitConfig(node.config))) return "skipped";
-  const { data: events, error } = await db
-    .from("flow_run_events").select("event_type, node_key, payload, created_at").eq("flow_run_id", run.id).gt("created_at", run.last_advanced_at).order("created_at", { ascending: true }).order("id", { ascending: true });
-  if (error) throw new Error("recovery_evidence_lookup_failed");
-  const verdict = classifyStrandedRun((events ?? []) as EvidenceRow[]);
+  const verdict = await assessStrandedRun(db, run);
   if (verdict.kind === "ambiguous") {
     await logEvent(db, run.id, "error", verdict.nodeKey, { reason: "send_outcome_unknown", detail: "intent recorded, no confirmation; NOT resent" });
     await endRun(db, run.id, "failed", "send_outcome_unknown");
     return "ambiguous";
   }
-  if (verdict.kind === "unsafe") {
+  if (verdict.kind === "unsafe" || verdict.kind === "outbound_since_cursor") {
     await logEvent(db, run.id, "error", run.current_node_key, { reason: "recovery_not_safe", detail: "progress after the last cursor included a send; not replayed" });
     await endRun(db, run.id, "failed", "recovery_not_safe");
     return "unsafe";
