@@ -10,12 +10,24 @@ import type { Contact, Conversation, Message } from "@/types";
 
 const h = vi.hoisted(() => {
   let resolveMessages: (value: { data: Message[]; error: null }) => void;
+  let resolveOlder: (value: { data: Message[]; error: null }) => void;
   return {
+    // The "load earlier messages" query (the one carrying an `or` cursor filter) resolves independently of the latest-page query.
+    olderFetch: new Promise<{ data: Message[]; error: null }>((resolve) => {
+      resolveOlder = resolve;
+    }),
+    resolveOlder: (rows: Message[]) => resolveOlder({ data: rows, error: null }),
+    olderQueries: [] as string[],
     messageFetch: new Promise<{ data: Message[]; error: null }>((resolve) => {
       resolveMessages = resolve;
     }),
     resolveMessages: (rows: Message[]) => resolveMessages({ data: rows, error: null }),
     resetMessageFetch() {
+      this.olderQueries.length = 0;
+      this.olderFetch = new Promise<{ data: Message[]; error: null }>((resolve) => {
+        resolveOlder = resolve;
+      });
+      this.resolveOlder = (rows: Message[]) => resolveOlder({ data: rows, error: null });
       this.messageFetch = new Promise<{ data: Message[]; error: null }>((resolve) => {
         resolveMessages = resolve;
       });
@@ -131,11 +143,25 @@ vi.mock("@/lib/supabase/client", () => ({
     const result = Promise.resolve({ data: [], error: null });
     return {
       from: (table: string) => {
+        // Messages queries are chained (select/eq/or/order/order/limit) and awaited at the end: thenable builder.
+        let older = false;
+        const messages: {
+          or: (filter: string) => typeof messages;
+          order: () => typeof messages;
+          limit: () => typeof messages;
+          then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) => Promise<unknown>;
+        } = {
+          or: (filter: string) => { older = true; h.olderQueries.push(filter); return messages; },
+          order: () => messages,
+          limit: () => messages,
+          then: (resolve, reject) => (older ? h.olderFetch : h.messageFetch).then(resolve, reject),
+        };
         const builder = {
           select: () => builder,
           eq: () => builder,
           update: () => builder,
-          order: () => (table === "messages" ? h.messageFetch : result),
+          order: () => (table === "messages" ? messages : result),
+          or: (filter: string) => (table === "messages" ? messages.or(filter) : result),
           then: result.then.bind(result),
         };
         return builder;
@@ -169,7 +195,12 @@ function conversation(id = "conversation-a"): Conversation {
   };
 }
 
+// Each message gets a later timestamp than the previous one, so chronological order == creation order (as in production, where the
+// thread is ordered by created_at).
+let messageClock = 0;
+
 function message(id: string, conversationId = "conversation-a"): Message {
+  messageClock += 1;
   return {
     id,
     conversation_id: conversationId,
@@ -177,7 +208,7 @@ function message(id: string, conversationId = "conversation-a"): Message {
     content_type: "text",
     content_text: id,
     status: "sent",
-    created_at: "2026-01-01T00:00:00Z",
+    created_at: new Date(Date.UTC(2026, 0, 1, 0, 0, 0) + messageClock * 1000).toISOString(),
   };
 }
 
@@ -557,5 +588,89 @@ describe("MessageThread session badge vs Meta free window", () => {
     render(<MessageThread {...threadProps([recent()])} />);
     expect(await screen.findByText("fepRemaining:3 d 0 h")).toBeTruthy();
     expect(screen.getByTestId("composer-session-expired").textContent).toBe("false");
+  });
+});
+
+describe("windowed history (latest 100, page back, resync keeps loaded pages)", () => {
+  // Chronological rows h-001 .. h-N (message() hands out increasing timestamps).
+  const rows = (from: number, to: number): Message[] => Array.from({ length: to - from + 1 }, (_, i) => message(`h-${String(from + i).padStart(4, "0")}`));
+
+  it("shows the load-earlier control only when the fetch reported more history, and never renders more than the 100-row page", async () => {
+    const all = rows(1, 101); // the page query asks for 101 rows: a 101st row means "there is more behind"
+    const view = render(<ResyncHarness initialMessages={[]} />);
+    attachScrollMetrics(view.container.querySelector<HTMLElement>(".overflow-y-auto")!);
+    await act(async () => h.resolveMessages([...all].reverse()));
+    expect(view.getByText("loadEarlierMessages")).toBeInTheDocument();
+    expect(view.queryByText("h-0001")).not.toBeInTheDocument(); // the 101st (oldest) row is the "has more" probe, not shown
+    expect(view.getByText("h-0002")).toBeInTheDocument();
+    expect(view.getByText("h-0101")).toBeInTheDocument();
+  });
+
+  it("no control for a short thread", async () => {
+    const view = render(<ResyncHarness initialMessages={[]} />);
+    await act(async () => h.resolveMessages(rows(1, 5)));
+    expect(view.queryByText("loadEarlierMessages")).not.toBeInTheDocument();
+  });
+
+  it("loads the previous page with a (created_at,id) cursor and keeps the reader's exact position", async () => {
+    const older = rows(1, 100);
+    const latest = rows(101, 201); // 101 rows, newest first from the server (the oldest one is the "has more" probe)
+    const view = render(<ResyncHarness initialMessages={[]} />);
+    const scroll = view.container.querySelector<HTMLElement>(".overflow-y-auto")!;
+    let top = 0;
+    // The content grows by 3000px only once the older rows are actually in the DOM, i.e. after the anchor was captured.
+    Object.defineProperties(scroll, {
+      scrollHeight: { configurable: true, get: () => (view.queryByText("h-0001") ? 4_000 : 1_000) },
+      clientHeight: { configurable: true, get: () => 200 },
+      scrollTop: { configurable: true, get: () => top, set: (next: number) => { top = next; } },
+    });
+    await act(async () => h.resolveMessages([...latest].reverse()));
+
+    scroll.scrollTop = 40;
+    fireEvent.scroll(scroll); // near the top: the next page is requested by the scroll itself
+    expect(h.olderQueries).toHaveLength(1);
+    expect(h.olderQueries[0]).toContain('created_at.lt."');
+    expect(h.olderQueries[0]).toContain('id.lt."h-0102"'); // cursor = oldest row shown (h-0101 was only the probe)
+
+    await act(async () => h.resolveOlder(older));
+    expect(view.getByText("h-0001")).toBeInTheDocument();
+    expect(view.getByText("h-0201")).toBeInTheDocument();
+    expect(scroll.scrollTop).toBe(40 + 3_000); // prepended content pushes the reader down by exactly its height
+    expect(view.queryByText("loadEarlierMessages")).not.toBeInTheDocument(); // 100 rows < 101: the start of the thread
+  });
+
+  it("a resync after paging back keeps the older pages and picks up the missed recent message", async () => {
+    const older = rows(1, 100);
+    const latest = rows(101, 201);
+    const view = render(<ResyncHarness initialMessages={[]} />);
+    const scroll = view.container.querySelector<HTMLElement>(".overflow-y-auto")!;
+    attachScrollMetrics(scroll);
+    await act(async () => h.resolveMessages([...latest].reverse()));
+    scroll.scrollTop = 20;
+    fireEvent.scroll(scroll);
+    await act(async () => h.resolveOlder(older));
+
+    const missed = message("h-missed-latest");
+    h.resetMessageFetch();
+    fireEvent.click(view.getByText("resync"));
+    // Server order (newest first), 100 rows: the missed message plus the newest 99 of the previous latest page.
+    await act(async () => h.resolveMessages([missed, ...[...latest].reverse().slice(0, 99)]));
+    expect(view.getByText("h-0001")).toBeInTheDocument(); // the older page survived the resync
+    expect(view.getByText("h-0050")).toBeInTheDocument();
+    expect(view.getByText("h-missed-latest")).toBeInTheDocument(); // and so did the newest message
+  });
+
+  it("a resync that finds a gap (more than a page of new messages) restarts the window instead of leaving a hole", async () => {
+    const first = rows(1, 10);
+    const burst = rows(11, 111);
+    const view = render(<ResyncHarness initialMessages={[]} />);
+    attachScrollMetrics(view.container.querySelector<HTMLElement>(".overflow-y-auto")!);
+    await act(async () => h.resolveMessages(first));
+    h.resetMessageFetch();
+    fireEvent.click(view.getByText("resync"));
+    await act(async () => h.resolveMessages([...burst].reverse()));
+    expect(view.queryByText("h-0005")).not.toBeInTheDocument(); // old window dropped: no hole in the middle
+    expect(view.getByText("h-0111")).toBeInTheDocument();
+    expect(view.getByText("loadEarlierMessages")).toBeInTheDocument();
   });
 });

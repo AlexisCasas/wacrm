@@ -77,6 +77,16 @@ import {
   isOptimisticMessageReplacement,
   shouldFollowLatest,
 } from "@/lib/inbox/message-scroll";
+import {
+  applyLatestPage,
+  fetchLatestPage,
+  fetchOlderPage,
+  mergeMessages,
+  oldestCursor,
+} from "@/lib/inbox/message-window";
+
+/** Distance from the top (px) at which the next older page is requested while scrolling up. */
+const LOAD_OLDER_THRESHOLD_PX = 160;
 
 type ReplyDraft = ReplyQuoteData;
 
@@ -214,6 +224,15 @@ export function MessageThread({
   const canBlockContact = useCan("send-messages");
   const { getPresence, getRow, now } = usePresence();
   const [loading, setLoading] = useState(false);
+  // Windowed history: the thread holds the latest page plus any older pages the reader asked for.
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const hasMoreOlderRef = useRef(false);
+  const loadingOlderRef = useRef(false);
+  const messagesRef = useRef<Message[]>(messages);
+  const activeConversationIdRef = useRef<string | undefined>(undefined);
+  // Scroll geometry captured right before older rows are prepended, so the reader's position can be restored after layout.
+  const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
   // This is intentionally a ref: recording every pixel of a user's scroll in
@@ -334,6 +353,11 @@ export function MessageThread({
 
   const conversationId = conversation?.id;
   const hasUnread = (conversation?.unread_count ?? 0) > 0;
+  // Written in an effect (React 19 refs rule); read only inside async completions and callbacks.
+  useEffect(() => {
+    messagesRef.current = messages;
+    activeConversationIdRef.current = conversationId;
+  });
 
   const mediaMessageId =
     openMedia && openMedia.conversationId === conversationId
@@ -361,21 +385,35 @@ export function MessageThread({
     (async () => {
       setLoading(true);
 
-      const { data, error } = await supabase
-        .from("messages")
-        .select("*")
-        .eq("conversation_id", conversationId)
-        .order("created_at", { ascending: true });
+      // Newest page first: the PostgREST row cap can then only ever cut OLD history, never the latest messages.
+      const page = await fetchLatestPage(supabase, conversationId);
 
       if (cancelled) return;
 
-      if (error) {
-        console.error("Failed to fetch messages:", error);
+      if (page.error) {
+        console.error("Failed to fetch messages:", page.error);
       } else {
+        // A fetch for a conversation that was already loaded is a resync (reconnect, tab focus, manual refresh): keep the older
+        // pages the reader loaded and any realtime rows instead of replacing the whole thread with the latest page.
+        const isResync = fetchedConversationIdRef.current === conversationId;
         // This data boundary prevents a transient render of the previous
         // thread from being treated as the newly selected thread's history.
         fetchedConversationIdRef.current = conversationId;
-        onMessagesLoadedRef.current(data ?? []);
+        let nextMessages = page.messages;
+        let nextHasMoreOlder = page.hasMoreOlder;
+        if (isResync) {
+          const applied = applyLatestPage({
+            existing: messagesRef.current,
+            latest: page.messages,
+            latestHasMoreOlder: page.hasMoreOlder,
+            existingHasMoreOlder: hasMoreOlderRef.current,
+          });
+          nextMessages = applied.messages;
+          nextHasMoreOlder = applied.hasMoreOlder;
+        }
+        hasMoreOlderRef.current = nextHasMoreOlder;
+        setHasMoreOlder(nextHasMoreOlder);
+        onMessagesLoadedRef.current(nextMessages);
       }
 
       if (!cancelled) setLoading(false);
@@ -528,11 +566,37 @@ export function MessageThread({
     isNearBottomRef.current = true;
   }, []);
 
+  // Load the page of messages immediately older than the oldest one held, keeping the reader exactly where they were.
+  const loadOlder = useCallback(async () => {
+    if (!conversationId || loadingOlderRef.current || !hasMoreOlderRef.current) return;
+    const cursor = oldestCursor(messagesRef.current);
+    if (!cursor) return;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    const page = await fetchOlderPage(createClient(), conversationId, cursor);
+    loadingOlderRef.current = false;
+    setLoadingOlder(false);
+    // The reader moved to another conversation while the page was loading: drop it.
+    if (activeConversationIdRef.current !== conversationId) return;
+    if (page.error) {
+      console.error("Failed to fetch earlier messages:", page.error);
+      return;
+    }
+    hasMoreOlderRef.current = page.hasMoreOlder;
+    setHasMoreOlder(page.hasMoreOlder);
+    const merged = mergeMessages(messagesRef.current, page.messages);
+    if (merged.length === messagesRef.current.length) return;
+    const el = scrollRef.current;
+    if (el) prependAnchorRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    onMessagesLoadedRef.current(merged);
+  }, [conversationId]);
+
   const handleThreadScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
     isNearBottomRef.current = isNearBottom(el);
-  }, []);
+    if (el.scrollTop <= LOAD_OLDER_THRESHOLD_PX) void loadOlder();
+  }, [loadOlder]);
 
   const addOwnOptimisticMessage = useCallback(
     (message: Message) => {
@@ -564,6 +628,20 @@ export function MessageThread({
         initialScrollPendingRef.current = false;
         previousMessagesRef.current = messages;
       }
+      return;
+    }
+
+    // Older rows were just prepended: restore the reader's exact position (absolute, so a browser's own scroll anchoring cannot
+    // double-adjust) and never treat the prepended rows as "new messages to follow".
+    const prependAnchor = prependAnchorRef.current;
+    if (prependAnchor) {
+      prependAnchorRef.current = null;
+      const el = scrollRef.current;
+      if (el) {
+        el.scrollTop = prependAnchor.scrollTop + (el.scrollHeight - prependAnchor.scrollHeight);
+        isNearBottomRef.current = isNearBottom(el);
+      }
+      previousMessagesRef.current = messages;
       return;
     }
 
@@ -1320,6 +1398,18 @@ export function MessageThread({
         className="flex-1 overflow-y-auto px-4 py-4"
       >
         <div ref={scrollContentRef}>
+          {hasMoreOlder && messages.length > 0 && (
+            <div className="flex justify-center pb-3">
+              <button
+                type="button"
+                onClick={() => void loadOlder()}
+                disabled={loadingOlder}
+                className="rounded-full bg-muted px-3 py-1 text-[11px] font-medium text-muted-foreground hover:bg-muted/80 disabled:opacity-60"
+              >
+                {loadingOlder ? t("loadingEarlierMessages") : t("loadEarlierMessages")}
+              </button>
+            </div>
+          )}
           {loading && messages.length === 0 ? (
             <div className="flex items-center justify-center py-12">
               <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
