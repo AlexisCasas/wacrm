@@ -34,8 +34,9 @@ ops/deploy/deploy.sh --execute wacrm-app:<tag>    # deploy
 ops/deploy/verify-no-502.sh --since 15m           # read-only proof
 ops/deploy/rollback.sh --execute                  # if needed
 ```
-**First rollout only:** the currently running image has no `/api/health/ready`. Gate on the home page instead:
-`READY_PATH=/ ops/deploy/deploy.sh --execute <image>`. From the second deploy on, the default applies.
+**First rollout:** keep the default `READY_PATH=/api/health/ready` for `deploy.sh`. The **candidate** is the new image from this PR and already has the endpoint; the old live container is not checked for readiness during deployment. Do **not** set `READY_PATH=/` on deploy: WACRM's `/` redirects to `/dashboard` (and may redirect again to login), so HTTP 200 would not prove DB readiness.
+
+**First rollback compatibility:** the previous, pre-OPS image does not have `/api/health/ready`, but `rollback.sh` checks readiness on the previous container. Before attempting the first rollback, explicitly verify old-image DB connectivity and its authenticated request path in a controlled preflight. A rollback-only `READY_PATH=/` fallback is a *degraded HTTP-liveness check*, not a DB readiness check; it must never be presented as proof of database health. For later deployments both images include `/api/health/ready` and the default applies.
 
 ## Rollback
 `rollback.sh` starts the stopped previous container (it rejoins `edge_proxy` with its aliases), waits for readiness, lets both serve,
