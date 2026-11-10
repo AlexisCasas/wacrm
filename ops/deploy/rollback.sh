@@ -16,41 +16,61 @@ exec 9>"$LOCK_FILE"; flock -n 9 || die "another deploy/rollback is running"
 [ -f "$STATE_DIR/last.env" ] || die "no $STATE_DIR/last.env: nothing to roll back to"
 # shellcheck disable=SC1091
 . "$STATE_DIR/last.env"
+[ "${ROLLBACK_DISABLED:-0}" != "1" ] || die "the previous release could not be parked privately; automatic rollback is disabled"
 [ -n "${PREV_NAME:-}" ] || die "last.env has no PREV_NAME (the deploy did not finish its last step)"
 container_exists "$PREV_NAME" || die "previous container $PREV_NAME no longer exists"
+! container_running "$PREV_NAME" || die "previous container already running; rollback state is inconsistent"
+is_private_rollback_container "$PREV_NAME" ||
+  die "previous image still holds public alias or is not privately connected; refusing to expose an unready backend"
 FAILED="$LIVE_NAME"; container_running "$FAILED" || die "current $FAILED is not running"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
 log "rollback: $FAILED (image $(docker inspect -f '{{.Config.Image}}' "$FAILED")) -> $PREV_NAME (image $OLD_IMAGE)"
 [ "$EXECUTE" = "1" ] || { log "DRY-RUN complete: nothing was changed. Re-run with --execute."; exit 0; }
 
-log "1/5 starting the previous container (a stopped container rejoins the networks it was on, with its aliases, so it serves $PUBLIC_ALIAS again alongside the failed release)"
+abort_previous() {
+  local reason="$1"
+  log "ABORT rollback: $reason; current release is still serving"
+  docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null 2>&1 || true
+  park_stopped_previous "$PREV_NAME" "$PREV_NAME" ||
+    log "CRITICAL: previous image could not be reparked; do not restart manually"
+  die "$reason"
+}
+log "1/5 starting previously parked container privately (no public alias yet)"
 docker start "$PREV_NAME" >/dev/null
-log "2/5 readiness"
-wait_ready "$PREV_NAME" rollback_ready_status || { log "previous container did not become ready; stopping it again, current release untouched"; docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null 2>&1 || true; die "rollback aborted"; }
+is_private_rollback_container "$PREV_NAME" ||
+  abort_previous "old image became publicly visible before readiness"
+log "2/5 readiness (legacy DB-backed probe supported)"
+wait_ready "$PREV_NAME" rollback_ready_status ||
+  abort_previous "previous container did not become DB-ready"
 IMG="$(docker inspect -f '{{.Image}}' "$PREV_NAME")"
 PREV_IP="$(container_ip "$PREV_NAME")"
-log "3/5 public alias check"
-case "$(resolve_from_edge "$IMG" "$PUBLIC_ALIAS" | tr '\n' ' ')" in
-  *"$PREV_IP"*) ;;
-  *) log "alias did not come back with the container: adding it"; docker network disconnect "$EDGE_NETWORK" "$PREV_NAME" && docker network connect --alias "$PUBLIC_ALIAS" --alias "$PREV_NAME" "$EDGE_NETWORK" "$PREV_NAME" ;;
-esac
+log "3/5 publish public alias only AFTER readiness has passed"
+# Previous is private; disconnecting it cannot interrupt public requests.
+docker network disconnect "$EDGE_NETWORK" "$PREV_NAME" ||
+  abort_previous "previous private network detach failed"
+docker network connect --alias "$PUBLIC_ALIAS" --alias "$PREV_NAME" "$EDGE_NETWORK" "$PREV_NAME" ||
+  abort_previous "could not publish ready previous image"
 # After a reconnect Docker may assign a new IP. Check both participants
 # before ever stopping the currently-serving release.
 PREV_IP="$(container_ip "$PREV_NAME")"
 FAILED_IP="$(container_ip "$FAILED")"
 GOT="$(resolve_from_edge "$IMG" "$PUBLIC_ALIAS")"
 if ! { grep -Fxq "$PREV_IP" <<<"$GOT" && grep -Fxq "$FAILED_IP" <<<"$GOT"; }; then
-  log "rollback alias is not dual-serving; stopping previous candidate and preserving current release"
-  docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null 2>&1 || true
-  die "rollback aborted before stopping current release"
+  abort_previous "rollback alias is not dual-serving; current release preserved"
 fi
 log "rollback alias validated for both live and previous containers"
 log "4/5 SIGTERM to the failed release after a ${DRAIN_SECONDS}s dual-serve window (grace ${STOP_GRACE}s)"
 sleep "$DRAIN_SECONDS"
-[ "$(rollback_ready_status "$PREV_NAME")" = "200" ] || { log "previous container lost readiness; stopping it so current release serves alone"; docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null 2>&1 || true; die "rollback aborted"; }
+[ "$(rollback_ready_status "$PREV_NAME")" = "200" ] ||
+  abort_previous "previous image lost DB readiness while dual-serving"
 docker stop -t "$STOP_GRACE" "$FAILED" >/dev/null
 log "5/5 swapping names"
-docker rename "$FAILED" "${LIVE_NAME}-failed-$TS"
-docker rename "$PREV_NAME" "$LIVE_NAME"
-sed -i '/^PREV_NAME=/d' "$STATE_DIR/last.env"; echo "FAILED_NAME=${LIVE_NAME}-failed-$TS" >>"$STATE_DIR/last.env"
+retry_rename "$FAILED" "${LIVE_NAME}-failed-$TS" ||
+  die "CRITICAL: current failed release cannot be renamed; previous is serving but cron name requires manual repair"
+retry_rename "$PREV_NAME" "$LIVE_NAME" ||
+  die "CRITICAL: previous is serving but cannot acquire LIVE_NAME after 3 attempts; manual repair required"
+# An already executed rollback cannot be reused to restart a stale image.
+grep -vE '^(PREV_NAME|ROLLBACK_DISABLED|FAILED_NAME)=' "$STATE_DIR/last.env" >"$STATE_DIR/.last.env.rollback-$TS"
+echo "FAILED_NAME=${LIVE_NAME}-failed-$TS" >>"$STATE_DIR/.last.env.rollback-$TS"
+mv -f "$STATE_DIR/.last.env.rollback-$TS" "$STATE_DIR/last.env"
 log "rolled back. live=$LIVE_NAME image=$OLD_IMAGE. Failed release kept stopped as ${LIVE_NAME}-failed-$TS. Verify with verify-no-502.sh"
