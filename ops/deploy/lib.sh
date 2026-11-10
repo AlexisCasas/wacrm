@@ -25,6 +25,36 @@ container_exists()  { docker inspect "$1" >/dev/null 2>&1; }
 container_running() { [ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || echo false)" = "true" ]; }
 container_ip()      { docker inspect -f "{{(index .NetworkSettings.Networks \"$EDGE_NETWORK\").IPAddress}}" "$1" 2>/dev/null; }
 
+# The previous image MUST restart without the public Caddy alias. Docker
+# reconnects stopped containers to their saved networks upon docker start.
+# Reconfigure its endpoint only AFTER the old process has gracefully stopped.
+network_aliases_json() {
+  docker inspect -f "{{json (index .NetworkSettings.Networks \"$EDGE_NETWORK\").Aliases}}" "$1" 2>/dev/null
+}
+is_private_rollback_container() {
+  local aliases
+  aliases="$(network_aliases_json "$1")" || return 1
+  [ -n "$aliases" ] && [ "$aliases" != "null" ] || return 1
+  ! grep -Fq "\"$PUBLIC_ALIAS\"" <<<"$aliases"
+}
+park_stopped_previous() {  # $1 stopped container, $2 private alias
+  local container="$1" private="$2"
+  ! container_running "$container" || return 1
+  # --force supports stopped endpoint removal on the tested Docker Engine.
+  # Gate its behavior on the VPS through disposable lab-private-rollback.sh.
+  docker network disconnect -f "$EDGE_NETWORK" "$container" || return 1
+  docker network connect --alias "$private" "$EDGE_NETWORK" "$container" || return 1
+  is_private_rollback_container "$container" || return 1
+}
+retry_rename() {  # $1 old name, $2 new name
+  local attempt
+  for attempt in 1 2 3; do
+    docker rename "$1" "$2" && return 0
+    sleep 1
+  done
+  return 1
+}
+
 # Fetch READY_PATH from INSIDE a container (no published port is needed). Prints the HTTP status, or 000.
 ready_status() {
   docker exec "$1" node -e "
