@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Disposable rollback-alias research: NEVER target real WACRM services.
 set -euo pipefail
-IMAGE="node:20-alpine"
+IMAGE="${1:-node:20-alpine}"
 NET="qa-rollback-$RANDOM-$$"
 OLD="$NET-old"; CURRENT="$NET-current"; PUBLIC="qa-public-app"
 cleanup() {
@@ -14,12 +14,14 @@ SERVER='const http=require("http");http.createServer((req,res)=>res.end(process.
 docker run -d --name "$OLD" --network "$NET" --network-alias "$PUBLIC" -e ID=old --entrypoint node "$IMAGE" -e "$SERVER" >/dev/null
 docker run -d --name "$CURRENT" --network "$NET" --network-alias "$PUBLIC" -e ID=current --entrypoint node "$IMAGE" -e "$SERVER" >/dev/null
 docker stop "$OLD" >/dev/null
-# Can a stopped previous image be isolated before a restart?
-if ! docker network disconnect -f "$NET" "$OLD"; then
-  echo "ROLLBACK_ALIAS_PREP=UNSUPPORTED: Docker rejected network disconnect of stopped container"
+# Use the exact helper the production script calls, not a separate imitation.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EDGE_NETWORK="$NET"; PUBLIC_ALIAS="$PUBLIC"
+. "$DIR/lib.sh"
+if ! park_stopped_previous "$OLD" "$OLD"; then
+  echo "ROLLBACK_ALIAS_PREP=UNSUPPORTED: previous image cannot be restarted with private alias"
   exit 1
 fi
-docker network connect --alias "$OLD" "$NET" "$OLD"
 docker start "$OLD" >/dev/null
 # The old must NOT be visible at the public name before passing readiness.
 IPS="$(docker run --rm --network "$NET" --entrypoint node "$IMAGE" -e \
