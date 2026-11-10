@@ -47,6 +47,11 @@ jobs:
           bash ops/deploy/lab-rename-handoff.sh
       - name: Pull disposable Node image
         run: docker pull node:20-alpine
+      - name: Exercise name handoff on disposable real Docker containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ops/deploy/lab-real-rename-handoff.sh node:20-alpine
       - name: Verify candidate Compose overlay parses without the public alias
         shell: bash
         run: |
