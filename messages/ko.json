@@ -173,6 +173,8 @@
       "noTeammates": "지정 가능한 팀원이 없습니다",
       "me": " (나)",
       "noMessagesYet": "아직 메시지가 없습니다",
+      "loadEarlierMessages": "이전 메시지 불러오기",
+      "loadingEarlierMessages": "이전 메시지를 불러오는 중…",
       "sendTemplateHint": "템플릿을 보내 대화를 시작하세요",
       "selectConversation": "대화를 선택하세요",
       "selectConversationHint": "왼쪽에서 대화를 선택해 메시지를 시작하세요",

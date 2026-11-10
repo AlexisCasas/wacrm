@@ -307,6 +307,8 @@
       "noTeammates": "No hay compañeros de equipo disponibles",
       "me": " (yo)",
       "noMessagesYet": "Aún no hay mensajes",
+      "loadEarlierMessages": "Cargar mensajes anteriores",
+      "loadingEarlierMessages": "Cargando mensajes anteriores…",
       "sendTemplateHint": "Envía una plantilla para iniciar la conversación",
       "selectConversation": "Selecciona una conversación",
       "selectConversationHint": "Elige una conversación de la izquierda para empezar a escribir",
