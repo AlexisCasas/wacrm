@@ -63,7 +63,7 @@ afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); delete process.env.F
 
 describe("recovery selection without starvation (69 legitimate waits + 1 stranded run)", () => {
   it("dry-run finds the stranded run behind 69 waiting ones and changes nothing", async () => {
-    const mem = setup([...waiting(69), run("stuck", { current_node_key: "start", last_advanced_at: ago(700) })]);
+    const mem = setup([...waiting(69), run("stuck", { current_node_key: "start", last_advanced_at: ago(602) })]);
     const before = snapshot(mem);
     const summary = await recoverStrandedRuns({ accountIds: [A], limit: 25 });
     expect(summary).toMatchObject({ mode: "dry-run", candidates: 70, waiting: 69, eligible: 1, would_resume: 1, resumed: 0, too_old: 0, truncated: false });
@@ -72,7 +72,7 @@ describe("recovery selection without starvation (69 legitimate waits + 1 strande
   });
 
   it("the same pass in the old way would have seen only waiting runs (guard against reintroducing the 25-oldest query)", async () => {
-    const mem = setup([...waiting(69), run("stuck", { current_node_key: "start", last_advanced_at: ago(700) })]);
+    const mem = setup([...waiting(69), run("stuck", { current_node_key: "start", last_advanced_at: ago(602) })]);
     const oldest25 = mem.table("flow_runs").sort((x, y) => String(x.last_advanced_at).localeCompare(String(y.last_advanced_at))).slice(0, 25);
     expect(oldest25.every((r) => r.current_node_key === "menu")).toBe(true);
     expect(oldest25.some((r) => r.id === "stuck")).toBe(false);
@@ -128,7 +128,7 @@ describe("max age (30 min): older runs are excluded from automatic recovery and 
 
 describe("active mode (only with explicit activation)", () => {
   it("resumes the stranded run exactly once, leaves the 69 waits alone, and a second pass does nothing", async () => {
-    const mem = setup([...waiting(69), run("stuck", { current_node_key: "start", last_advanced_at: ago(700) })]);
+    const mem = setup([...waiting(69), run("stuck", { current_node_key: "start", last_advanced_at: ago(602) })]);
     const first = await recoverStrandedRuns({ accountIds: [A], mode: "active" });
     expect(first).toMatchObject({ mode: "active", waiting: 69, eligible: 1, resumed: 1 });
     expect(h.sendTextMessage).toHaveBeenCalledTimes(1);
