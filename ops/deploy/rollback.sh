@@ -76,8 +76,15 @@ if [ "$SWAP_RESULT" != "0" ]; then
   fi
   die "CRITICAL: ambiguous rollback name handoff (code=$SWAP_RESULT); both instances left for manual repair"
 fi
-[ "$(rollback_ready_status "$LIVE_NAME")" = "200" ] ||
-  die "CRITICAL: previous image lost readiness after rename; failed image running as $FAILED_NAME; manual repair required"
+if [ "$(rollback_ready_status "$LIVE_NAME")" != "200" ]; then
+  log "CRITICAL: previous image lost readiness after rollback name swap; restoring running current release"
+  REVERSE_RESULT=0
+  swap_running_live_name "$PREV_NAME" "$FAILED_NAME" "$LIVE_NAME" || REVERSE_RESULT=$?
+  if [ "$REVERSE_RESULT" = "0" ]; then
+    abort_previous "previous image failed post-swap readiness; current release restored as $LIVE_NAME"
+  fi
+  die "CRITICAL: rollback readiness failure and reverse name handoff failed (code=$REVERSE_RESULT); manual intervention required"
+fi
 docker stop -t "$STOP_GRACE" "$FAILED_NAME" >/dev/null ||
   die "CRITICAL: failed image could not be stopped; prior image stays live; manual inspection required"
 # An already executed rollback cannot be reused to restart a stale image.
