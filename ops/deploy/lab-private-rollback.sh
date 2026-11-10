@@ -32,3 +32,22 @@ OLD_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddr
   echo "ROLLBACK_ALIAS_PREP=FAIL: old container publicly visible before readiness"; exit 1;
 }
 echo "ROLLBACK_ALIAS_PREP=PASS: old restarted private"
+# Simulate publication after readiness, then a failed rollback and re-parking.
+docker network disconnect "$NET" "$OLD"
+docker network connect --alias "$PUBLIC" --alias "$OLD" "$NET" "$OLD"
+GOT="$(docker run --rm --network "$NET" --entrypoint node "$IMAGE" -e \
+  "require('dns').promises.lookup('$PUBLIC',{all:true,family:4}).then(a=>console.log(a.map(x=>x.address).sort().join(' '))).catch(()=>process.exit(1))")"
+OLD_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$OLD")"
+[ "$(printf '%s\n' "$GOT" | wc -w)" -eq 2 ] || {
+  echo "ROLLBACK_PUBLISH=FAIL: expected both ready and current aliases"; exit 1;
+}
+docker stop "$OLD" >/dev/null
+park_stopped_previous "$OLD" "$OLD"
+docker start "$OLD" >/dev/null
+AFTER="$(docker run --rm --network "$NET" --entrypoint node "$IMAGE" -e \
+  "require('dns').promises.lookup('$PUBLIC',{all:true,family:4}).then(a=>console.log(a.map(x=>x.address).join(' '))).catch(()=>process.exit(1))")"
+CURRENT_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$NET\").IPAddress}}" "$CURRENT")"
+[ "$AFTER" = "$CURRENT_IP" ] || {
+  echo "ROLLBACK_ABORT=FAIL: previously published image leaked into public alias"; exit 1;
+}
+echo "ROLLBACK_PUBLISH_AND_ABORT=PASS: ready-only publication and re-park"
