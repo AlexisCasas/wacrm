@@ -107,6 +107,14 @@ swap_running_live_name() {  # $1 previous-name, $2 candidate-name, $3 live-name
   return 3
 }
 
+# The current production Flows cron actively resumes eligible runs. New code is
+# dry-run by default. Require explicit runtime continuity before the candidate
+# receives the public alias; never print or dump other environment variables.
+flow_recovery_status() {  # $1 running container
+  docker exec "$1" node -e 'process.stdout.write(process.env.FLOW_RECOVERY_ACTIVE === "true" ? "active" : "dry-run")' \
+    2>/dev/null || echo unknown
+}
+
 # Fetch READY_PATH from INSIDE a container (no published port is needed). Prints the HTTP status, or 000.
 ready_status() {
   docker exec "$1" node -e "
