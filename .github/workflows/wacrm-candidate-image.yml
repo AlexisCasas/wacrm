@@ -1,0 +1,105 @@
+name: WACRM candidate image (manual, artifact only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: "Exact 40-character SHA at main HEAD; no implicit latest"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wacrm-candidate-${{ github.event.inputs.release_sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # Public values must match the current production build config.
+    # These are compile-time NEXT_PUBLIC_* variables, not server secrets.
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ vars.WACRM_NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.WACRM_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      NEXT_PUBLIC_SITE_URL: ${{ vars.WACRM_NEXT_PUBLIC_SITE_URL }}
+      NEXT_PUBLIC_APP_LOCALE: ${{ vars.WACRM_NEXT_PUBLIC_APP_LOCALE || 'en' }}
+    steps:
+      - name: Checkout exact release SHA
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.release_sha }}
+          fetch-depth: 0
+
+      - name: Gate SHA, main and compile-time public configuration
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHA="${{ inputs.release_sha }}"
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid SHA"; exit 1; }
+          [ "$(git rev-parse HEAD)" = "$SHA" ] || { echo "Checkout drift"; exit 1; }
+          [ "$(git rev-parse origin/main)" = "$SHA" ] || { echo "Release is not the current main HEAD"; exit 1; }
+          [ "${{ github.ref }}" = "refs/heads/main" ] || { echo "Run workflow from main only"; exit 1; }
+          [ -n "$NEXT_PUBLIC_SUPABASE_URL" ] && [ -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ] ||
+            { echo "Missing production public Supabase configuration in repository vars/secrets"; exit 1; }
+          case "$NEXT_PUBLIC_SUPABASE_URL" in https://*) ;; *) echo "Expected HTTPS Supabase URL"; exit 1 ;; esac
+          TAG="wacrm-app:candidate-${SHA:0:12}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          # Publish only a fingerprint, never the public key itself.
+          {
+            printf '%s\0' "$NEXT_PUBLIC_SUPABASE_URL"
+            printf '%s\0' "$NEXT_PUBLIC_SUPABASE_ANON_KEY"
+            printf '%s\0' "$NEXT_PUBLIC_SITE_URL"
+            printf '%s\0' "$NEXT_PUBLIC_APP_LOCALE"
+          } | sha256sum | cut -d ' ' -f1 > /tmp/wacrm-public-build-config.sha256
+          echo "CANDIDATE_PREFLIGHT=PASS"
+
+      - name: Build candidate image outside VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 --pull \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY \
+            --build-arg NEXT_PUBLIC_SITE_URL \
+            --build-arg NEXT_PUBLIC_APP_LOCALE \
+            --label "org.opencontainers.image.revision=${{ steps.preflight.outputs.sha }}" \
+            --label "org.opencontainers.image.source=https://github.com/AlexisCasas/wacrm" \
+            -t "${{ steps.preflight.outputs.tag }}" .
+          actual="$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' '${{ steps.preflight.outputs.tag }}')"
+          [ "$actual" = "${{ steps.preflight.outputs.sha }}" ] ||
+            { echo "Revision label mismatch"; exit 1; }
+          [ "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' '${{ steps.preflight.outputs.tag }}')" = "linux/amd64" ] ||
+            { echo "Unexpected image architecture"; exit 1; }
+          echo "CANDIDATE_BUILD=PASS"
+
+      - name: Export image and verify archive SHA-256
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          docker save '${{ steps.preflight.outputs.tag }}' | gzip -1 > release/wacrm-candidate-image.tar.gz
+          ( cd release && sha256sum wacrm-candidate-image.tar.gz > SHA256SUMS && sha256sum --check SHA256SUMS )
+          image_id="$(docker image inspect -f '{{.Id}}' '${{ steps.preflight.outputs.tag }}')"
+          {
+            echo "SOURCE_SHA=${{ steps.preflight.outputs.sha }}"
+            echo "IMAGE_TAG=${{ steps.preflight.outputs.tag }}"
+            echo "IMAGE_ID=$image_id"
+            echo "PLATFORM=linux/amd64"
+            echo "PUBLIC_BUILD_CONFIG_SHA256=$(cat /tmp/wacrm-public-build-config.sha256)"
+            echo "BUILT_AT_UTC=$(date -u +%FT%TZ)"
+            echo "DEPLOYED=false"
+          } > release/manifest.txt
+          echo "CANDIDATE_ARTIFACT_SHA256=PASS"
+
+      - name: Upload candidate artifact (no deployment)
+        uses: actions/upload-artifact@v4
+        with:
+          name: wacrm-candidate-${{ steps.preflight.outputs.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
