@@ -73,7 +73,7 @@ done
 IMAGE_OVERRIDE="$STATE_DIR/$TS-image-override.yml"
 log "live=$OLD  image(old)=$(docker inspect -f '{{.Config.Image}}' "$OLD")  ->  image(new)=$IMAGE"
 log "compose overlays kept: ${#COMPOSE_ARGS[@]} files; project dir $PROJECT_DIR"
-log "plan: start $CAND (private alias) -> ready x$READY_PASSES -> DNS check -> alias $PUBLIC_ALIAS on candidate -> both serve ${DRAIN_SECONDS}s -> SIGTERM $OLD (grace ${STOP_GRACE}s, kept stopped) -> rename"
+log "plan: start $CAND privately -> ready x$READY_PASSES -> DNS -> dual-serve ${DRAIN_SECONDS}s -> swap names while both RUN -> readiness -> SIGTERM old (grace ${STOP_GRACE}s) -> park rollback privately"
 
 cleanup_candidate() {
   log "removing candidate $CAND (old container untouched)"
