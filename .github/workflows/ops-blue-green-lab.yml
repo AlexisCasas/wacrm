@@ -52,7 +52,7 @@ jobs:
         run: |
           set -euo pipefail
           source ops/deploy/lib.sh
-          PREFIX="qa-flow-recovery-$RANDOM-$"
+          PREFIX="qa-flow-recovery-$RANDOM-$(date +%s%N)"
           ACTIVE="$PREFIX-active"
           INACTIVE="$PREFIX-unset"
           WRONG="$PREFIX-wrong"
