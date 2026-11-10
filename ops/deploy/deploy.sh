@@ -15,6 +15,8 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 EXECUTE=0
 if [ "${1:-}" = "--execute" ]; then EXECUTE=1; shift; fi
 IMAGE="${1:-}"; [ -n "$IMAGE" ] || die "usage: deploy.sh [--execute] <image:tag>"
+# This tag is persisted in a sourced rollback manifest: forbid shell metacharacters.
+[[ "$IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/@-]*$ ]] || die "unsafe Docker image reference"
 # The candidate is built from this release and must provide the DB-backed readiness route.
 # The home page redirects to dashboard/login and could return 200 with the DB unavailable.
 [ "$READY_PATH" = "/api/health/ready" ] || die "READY_PATH is not a database readiness gate; use exactly /api/health/ready for the candidate"
@@ -24,6 +26,9 @@ export EXECUTE
 exec 9>"$LOCK_FILE"; flock -n 9 || die "another deploy is running ($LOCK_FILE)"
 
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
+# Docker Compose project names are lowercase, even though Docker container names
+# themselves may contain uppercase timestamp separators.
+COMPOSE_PROJECT="wacrm-cand-${TS,,}"
 CAND="wacrm-app-cand-$TS"
 OLD="$LIVE_NAME"
 container_running "$OLD" || die "live container $OLD is not running: this script only does zero-downtime swaps; use the normal procedure to start from nothing"
@@ -63,7 +68,7 @@ for f in "${FILES[@]}"; do
 done
 # Validate the live overlays and support for Compose !override BEFORE changing
 # state. This requires Docker Compose >= 2.24.4.
-( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "wacrm-cand-$TS" "${COMPOSE_ARGS[@]}" -f "$DIR/candidate.override.yml" config -q ) ||
+( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "$COMPOSE_PROJECT" "${COMPOSE_ARGS[@]}" -f "$DIR/candidate.override.yml" config -q ) ||
   die "candidate Compose overlay invalid, or Docker Compose too old for !override"
 IMAGE_OVERRIDE="$STATE_DIR/$TS-image-override.yml"
 log "live=$OLD  image(old)=$(docker inspect -f '{{.Config.Image}}' "$OLD")  ->  image(new)=$IMAGE"
@@ -73,7 +78,7 @@ log "plan: start $CAND (private alias) -> ready x$READY_PASSES -> DNS check -> a
 cleanup_candidate() {
   log "removing candidate $CAND (old container untouched)"
   docker rm -f "$CAND" >/dev/null 2>&1 || true
-  ( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "wacrm-cand-$TS" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" down --remove-orphans ) >/dev/null 2>&1 || true
+  ( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "$COMPOSE_PROJECT" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" down --remove-orphans ) >/dev/null 2>&1 || true
 }
 
 if [ "$EXECUTE" != "1" ]; then
@@ -99,11 +104,11 @@ YML
 } >"$STATE_DIR/$TS.env"
 
 # Validate the *final* composed candidate after generating its image override.
-( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "wacrm-cand-$TS" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" config -q ) ||
+( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "$COMPOSE_PROJECT" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" config -q ) ||
   { cleanup_candidate; die "final candidate Compose configuration invalid"; }
 
 log "1/7 starting candidate $CAND"
-( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "wacrm-cand-$TS" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" up -d --no-build --no-deps app ) || { cleanup_candidate; die "candidate failed to start"; }
+( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "$COMPOSE_PROJECT" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" up -d --no-build --no-deps app ) || { cleanup_candidate; die "candidate failed to start"; }
 
 log "2/7 readiness gate ($READY_PASSES consecutive 200s on $READY_PATH, timeout ${READY_TIMEOUT}s)"
 wait_ready "$CAND" || { docker logs --tail 30 "$CAND" 2>&1 | sed -E 's/(eyJ[A-Za-z0-9_.-]{20,}|sk-[A-Za-z0-9]{10,})/<redacted>/g' | tail -30; cleanup_candidate; die "candidate never became ready; old container still serving"; }
