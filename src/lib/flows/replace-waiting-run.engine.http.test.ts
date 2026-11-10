@@ -29,11 +29,18 @@ vi.mock('./admin-client', () => {
   const head = b64({ alg: 'HS256', typ: 'JWT' }); const body = b64({ role: 'service_role', iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 3600 })
   const token = `${head}.${body}.${createHmac('sha256', process.env.QA_JWT_SECRET ?? '').update(`${head}.${body}`).digest('base64url')}`
   const url = process.env.QA_REST_URL ?? ''
-  const client = createClient(url || 'http://invalid.local', token, {
+  // This integration suite is skipped in ordinary CI. Do not construct the
+  // Supabase Realtime client unless the disposable QA stack is configured:
+  // Node 20 has no native WebSocket, and creating the unused client fails
+  // at import time before describe.skipIf() can skip the suite.
+  const client = url && process.env.QA_PG_CONTAINER ? createClient(url, token, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { fetch: (input, init) => { const u = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url; if (!u.startsWith(url)) throw new Error(`blocked: ${u}`); return fetch(u.replace('/rest/v1', ''), init) } },
-  })
-  return { supabaseAdmin: () => client }
+  }) : null
+  return { supabaseAdmin: () => {
+    if (!client) throw new Error('Disposable QA PostgREST/PostgreSQL not configured')
+    return client
+  } }
 })
 
 const psql = (sql: string) => new Promise<string>((resolve, reject) => execFile('docker', ['exec', '-i', CONTAINER, 'psql', '-U', 'supabase_admin', '-h', '/var/run/postgresql', '-d', 'postgres', '-X', '-A', '-t', '-q', '-v', 'ON_ERROR_STOP=1', '-c', sql], { maxBuffer: 8 << 20 }, (e, out, err) => (e ? reject(new Error(err || String(e))) : resolve(out.trim()))))
