@@ -96,9 +96,9 @@ export default function AdsResultsPage() {
                         <TableHead className="text-right">Compradores</TableHead>
                         <TableHead className="text-right">Pedidos</TableHead>
                         <TableHead className="text-right">Unidades</TableHead>
-                        <TableHead className="text-right">Ventas</TableHead>
+                        <TableHead className="text-right">Ventas confirmadas</TableHead>
                         <TableHead className="text-right">Ticket prom.</TableHead>
-                        {hasDrilldown && <TableHead className="text-right">Anuncios</TableHead>}
+                        {hasDrilldown && <TableHead className="text-right">Anuncios atribuidos</TableHead>}
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -235,11 +235,11 @@ function AdBreakdown({ ads }: { ads: ProductAdRow[] }) {
         <TableHeader>
           <TableRow>
             <TableHead>Anuncio atribuido</TableHead>
-            <TableHead className="text-right">Contactos</TableHead>
-            <TableHead className="text-right">Compradores</TableHead>
-            <TableHead className="text-right">Pedidos</TableHead>
-            <TableHead className="text-right">Unidades</TableHead>
-            <TableHead className="text-right">Ventas</TableHead>
+            <TableHead className="text-right">Contactos del anuncio</TableHead>
+            <TableHead className="text-right">Compradores del producto</TableHead>
+            <TableHead className="text-right">Pedidos del producto</TableHead>
+            <TableHead className="text-right">Unidades del producto</TableHead>
+            <TableHead className="text-right">Ventas confirmadas</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -265,8 +265,9 @@ function AdBreakdown({ ads }: { ads: ProductAdRow[] }) {
         </TableBody>
       </Table>
       <p className="text-xs text-muted-foreground">
-        Contactos es el total de contactos del anuncio en el periodo (dato del anuncio, no de este producto). Pedidos, unidades y ventas suman el total del producto. Compradores puede sumar más que los compradores únicos del producto si una misma persona compró este
-        producto en pedidos atribuidos a anuncios distintos.
+        Los contactos corresponden al total del anuncio en el período. No representan necesariamente consultas por este producto. Pedidos, unidades y ventas suman el
+        total del producto; Compradores puede sumar más que los compradores únicos del producto si una misma persona compró este producto en pedidos atribuidos a anuncios
+        distintos.
       </p>
     </div>
   )
