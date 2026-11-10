@@ -40,6 +40,11 @@ jobs:
           fi
           [ "$attempt" -eq 3 ] || exit 1
           echo "OPS_RENAME_RETRY=PASS"
+      - name: Verify live cron name handoff under injected rename failures
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ops/deploy/lab-rename-handoff.sh
       - name: Pull disposable Node image
         run: docker pull node:20-alpine
       - name: Verify candidate Compose overlay parses without the public alias
