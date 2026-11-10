@@ -7,6 +7,11 @@ services:
   app:
     container_name: ${CAND_NAME}
     stop_grace_period: 40s
+    # Caddy dials the container over edge_proxy. Never bind the candidate to
+    # the live container's published host port (Docker would reject the bind).
+    # Removing a host-published endpoint after cutover needs an explicit gate
+    # in deploy.sh; it must NOT silently change an external integration.
+    ports: !override []
     networks:
       edge_proxy:
         aliases: !override
