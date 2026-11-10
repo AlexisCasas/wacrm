@@ -44,7 +44,7 @@ ops/deploy/rollback.sh --execute                  # if needed
 - The current `docker-compose.yml` publishes `HOST_PORT:3000` on the VPS. The candidate **must omit this binding** while the old container owns it; after cutover the new container will not expose that host port. Before setting `ALLOW_DROP_HOST_PORTS=1`, inventory *all* host-port consumers (local probes, other containers, cron scripts, external integrations and monitoring) and either migrate them to `edge_proxy` or choose a different deployment architecture. Do not assume Caddy is the only client.
 - Validate `docker compose version` (**>=2.24.4** for `!override`) and `docker compose ... config` against the *actual* live overlays and environment. `deploy.sh` enforces the Compose configuration check before mutations.
 - Verify `edge_proxy`, shared Caddy reverse proxy, available memory/disk, live Compose project labels, candidate image checksum, all host/cron dependencies and the DB-backed rollback probe; take and verify a backup before the execute window.
-- Rehearse dual-service window with synthetic/test traffic where possible. The existing lab proves isolated DNS/connection behavior, **not** real Caddy no-502 under concurrent WhatsApp webhooks.
+- Rehearse dual-service window with synthetic/test traffic and the **actual Caddy** before an execute approval. The isolated lab has sometimes shown a dropped keep-alive socket, so a successful isolated trial alone is not sufficient. Do not retry non-idempotent POST webhooks unless delivery/idempotency can be proven. Stop on any 502 or lost webhook acknowledgement.
 - The deployed state file `last.env` is published **only after successful name swap**. An aborted candidate keeps the previously known-good rollback pointer.
 - **No production command, Caddy edit, shared Dentalpin change, restart or migration is authorized by merging this PR.** Run `--execute` only under a separate explicit approval.
 
@@ -61,7 +61,7 @@ For stronger evidence also watch Meta's webhook delivery dashboard (no retries a
 ## Compatibility and limits
 - **Shared Caddy / Dentalpin: untouched.** Only the Caddy *log* is read. The candidate attaches to `edge_proxy` under WACRM's own aliases.
   Throwaway DNS probes run on `edge_proxy` as short-lived containers (`docker run --rm`).
-- **No Caddy change is required.** An optional hardening (`caddy-hardening.proposed.md`) is a separate decision and is not applied.
+- **Caddy is untouched by this PR**, but the lab has observed an intermittent keep-alive socket error (1/784 requests in one run, 12/12 slow requests completed). Therefore `zero 502` is **NOT guaranteed by alias rotation alone**. Review the WACRM-only `keepalive off` option in `caddy-hardening.proposed.md`; any Caddy change is a separate decision requiring approval and regression checks for Dentalpin.
 - **Compose project label.** After the first run the live container belongs to project `wacrm-cand-<ts>`, not `wacrm`. From then on deploy only
   with this script; do not run `docker compose -p wacrm up` for releases (it would try to create a second `wacrm-app-1`).
 - **Crons:** between the two `docker rename`s (~100 ms) `docker exec wacrm-app-1` can fail once; the flock'd per-minute scripts retry next tick.
