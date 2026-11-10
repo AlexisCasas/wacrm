@@ -26,6 +26,8 @@ jobs:
             app:
               image: node:20-alpine
               container_name: wacrm-app-1
+              ports:
+                - "127.0.0.1:39999:3000"
               networks:
                 edge_proxy:
                   aliases:
@@ -37,7 +39,7 @@ jobs:
             -f /tmp/wacrm-qa-base.yml \
             -f ops/deploy/candidate.override.yml \
             config --format json > /tmp/wacrm-qa-config.json
-          node -e 'const c=require("/tmp/wacrm-qa-config.json"); const a=c.services.app.networks.edge_proxy.aliases; if(JSON.stringify(a)!==JSON.stringify(["qa-candidate"])){console.error(a);process.exit(1)}'
+          node -e 'const c=require("/tmp/wacrm-qa-config.json"); const app=c.services.app; const a=app.networks.edge_proxy.aliases; if(JSON.stringify(a)!==JSON.stringify(["qa-candidate"])||(app.ports||[]).length!==0){console.error(a,app.ports);process.exit(1)}'
       - name: Reject home-page readiness on new candidates
         shell: bash
         run: |
@@ -45,6 +47,51 @@ jobs:
             echo 'OPS LAB FAIL: redirected home page was accepted as readiness'; exit 1
           fi
           grep -q 'not a database readiness gate' /tmp/readiness-reject.log
+      - name: Reject missing proxy logs (never report a false 502 PASS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/qa-wacrm-fake-bin
+          printf '#!/bin/sh\nexit 1\n' > /tmp/qa-wacrm-fake-bin/docker
+          chmod +x /tmp/qa-wacrm-fake-bin/docker
+          if PATH="/tmp/qa-wacrm-fake-bin:$PATH" bash ops/deploy/verify-no-502.sh --since 5m; then
+            echo 'OPS LAB FAIL: missing proxy logs incorrectly passed'; exit 1
+          fi
+      - name: Test database-backed first rollback against isolated REST endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET="qa-legacy-rollback-${{ github.run_id }}-${{ github.run_attempt }}"
+          cleanup() {
+            docker rm -f "$NET-db" "$NET-prev" "$NET-prev-bad" >/dev/null 2>&1 || true
+            docker network rm "$NET" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker network create "$NET" >/dev/null
+          HTTP='const http=require("http");http.createServer((req,res)=>{
+            if(req.url.startsWith("/rest/v1/accounts?") && req.headers.apikey==="qa-test-key"){
+              res.writeHead(200,{"Content-Type":"application/json"});res.end("[]")
+            } else {res.writeHead(401);res.end("unauthorized")}
+          }).listen(3000,"0.0.0.0")'
+          docker run -d --name "$NET-db" --network "$NET" --entrypoint node node:20-alpine -e "$HTTP" >/dev/null
+          docker run -d --name "$NET-prev" --network "$NET" \
+            -e NEXT_PUBLIC_SUPABASE_URL="http://$NET-db:3000" \
+            -e SUPABASE_SERVICE_ROLE_KEY=qa-test-key \
+            --entrypoint node node:20-alpine -e 'setInterval(()=>{},1000)' >/dev/null
+          docker run -d --name "$NET-prev-bad" --network "$NET" \
+            -e NEXT_PUBLIC_SUPABASE_URL="http://$NET-db:3000" \
+            -e SUPABASE_SERVICE_ROLE_KEY=wrong-key \
+            --entrypoint node node:20-alpine -e 'setInterval(()=>{},1000)' >/dev/null
+          . ops/deploy/lib.sh
+          ready=0
+          for _ in $(seq 1 20); do
+            if [ "$(legacy_db_ready_status "$NET-prev")" = 200 ]; then ready=1; break; fi
+            sleep 1
+          done
+          [ "$ready" = 1 ] || { echo 'OPS LAB FAIL: valid legacy DB probe'; exit 1; }
+          [ "$(rollback_ready_status "$NET-prev")" = 200 ] || exit 1
+          [ "$(legacy_db_ready_status "$NET-prev-bad")" = 503 ] || { echo 'OPS LAB FAIL: invalid credentials accepted'; exit 1; }
+          echo 'OPS_LEGACY_ROLLBACK_DB=PASS'
       - name: Preserve 12 inflight requests while swapping alias
         shell: bash
         run: |
