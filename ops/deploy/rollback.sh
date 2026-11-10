@@ -26,7 +26,7 @@ log "rollback: $FAILED (image $(docker inspect -f '{{.Config.Image}}' "$FAILED")
 log "1/5 starting the previous container (a stopped container rejoins the networks it was on, with its aliases, so it serves $PUBLIC_ALIAS again alongside the failed release)"
 docker start "$PREV_NAME" >/dev/null
 log "2/5 readiness"
-wait_ready "$PREV_NAME" || { log "previous container did not become ready; stopping it again, current release untouched"; docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null 2>&1 || true; die "rollback aborted"; }
+wait_ready "$PREV_NAME" rollback_ready_status || { log "previous container did not become ready; stopping it again, current release untouched"; docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null 2>&1 || true; die "rollback aborted"; }
 IMG="$(docker inspect -f '{{.Image}}' "$PREV_NAME")"
 PREV_IP="$(container_ip "$PREV_NAME")"
 log "3/5 public alias check"
@@ -37,7 +37,7 @@ esac
 log "alias resolves to: $(resolve_from_edge "$IMG" "$PUBLIC_ALIAS" | tr '\n' ' ')"
 log "4/5 SIGTERM to the failed release after a ${DRAIN_SECONDS}s dual-serve window (grace ${STOP_GRACE}s)"
 sleep "$DRAIN_SECONDS"
-[ "$(ready_status "$PREV_NAME")" = "200" ] || { log "previous container lost readiness: leaving the failed release serving"; die "rollback aborted"; }
+[ "$(rollback_ready_status "$PREV_NAME")" = "200" ] || { log "previous container lost readiness: leaving the failed release serving"; die "rollback aborted"; }
 docker stop -t "$STOP_GRACE" "$FAILED" >/dev/null
 log "5/5 swapping names"
 docker rename "$FAILED" "${LIVE_NAME}-failed-$TS"
