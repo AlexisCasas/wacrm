@@ -22,6 +22,13 @@ const h = vi.hoisted(() => {
       resolveMessages = resolve;
     }),
     resolveMessages: (rows: Message[]) => resolveMessages({ data: rows, error: null }),
+    // Replace only the latest-page fetch, leaving a pending older-page request in flight.
+    resetLatestFetch() {
+      this.messageFetch = new Promise<{ data: Message[]; error: null }>((resolve) => {
+        resolveMessages = resolve;
+      });
+      this.resolveMessages = (rows: Message[]) => resolveMessages({ data: rows, error: null });
+    },
     resetMessageFetch() {
       this.olderQueries.length = 0;
       this.olderFetch = new Promise<{ data: Message[]; error: null }>((resolve) => {
@@ -658,6 +665,32 @@ describe("windowed history (latest 100, page back, resync keeps loaded pages)", 
     expect(view.getByText("h-0001")).toBeInTheDocument(); // the older page survived the resync
     expect(view.getByText("h-0050")).toBeInTheDocument();
     expect(view.getByText("h-missed-latest")).toBeInTheDocument(); // and so did the newest message
+  });
+
+  it("discards a pending older page after resync detects a gap and rebuilds the window", async () => {
+    const first = rows(1, 101);
+    const view = render(<ResyncHarness initialMessages={[]} />);
+    const scroll = view.container.querySelector<HTMLElement>(".overflow-y-auto")!;
+    attachScrollMetrics(scroll);
+    await act(async () => h.resolveMessages([...first].reverse()));
+    scroll.scrollTop = 40;
+    fireEvent.scroll(scroll);
+    expect(h.olderQueries).toHaveLength(1);
+
+    // The older request remains unresolved when a burst of 101 new messages
+    // makes the latest-page resync drop the previous window as non-contiguous.
+    const newer = rows(102, 202);
+    h.resetLatestFetch();
+    fireEvent.click(view.getByText("resync"));
+    await act(async () => h.resolveMessages([...newer].reverse()));
+    expect(view.getByText("h-0202")).toBeInTheDocument();
+    expect(view.queryByText("h-0002")).not.toBeInTheDocument();
+
+    // This late response must not reinsert rows behind the new window,
+    // which would conceal a gap in the message history.
+    await act(async () => h.resolveOlder(rows(1, 100)));
+    expect(view.queryByText("h-0002")).not.toBeInTheDocument();
+    expect(view.getByText("h-0202")).toBeInTheDocument();
   });
 
   it("a resync that finds a gap (more than a page of new messages) restarts the window instead of leaving a hole", async () => {
