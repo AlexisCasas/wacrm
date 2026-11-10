@@ -138,34 +138,46 @@ for _ in $(seq 1 $((DRAIN_SECONDS/3 > 0 ? DRAIN_SECONDS/3 : 1))); do
   [ "$(ready_status "$CAND")" = "200" ] || { log "candidate lost readiness while serving: stopping it, old keeps serving"; docker stop -t "$STOP_GRACE" "$CAND" >/dev/null 2>&1 || true; cleanup_candidate; die "candidate unhealthy under traffic; rolled back to old only"; }
 done
 
-log "6/7 SIGTERM to the old container (grace ${STOP_GRACE}s): it stops accepting, finishes in-flight requests and pending after() callbacks, then exits."
-docker stop -t "$STOP_GRACE" "$OLD" >/dev/null
-[ "$(docker inspect -f '{{.State.ExitCode}}' "$OLD")" = "0" ] || log "WARN old container exit code $(docker inspect -f '{{.State.ExitCode}}' "$OLD") (137 = killed after the grace window: raise STOP_GRACE)"
-# The stopped old image must NOT regain the public alias on docker start.
-# The candidate remains live while we prepare a private rollback endpoint.
+log "6/7 swapping names WHILE both are healthy and running so cron's live name never points to a stopped process"
 PREV_NAME="${OLD}-prev-$TS"
-PARK_OK=1
-if ! park_stopped_previous "$OLD" "$PREV_NAME"; then
-  PARK_OK=0
-  log "CRITICAL: old image could not be parked privately; automatic rollback will be disabled. Candidate still serves traffic."
+SWAP_RESULT=0
+swap_running_live_name "$PREV_NAME" "$CAND" "$LIVE_NAME" || SWAP_RESULT=$?
+if [ "$SWAP_RESULT" != "0" ]; then
+  if [ "$SWAP_RESULT" = "1" ] || [ "$SWAP_RESULT" = "2" ]; then
+    # The old image still owns LIVE_NAME and is running; remove candidate only
+    # after its graceful stop. No rollback manifest was published.
+    log "ABORT: name handoff failed, original live container recovered (code=$SWAP_RESULT)"
+    docker stop -t "$STOP_GRACE" "$CAND" >/dev/null 2>&1 || true
+    cleanup_candidate
+    die "name handoff failed safely; old image remains live; inspect Docker before retry"
+  fi
+  die "CRITICAL: ambiguous Docker rename or precondition failure (code=$SWAP_RESULT); both containers preserved for manual repair; DO NOT retry"
 fi
-GOT="$(resolve_from_edge "$IMAGE" "$PUBLIC_ALIAS")"
-[ "$GOT" = "$CAND_IP" ] || log "WARN after stopping old: public alias resolves to '$GOT', expected only $CAND_IP"
+# Candidate is now wacrm-app-1, still RUNNING and DB-ready.
+[ "$(ready_status "$LIVE_NAME")" = "200" ] ||
+  die "CRITICAL: candidate lost readiness after name swap; old running as $PREV_NAME; manual intervention required"
 
-log "7/7 swapping names so the host crons (docker exec $LIVE_NAME) hit the new container"
-if ! retry_rename "$OLD" "$PREV_NAME"; then
-  die "CRITICAL: old name cannot be freed; candidate is live but cron name needs immediate manual repair"
+log "7/7 SIGTERM to previous container (grace ${STOP_GRACE}s); candidate remains running under live cron name"
+docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null ||
+  die "CRITICAL: previous container did not stop cleanly; candidate stays live; manual inspection required"
+[ "$(docker inspect -f '{{.State.ExitCode}}' "$PREV_NAME")" = "0" ] ||
+  log "WARN previous container exit code $(docker inspect -f '{{.State.ExitCode}}' "$PREV_NAME") (137 = grace exceeded)"
+PARK_OK=1
+if ! park_stopped_previous "$PREV_NAME" "$PREV_NAME"; then
+  PARK_OK=0
+  log "CRITICAL: previous image could not be parked privately; automatic rollback disabled. Candidate serves traffic."
 fi
-if ! retry_rename "$CAND" "$LIVE_NAME"; then
-  # Never restore LIVE_NAME to a STOPPED old container. That silently breaks crons.
-  die "CRITICAL: candidate is serving, but LIVE_NAME was not assigned after 3 attempts; manual rename required"
-fi
+# Only the current RUNNING candidate should be reachable by public alias.
+LIVE_IP="$(container_ip "$LIVE_NAME")"
+GOT="$(resolve_from_edge "$IMAGE" "$PUBLIC_ALIAS")"
+[ "$GOT" = "$LIVE_IP" ] ||
+  log "WARN public alias resolved to '$GOT', expected only active candidate (verify DNS before rollout)"
+
 if [ "$PARK_OK" = "1" ]; then
   echo "PREV_NAME=$PREV_NAME" >>"$STATE_DIR/$TS.env"
 else
   echo "ROLLBACK_DISABLED=1" >>"$STATE_DIR/$TS.env"
 fi
-# A failed candidate must never replace the last KNOWN-GOOD rollback target.
 cp "$STATE_DIR/$TS.env" "$STATE_DIR/.last.env.tmp-$TS"
 mv -f "$STATE_DIR/.last.env.tmp-$TS" "$STATE_DIR/last.env"
 if [ "$PARK_OK" != "1" ]; then
