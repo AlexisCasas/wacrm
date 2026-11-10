@@ -117,6 +117,16 @@ log "1/7 starting candidate $CAND"
 log "2/7 readiness gate ($READY_PASSES consecutive 200s on $READY_PATH, timeout ${READY_TIMEOUT}s)"
 wait_ready "$CAND" || { docker logs --tail 30 "$CAND" 2>&1 | sed -E 's/(eyJ[A-Za-z0-9_.-]{20,}|sk-[A-Za-z0-9]{10,})/<redacted>/g' | tail -30; cleanup_candidate; die "candidate never became ready; old container still serving"; }
 
+# Operational gate: old production Flows recovery is ACTIVE. The new engine
+# defaults to dry-run unless the exact env value is true. Reject silent
+# regression BEFORE the candidate can receive webhooks under the public alias.
+FLOW_RECOVERY_STATUS="$(flow_recovery_status "$CAND")"
+if [ "$FLOW_RECOVERY_STATUS" != "active" ]; then
+  cleanup_candidate
+  die "candidate Flow recovery is not ACTIVE; explicitly configure FLOW_RECOVERY_ACTIVE=true before cutover (no config modified)"
+fi
+log "FLOW_RECOVERY_CONTINUITY=PASS (candidate active; no env values printed)"
+
 log "3/7 DNS: the candidate resolves by its private alias, and the public alias still points only at the old container"
 CAND_IP="$(container_ip "$CAND")"; OLD_IP="$(container_ip "$OLD")"
 [ -n "$CAND_IP" ] && [ -n "$OLD_IP" ] || { cleanup_candidate; die "could not read container IPs on $EDGE_NETWORK"; }
