@@ -60,7 +60,8 @@ jobs:
           networks:
             edge_proxy:
           YAML
-          CAND_NAME=qa-candidate docker compose \
+          PROJECT="wacrm-cand-$(date -u +%Y%m%dT%H%M%SZ | tr '[:upper:]' '[:lower:]')"
+          CAND_NAME=qa-candidate docker compose -p "$PROJECT" \
             -f /tmp/wacrm-qa-base.yml \
             -f ops/deploy/candidate.override.yml \
             config --format json > /tmp/wacrm-qa-config.json
