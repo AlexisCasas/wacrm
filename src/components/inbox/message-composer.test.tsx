@@ -288,7 +288,9 @@ describe("MessageComposer — Document picker auto-detects a picked .ogg", () =>
     });
 
     await waitFor(() => expect(uploadCalls).toHaveLength(1));
-    expect(screen.getByText("invoice.pdf")).toBeInTheDocument();
+    // The upload mock resolves before React commits the draft preview.
+    // Wait for the visible filename instead of racing that render.
+    expect(await screen.findByText("invoice.pdf")).toBeInTheDocument();
     expect(document.querySelector("audio")).not.toBeInTheDocument();
   });
 });
