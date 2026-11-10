@@ -1,0 +1,53 @@
+name: WACRM OPS blue-green lab
+
+on:
+  pull_request:
+    paths:
+      - "ops/deploy/**"
+      - ".github/workflows/ops-blue-green-lab.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  docker-alias-switch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Pull disposable Node image
+        run: docker pull node:20-alpine
+      - name: Verify candidate Compose overlay parses without the public alias
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > /tmp/wacrm-qa-base.yml <<'YAML'
+          services:
+            app:
+              image: node:20-alpine
+              container_name: wacrm-app-1
+              networks:
+                edge_proxy:
+                  aliases:
+                    - wacrm-app
+          networks:
+            edge_proxy:
+          YAML
+          CAND_NAME=qa-candidate docker compose \
+            -f /tmp/wacrm-qa-base.yml \
+            -f ops/deploy/candidate.override.yml \
+            config --format json > /tmp/wacrm-qa-config.json
+          node -e 'const c=require("/tmp/wacrm-qa-config.json"); const a=c.services.app.networks.edge_proxy.aliases; if(JSON.stringify(a)!==JSON.stringify(["qa-candidate"])){console.error(a);process.exit(1)}'
+      - name: Preserve 12 inflight requests while swapping alias
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ops/deploy/lab-alias-flip.sh node:20-alpine sigterm-first | tee /tmp/wacrm-blue-green-lab.log
+          result="$(sed -n 's/^RESULT\[sigterm-first\]: //p' /tmp/wacrm-blue-green-lab.log | tail -n 1)"
+          if [ -z "$result" ]; then echo "OPS LAB FAIL: no result JSON"; exit 1; fi
+          node -e '
+            const x=JSON.parse(process.argv[1]);
+            console.log("Traffic:", x.total, "failures:", x.fail, "slow completed:", x.slow.ok, "slow failed:", x.slow.failed);
+            if(x.fail!==0 || x.slow.ok!==12 || x.slow.failed!==0 || !(x.counts.a>0) || !(x.counts.b>0)) process.exit(1);
+            console.log("OPS_BLUE_GREEN_LAB=PASS");
+          ' "$result"
