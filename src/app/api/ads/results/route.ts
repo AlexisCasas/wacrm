@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { buildAdsReport } from '@/lib/meta-capi/report'
+import { attachMetaCatalog, reportAdIds } from '@/lib/meta-ads/enrich'
 
 // Read-only ad results. The account comes from the session and the report runs with the CALLER's client (RLS + explicit membership check in SQL).
 // It never writes and never calls Meta, WhatsApp or InkaClick.
@@ -26,6 +27,27 @@ export async function GET(request: Request) {
     // Only the on/off state of the Meta sending for THIS account (service role scoped to the session's account; no ids, no token).
     const { data: capi } = await supabaseAdmin().from('meta_capi_settings').select('enabled, test_event_code').eq('account_id', accountId).maybeSingle()
     report.meta_capi = { enabled: capi?.enabled === true, test_mode: !!capi?.test_event_code }
+    // Optional Meta Ads catalog enrichment (real ad names, campaign/adset, status). Read-only from OUR cache: this never calls Meta. Any problem (migration
+    // not applied, nothing synced yet, token failing, RPC error) leaves the report exactly as above; it can never fail or slow the report.
+    try {
+      const ids = reportAdIds(report)
+      if (ids.length > 0) {
+        const [catalog, sync] = await Promise.all([
+          Promise.resolve(supabase.rpc('ads_results_meta_catalog', { p_account: accountId, p_ad_ids: ids })),
+          supabaseAdmin().from('meta_ads_sync_state').select('last_success_at').eq('account_id', accountId).eq('job', 'catalog').maybeSingle(),
+        ])
+        if (!catalog.error && !sync.error) attachMetaCatalog(report, catalog.data ?? [], sync.data?.last_success_at ?? null)
+      }
+    } catch {
+      // enrichment is optional by design
+    }
+    // Only tells the page whether to offer the separate "Rendimiento Meta Ads" section (it loads its own data from /api/ads/meta-performance).
+    try {
+      const { data: jobs } = await supabaseAdmin().from('meta_ads_sync_state').select('job').eq('account_id', accountId)
+      if (Array.isArray(jobs) && jobs.some((j) => (j as { job?: string }).job === 'insights')) report.meta_ads = { configured: true }
+    } catch {
+      // optional
+    }
     return NextResponse.json(report)
   } catch (error) {
     return toErrorResponse(error)

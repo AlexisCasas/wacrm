@@ -1,0 +1,6 @@
+-- After ROLLBACK-insights.sql: the database must be exactly in the 20261116 state again.
+\set ON_ERROR_STOP on
+SELECT qa.ok('drill: insights objects gone', to_regclass('public.meta_ads_insights_daily') IS NULL AND to_regclass('public.meta_ads_campaigns') IS NULL AND to_regclass('public.meta_ads_adsets') IS NULL AND to_regclass('public.meta_ads_reconciliation') IS NULL AND to_regprocedure('public.meta_ads_performance(uuid,date,date,text)') IS NULL AND to_regprocedure('public.meta_ads_insights_totals(uuid,date,date)') IS NULL);
+SELECT qa.ok('drill: 20261116 objects intact', to_regclass('public.meta_ads_settings') IS NOT NULL AND to_regclass('public.meta_ads_ads') IS NOT NULL AND to_regclass('public.meta_ads_sync_state') IS NOT NULL AND to_regprocedure('public.ads_results_meta_catalog(uuid,text[])') IS NOT NULL);
+SELECT qa.eq('drill: job CHECK back to catalog-only', $q$SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conname='meta_ads_sync_state_job'$q$, $q$CHECK ((job = 'catalog'::text))$q$);
+SELECT qa.ok('drill: added columns removed', NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND ((table_name='meta_ads_sync_state' AND column_name IN ('covered_from','covered_to')) OR (table_name='meta_ads_settings' AND column_name='insights_interval_minutes'))));

@@ -5,7 +5,8 @@ import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { AdsReport, ProductAdRow } from '@/lib/meta-capi/report'
+import type { AdsReport, MetaAdInfo, ProductAdRow } from '@/lib/meta-capi/report'
+import { MetaAdsPerformance } from './meta-ads-performance'
 
 const RANGES = [7, 30, 90] as const
 const money = (n: number) => new Intl.NumberFormat('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
@@ -188,8 +189,7 @@ export default function AdsResultsPage() {
                     {report.ads.map((a) => (
                       <TableRow key={a.source_id}>
                         <TableCell>
-                          <div className="font-medium">{a.headline ?? 'Sin título'}</div>
-                          <div className="text-xs text-muted-foreground">ID {a.source_id}</div>
+                          <AdIdentity sourceId={a.source_id} headline={a.headline} meta={a.meta} />
                         </TableCell>
                         <TableCell className="text-right">{a.contacts}</TableCell>
                         <TableCell className="text-right">{a.orders}</TableCell>
@@ -207,6 +207,14 @@ export default function AdsResultsPage() {
             )}
           </Card>
 
+          {report.meta_ads?.configured && <MetaAdsPerformance days={days} />}
+
+          {report.meta_catalog?.available && report.meta_catalog.synced_at && (
+            <p className="text-xs text-muted-foreground" data-testid="meta-catalog-note">
+              Nombres de anuncios, campañas y conjuntos de Meta sincronizados el {new Date(report.meta_catalog.synced_at).toLocaleString('es-PE')}. Los números de este reporte
+              provienen de WACRM.
+            </p>
+          )}
           <p className="text-xs text-muted-foreground">
             Los importes son pedidos confirmados, no ventas cobradas. {report.verified_sales.reason} ROAS no disponible: {report.roas.reason} Conversión = contactos del
             anuncio que pidieron ÷ contactos del anuncio en el periodo.
@@ -214,6 +222,29 @@ export default function AdsResultsPage() {
         </>
       )}
     </div>
+  )
+}
+
+const STATUS_LABEL: Record<string, string> = { ACTIVE: 'Activo', PAUSED: 'Pausado', ARCHIVED: 'Archivado', DELETED: 'Eliminado' }
+
+/**
+ * Ad name + technical id. With the Meta catalog synced (meta !== undefined) the REAL ad name leads and the Meta Ad ID stays small below it;
+ * an ad missing from the catalog says so (never guessed from the headline). Without the catalog (meta undefined) it is exactly the previous
+ * rendering: headline (or "Sin título") and the id.
+ */
+function AdIdentity({ sourceId, headline, meta }: { sourceId: string | null; headline: string | null; meta?: MetaAdInfo | null }) {
+  const name = meta === undefined ? (headline ?? 'Sin título') : meta === null ? 'Anuncio no sincronizado' : (meta.name ?? headline ?? 'Sin título')
+  const detail = meta
+    ? [meta.campaign_name && `Campaña: ${meta.campaign_name}`, meta.adset_name && `Conjunto: ${meta.adset_name}`, (STATUS_LABEL[meta.effective_status ?? meta.status ?? ''] ?? null)]
+        .filter(Boolean)
+        .join(' · ')
+    : ''
+  return (
+    <>
+      <div className="font-medium">{name}</div>
+      <div className="text-xs text-muted-foreground">ID {sourceId}</div>
+      {detail && <div className="text-xs text-muted-foreground">{detail}</div>}
+    </>
   )
 }
 
@@ -249,10 +280,7 @@ function AdBreakdown({ ads }: { ads: ProductAdRow[] }) {
                 {a.source_id === null ? (
                   <div className="font-medium">Sin atribución comprobable</div>
                 ) : (
-                  <>
-                    <div className="font-medium">{a.headline ?? 'Sin título'}</div>
-                    <div className="text-xs text-muted-foreground">ID {a.source_id}</div>
-                  </>
+                  <AdIdentity sourceId={a.source_id} headline={a.headline} meta={a.meta} />
                 )}
               </TableCell>
               <TableCell className="text-right">{a.contacts === null ? '—' : a.contacts}</TableCell>

@@ -1,6 +1,17 @@
+/** Real ad data from the synced Meta catalog (optional enrichment; absent when Meta Ads is not configured / synced). Never derived from the headline. */
+export interface MetaAdInfo {
+  name: string | null
+  campaign_name: string | null
+  adset_name: string | null
+  status: string | null
+  effective_status: string | null
+}
+
 export interface AdsReportRow {
   source_id: string | null
   headline: string | null
+  /** Only set when the Meta catalog is available: the ad's catalog data, or null = "Anuncio no sincronizado". undefined = no enrichment at all. */
+  meta?: MetaAdInfo | null
   contacts: number
   buyers: number
   orders: number
@@ -12,6 +23,8 @@ export interface AdsReportRow {
 /** One ad bucket of a SOLD product. source_id null = "Sin atribución comprobable" (orders that do not resolve to any ad). */
 export interface ProductAdRow {
   source_id: string | null
+  /** Same semantics as AdsReportRow.meta. */
+  meta?: MetaAdInfo | null
   /** Same name the full per-ad table shows (headline of that ad's cohort in the period); null = "Sin título" there too. Never invented. */
   headline: string | null
   /** Contacts of this AD in the period, exactly as the full per-ad table reports them (an ad-level figure, not product-specific). null = unattributed bucket. */
@@ -52,6 +65,10 @@ export interface AdsReport {
   verified_sales: { available: false; reason: string }
   /** ROAS needs ad spend, which WACRM does not have. */
   roas: { available: false; reason: string }
+  /** true = the Meta Ads sync exists for this account, so the page may show the "Rendimiento Meta Ads" section (fetched separately; absent = the screen is unchanged). */
+  meta_ads?: { configured: boolean } | null
+  /** Meta Ads catalog enrichment. null/undefined = not configured or unavailable: the report is then exactly the pre-integration one. */
+  meta_catalog?: { available: boolean; synced_at: string | null } | null
   /** Whether conversions are being sent to Meta for this account. null = not visible to the caller. Informational only. */
   meta_capi: { enabled: boolean; test_mode: boolean } | null
 }
