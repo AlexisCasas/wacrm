@@ -34,6 +34,7 @@
 
 import { LEGACY_IMPORT_TOKEN, renderTemplate } from "@/lib/variables";
 import { supabaseAdmin } from "./admin-client";
+import { describeSendError } from "@/lib/whatsapp/send-error-diagnostics";
 import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
@@ -439,13 +440,33 @@ async function findEntryFlow(
 // thread can quote the prompt the customer is replying to.
 // ============================================================
 
+/**
+ * Buttons and lists are sent outside the try/catch the other send nodes have, so a failed send used to leave no trace at all: the run
+ * stayed active with neither a message_sent nor an error event. This records the failure as evidence and rethrows, so the historic
+ * control flow is unchanged (the caller still sees the exception; nothing is retried here).
+ */
+async function withInteractiveSendEvidence<T>(db: AdminClient, run: FlowRunRow, node: FlowNodeRow, send: () => Promise<T>): Promise<T> {
+  try {
+    return await send();
+  } catch (err) {
+    if (!(err instanceof ContactBlockedError)) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "send_interactive_failed",
+        node_type: node.node_type,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+    throw err;
+  }
+}
+
 async function sendButtonsAndSuspend(
   db: AdminClient,
   run: FlowRunRow,
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendButtonsNodeConfig;
-  const { whatsapp_message_id, recipient_kind } = await engineSendInteractiveButtons({
+  const { whatsapp_message_id, recipient_kind } = await withInteractiveSendEvidence(db, run, node, () => engineSendInteractiveButtons({
     accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
@@ -455,7 +476,7 @@ async function sendButtonsAndSuspend(
     headerText: cfg.header_text,
     footerText: cfg.footer_text,
     buttons: cfg.buttons.map((b) => ({ id: b.reply_id, title: b.title })),
-  });
+  }));
   await logEvent(db, run.id, "message_sent", node.node_key, {
     node_type: "send_buttons",
     whatsapp_message_id,
@@ -483,7 +504,7 @@ async function sendListAndSuspend(
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendListNodeConfig;
-  const { whatsapp_message_id, recipient_kind } = await engineSendInteractiveList({
+  const { whatsapp_message_id, recipient_kind } = await withInteractiveSendEvidence(db, run, node, () => engineSendInteractiveList({
     accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
@@ -501,7 +522,7 @@ async function sendListAndSuspend(
         description: r.description,
       })),
     })),
-  });
+  }));
   await logEvent(db, run.id, "message_sent", node.node_key, {
     node_type: "send_list",
     whatsapp_message_id,
@@ -543,16 +564,6 @@ async function executeHandoff(
     assigned_to: cfg.assign_to ?? null,
   });
   await endRun(db, run.id, "handed_off", "handoff_node");
-}
-
-/** Does this graph use something whose recovery needs the send-intent record? Plain legacy flows never do. */
-function graphNeedsSendTracking(nodes: Map<string, FlowNodeRow>): boolean {
-  for (const n of nodes.values()) {
-    if (n.node_type === "execute_flow") return true;
-    if (n.node_type === "delay" && isDurableWaitConfig(n.config)) return true;
-    if (n.node_type === "condition" && (n.config as { subject?: unknown }).subject === CUSTOMER_ACTIVITY_SUBJECT) return true;
-  }
-  return false;
 }
 
 /** The flow the run is inside right now: the callee while a subflow is running, the root flow otherwise. */
@@ -726,15 +737,13 @@ async function sendSuppressedByReplyGuard(db: AdminClient, run: FlowRunRow, node
 }
 
 /**
- * Write the intent to send BEFORE calling Meta. If the process dies afterwards, the run shows an intent without a matching
- * message_sent: the outcome is UNKNOWN and recovery must not resend it. If the intent cannot be written, nothing is sent.
+ * Write the intent to send BEFORE calling Meta, for EVERY send the Flows engine makes (plain flows included: the protection is not
+ * limited to flows that use durable waits or subflows). If the process dies afterwards, the run shows an intent without a matching
+ * message_sent: the outcome is UNKNOWN and recovery must not resend it. If the intent cannot be written, nothing is sent: the run
+ * ends as failed (send_intent_not_recorded) and no retry is attempted.
  */
-async function recordSendIntent(db: AdminClient, run: FlowRunRow, nodeKey: string, nodeType: string, track: boolean): Promise<boolean> {
-  // Only runs of flows that use the P6 / P8 machinery (a durable wait, a call to another flow, the customer-activity condition, or a
-  // run that is inside a called flow) pay for, and depend on, the intent record: every other flow keeps the exact historic send
-  // path, with no extra write and no new way to fail, whatever the account-level switches say.
-  if (!track) return true;
-  const ok = await logEventStrict(db, run.id, "node_entered", nodeKey, { reason: "send_intent", node_type: nodeType, flow_id: currentFlowIdOf(run), attempt: randomUUID() });
+async function recordSendIntent(db: AdminClient, run: FlowRunRow, nodeKey: string, nodeType: string, extra: Record<string, unknown> = {}): Promise<boolean> {
+  const ok = await logEventStrict(db, run.id, "node_entered", nodeKey, { reason: "send_intent", node_type: nodeType, flow_id: currentFlowIdOf(run), attempt: randomUUID(), ...extra });
   if (!ok) {
     await logEvent(db, run.id, "error", nodeKey, { reason: "send_intent_not_recorded" });
     await endRun(db, run.id, "failed", "send_intent_not_recorded");
@@ -1106,7 +1115,6 @@ async function advanceFromNodeKey(
   // The graph the run is walking. It changes when the run enters a subflow or returns from one (execute_flow / end).
   let nodes = initialNodes;
   let referenceKeys = referencedSendKeys(nodes.values());
-  let trackSends = !!run.current_flow_id || graphNeedsSendTracking(nodes);
   // Defensive cap — if a flow has a cycle (which the validator
   // SHOULD catch but doesn't yet in v1), we bail rather than loop.
   for (let safety = 0; safety < 64; safety += 1) {
@@ -1139,10 +1147,11 @@ async function advanceFromNodeKey(
     ) {
       // Re-validate everything that says "do not send this follow-up", then write the intent BEFORE the Meta call.
       if (await sendSuppressedByReplyGuard(db, run, node.node_key)) return { outcome: "completed" };
-      if (!(await recordSendIntent(db, run, node.node_key, node.node_type, trackSends))) return { outcome: "completed" };
+      if (!(await recordSendIntent(db, run, node.node_key, node.node_type))) return { outcome: "completed" };
     }
     if (node.node_type === "send_message") {
       const cfg = node.config as unknown as SendMessageNodeConfig;
+      const sendStartedAt = Date.now();
       try {
         const { whatsapp_message_id, recipient_kind } = await engineSendText({
           accountId: run.account_id,
@@ -1166,6 +1175,7 @@ async function advanceFromNodeKey(
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "send_text_failed",
           detail: err instanceof Error ? err.message : String(err),
+          diag: describeSendError(err, sendStartedAt),
         });
         await endRun(db, run.id, "failed", "send_text_failed");
         return { outcome: "completed" };
@@ -1175,6 +1185,7 @@ async function advanceFromNodeKey(
     }
     if (node.node_type === "send_media") {
       const cfg = node.config as unknown as SendMediaNodeConfig;
+      const sendStartedAt = Date.now();
       try {
         const { whatsapp_message_id, recipient_kind } = await engineSendMedia({
           accountId: run.account_id,
@@ -1213,6 +1224,7 @@ async function advanceFromNodeKey(
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "send_media_failed",
           detail: err instanceof Error ? err.message : String(err),
+          diag: describeSendError(err, sendStartedAt),
         });
         await endRun(db, run.id, "failed", "send_media_failed");
         return { outcome: "completed" };
@@ -1279,6 +1291,7 @@ async function advanceFromNodeKey(
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "collect_input_prompt_failed",
           detail: err instanceof Error ? err.message : String(err),
+          diag: describeSendError(err),
         });
         await endRun(db, run.id, "failed", "collect_input_prompt_failed");
         return { outcome: "completed" };
@@ -1490,7 +1503,7 @@ async function advanceFromNodeKey(
     if (node.node_type === "execute_flow") {
       const call = await enterSubflow(db, run, node);
       if (call.kind === "ended") return { outcome: "completed" };
-      nodes = call.nodes; referenceKeys = referencedSendKeys(nodes.values()); trackSends = true; currentKey = call.entryNodeKey;
+      nodes = call.nodes; referenceKeys = referencedSendKeys(nodes.values()); currentKey = call.entryNodeKey;
       continue;
     }
     if (node.node_type === "end") {
@@ -1498,7 +1511,7 @@ async function advanceFromNodeKey(
         // "End this subflow and return": the caller resumes at its return node, unless the stack or the customer says otherwise.
         const back = await leaveSubflow(db, run, node);
         if (back.kind === "ended") return { outcome: "completed" };
-        nodes = back.nodes; referenceKeys = referencedSendKeys(nodes.values()); trackSends = !!run.current_flow_id || graphNeedsSendTracking(nodes); currentKey = back.returnNodeKey;
+        nodes = back.nodes; referenceKeys = referencedSendKeys(nodes.values()); currentKey = back.returnNodeKey;
         continue;
       }
       // Default (historic behaviour): the whole execution ends, wherever the run is.
@@ -1933,7 +1946,14 @@ async function handleReplyForActiveRun(
     return { consumed: false, flow_run_id: run.id, outcome: "no_match" };
   }
   if (action.type === "reprompt") {
-    // Re-send the same prompt. Same node, no current_node_key change.
+    // Re-send the same prompt. Same node, no current_node_key change. Like every other send, the intent is durable first: if it
+    // cannot be written the prompt is not re-sent (recordSendIntent ends the run as failed).
+    if (
+      (currentNode.node_type === "send_buttons" || currentNode.node_type === "send_list" || currentNode.node_type === "collect_input") &&
+      !(await recordSendIntent(db, run, currentNode.node_key, currentNode.node_type, { reprompt: true }))
+    ) {
+      return { consumed: true, flow_run_id: run.id, outcome: "fallback_fired" };
+    }
     if (currentNode.node_type === "send_buttons") {
       await sendButtonsAndSuspend(db, run, currentNode);
     } else if (currentNode.node_type === "send_list") {
@@ -1955,6 +1975,7 @@ async function handleReplyForActiveRun(
         await logEvent(db, run.id, "error", currentNode.node_key, {
           reason: "reprompt_send_failed",
           detail: err instanceof Error ? err.message : String(err),
+          diag: describeSendError(err),
         });
       }
     }
@@ -2490,9 +2511,58 @@ async function resumeOneWait(
 // outcome is unknown is NEVER repeated: the run is ended and the incident is on record.
 // ============================================================
 
-export interface RecoverySummary { examined: number; resumed: number; ambiguous: number; unsafe: number; skipped: number; failed: number }
+/** Recovery never touches a run whose last progress is older than this: it is reported for human review instead (D1). */
+export const RECOVERY_MAX_AGE_SECONDS = 30 * 60;
+/** Upper bound of runs read per window and pass; a window that hits it is reported as truncated. */
+const RECOVERY_SCAN_LIMIT = 500;
+/** Review list cap (the list is part of the cron response). */
+const RECOVERY_REVIEW_CAP = 50;
 
-type EvidenceRow = { event_type: string; node_key: string | null; payload: Record<string, unknown>; created_at: string };
+export type RecoveryMode = "dry-run" | "active";
+/** Recovery only acts when FLOW_RECOVERY_ACTIVE=true. Anything else (including unset) is dry-run: select, assess and report, change nothing. */
+export function recoveryModeFromEnv(): RecoveryMode {
+  return process.env.FLOW_RECOVERY_ACTIVE === "true" ? "active" : "dry-run";
+}
+
+export type RecoveryReviewReason =
+  | "too_old"            // older than RECOVERY_MAX_AGE_SECONDS: never automatic, a person decides
+  | "not_safe"           // within the max age but the evidence says resuming is not safe (unconfirmed send, send after the cursor)
+  | "node_missing"       // the node the cursor points to does not exist any more
+  | "evidence_error";    // the evidence could not be read: nothing is assumed
+
+export interface RecoveryReviewItem {
+  run_id: string;
+  account_id: string;
+  node_key: string | null;
+  age_s: number;
+  reason: RecoveryReviewReason;
+  /** What the event log + outbound messages say about resuming it: only "recoverable" would be safe. */
+  evidence?: "recoverable" | "ambiguous" | "unsafe" | "outbound_since_cursor";
+}
+
+export interface RecoverySummary {
+  examined: number; resumed: number; ambiguous: number; unsafe: number; skipped: number; failed: number;
+  mode?: RecoveryMode;
+  /** Active runs without a wait, quiet for at least minAgeSeconds (both windows). */
+  candidates?: number;
+  /** Of those, runs that legitimately wait for the customer (buttons, lists, input) or for a durable timer: never stranded. */
+  waiting?: number;
+  /** Auto-advancing, within the max age: the ones recovery may act on. */
+  eligible?: number;
+  /** Auto-advancing but older than the max age: excluded from automatic recovery. */
+  too_old?: number;
+  /** Eligible runs whose evidence says resuming is safe (dry-run: what an active pass would resume). */
+  would_resume?: number;
+  truncated?: boolean;
+  review?: RecoveryReviewItem[];
+}
+
+type EvidenceRow = {
+  event_type: string;
+  node_key: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
 
 /** Pure decision, exported for tests. `events` are the run's events NEWER than its last persisted cursor, oldest first. */
 export function classifyStrandedRun(events: EvidenceRow[]): { kind: "recoverable" } | { kind: "ambiguous"; nodeKey: string | null } | { kind: "unsafe" } {
@@ -2507,20 +2577,123 @@ export function classifyStrandedRun(events: EvidenceRow[]): { kind: "recoverable
   return { kind: "recoverable" };
 }
 
-export async function recoverStrandedRuns(options: { accountIds: string[]; minAgeSeconds?: number; limit?: number; db?: AdminClient }): Promise<RecoverySummary> {
+/** Does the conversation hold bot messages after the run's cursor that no message_sent event accounts for? Then a send happened that the log does not confirm. */
+async function hasUnconfirmedOutbound(db: AdminClient, run: FlowRunRow, events: EvidenceRow[]): Promise<boolean> {
+  if (!run.conversation_id) return false;
+  const { count, error } = await db
+    .from("messages").select("id", { count: "exact", head: true }).eq("conversation_id", run.conversation_id).eq("sender_type", "bot").gte("created_at", run.last_advanced_at);
+  if (error) throw new Error("recovery_outbound_lookup_failed");
+  return (count ?? 0) > events.filter((e) => e.event_type === "message_sent").length;
+}
+
+type StrandedAssessment = { kind: "recoverable" } | { kind: "ambiguous"; nodeKey: string | null } | { kind: "unsafe" } | { kind: "outbound_since_cursor" };
+
+/** Evidence for one run: the event log after the cursor, then the conversation's outbound messages. Read-only. */
+async function assessStrandedRun(db: AdminClient, run: FlowRunRow): Promise<StrandedAssessment> {
+  const { data: events, error } = await db
+    .from("flow_run_events").select("event_type, node_key, payload, created_at").eq("flow_run_id", run.id).gt("created_at", run.last_advanced_at).order("created_at", { ascending: true }).order("id", { ascending: true });
+  if (error) throw new Error("recovery_evidence_lookup_failed");
+  const rows = (events ?? []) as EvidenceRow[];
+  const verdict = classifyStrandedRun(rows);
+  if (verdict.kind !== "recoverable") return verdict;
+  if (await hasUnconfirmedOutbound(db, run, rows)) return { kind: "outbound_since_cursor" };
+  return verdict;
+}
+
+/**
+ * Stranded-run recovery (D1). Selection no longer starves: instead of "the 25 oldest quiet runs" (which, with many runs legitimately
+ * waiting for a button tap, were always the same 25 and hid everything after them), the quiet runs are read in two bounded windows
+ * (within / beyond the max age), the node type of each is resolved, and only auto-advancing runs are considered.
+ *   - within the max age AND safe evidence -> eligible (dry-run reports it; active mode resumes it)
+ *   - beyond the max age -> NEVER automatic and its state is NOT changed: it is listed in `review` for a person
+ *   - waiting for the customer / a durable timer -> counted, never touched
+ * In dry-run nothing is written: no cursor take-over, no event, no state change, no send.
+ */
+export async function recoverStrandedRuns(options: { accountIds: string[]; minAgeSeconds?: number; maxAgeSeconds?: number; limit?: number; mode?: RecoveryMode; db?: AdminClient }): Promise<RecoverySummary> {
   const db = options.db ?? supabaseAdmin();
-  const summary: RecoverySummary = { examined: 0, resumed: 0, ambiguous: 0, unsafe: 0, skipped: 0, failed: 0 };
+  const mode = options.mode ?? recoveryModeFromEnv();
+  const summary: RecoverySummary = { examined: 0, resumed: 0, ambiguous: 0, unsafe: 0, skipped: 0, failed: 0, mode, candidates: 0, waiting: 0, eligible: 0, too_old: 0, would_resume: 0, truncated: false, review: [] };
   if (options.accountIds.length === 0) return summary;
-  const cutoff = new Date(Date.now() - (options.minAgeSeconds ?? 300) * 1000).toISOString();
-  const { data, error } = await db
-    .from("flow_runs").select("*").eq("status", "active").is("wait_until", null).lt("last_advanced_at", cutoff).in("account_id", options.accountIds)
-    .order("last_advanced_at", { ascending: true }).limit(options.limit ?? 25);
-  if (error) throw new Error(`stranded run lookup failed: ${error.message}`);
-  for (const row of (data ?? []) as FlowRunRow[]) {
+  // D1 safety boundary is absolute, even for callers passing explicit overrides.
+  // Older runs are for manual review, never automatic recovery.
+  const minAge = Math.min(Math.max(options.minAgeSeconds ?? 300, 0), RECOVERY_MAX_AGE_SECONDS);
+  const maxAge = Math.min(Math.max(options.maxAgeSeconds ?? RECOVERY_MAX_AGE_SECONDS, minAge), RECOVERY_MAX_AGE_SECONDS);
+  const now = Date.now();
+  const quietBefore = new Date(now - minAge * 1000).toISOString();
+  const tooOldBefore = new Date(now - maxAge * 1000).toISOString();
+  const limit = options.limit ?? 25;
+
+  const readWindow = async (window: "recent" | "old"): Promise<FlowRunRow[]> => {
+    let q = db.from("flow_runs").select("*").eq("status", "active").is("wait_until", null).in("account_id", options.accountIds);
+    q = window === "recent" ? q.gte("last_advanced_at", tooOldBefore).lt("last_advanced_at", quietBefore) : q.lt("last_advanced_at", tooOldBefore);
+    const { data, error } = await q.order("last_advanced_at", { ascending: true }).limit(RECOVERY_SCAN_LIMIT);
+    if (error) throw new Error(`stranded run lookup failed: ${error.message}`);
+    const rows = (data ?? []) as FlowRunRow[];
+    if (rows.length >= RECOVERY_SCAN_LIMIT) summary.truncated = true;
+    return rows;
+  };
+  const recent = await readWindow("recent");
+  const old = await readWindow("old");
+  summary.candidates = recent.length + old.length;
+
+  const nodeCache = new Map<string, Map<string, FlowNodeRow>>();
+  const nodesOf = async (flowId: string) => {
+    let nodes = nodeCache.get(flowId);
+    if (!nodes) { nodes = await loadAllNodes(db, flowId); nodeCache.set(flowId, nodes); }
+    return nodes;
+  };
+  const review = (run: FlowRunRow, reason: RecoveryReviewReason, evidence?: RecoveryReviewItem["evidence"]) => {
+    if (summary.review!.length < RECOVERY_REVIEW_CAP) {
+      summary.review!.push({ run_id: run.id, account_id: run.account_id, node_key: run.current_node_key ?? null, age_s: Math.round((now - new Date(run.last_advanced_at).getTime()) / 1000), reason, ...(evidence ? { evidence } : {}) });
+    }
+  };
+  /** "auto" = the cursor sits on a node the engine advances by itself, so a quiet run there is stranded; "waiting" = legitimately parked. */
+  const nature = async (run: FlowRunRow): Promise<"auto" | "waiting" | "missing"> => {
+    if (!run.current_node_key) return "missing";
+    const node = (await nodesOf(currentFlowIdOf(run))).get(run.current_node_key);
+    if (!node) return "missing";
+    if (!isAutoAdvancing(node.node_type) || (node.node_type === "delay" && isDurableWaitConfig(node.config))) return "waiting";
+    return "auto";
+  };
+
+  for (const run of old) {
     try {
-      const outcome = await recoverOneStrandedRun(db, row);
+      const kind = await nature(run);
+      if (kind === "waiting") { summary.waiting! += 1; continue; }
+      if (kind === "missing") { summary.skipped += 1; review(run, "node_missing"); continue; }
+      summary.too_old! += 1;
+      let evidence: RecoveryReviewItem["evidence"] | undefined;
+      try { evidence = (await assessStrandedRun(db, run)).kind; } catch { /* the item is still reported, without evidence */ }
+      review(run, "too_old", evidence);
+    } catch (err) {
+      summary.failed += 1;
+      console.error("[flows] stranded run review failed:", err instanceof Error ? err.message : err);
+    }
+  }
+
+  let acted = 0;
+  for (const run of recent) {
+    if (acted >= limit) break;
+    try {
+      const kind = await nature(run);
+      if (kind === "waiting") { summary.waiting! += 1; continue; }
+      if (kind === "missing") { summary.skipped += 1; review(run, "node_missing"); continue; }
+      summary.eligible! += 1;
+      if (mode === "dry-run") {
+        let verdict: StrandedAssessment;
+        try { verdict = await assessStrandedRun(db, run); } catch { review(run, "evidence_error"); summary.failed += 1; continue; }
+        if (verdict.kind === "recoverable") summary.would_resume! += 1;
+        else if (verdict.kind === "ambiguous") summary.ambiguous += 1;
+        else summary.unsafe += 1;
+        if (verdict.kind !== "recoverable") review(run, "not_safe", verdict.kind);
+        summary.examined += 1;
+        acted += 1;
+        continue;
+      }
+      const outcome = await recoverOneStrandedRun(db, run);
       summary.examined += outcome === "skipped" ? 0 : 1;
       summary[outcome] += 1;
+      acted += 1;
     } catch (err) {
       summary.failed += 1;
       console.error("[flows] stranded run recovery threw:", err instanceof Error ? err.message : err);
@@ -2536,16 +2709,13 @@ async function recoverOneStrandedRun(db: AdminClient, run: FlowRunRow): Promise<
   const node = nodes.get(run.current_node_key);
   // Runs that legitimately wait for the customer (buttons, lists, collect_input) are not stranded, however long they have been quiet.
   if (!node || !isAutoAdvancing(node.node_type) || (node.node_type === "delay" && isDurableWaitConfig(node.config))) return "skipped";
-  const { data: events, error } = await db
-    .from("flow_run_events").select("event_type, node_key, payload, created_at").eq("flow_run_id", run.id).gt("created_at", run.last_advanced_at).order("created_at", { ascending: true }).order("id", { ascending: true });
-  if (error) throw new Error("recovery_evidence_lookup_failed");
-  const verdict = classifyStrandedRun((events ?? []) as EvidenceRow[]);
+  const verdict = await assessStrandedRun(db, run);
   if (verdict.kind === "ambiguous") {
     await logEvent(db, run.id, "error", verdict.nodeKey, { reason: "send_outcome_unknown", detail: "intent recorded, no confirmation; NOT resent" });
     await endRun(db, run.id, "failed", "send_outcome_unknown");
     return "ambiguous";
   }
-  if (verdict.kind === "unsafe") {
+  if (verdict.kind === "unsafe" || verdict.kind === "outbound_since_cursor") {
     await logEvent(db, run.id, "error", run.current_node_key, { reason: "recovery_not_safe", detail: "progress after the last cursor included a send; not replayed" });
     await endRun(db, run.id, "failed", "recovery_not_safe");
     return "unsafe";
