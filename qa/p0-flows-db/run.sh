@@ -32,12 +32,22 @@ docker network create --internal "$NET" >/dev/null
 docker run -d --name "$DB" --network "$NET" -e POSTGRES_PASSWORD=qa "$PG_IMAGE" >/dev/null
 psql_() { docker exec -i "$DB" psql -U supabase_admin -h /var/run/postgresql -d postgres -X -v ON_ERROR_STOP=1 -q "$@"; }
 
+# The image briefly accepts connections during initdb, then restarts into its
+# final service. Starting migrations on the temporary postmaster races the
+# graphql schema-version sequence and fails with a stale OID.
+# Match the proven gate in qa/replace-waiting/run-engine-qa.sh.
 ready=0
 for _ in $(seq 1 150); do
-  if psql_ -Atc 'select 1' >/dev/null 2>&1; then ready=1; break; fi
+  log="$(docker logs "$DB" 2>&1 || true)"
+  if grep -q 'PostgreSQL init process complete' <<<"$log" &&
+     [ "$(grep -c 'ready to accept connections' <<<"$log" || true)" -ge 2 ] &&
+     psql_ -Atc 'select 1' >/dev/null 2>&1; then
+    ready=1
+    break
+  fi
   sleep 1
 done
-if [ "$ready" != 1 ]; then echo "QA ERROR: postgres not ready" >&2; docker logs --tail 60 "$DB" >&2; exit 1; fi
+if [ "$ready" != 1 ]; then echo "QA ERROR: PostgreSQL init did not complete" >&2; docker logs --tail 60 "$DB" >&2; exit 1; fi
 export PGOPTIONS="-c client_min_messages=warning"
 psql_ < qa/flows-safe-save/bootstrap.sql >/dev/null
 count=0
