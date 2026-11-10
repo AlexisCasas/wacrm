@@ -2536,6 +2536,13 @@ export interface RecoverySummary {
   review?: RecoveryReviewItem[];
 }
 
+type EvidenceRow = {
+  event_type: string;
+  node_key: string | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+};
+
 /** Pure decision, exported for tests. `events` are the run's events NEWER than its last persisted cursor, oldest first. */
 export function classifyStrandedRun(events: EvidenceRow[]): { kind: "recoverable" } | { kind: "ambiguous"; nodeKey: string | null } | { kind: "unsafe" } {
   let pendingIntent: EvidenceRow | null = null;
