@@ -83,7 +83,7 @@ describe('GET /api/ads/results', () => {
       : { data: [{ product: 'Laser', buyers: 1, orders: 2, units: 3, sales: 200, legacy_orders: 0 }], error: null }))
     const body = await (await get('?account_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')).json()
     expect(rpc).toHaveBeenCalledWith('ads_results_by_product', expect.objectContaining({ p_account: A }))
-    expect(rpc.mock.calls.map((c) => c[0]).sort()).toEqual(['ads_results_by_product', 'ads_results_report'])
+    expect(rpc.mock.calls.map((c) => c[0]).sort()).toEqual(['ads_results_by_product', 'ads_results_product_ad_breakdown', 'ads_results_report'])
     expect(body.ads[0]).toMatchObject({ contacts: 4, buyers: 1, orders: 2, order_amount: 200, conversion_pct: 25 })
     expect(Object.keys(body.ads[0]).sort()).toEqual(['buyers', 'contacts', 'conversion_pct', 'headline', 'order_amount', 'orders', 'products', 'source_id', 'units'])
     expect(body.product_sales).toEqual([expect.objectContaining({ product: 'Laser', avg_ticket: 200 })])
@@ -105,5 +105,41 @@ describe('GET /api/ads/results', () => {
     await get()
     expect(f).not.toHaveBeenCalled()
     vi.unstubAllGlobals()
+  })
+  it('product -> ad breakdown: called with the SESSION account only, attached to the product rows, names come from the per-ad rows', async () => {
+    rpc.mockImplementation(async (name: string) => {
+      if (name === 'ads_results_report') return { data: [{ source_id: 'AD1', headline: 'Oferta', contacts: 4, buyers: 1, orders: 2, order_amount: 200, units: 3, products: [] }], error: null }
+      if (name === 'ads_results_by_product') return { data: [{ product: 'Laser', buyers: 1, orders: 2, units: 3, sales: 200, legacy_orders: 0 }], error: null }
+      return { data: [{ product: 'Laser', source_id: 'AD1', buyers: 1, orders: 1, units: 2, sales: 150 }, { product: 'Laser', source_id: null, buyers: 1, orders: 1, units: 1, sales: 50 }], error: null }
+    })
+    const body = await (await get('?account_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')).json()
+    expect(rpc).toHaveBeenCalledWith('ads_results_product_ad_breakdown', expect.objectContaining({ p_account: A }))
+    expect(body.ad_breakdown_available).toBe(true)
+    expect(body.product_sales[0].ads).toEqual([
+      { source_id: 'AD1', headline: 'Oferta', buyers: 1, orders: 1, units: 2, sales: 150 },
+      { source_id: null, headline: null, buyers: 1, orders: 1, units: 1, sales: 50 },
+    ])
+    // product figures and the per-ad report are exactly what the existing functions returned
+    expect(body.product_sales[0]).toMatchObject({ product: 'Laser', buyers: 1, orders: 2, units: 3, sales: 200, avg_ticket: 200 })
+    expect(body.ads[0]).toMatchObject({ source_id: 'AD1', orders: 2, order_amount: 200, conversion_pct: 25 })
+    expect(writes).not.toHaveBeenCalled()
+  })
+  it('breakdown function missing/failing/throwing never breaks the report: cards, per-ad table and products stay', async () => {
+    for (const failure of [
+      async () => ({ data: null, error: { message: 'function does not exist' } }),
+      async () => { throw new Error('network') },
+    ]) {
+      rpc.mockImplementation(async (name: string) => {
+        if (name === 'ads_results_report') return { data: [{ source_id: 'AD1', contacts: 1, buyers: 0, orders: 0, order_amount: 0, units: 0 }], error: null }
+        if (name === 'ads_results_by_product') return { data: [{ product: 'Laser', buyers: 1, orders: 1, units: 1, sales: 10, legacy_orders: 0 }], error: null }
+        return failure()
+      })
+      const res = await get()
+      expect(res.status).toBe(200)
+      const body = await res.json()
+      expect(body.ads).toHaveLength(1)
+      expect(body.product_sales[0]).toMatchObject({ product: 'Laser', sales: 10, ads: null })
+      expect(body.ad_breakdown_available).toBe(false)
+    }
   })
 })

@@ -35,6 +35,12 @@ psql_ -q -v ON_ERROR_STOP=1 < docs/integrations/ads-results/ROLLBACK-by-product.
 echo "functions left: $(psql_ -Atq -c "select count(*) from pg_proc where proname in ('ads_results_by_product')")  (expected 0)"
 echo "existing report function intact: $(psql_ -Atq -c "select count(*) from pg_proc where proname='ads_results_report'")  (expected 1)"
 psql_ -q -v ON_ERROR_STOP=1 < supabase/migrations/20261114000000_ads_results_by_product.sql >/dev/null && echo "re-apply after rollback OK"
+echo "== rollback (breakdown function)"
+psql_ -q -v ON_ERROR_STOP=1 < docs/integrations/ads-results/ROLLBACK-product-ad-breakdown.sql >/dev/null && echo "rollback applied" || { echo "ROLLBACK FAILED"; exit 1; }
+echo "breakdown functions left: $(psql_ -Atq -c "select count(*) from pg_proc where proname='ads_results_product_ad_breakdown'")  (expected 0)"
+echo "by_product / report / attribution intact: $(psql_ -Atq -c "select count(*) from pg_proc where proname in ('ads_results_by_product','ads_results_report','order_ad_attribution')")  (expected 3)"
+psql_ -q -v ON_ERROR_STOP=1 < supabase/migrations/20261115000000_ads_results_product_ad_breakdown.sql >/dev/null && echo "re-apply after rollback OK (breakdown)"
+LAST=$(ls supabase/migrations/*.sql | xargs -n1 basename | sort | tail -1); echo "breakdown migration orders after its dependencies: $([ "$(ls supabase/migrations | sort | tail -1)" = "20261115000000_ads_results_product_ad_breakdown.sql" ] && echo yes || echo NO) (last=$LAST)"
 echo "$OUT" | grep -q "FAIL" && exit 1
 echo "$OUT" | grep -q "RESULT" || exit 1
 exit 0

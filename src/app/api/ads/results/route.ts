@@ -20,7 +20,9 @@ export async function GET(request: Request) {
     if (error) return NextResponse.json({ error: 'Could not load the report' }, { status: 500 })
     // Additive sold-products helper: if it is missing (migration not applied) or fails, the original report is returned unchanged.
     const products = await supabase.rpc('ads_results_by_product', args)
-    const report = buildAdsReport(data ?? [], from.toISOString(), to.toISOString(), products.error ? null : (products.data ?? []))
+    // Additive product -> ad drilldown helper: same rule. Missing or failing => only the drilldown is hidden; cards, products and the full per-ad table stay.
+    const breakdown = await Promise.resolve(supabase.rpc('ads_results_product_ad_breakdown', args)).catch(() => ({ data: null, error: { message: 'unavailable' } }))
+    const report = buildAdsReport(data ?? [], from.toISOString(), to.toISOString(), products.error ? null : (products.data ?? []), breakdown.error ? null : (breakdown.data ?? []))
     // Only the on/off state of the Meta sending for THIS account (service role scoped to the session's account; no ids, no token).
     const { data: capi } = await supabaseAdmin().from('meta_capi_settings').select('enabled, test_event_code').eq('account_id', accountId).maybeSingle()
     report.meta_capi = { enabled: capi?.enabled === true, test_mode: !!capi?.test_event_code }

@@ -73,4 +73,65 @@ DO $$ DECLARE t boolean[] := '{}'; BEGIN
   RESET ROLE;
   PERFORM pg_temp.chk('anon cannot execute the product function', t[1]);
 END $$;
+
+-- ================= ads_results_product_ad_breakdown (product -> ad drilldown) =================
+-- Extra synthetic scenario on account A (added AFTER every check above, so those expectations are untouched):
+--   c4 clicked AD2 (10 days ago) and bought Laser (order 7, AD2); c1 clicked AD2 again 12 h ago and bought Laser once more (order 8 => AD2) while his
+--   earlier Laser orders (1, 2) resolve to AD1 => the same buyer appears under two ads. Order 3 ('laser ' legacy header, contact c2 without click) is unattributed.
+INSERT INTO public.contacts (id, account_id, user_id, phone, name) VALUES
+ ('c0000000-0000-4000-8000-0000000000a4', :'acct_a','a1000000-0000-4000-8000-000000000001','51900000004','c4');
+INSERT INTO public.contact_ad_attributions (contact_id, account_id, source_id, ctwa_clid, headline, captured_at) VALUES
+ ('c0000000-0000-4000-8000-0000000000a4', :'acct_a','AD2','CL4','Segundo', now()-interval '10 days');
+INSERT INTO public.contact_ad_clicks (account_id, contact_id, ctwa_clid, source_id, captured_at) VALUES
+ (:'acct_a','c0000000-0000-4000-8000-0000000000a1','CL1b','AD2', now()-interval '12 hours');
+INSERT INTO public.order_confirmations (id, account_id, contact_id, confirmed_at, customer_name, phone, product, quantity, price, destination, seller_name, confirmed_by_name, request_key) VALUES
+ ('d0000000-0000-4000-8000-000000000007', :'acct_a','c0000000-0000-4000-8000-0000000000a4', now()-interval '2 days','C','51900000004','Laser',1,100.00,'Lima','V','QA','k7'),
+ ('d0000000-0000-4000-8000-000000000008', :'acct_a','c0000000-0000-4000-8000-0000000000a1', now()-interval '6 hours','C','51900000001','Laser',1,100.00,'Lima','V','QA','k8');
+INSERT INTO public.order_confirmation_items (order_id, account_id, line_number, product_name, quantity, unit_price) VALUES
+ ('d0000000-0000-4000-8000-000000000007', :'acct_a',1,'Laser',1,100.00), ('d0000000-0000-4000-8000-000000000008', :'acct_a',1,'Laser',1,100.00);
+
+SELECT pg_temp.asuser('a1000000-0000-4000-8000-000000000001', format($q$SELECT * FROM ads_results_product_ad_breakdown(%L, now()-interval '30 days', now()+interval '1 day')$q$, :'acct_a')) AS bd30 \gset
+SELECT pg_temp.asuser('a1000000-0000-4000-8000-000000000001', format($q$SELECT * FROM ads_results_product_ad_breakdown(%L, now()-interval '90 days', now()+interval '1 day')$q$, :'acct_a')) AS bd90 \gset
+SELECT pg_temp.asuser('a1000000-0000-4000-8000-000000000001', format($q$SELECT * FROM ads_results_by_product(%L, now()-interval '90 days', now()+interval '1 day')$q$, :'acct_a')) AS bp90 \gset
+SELECT pg_temp.asuser('a1000000-0000-4000-8000-000000000001', format($q$SELECT * FROM ads_results_report(%L, now()-interval '90 days', now()+interval '1 day')$q$, :'acct_a')) AS rp90 \gset
+
+SELECT pg_temp.chk('breakdown: same orders/units/sales per product as ads_results_by_product (90d, every product)',
+  (SELECT bool_and(p.orders = a.o AND p.units = a.u AND p.sales = a.s) AND count(*) = (SELECT count(*) FROM jsonb_array_elements(:'bp90'::jsonb))
+   FROM jsonb_to_recordset(:'bp90'::jsonb) AS p(product text, orders bigint, units bigint, sales numeric)
+   JOIN (SELECT b.product, sum(b.orders) o, sum(b.units) u, sum(b.sales) s FROM jsonb_to_recordset(:'bd90'::jsonb) AS b(product text, source_id text, orders bigint, units bigint, sales numeric) GROUP BY b.product) a USING (product)));
+SELECT pg_temp.chk('breakdown: same product display names as ads_results_by_product (no extra, no missing)',
+  (SELECT array_agg(DISTINCT product ORDER BY product) FROM jsonb_to_recordset(:'bd90'::jsonb) AS b(product text)) = (SELECT array_agg(product ORDER BY product) FROM jsonb_to_recordset(:'bp90'::jsonb) AS p(product text)));
+SELECT pg_temp.chk('breakdown: per ad (incl. the unattributed bucket) units and amounts equal ads_results_report => SAME order->ad resolution',
+  (SELECT bool_and(coalesce(r.units,-1) = a.u AND coalesce(r.order_amount,-1) = a.s) FROM
+     (SELECT b.source_id, sum(b.units) u, sum(b.sales) s FROM jsonb_to_recordset(:'bd90'::jsonb) AS b(source_id text, units bigint, sales numeric) GROUP BY b.source_id) a
+     LEFT JOIN jsonb_to_recordset(:'rp90'::jsonb) AS r(source_id text, units bigint, order_amount numeric) ON coalesce(r.source_id,'~') = coalesce(a.source_id,'~')));
+SELECT pg_temp.chk('Laser (30d): AD1 = 1 buyer, 2 orders, 3 units, 300 (multi-product order 1 keeps its own Laser subtotal)',
+  (:'bd30'::jsonb) @> '[{"product":"Laser","source_id":"AD1","buyers":1,"orders":2,"units":3,"sales":300.00}]'::jsonb);
+SELECT pg_temp.chk('Laser (30d): AD2 = 2 buyers (c4 and c1), 2 orders, 2 units, 200',
+  (:'bd30'::jsonb) @> '[{"product":"Laser","source_id":"AD2","buyers":2,"orders":2,"units":2,"sales":200.00}]'::jsonb);
+SELECT pg_temp.chk('Laser (30d): unattributed bucket = legacy header order 3 (name variant "laser " merged), 90',
+  (:'bd30'::jsonb) @> '[{"product":"Laser","source_id":null,"buyers":1,"orders":1,"units":1,"sales":90.00}]'::jsonb);
+SELECT pg_temp.chk('repeated buyer across ads: Laser buckets add 4 buyers but the product has 3 distinct buyers',
+  (SELECT sum((x->>'buyers')::int) FROM jsonb_array_elements(:'bd30'::jsonb) x WHERE x->>'product'='Laser') = 4
+  AND (SELECT (x->>'buyers')::int FROM jsonb_array_elements(:'bp90'::jsonb) x WHERE x->>'product'='Laser') = 3);
+SELECT pg_temp.chk('Gel (30d): product with ONE ad (AD1) and nothing unattributed: 2 buyers, 2 orders, 4 units, 190 (two Gel lines of order 5 count once as an order)',
+  (:'bd30'::jsonb) @> '[{"product":"Gel","source_id":"AD1","buyers":2,"orders":2,"units":4,"sales":190.00}]'::jsonb
+  AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(:'bd30'::jsonb) x WHERE x->>'product'='Gel' AND x->>'source_id' IS NULL));
+SELECT pg_temp.chk('Gel (90d): ad + unattributed (40-day-old legacy order 4): AD1 190 and NULL 50',
+  (:'bd90'::jsonb) @> '[{"product":"Gel","source_id":"AD1","sales":190.00},{"product":"Gel","source_id":null,"orders":1,"units":1,"sales":50.00}]'::jsonb);
+SELECT pg_temp.chk('window is [from,to): a 1-hour window around order 8 only contains order 8',
+  (SELECT jsonb_array_length(pg_temp.asuser('a1000000-0000-4000-8000-000000000001', format($q$SELECT * FROM ads_results_product_ad_breakdown(%L, now()-interval '7 hours', now()-interval '5 hours')$q$, :'acct_a'))) = 1));
+SELECT pg_temp.asuser('b2000000-0000-4000-8000-000000000002', format($q$SELECT * FROM ads_results_product_ad_breakdown(%L, now()-interval '90 days', now()+interval '1 day')$q$, :'acct_a')) AS bdx \gset
+SELECT pg_temp.chk('breakdown: member of B asking for A gets nothing', :'bdx'::jsonb = '[]'::jsonb);
+SELECT pg_temp.asuser('b2000000-0000-4000-8000-000000000002', format($q$SELECT * FROM ads_results_product_ad_breakdown(%L, now()-interval '90 days', now()+interval '1 day')$q$, :'acct_b')) AS bdb \gset
+SELECT pg_temp.chk('breakdown: B sees only its own order, unattributed (no click evidence)', :'bdb'::jsonb @> '[{"product":"Laser","source_id":null,"units":5,"sales":999.00}]'::jsonb AND jsonb_array_length(:'bdb'::jsonb) = 1);
+SELECT pg_temp.chk('breakdown function is read-only: STABLE, SECURITY INVOKER, no anon/PUBLIC grant',
+  (SELECT provolatile = 's' AND NOT prosecdef AND NOT has_function_privilege('anon', p.oid, 'EXECUTE') AND has_function_privilege('authenticated', p.oid, 'EXECUTE') AND has_function_privilege('service_role', p.oid, 'EXECUTE')
+   FROM pg_proc p WHERE p.proname = 'ads_results_product_ad_breakdown'));
+DO $$ DECLARE t boolean[] := '{}'; BEGIN
+  SET LOCAL ROLE anon;
+  BEGIN PERFORM * FROM ads_results_product_ad_breakdown(gen_random_uuid(), now()-interval '1 day', now()); t[1] := false; EXCEPTION WHEN insufficient_privilege THEN t[1] := true; END;
+  RESET ROLE;
+  PERFORM pg_temp.chk('anon cannot execute the breakdown function', t[1]);
+END $$;
 SELECT 'RESULT ' || count(*) FILTER (WHERE ok) || ' passed, ' || count(*) FILTER (WHERE NOT ok) || ' failed' AS summary FROM r;

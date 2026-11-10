@@ -195,7 +195,7 @@ describe('buildAdsReport: additive sold-products block', () => {
     const { product_sales: b, ...restWith } = withP
     expect(restWith).toEqual(restBase)
     expect(a).toBeNull()
-    expect(b).toEqual([{ product: 'Laser', buyers: 2, orders: 3, units: 4, sales: 390, legacy_orders: 1, avg_ticket: 195 }])
+    expect(b).toEqual([{ product: 'Laser', buyers: 2, orders: 3, units: 4, sales: 390, legacy_orders: 1, avg_ticket: 195, ads: null }])
     expect(base.totals).toMatchObject({ contacts: 10, attributed_orders: 3, unattributed_orders: 4, orders: 7, order_amount: 400 })
   })
   it('empty product list stays empty; buyers = 0 gives no ticket', () => {
@@ -203,4 +203,45 @@ describe('buildAdsReport: additive sold-products block', () => {
     expect(buildAdsReport([], 'f', 't', [{ product: 'X', buyers: 0, orders: 0, units: 0, sales: 0 }]).product_sales?.[0].avg_ticket).toBeNull()
   })
 })
+})
+
+describe('buildAdsReport: product -> ad breakdown', () => {
+  const adRows = [
+    { source_id: 'A', headline: 'Alpha', contacts: 5, buyers: 1, orders: 1, order_amount: 100, units: 2, products: [] },
+    { source_id: 'B', headline: null, contacts: 2, buyers: 1, orders: 1, order_amount: 50, units: 1, products: [] },
+    { source_id: 'Z', headline: 'No sales', contacts: 3, buyers: 0, orders: 0, order_amount: 0, units: 0, products: [] },
+    { source_id: null, contacts: 0, buyers: 0, orders: 1, order_amount: 20, units: 1, products: [] },
+  ]
+  const prod = [{ product: 'Laser', buyers: 2, orders: 3, units: 4, sales: 170, legacy_orders: 1 }, { product: 'Gel', buyers: 1, orders: 1, units: 1, sales: 20, legacy_orders: 0 }]
+  const bd = [
+    { product: 'Laser', source_id: null, buyers: 1, orders: 1, units: 1, sales: 20 },
+    { product: 'Laser', source_id: 'B', buyers: 1, orders: 1, units: 1, sales: 50 },
+    { product: 'Laser', source_id: 'A', buyers: 1, orders: 1, units: 2, sales: 100 },
+    { product: 'Gel', source_id: null, buyers: 1, orders: 1, units: 1, sales: 20 },
+    { product: 'Ghost', source_id: 'A', buyers: 1, orders: 1, units: 1, sales: 5 },
+  ]
+  it('real ads by sales first, the unattributed bucket last; names from the per-ad rows; buckets add up to the product row', () => {
+    const rep = buildAdsReport(adRows, 'f', 't', prod, bd)
+    expect(rep.ad_breakdown_available).toBe(true)
+    const laser = rep.product_sales![0]
+    expect(laser.ads!.map((a) => [a.source_id, a.headline])).toEqual([['A', 'Alpha'], ['B', null], [null, null]])
+    for (const k of ['orders', 'units', 'sales'] as const) expect(laser.ads!.reduce((s, a) => s + a[k], 0)).toBe(laser[k])
+    expect(rep.product_sales![1].ads).toEqual([{ source_id: null, headline: null, buyers: 1, orders: 1, units: 1, sales: 20 }])
+  })
+  it('ads with contacts and no sales stay in the per-ad list; a product with no breakdown rows gets []', () => {
+    const rep = buildAdsReport(adRows, 'f', 't', [{ product: 'Nuevo', buyers: 1, orders: 1, units: 1, sales: 9, legacy_orders: 0 }], bd)
+    expect(rep.ads.map((a) => a.source_id)).toContain('Z')
+    expect(rep.product_sales![0].ads).toEqual([])
+  })
+  it('breakdown null => ads null + not available; every existing figure is identical to a report without it', () => {
+    const without = buildAdsReport(adRows, 'f', 't', prod)
+    const withBd = buildAdsReport(adRows, 'f', 't', prod, bd)
+    expect(without.ad_breakdown_available).toBe(false)
+    expect(without.product_sales!.every((p) => p.ads === null)).toBe(true)
+    const strip = (r: typeof without) => ({ ...r, ad_breakdown_available: undefined, product_sales: r.product_sales!.map((p) => ({ ...p, ads: undefined })) })
+    expect(strip(withBd)).toEqual(strip(without))
+  })
+  it('product_sales unavailable => breakdown not available even if rows exist', () => {
+    expect(buildAdsReport(adRows, 'f', 't', null, bd).ad_breakdown_available).toBe(false)
+  })
 })
