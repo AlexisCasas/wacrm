@@ -1,0 +1,29 @@
+name: Meta Ads cron source integrity
+
+on:
+  pull_request:
+    paths:
+      - "ops/meta-ads/run-meta-sync.sh"
+      - ".github/workflows/meta-ads-cron-source.yml"
+      - "docs/ops/META-ADS-CRON-SOURCE.md"
+
+permissions:
+  contents: read
+
+jobs:
+  check-source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify source SHA-256 and shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' 'e752cf5024ad928804e4628e30d23926896181d8b184564b4ea518f0ba22ffd9  ops/meta-ads/run-meta-sync.sh' | sha256sum --check
+          [ "$(wc -c < ops/meta-ads/run-meta-sync.sh)" -eq 1362 ]
+          [ "$(wc -l < ops/meta-ads/run-meta-sync.sh)" -eq 15 ]
+          sh -n ops/meta-ads/run-meta-sync.sh
+          bash -n ops/meta-ads/run-meta-sync.sh
+          grep -Fq 'docker exec wacrm-app-1 node -e' ops/meta-ads/run-meta-sync.sh
+          grep -Fq '/api/meta-ads/cron' ops/meta-ads/run-meta-sync.sh
+          echo "META_ADS_CRON_SOURCE_EXACT=PASS"
