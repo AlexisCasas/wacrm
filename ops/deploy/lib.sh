@@ -47,8 +47,8 @@ park_stopped_previous() {  # $1 stopped container, $2 private alias
   is_private_rollback_container "$container" || return 1
 }
 retry_rename() {  # $1 old name, $2 new name
-  local attempt
-  for attempt in 1 2 3; do
+  local try_idx
+  for try_idx in 1 2 3; do
     docker rename "$1" "$2" && return 0
     sleep 1
   done
