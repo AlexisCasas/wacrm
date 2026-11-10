@@ -55,9 +55,13 @@ export function applyLatestPage(args: {
   if (persisted.length === 0) {
     return { messages: mergeMessages(args.existing, args.latest), hasMoreOlder: args.latestHasMoreOlder };
   }
-  const newestHeld = Math.max(...persisted.map(time));
-  const oldestFresh = args.latest.length > 0 ? Math.min(...args.latest.map(time)) : Number.NEGATIVE_INFINITY;
-  if (args.latestHasMoreOlder && args.latest.length > 0 && oldestFresh > newestHeld) {
+  // A gap must compare the full keyset order, not timestamps alone:
+  // a burst inserted in one database transaction can share created_at.
+  const newestHeld = persisted.reduce((max, message) => compareMessages(message, max) > 0 ? message : max);
+  const oldestFresh = args.latest.length > 0
+    ? args.latest.reduce((min, message) => compareMessages(message, min) < 0 ? message : min)
+    : null;
+  if (args.latestHasMoreOlder && oldestFresh && compareMessages(oldestFresh, newestHeld) > 0) {
     const optimistic = args.existing.filter(isOptimistic);
     return { messages: mergeMessages(optimistic, args.latest), hasMoreOlder: true };
   }
