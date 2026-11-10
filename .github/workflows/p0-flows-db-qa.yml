@@ -25,7 +25,7 @@ jobs:
           - label: "PR 95 / send intent S01-S29"
             target_sha: "6257acfedd981205d28a9f8c97341783512e6d1d"
           - label: "PR 96 / recovery S01-S29"
-            target_sha: "1bd830f947fc40b9a19abc1519e1d0fade8cab48"
+            target_sha: "601d32cd62a920f805df87b47d8150534db6286e"
     steps:
       - name: Checkout isolated QA harness
         uses: actions/checkout@v7
