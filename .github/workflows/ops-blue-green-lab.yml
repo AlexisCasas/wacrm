@@ -97,6 +97,11 @@ jobs:
           [ "$(rollback_ready_status "$NET-prev")" = 200 ] || exit 1
           [ "$(legacy_db_ready_status "$NET-prev-bad")" = 503 ] || { echo 'OPS LAB FAIL: invalid credentials accepted'; exit 1; }
           echo 'OPS_LEGACY_ROLLBACK_DB=PASS'
+      - name: Verify old container can restart privately before rollback
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash ops/deploy/lab-private-rollback.sh
       - name: Preserve 12 inflight requests while swapping alias
         shell: bash
         run: |
