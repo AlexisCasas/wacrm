@@ -440,13 +440,33 @@ async function findEntryFlow(
 // thread can quote the prompt the customer is replying to.
 // ============================================================
 
+/**
+ * Buttons and lists are sent outside the try/catch the other send nodes have, so a failed send used to leave no trace at all: the run
+ * stayed active with neither a message_sent nor an error event. This records the failure as evidence and rethrows, so the historic
+ * control flow is unchanged (the caller still sees the exception; nothing is retried here).
+ */
+async function withInteractiveSendEvidence<T>(db: AdminClient, run: FlowRunRow, node: FlowNodeRow, send: () => Promise<T>): Promise<T> {
+  try {
+    return await send();
+  } catch (err) {
+    if (!(err instanceof ContactBlockedError)) {
+      await logEvent(db, run.id, "error", node.node_key, {
+        reason: "send_interactive_failed",
+        node_type: node.node_type,
+        detail: err instanceof Error ? err.message : String(err),
+      });
+    }
+    throw err;
+  }
+}
+
 async function sendButtonsAndSuspend(
   db: AdminClient,
   run: FlowRunRow,
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendButtonsNodeConfig;
-  const { whatsapp_message_id, recipient_kind } = await engineSendInteractiveButtons({
+  const { whatsapp_message_id, recipient_kind } = await withInteractiveSendEvidence(db, run, node, () => engineSendInteractiveButtons({
     accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
@@ -456,7 +476,7 @@ async function sendButtonsAndSuspend(
     headerText: cfg.header_text,
     footerText: cfg.footer_text,
     buttons: cfg.buttons.map((b) => ({ id: b.reply_id, title: b.title })),
-  });
+  }));
   await logEvent(db, run.id, "message_sent", node.node_key, {
     node_type: "send_buttons",
     whatsapp_message_id,
@@ -484,7 +504,7 @@ async function sendListAndSuspend(
   node: FlowNodeRow,
 ): Promise<{ outcome: "advanced"; node_key: string }> {
   const cfg = node.config as unknown as SendListNodeConfig;
-  const { whatsapp_message_id, recipient_kind } = await engineSendInteractiveList({
+  const { whatsapp_message_id, recipient_kind } = await withInteractiveSendEvidence(db, run, node, () => engineSendInteractiveList({
     accountId: run.account_id,
     userId: run.user_id,
     conversationId: run.conversation_id!,
@@ -502,7 +522,7 @@ async function sendListAndSuspend(
         description: r.description,
       })),
     })),
-  });
+  }));
   await logEvent(db, run.id, "message_sent", node.node_key, {
     node_type: "send_list",
     whatsapp_message_id,
@@ -544,16 +564,6 @@ async function executeHandoff(
     assigned_to: cfg.assign_to ?? null,
   });
   await endRun(db, run.id, "handed_off", "handoff_node");
-}
-
-/** Does this graph use something whose recovery needs the send-intent record? Plain legacy flows never do. */
-function graphNeedsSendTracking(nodes: Map<string, FlowNodeRow>): boolean {
-  for (const n of nodes.values()) {
-    if (n.node_type === "execute_flow") return true;
-    if (n.node_type === "delay" && isDurableWaitConfig(n.config)) return true;
-    if (n.node_type === "condition" && (n.config as { subject?: unknown }).subject === CUSTOMER_ACTIVITY_SUBJECT) return true;
-  }
-  return false;
 }
 
 /** The flow the run is inside right now: the callee while a subflow is running, the root flow otherwise. */
@@ -727,15 +737,13 @@ async function sendSuppressedByReplyGuard(db: AdminClient, run: FlowRunRow, node
 }
 
 /**
- * Write the intent to send BEFORE calling Meta. If the process dies afterwards, the run shows an intent without a matching
- * message_sent: the outcome is UNKNOWN and recovery must not resend it. If the intent cannot be written, nothing is sent.
+ * Write the intent to send BEFORE calling Meta, for EVERY send the Flows engine makes (plain flows included: the protection is not
+ * limited to flows that use durable waits or subflows). If the process dies afterwards, the run shows an intent without a matching
+ * message_sent: the outcome is UNKNOWN and recovery must not resend it. If the intent cannot be written, nothing is sent: the run
+ * ends as failed (send_intent_not_recorded) and no retry is attempted.
  */
-async function recordSendIntent(db: AdminClient, run: FlowRunRow, nodeKey: string, nodeType: string, track: boolean): Promise<boolean> {
-  // Only runs of flows that use the P6 / P8 machinery (a durable wait, a call to another flow, the customer-activity condition, or a
-  // run that is inside a called flow) pay for, and depend on, the intent record: every other flow keeps the exact historic send
-  // path, with no extra write and no new way to fail, whatever the account-level switches say.
-  if (!track) return true;
-  const ok = await logEventStrict(db, run.id, "node_entered", nodeKey, { reason: "send_intent", node_type: nodeType, flow_id: currentFlowIdOf(run), attempt: randomUUID() });
+async function recordSendIntent(db: AdminClient, run: FlowRunRow, nodeKey: string, nodeType: string, extra: Record<string, unknown> = {}): Promise<boolean> {
+  const ok = await logEventStrict(db, run.id, "node_entered", nodeKey, { reason: "send_intent", node_type: nodeType, flow_id: currentFlowIdOf(run), attempt: randomUUID(), ...extra });
   if (!ok) {
     await logEvent(db, run.id, "error", nodeKey, { reason: "send_intent_not_recorded" });
     await endRun(db, run.id, "failed", "send_intent_not_recorded");
@@ -1107,7 +1115,6 @@ async function advanceFromNodeKey(
   // The graph the run is walking. It changes when the run enters a subflow or returns from one (execute_flow / end).
   let nodes = initialNodes;
   let referenceKeys = referencedSendKeys(nodes.values());
-  let trackSends = !!run.current_flow_id || graphNeedsSendTracking(nodes);
   // Defensive cap — if a flow has a cycle (which the validator
   // SHOULD catch but doesn't yet in v1), we bail rather than loop.
   for (let safety = 0; safety < 64; safety += 1) {
@@ -1140,7 +1147,7 @@ async function advanceFromNodeKey(
     ) {
       // Re-validate everything that says "do not send this follow-up", then write the intent BEFORE the Meta call.
       if (await sendSuppressedByReplyGuard(db, run, node.node_key)) return { outcome: "completed" };
-      if (!(await recordSendIntent(db, run, node.node_key, node.node_type, trackSends))) return { outcome: "completed" };
+      if (!(await recordSendIntent(db, run, node.node_key, node.node_type))) return { outcome: "completed" };
     }
     if (node.node_type === "send_message") {
       const cfg = node.config as unknown as SendMessageNodeConfig;
@@ -1496,7 +1503,7 @@ async function advanceFromNodeKey(
     if (node.node_type === "execute_flow") {
       const call = await enterSubflow(db, run, node);
       if (call.kind === "ended") return { outcome: "completed" };
-      nodes = call.nodes; referenceKeys = referencedSendKeys(nodes.values()); trackSends = true; currentKey = call.entryNodeKey;
+      nodes = call.nodes; referenceKeys = referencedSendKeys(nodes.values()); currentKey = call.entryNodeKey;
       continue;
     }
     if (node.node_type === "end") {
@@ -1504,7 +1511,7 @@ async function advanceFromNodeKey(
         // "End this subflow and return": the caller resumes at its return node, unless the stack or the customer says otherwise.
         const back = await leaveSubflow(db, run, node);
         if (back.kind === "ended") return { outcome: "completed" };
-        nodes = back.nodes; referenceKeys = referencedSendKeys(nodes.values()); trackSends = !!run.current_flow_id || graphNeedsSendTracking(nodes); currentKey = back.returnNodeKey;
+        nodes = back.nodes; referenceKeys = referencedSendKeys(nodes.values()); currentKey = back.returnNodeKey;
         continue;
       }
       // Default (historic behaviour): the whole execution ends, wherever the run is.
@@ -1939,7 +1946,14 @@ async function handleReplyForActiveRun(
     return { consumed: false, flow_run_id: run.id, outcome: "no_match" };
   }
   if (action.type === "reprompt") {
-    // Re-send the same prompt. Same node, no current_node_key change.
+    // Re-send the same prompt. Same node, no current_node_key change. Like every other send, the intent is durable first: if it
+    // cannot be written the prompt is not re-sent (recordSendIntent ends the run as failed).
+    if (
+      (currentNode.node_type === "send_buttons" || currentNode.node_type === "send_list" || currentNode.node_type === "collect_input") &&
+      !(await recordSendIntent(db, run, currentNode.node_key, currentNode.node_type, { reprompt: true }))
+    ) {
+      return { consumed: true, flow_run_id: run.id, outcome: "fallback_fired" };
+    }
     if (currentNode.node_type === "send_buttons") {
       await sendButtonsAndSuspend(db, run, currentNode);
     } else if (currentNode.node_type === "send_list") {
