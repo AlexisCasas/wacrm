@@ -13,7 +13,10 @@ EXECUTE=0; if [ "${1:-}" = "--execute" ]; then EXECUTE=1; shift; fi
 export EXECUTE
 need docker; need flock
 exec 9>"$LOCK_FILE"; flock -n 9 || die "another deploy/rollback is running"
-[ -f "$STATE_DIR/last.env" ] || die "no $STATE_DIR/last.env: nothing to roll back to"
+[ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ] && [ "$(stat -c '%a' -- "$STATE_DIR")" = "700" ] ||
+  die "unsafe/missing state directory; require a real directory with mode 0700"
+private_state_manifest "$STATE_DIR/last.env" ||
+  die "rollback state manifest missing or unsafe (must be a regular file with mode 0600)"
 # shellcheck disable=SC1091
 . "$STATE_DIR/last.env"
 [ "${ROLLBACK_DISABLED:-0}" != "1" ] || die "the previous release could not be parked privately; automatic rollback is disabled"
@@ -91,4 +94,6 @@ docker stop -t "$STOP_GRACE" "$FAILED_NAME" >/dev/null ||
 grep -vE '^(PREV_NAME|ROLLBACK_DISABLED|FAILED_NAME)=' "$STATE_DIR/last.env" >"$STATE_DIR/.last.env.rollback-$TS"
 echo "FAILED_NAME=${LIVE_NAME}-failed-$TS" >>"$STATE_DIR/.last.env.rollback-$TS"
 mv -f "$STATE_DIR/.last.env.rollback-$TS" "$STATE_DIR/last.env"
+chmod 600 -- "$STATE_DIR/last.env" || die "cannot secure post-rollback manifest"
+private_state_manifest "$STATE_DIR/last.env" || die "post-rollback manifest permissions not 0600"
 log "rolled back. live=$LIVE_NAME image=$OLD_IMAGE. Failed release kept stopped as ${LIVE_NAME}-failed-$TS. Verify with verify-no-502.sh"
