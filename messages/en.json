@@ -307,6 +307,8 @@
       "noTeammates": "No teammates available",
       "me": " (me)",
       "noMessagesYet": "No messages yet",
+      "loadEarlierMessages": "Load earlier messages",
+      "loadingEarlierMessages": "Loading earlier messages…",
       "sendTemplateHint": "Send a template to start the conversation",
       "selectConversation": "Select a conversation",
       "selectConversationHint": "Choose a conversation from the left to start messaging",
