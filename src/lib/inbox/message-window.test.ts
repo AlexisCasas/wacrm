@@ -175,6 +175,22 @@ describe("applyLatestPage (resync)", () => {
     expect(out.messages.map((m) => m.id)).toEqual([...latest.map((m) => m.id), "temp-x"]);
     expect(out.hasMoreOlder).toBe(true);
   });
+  it("detects a resync gap even when both windows share the same created_at", () => {
+    // Postgres now() is transaction-stable; bulk inserts may share a timestamp.
+    // Distinct UUID/id ordering must still detect >100 unseen messages.
+    const stamp = "2026-11-09T12:00:00.000Z";
+    const held = thread(5).map((row) => ({ ...row, created_at: stamp }));
+    const latest = thread(220).slice(120).map((row) => ({ ...row, created_at: stamp }));
+    const out = applyLatestPage({
+      existing: held,
+      latest,
+      latestHasMoreOlder: true,
+      existingHasMoreOlder: false,
+    });
+    expect(out.messages.map((row) => row.id)).toEqual(latest.map((row) => row.id));
+    expect(out.hasMoreOlder).toBe(true);
+  });
+
   it("no gap when the whole thread fit in the fresh page", () => {
     const out = applyLatestPage({ existing: thread(3), latest: thread(8), latestHasMoreOlder: false, existingHasMoreOlder: false });
     expect(out.messages).toHaveLength(8);
