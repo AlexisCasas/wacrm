@@ -34,10 +34,20 @@ case "$(resolve_from_edge "$IMG" "$PUBLIC_ALIAS" | tr '\n' ' ')" in
   *"$PREV_IP"*) ;;
   *) log "alias did not come back with the container: adding it"; docker network disconnect "$EDGE_NETWORK" "$PREV_NAME" && docker network connect --alias "$PUBLIC_ALIAS" --alias "$PREV_NAME" "$EDGE_NETWORK" "$PREV_NAME" ;;
 esac
-log "alias resolves to: $(resolve_from_edge "$IMG" "$PUBLIC_ALIAS" | tr '\n' ' ')"
+# After a reconnect Docker may assign a new IP. Check both participants
+# before ever stopping the currently-serving release.
+PREV_IP="$(container_ip "$PREV_NAME")"
+FAILED_IP="$(container_ip "$FAILED")"
+GOT="$(resolve_from_edge "$IMG" "$PUBLIC_ALIAS")"
+if ! { grep -Fxq "$PREV_IP" <<<"$GOT" && grep -Fxq "$FAILED_IP" <<<"$GOT"; }; then
+  log "rollback alias is not dual-serving; stopping previous candidate and preserving current release"
+  docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null 2>&1 || true
+  die "rollback aborted before stopping current release"
+fi
+log "rollback alias validated for both live and previous containers"
 log "4/5 SIGTERM to the failed release after a ${DRAIN_SECONDS}s dual-serve window (grace ${STOP_GRACE}s)"
 sleep "$DRAIN_SECONDS"
-[ "$(rollback_ready_status "$PREV_NAME")" = "200" ] || { log "previous container lost readiness: leaving the failed release serving"; die "rollback aborted"; }
+[ "$(rollback_ready_status "$PREV_NAME")" = "200" ] || { log "previous container lost readiness; stopping it so current release serves alone"; docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null 2>&1 || true; die "rollback aborted"; }
 docker stop -t "$STOP_GRACE" "$FAILED" >/dev/null
 log "5/5 swapping names"
 docker rename "$FAILED" "${LIVE_NAME}-failed-$TS"
