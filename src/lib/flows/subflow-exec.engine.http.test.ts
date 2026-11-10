@@ -284,7 +284,8 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
   // P7 fail-closed guard correctly rejects the corrupt reference.
   const agePersistedSyntheticReferences = async (runId: string) => {
     const [row] = await rows<{ vars: Record<string, unknown> }>(`select vars from public.flow_runs where id='${runId}'`)
-    const refs = row?.vars?.['$refs']
+    if (!row?.vars) throw new Error('synthetic run vars missing')
+    const refs = row.vars['$refs']
     if (!refs || typeof refs !== 'object' || Array.isArray(refs)) throw new Error('synthetic send references missing')
     const agedRefs = Object.fromEntries(Object.entries(refs).map(([key, value]) => {
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid synthetic send reference')
