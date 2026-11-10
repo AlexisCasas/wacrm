@@ -127,10 +127,10 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
   beforeAll(async () => {
     acctA = await psql(`select account_id from public.profiles where user_id='${UA}'`); acctB = await psql(`select account_id from public.profiles where user_id='${UB}'`)
     await enable(acctA)                                                                                                       // the backend-controlled table: account A only
-    process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS = acctA; process.env.FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS = acctA; process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS = acctA   // the environment flag: second, independent condition
+    process.env.FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS = acctA; process.env.FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS = acctA; process.env.FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS = acctA   // the environment flag: second, independent condition; process.env.FLOW_RECOVERY_ACTIVE = 'true'   // recovery is dry-run unless explicitly activated
     engine = await import('./engine')
   })
-  afterAll(() => { for (const k of ['FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS', 'FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS', 'FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS']) delete process.env[k]; sent.afterStore = null; sent.duringCall = null })
+  afterAll(() => { for (const k of ['FLOW_DURABLE_WAIT_EXECUTION_ACCOUNT_IDS', 'FLOW_CUSTOMER_REPLY_CONDITION_ACCOUNT_IDS', 'FLOW_SUBFLOW_EXECUTION_ACCOUNT_IDS', 'FLOW_RECOVERY_ACTIVE']) delete process.env[k]; sent.afterStore = null; sent.duringCall = null })
 
   it('S01: A -> B -> A -> C -> A on ONE run: B waits 13 minutes, nobody replied, follow-up, return, C, return, close, end', async () => {
     const w = await world(); const c = await contact(w); await send(w, c)
@@ -284,7 +284,7 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
       const w = await world(); const c = await contact(w); await send(w, c); const r = await run(c); await makeDue(r.id)
       const cl = await admin.rpc('claim_due_flow_waits', { p_account_ids: [acctA], p_limit: 50, p_lease_seconds: 300 }); const mine = (cl.data as { run_id: string; claim_token: string }[]).find((x) => x.run_id === r.id)!
       expect((await admin.rpc('consume_flow_wait', { p_account_id: acctA, p_run_id: r.id, p_claim_token: mine.claim_token, p_next_node_key: 'check' })).data).toBe(true)
-      await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`); return { w, c, r }
+      await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.messages set created_at = created_at - interval '20 minutes' where conversation_id='${r.conversation_id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`); return { w, c, r }
     }
     // (a) nothing happened after the cursor: safe to resume, the follow-up goes out once
     const a = await strand(); const sa = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }); expect(sa.resumed).toBeGreaterThanOrEqual(1)
@@ -306,7 +306,7 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
   it('S16: two recovery workers racing over the same stranded run resume it exactly once', async () => {
     const admin = (await import('./admin-client')).supabaseAdmin(); const w = await world(); const c = await contact(w); await send(w, c); const r = await run(c); await makeDue(r.id)
     const cl = await admin.rpc('claim_due_flow_waits', { p_account_ids: [acctA], p_limit: 50, p_lease_seconds: 300 }); const mine = (cl.data as { run_id: string; claim_token: string }[]).find((x) => x.run_id === r.id)!
-    await admin.rpc('consume_flow_wait', { p_account_id: acctA, p_run_id: r.id, p_claim_token: mine.claim_token, p_next_node_key: 'check' }); await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`)
+    await admin.rpc('consume_flow_wait', { p_account_id: acctA, p_run_id: r.id, p_claim_token: mine.claim_token, p_next_node_key: 'check' }); await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.messages set created_at = created_at - interval '20 minutes' where conversation_id='${r.conversation_id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`)
     const [p, q] = await Promise.all([engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }), engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 })])
     expect(p.resumed + q.resumed).toBe(1); expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE])
     pass('S16', 'two recovery passes at the same instant: one takes the run (compare-and-set on the cursor), the other skips it; each message delivered once')
