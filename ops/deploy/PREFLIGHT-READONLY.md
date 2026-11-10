@@ -34,7 +34,7 @@ grep -RIlE 'wacrm-app-1|127\.0\.0\.1:(3000|8080)|localhost:(3000|8080)' /etc/cro
 - Confirmar exactamente el upstream de `crm.globaltechup.com`, si usa `wacrm-app:3000`, transport/keepalive, timeouts, health checks y registros de acceso/errores.
 - No asumir que el bloque propuesto `caddy-hardening.proposed.md` ya esté instalado. **No editar, validar con reload ni reiniciar Caddy/Dentalpin.**
 - Medir solo conteos de errores upstream relacionados con WACRM para una ventana definida. No copiar líneas de logs con teléfonos, headers o payloads.
-- **Bloqueo P0:** el rollback actual reinicia el contenedor antiguo con el alias público antes de readiness. Requiere rediseño/ensayo antes de permitir una conmutación.
+- **Estado de código:** el rollback privado fue corregido en el PR #98: arranca sin alias público, verifica readiness y solo después publica el alias. Falta ensayo específico en el Docker Engine productivo (sin ejecutarlo durante este preflight). El intercambio de nombres tiene un correctivo adicional pendiente de revisión/CI; no considerar resueltos los fallos persistentes de `docker rename`.
 
 ## 4. Reversibilidad, seguridad y compatibilidad
 - Confirmar respaldo existente y su integridad mediante manifiesto/checksum; no crear ni restaurar backups todavía.
@@ -55,4 +55,4 @@ grep -RIlE 'wacrm-app-1|127\.0\.0\.1:(3000|8080)|localhost:(3000|8080)' /etc/cro
 | Backup | integridad verificada y rollback de datos documentado |
 | CI GitHub | CI y lab PASS en HEAD exacto |
 
-**Formato del reporte:** hora Lima y SHA, tabla de gates PASS/FAIL/PENDIENTE, evidencias sintetizadas, riesgos residuales, conclusión GO/NO-GO y cambios solicitados. Mientras falle cualquier gate crítico: NO-GO para merge y `--execute`.
+**Formato del reporte:** hora Lima y SHA, tabla de gates PASS/FAIL/PENDIENTE, evidencias sintetizadas, riesgos residuales, conclusión GO/NO-GO y cambios solicitados. Mientras falle cualquier gate crítico: NO-GO para despliegue (`--execute`); la integración de correctivos debe revisarse y autorizarse por separado, con CI y sin implicar autorización de producción.

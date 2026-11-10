@@ -59,16 +59,34 @@ if ! { grep -Fxq "$PREV_IP" <<<"$GOT" && grep -Fxq "$FAILED_IP" <<<"$GOT"; }; th
   abort_previous "rollback alias is not dual-serving; current release preserved"
 fi
 log "rollback alias validated for both live and previous containers"
-log "4/5 SIGTERM to the failed release after a ${DRAIN_SECONDS}s dual-serve window (grace ${STOP_GRACE}s)"
+log "4/5 waiting ${DRAIN_SECONDS}s for dual-serve before name swap"
 sleep "$DRAIN_SECONDS"
 [ "$(rollback_ready_status "$PREV_NAME")" = "200" ] ||
   abort_previous "previous image lost DB readiness while dual-serving"
-docker stop -t "$STOP_GRACE" "$FAILED" >/dev/null
-log "5/5 swapping names"
-retry_rename "$FAILED" "${LIVE_NAME}-failed-$TS" ||
-  die "CRITICAL: current failed release cannot be renamed; previous is serving but cron name requires manual repair"
-retry_rename "$PREV_NAME" "$LIVE_NAME" ||
-  die "CRITICAL: previous is serving but cannot acquire LIVE_NAME after 3 attempts; manual repair required"
+
+log "5/5 swapping names while both images still run; only then stop failed image"
+FAILED_NAME="${LIVE_NAME}-failed-$TS"
+SWAP_RESULT=0
+swap_running_live_name "$FAILED_NAME" "$PREV_NAME" "$LIVE_NAME" || SWAP_RESULT=$?
+if [ "$SWAP_RESULT" != "0" ]; then
+  if [ "$SWAP_RESULT" = "1" ] || [ "$SWAP_RESULT" = "2" ]; then
+    # Existing release is still the running live cron target; abort safely
+    # and restore the previous image to its private rollback endpoint.
+    abort_previous "rollback rename failed safely; current release remains live (code=$SWAP_RESULT)"
+  fi
+  die "CRITICAL: ambiguous rollback name handoff (code=$SWAP_RESULT); both instances left for manual repair"
+fi
+if [ "$(rollback_ready_status "$LIVE_NAME")" != "200" ]; then
+  log "CRITICAL: previous image lost readiness after rollback name swap; restoring running current release"
+  REVERSE_RESULT=0
+  swap_running_live_name "$PREV_NAME" "$FAILED_NAME" "$LIVE_NAME" || REVERSE_RESULT=$?
+  if [ "$REVERSE_RESULT" = "0" ]; then
+    abort_previous "previous image failed post-swap readiness; current release restored as $LIVE_NAME"
+  fi
+  die "CRITICAL: rollback readiness failure and reverse name handoff failed (code=$REVERSE_RESULT); manual intervention required"
+fi
+docker stop -t "$STOP_GRACE" "$FAILED_NAME" >/dev/null ||
+  die "CRITICAL: failed image could not be stopped; prior image stays live; manual inspection required"
 # An already executed rollback cannot be reused to restart a stale image.
 grep -vE '^(PREV_NAME|ROLLBACK_DISABLED|FAILED_NAME)=' "$STATE_DIR/last.env" >"$STATE_DIR/.last.env.rollback-$TS"
 echo "FAILED_NAME=${LIVE_NAME}-failed-$TS" >>"$STATE_DIR/.last.env.rollback-$TS"
