@@ -290,6 +290,11 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     }
     // (a) nothing happened after the cursor: safe to resume, the follow-up goes out once
     const a = await strand(); const sa = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' }); expect(sa.resumed).toBeGreaterThanOrEqual(1)
+    // Synthetic QA evidence only: capture the final state when the engine claims recovery but did not send.
+    if (textsFor(a.c).length !== 4) {
+      const final = await run(a.c); const ev = await events(a.r.id)
+      console.log('QA-RECOVERY-DIAG S15', JSON.stringify({ summary: sa, status: final.status, end_reason: final.end_reason, node: final.current_node_key, active_flow: final.current_flow_id, event_tail: ev.slice(-14).map((x) => ({ type: x.event_type, key: x.node_key, payload: x.payload })) }))
+    }
     expect(textsFor(a.c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(await run(a.c)).toMatchObject({ status: 'completed' })
     expect((await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' })).resumed).toBe(0); expect(textsFor(a.c)).toHaveLength(4)
     // (b) an intent was written, the process died, no confirmation: outcome UNKNOWN -> not resent, incident on record
@@ -310,6 +315,10 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     const cl = await admin.rpc('claim_due_flow_waits', { p_account_ids: [acctA], p_limit: 50, p_lease_seconds: 300 }); const mine = (cl.data as { run_id: string; claim_token: string }[]).find((x) => x.run_id === r.id)!
     await admin.rpc('consume_flow_wait', { p_account_id: acctA, p_run_id: r.id, p_claim_token: mine.claim_token, p_next_node_key: 'check' }); await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.messages set created_at = created_at - interval '20 minutes' where conversation_id='${r.conversation_id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`)
     const [p, q] = await Promise.all([engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' }), engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' })])
+    if (textsFor(c).length !== 4) {
+      const final = await run(c); const ev = await events(r.id)
+      console.log('QA-RECOVERY-DIAG S16', JSON.stringify({ summaries: [p, q], status: final.status, end_reason: final.end_reason, node: final.current_node_key, active_flow: final.current_flow_id, event_tail: ev.slice(-14).map((x) => ({ type: x.event_type, key: x.node_key, payload: x.payload })) }))
+    }
     expect(p.resumed + q.resumed).toBe(1); expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE])
     pass('S16', 'two recovery passes at the same instant: one takes the run (compare-and-set on the cursor), the other skips it; each message delivered once')
   })
