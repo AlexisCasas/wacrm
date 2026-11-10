@@ -5,7 +5,7 @@
 #   deploy.sh --execute <image:tag>    # does it
 #
 # Order: candidate (private alias) -> readiness gate -> DNS check -> public alias added (both serve) -> dual-serve window ->
-# old gets SIGTERM and time to finish (it leaves DNS when it exits) -> old kept STOPPED for rollback -> names swapped so the host crons work.
+# swap names while both containers are RUNNING -> post-swap readiness -> SIGTERM old (70s grace) -> park stopped old privately for rollback.
 # The old container is deliberately NOT disconnected from the network: that severs its in-flight connections (see lab-alias-flip.sh).
 # Any failure before the old container is stopped leaves the old one serving and removes the candidate.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,7 +92,9 @@ fi
 bash "$DIR/lab-private-rollback.sh" "$IMAGE" ||
   die "this Docker Engine cannot safely park a stopped image; no live change"
 
-mkdir -p "$STATE_DIR"
+prepare_private_state_dir || die "cannot securely create deploy state dir (must be a real directory with mode 0700)"
+[ ! -e "$IMAGE_OVERRIDE" ] && [ ! -L "$IMAGE_OVERRIDE" ] || die "image override path already exists; refusing to overwrite"
+[ ! -e "$STATE_DIR/$TS.env" ] && [ ! -L "$STATE_DIR/$TS.env" ] || die "deployment manifest already exists; refusing to overwrite"
 cat >"$IMAGE_OVERRIDE" <<YML
 services:
   app:
@@ -102,6 +104,8 @@ YML
   echo "TS=$TS"; echo "OLD_NAME=$OLD"; echo "OLD_IMAGE=$(docker inspect -f '{{.Config.Image}}' "$OLD")"; echo "OLD_IMAGE_ID=$(docker inspect -f '{{.Image}}' "$OLD")"
   echo "NEW_IMAGE=$IMAGE"; echo "CAND=$CAND"
 } >"$STATE_DIR/$TS.env"
+chmod 600 -- "$IMAGE_OVERRIDE" "$STATE_DIR/$TS.env" || die "cannot restrict private deploy files"
+private_state_manifest "$STATE_DIR/$TS.env" || die "manifest permissions are not 0600"
 
 # Validate the *final* composed candidate after generating its image override.
 ( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "$COMPOSE_PROJECT" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" config -q ) ||
@@ -189,6 +193,8 @@ else
 fi
 cp "$STATE_DIR/$TS.env" "$STATE_DIR/.last.env.tmp-$TS"
 mv -f "$STATE_DIR/.last.env.tmp-$TS" "$STATE_DIR/last.env"
+chmod 600 -- "$STATE_DIR/last.env" || die "cannot secure rollback manifest"
+private_state_manifest "$STATE_DIR/last.env" || die "rollback manifest permissions are not 0600"
 if [ "$PARK_OK" != "1" ]; then
   die "cutover serving new image, but rollback is DISABLED; do not run rollback.sh or retry deployment until manual repair"
 fi
