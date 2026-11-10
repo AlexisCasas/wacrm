@@ -77,4 +77,33 @@ describe('GET /api/ads/results', () => {
     await get()
     expect(writes).not.toHaveBeenCalled()
   })
+  it('sold-products helper is called with the SESSION account only; original report fields unchanged; nothing is written', async () => {
+    rpc.mockImplementation(async (name: string) => (name === 'ads_results_report'
+      ? { data: [{ source_id: 'AD1', headline: 'H', contacts: 4, buyers: 1, orders: 2, order_amount: 200, units: 3, products: [] }], error: null }
+      : { data: [{ product: 'Laser', buyers: 1, orders: 2, units: 3, sales: 200, legacy_orders: 0 }], error: null }))
+    const body = await (await get('?account_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb')).json()
+    expect(rpc).toHaveBeenCalledWith('ads_results_by_product', expect.objectContaining({ p_account: A }))
+    expect(rpc.mock.calls.map((c) => c[0]).sort()).toEqual(['ads_results_by_product', 'ads_results_report'])
+    expect(body.ads[0]).toMatchObject({ contacts: 4, buyers: 1, orders: 2, order_amount: 200, conversion_pct: 25 })
+    expect(Object.keys(body.ads[0]).sort()).toEqual(['buyers', 'contacts', 'conversion_pct', 'headline', 'order_amount', 'orders', 'products', 'source_id', 'units'])
+    expect(body.product_sales).toEqual([expect.objectContaining({ product: 'Laser', avg_ticket: 200 })])
+    expect(writes).not.toHaveBeenCalled()
+  })
+  it('helper missing/failing never breaks the original report', async () => {
+    rpc.mockImplementation(async (name: string) => (name === 'ads_results_report'
+      ? { data: [{ source_id: 'AD1', contacts: 1, buyers: 0, orders: 0, order_amount: 0, units: 0 }], error: null }
+      : { data: null, error: { message: 'function does not exist' } }))
+    const res = await get()
+    expect(res.status).toBe(200)
+    const body = await res.json()
+    expect(body.ads).toHaveLength(1)
+    expect(body.product_sales).toBeNull()
+  })
+  it('no network call of any kind (no Meta)', async () => {
+    const f = vi.fn(async () => { throw new Error('NETWORK') })
+    vi.stubGlobal('fetch', f)
+    await get()
+    expect(f).not.toHaveBeenCalled()
+    vi.unstubAllGlobals()
+  })
 })

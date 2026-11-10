@@ -15,9 +15,12 @@ export async function GET(request: Request) {
     if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime()) || from >= to || to.getTime() - from.getTime() > 366 * DAY) {
       return NextResponse.json({ error: 'invalid period' }, { status: 400 })
     }
-    const { data, error } = await supabase.rpc('ads_results_report', { p_account: accountId, p_from: from.toISOString(), p_to: to.toISOString() })
+    const args = { p_account: accountId, p_from: from.toISOString(), p_to: to.toISOString() }
+    const { data, error } = await supabase.rpc('ads_results_report', args)
     if (error) return NextResponse.json({ error: 'Could not load the report' }, { status: 500 })
-    const report = buildAdsReport(data ?? [], from.toISOString(), to.toISOString())
+    // Additive sold-products helper: if it is missing (migration not applied) or fails, the original report is returned unchanged.
+    const products = await supabase.rpc('ads_results_by_product', args)
+    const report = buildAdsReport(data ?? [], from.toISOString(), to.toISOString(), products.error ? null : (products.data ?? []))
     // Only the on/off state of the Meta sending for THIS account (service role scoped to the session's account; no ids, no token).
     const { data: capi } = await supabaseAdmin().from('meta_capi_settings').select('enabled, test_event_code').eq('account_id', accountId).maybeSingle()
     report.meta_capi = { enabled: capi?.enabled === true, test_mode: !!capi?.test_event_code }

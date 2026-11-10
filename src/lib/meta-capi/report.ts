@@ -9,8 +9,24 @@ export interface AdsReportRow {
   products: { name: string; units: number }[]
 }
 
+/** SOLD product (from order lines), never the advertised product. Additive: independent of every existing metric. */
+export interface ProductSalesRow {
+  product: string
+  buyers: number
+  orders: number
+  units: number
+  /** Sum of item-level subtotals (legacy one-line orders: the order price). Never a prorated share of an order total. */
+  sales: number
+  /** Orders in this row that came from the legacy header (no item detail). */
+  legacy_orders: number
+  /** sales / buyers. */
+  avg_ticket: number | null
+}
+
 export interface AdsReport {
   period: { from: string; to: string }
+  /** All confirmed orders of the period by sold product. null = the read-only helper function is not available (migration not applied). */
+  product_sales: ProductSalesRow[] | null
   ads: (AdsReportRow & { conversion_pct: number | null })[]
   unattributed: AdsReportRow | null
   totals: { contacts: number; orders: number; order_amount: number; attributed_orders: number; unattributed_orders: number }
@@ -24,7 +40,19 @@ export interface AdsReport {
 
 const num = (v: unknown) => (typeof v === 'number' ? v : Number(v ?? 0)) || 0
 
-export function buildAdsReport(rows: unknown[], from: string, to: string): AdsReport {
+const money2 = (n: number) => Math.round(n * 100) / 100
+
+export function buildProductSales(rows: unknown[] | null | undefined): ProductSalesRow[] | null {
+  if (!Array.isArray(rows)) return null
+  return rows.map((r) => {
+    const x = r as Record<string, unknown>
+    const buyers = num(x.buyers)
+    const sales = money2(num(x.sales))
+    return { product: typeof x.product === 'string' ? x.product : '—', buyers, orders: num(x.orders), units: num(x.units), sales, legacy_orders: num(x.legacy_orders), avg_ticket: buyers > 0 ? money2(sales / buyers) : null }
+  })
+}
+
+export function buildAdsReport(rows: unknown[], from: string, to: string, productRows?: unknown[] | null): AdsReport {
   const all: AdsReportRow[] = (rows ?? []).map((r) => {
     const x = r as Record<string, unknown>
     return {
@@ -46,6 +74,7 @@ export function buildAdsReport(rows: unknown[], from: string, to: string): AdsRe
   return {
     period: { from, to },
     ads,
+    product_sales: buildProductSales(productRows),
     unattributed,
     totals: {
       contacts: ads.reduce((a, r) => a + r.contacts, 0),

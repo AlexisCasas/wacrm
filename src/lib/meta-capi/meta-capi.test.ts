@@ -182,4 +182,25 @@ describe('buildAdsReport', () => {
     const rep = buildAdsReport([{ source_id: 'A', contacts: 5, buyers: 0, orders: 0, order_amount: 0, units: 0 }, { source_id: 'B', contacts: 0, buyers: 0, orders: 1, order_amount: 9, units: 1 }], 'f', 't')
     expect(rep.ads.map((a) => a.conversion_pct)).toEqual([0, null])
   })
+
+describe('buildAdsReport: additive sold-products block', () => {
+  const rows = [
+    { source_id: 'AD1', headline: 'Oferta', contacts: 10, buyers: 2, orders: 3, order_amount: '300.00', units: 5, products: [{ name: 'Laser', units: 5 }] },
+    { source_id: null, headline: null, contacts: 0, buyers: 0, orders: 4, order_amount: 100, units: 4, products: [] },
+  ]
+  it('existing figures are identical with or without product rows', () => {
+    const base = buildAdsReport(rows, 'f', 't')
+    const withP = buildAdsReport(rows, 'f', 't', [{ product: 'Laser', buyers: 2, orders: 3, units: 4, sales: '390.00', legacy_orders: 1 }])
+    const { product_sales: a, ...restBase } = base
+    const { product_sales: b, ...restWith } = withP
+    expect(restWith).toEqual(restBase)
+    expect(a).toBeNull()
+    expect(b).toEqual([{ product: 'Laser', buyers: 2, orders: 3, units: 4, sales: 390, legacy_orders: 1, avg_ticket: 195 }])
+    expect(base.totals).toMatchObject({ contacts: 10, attributed_orders: 3, unattributed_orders: 4, orders: 7, order_amount: 400 })
+  })
+  it('empty product list stays empty; buyers = 0 gives no ticket', () => {
+    expect(buildAdsReport([], 'f', 't', []).product_sales).toEqual([])
+    expect(buildAdsReport([], 'f', 't', [{ product: 'X', buyers: 0, orders: 0, units: 0, sales: 0 }]).product_sales?.[0].avg_ticket).toBeNull()
+  })
+})
 })

@@ -115,6 +115,48 @@ export default function AdsResultsPage() {
             </CardContent>
           </Card>
 
+          {report.product_sales && (
+            <Card data-testid="sold-products">
+              <CardHeader>
+                <CardTitle className="text-base">Por producto vendido</CardTitle>
+              </CardHeader>
+              <CardContent className="overflow-x-auto">
+                {report.product_sales.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">Sin pedidos confirmados en este periodo.</p>
+                ) : (
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Producto</TableHead>
+                        <TableHead className="text-right">Compradores</TableHead>
+                        <TableHead className="text-right">Pedidos</TableHead>
+                        <TableHead className="text-right">Unidades</TableHead>
+                        <TableHead className="text-right">Ventas</TableHead>
+                        <TableHead className="text-right">Ticket promedio</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {report.product_sales.map((p) => (
+                        <TableRow key={p.product.toLowerCase()}>
+                          <TableCell className="font-medium">{p.product}</TableCell>
+                          <TableCell className="text-right">{p.buyers}</TableCell>
+                          <TableCell className="text-right">{p.orders}</TableCell>
+                          <TableCell className="text-right">{p.units}</TableCell>
+                          <TableCell className="text-right">{money(p.sales)}</TableCell>
+                          <TableCell className="text-right">{p.avg_ticket === null ? '—' : money(p.avg_ticket)}</TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                )}
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Producto vendido, no necesariamente producto publicitado. Todos los pedidos confirmados del periodo, con o sin anuncio; las ventas son importes de
+                  pedidos confirmados (no cobrados) tomados de las líneas del pedido, y en pedidos antiguos sin detalle, del importe del pedido.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
           <p className="text-xs text-muted-foreground">
             Los importes son pedidos confirmados, no ventas cobradas. {report.verified_sales.reason} ROAS no disponible: {report.roas.reason} Conversión = contactos del
             anuncio que pidieron ÷ contactos del anuncio en el periodo.
