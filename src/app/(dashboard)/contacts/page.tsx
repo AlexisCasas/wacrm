@@ -68,6 +68,7 @@ import { bulkDeleteContacts } from '@/lib/contacts/bulk-delete-api';
 import { TIME_FILTERS, resolveTimeRange, isTimeFilterActive, type TimeFilter, type TimeRange } from '@/lib/contacts/time-filter';
 
 const PAGE_SIZE = 25;
+const BULK_DELETE_BATCH_SIZE = 100;
 
 // base-ui renders the checkbox as an inline <span>. In a table cell an inline element ignores width/height (measured in Chromium: display inline,
 // 2x17 px box), so only the two vertical borders painted and it looked like a line. inline-flex makes the size apply; min-size / shrink-0 /
@@ -113,8 +114,10 @@ export default function ContactsPage() {
   const [deleteTarget, setDeleteTarget] = useState<Contact | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  // Bulk selection (page-scoped — only the loaded rows are selectable)
+  // A normal selection holds explicitly ticked ids. A header selection
+  // represents the full current result set, with explicit exclusions here.
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [allMatchingSelected, setAllMatchingSelected] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   // Synchronous guard against a double click on a destructive button (state updates are async).
   const deletingRef = useRef(false);
@@ -146,11 +149,6 @@ export default function ContactsPage() {
   const fetchContacts = useCallback(async () => {
     const seq = ++fetchSeq.current;
     setLoading(true);
-    // The visible rows are about to change — drop any selection that
-    // referred to the old page/search results so the bulk bar can't
-    // act on rows the user can no longer see.
-    setSelected(new Set());
-
     const from = page * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
     const term = search.trim();
@@ -307,20 +305,22 @@ export default function ContactsPage() {
     setDeleteTarget(null);
   }
 
+  function clearSelection() {
+    setSelected(new Set());
+    setAllMatchingSelected(false);
+  }
+
+  const isSelected = (id: string) => allMatchingSelected ? !selected.has(id) : selected.has(id);
+  const selectedCount = allMatchingSelected ? Math.max(0, totalCount - selected.size) : selected.size;
+
   const allOnPageSelected =
-    contacts.length > 0 && contacts.every((c) => selected.has(c.id));
-  const someOnPageSelected = contacts.some((c) => selected.has(c.id));
+    contacts.length > 0 && contacts.every((c) => isSelected(c.id));
+  const someOnPageSelected = contacts.some((c) => isSelected(c.id));
 
   function toggleSelectAll() {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (allOnPageSelected) {
-        contacts.forEach((c) => next.delete(c.id));
-      } else {
-        contacts.forEach((c) => next.add(c.id));
-      }
-      return next;
-    });
+    if (allMatchingSelected) return clearSelection();
+    setSelected(new Set());
+    setAllMatchingSelected(true);
   }
 
   function toggleSelect(id: string) {
@@ -332,26 +332,66 @@ export default function ContactsPage() {
     });
   }
 
+  async function resolveAllMatchingIds(): Promise<string[]> {
+    const ids: string[] = [];
+    const excluded = selected;
+    const term = search.trim();
+    for (let offset = 0; ids.length < totalCount; offset += BULK_DELETE_BATCH_SIZE) {
+      if (selectedTagIds.length > 0) {
+        const { data, error } = isTimeFilterActive(timeRange)
+          ? await supabase.rpc('filter_contacts_by_tags_time', { p_tag_ids: selectedTagIds, p_search: term || null, p_limit: BULK_DELETE_BATCH_SIZE, p_offset: offset, p_created_from: timeRange.from, p_created_to: timeRange.to })
+          : await supabase.rpc('filter_contacts_by_tags', { p_tag_ids: selectedTagIds, p_search: term || null, p_limit: BULK_DELETE_BATCH_SIZE, p_offset: offset });
+        if (error) throw error;
+        const pageIds = ((data ?? []) as { contact: Pick<Contact, 'id'> }[]).map(({ contact }) => contact.id).filter((id) => !excluded.has(id));
+        if (pageIds.length === 0 && (data ?? []).length === 0) break;
+        ids.push(...pageIds);
+      } else {
+        let query = supabase.from('contacts').select('id').order('created_at', { ascending: false }).range(offset, offset + BULK_DELETE_BATCH_SIZE - 1);
+        if (term) { const like = `%${term}%`; query = query.or(`name.ilike.${like},phone.ilike.${like},email.ilike.${like},wa_username.ilike.${like}`); }
+        if (timeRange.from) query = query.gte('created_at', timeRange.from);
+        if (timeRange.to) query = query.lt('created_at', timeRange.to);
+        const { data, error } = await query;
+        if (error) throw error;
+        const pageIds = ((data ?? []) as Pick<Contact, 'id'>[]).map((contact) => contact.id).filter((id) => !excluded.has(id));
+        if (pageIds.length === 0 && (data ?? []).length === 0) break;
+        ids.push(...pageIds);
+      }
+    }
+    return ids;
+  }
+
   async function handleBulkDelete() {
-    // The ONLY input is the set of ids the user ticked: no filters, search, tag or time range travel to the server.
-    const ids = [...selected];
-    if (ids.length === 0 || deletingRef.current) return;
+    if (selectedCount === 0 || deletingRef.current) return;
     deletingRef.current = true;
     setDeleting(true);
 
     try {
-      const result = await bulkDeleteContacts(ids);
-      if (!result.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
-      else toast.success(t('toastBulkDeleted', { count: result.deleted }));
-      setSelected(new Set());
+      const ids = allMatchingSelected ? await resolveAllMatchingIds() : [...selected];
+      if (ids.length === 0) return;
+      let deleted = 0;
+      let cleanupComplete = true;
+      for (let index = 0; index < ids.length; index += BULK_DELETE_BATCH_SIZE) {
+        try {
+          const result = await bulkDeleteContacts(ids.slice(index, index + BULK_DELETE_BATCH_SIZE));
+          deleted += result.deleted;
+          cleanupComplete = cleanupComplete && result.cleanup_complete;
+        } catch (error) {
+          setAllMatchingSelected(false);
+          setSelected(new Set(ids.slice(index)));
+          throw error;
+        }
+      }
+      if (!cleanupComplete) toast.warning(t('toastMediaCleanupIncomplete'));
+      else toast.success(t('toastBulkDeleted', { count: deleted }));
+      clearSelection();
       fetchContacts();
     } catch {
       toast.error(t('toastBulkFailedDelete'));
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
+      setBulkDeleteOpen(false);
     }
-
-    deletingRef.current = false;
-    setDeleting(false);
-    setBulkDeleteOpen(false);
   }
 
   const totalPages = Math.ceil(totalCount / PAGE_SIZE);
@@ -366,6 +406,7 @@ export default function ContactsPage() {
   const hasActiveFilters = search.trim().length > 0 || selectedTagIds.length > 0 || isTimeFilterActive(timeRange);
 
   function toggleTagFilter(tagId: string) {
+    clearSelection();
     setSelectedTagIds((prev) =>
       prev.includes(tagId)
         ? prev.filter((id) => id !== tagId)
@@ -375,12 +416,14 @@ export default function ContactsPage() {
   }
 
   function clearTagFilters() {
+    clearSelection();
     setSelectedTagIds([]);
     setPage(0);
   }
 
   // Time filter helpers. Like the other filters, every change resets to page 0 (and the fetch drops any selection).
   function applyTimeFilter(filter: TimeFilter, from = customFrom, to = customTo) {
+    clearSelection();
     setTimeFilter(filter);
     const result = resolveTimeRange(filter, new Date(), from, to);
     if (result.ok) {
@@ -474,6 +517,7 @@ export default function ContactsPage() {
               value={search}
               onChange={(e) => {
                 setSearch(e.target.value);
+                clearSelection();
                 // Reset pagination when the query changes — the result
                 // set shrinks/grows, page N may no longer be valid.
                 setPage(0);
@@ -682,16 +726,16 @@ export default function ContactsPage() {
       </div>
 
       {/* Bulk action bar */}
-      {selected.size > 0 && (
+      {selectedCount > 0 && (
         <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-muted/40 px-4 py-2">
           <p className="text-sm text-foreground">
-            {t('selectedCount', { count: selected.size })}
+            {t('selectedCount', { count: selectedCount })}
           </p>
           <div className="flex items-center gap-2">
             <Button
               variant="ghost"
               size="sm"
-              onClick={() => setSelected(new Set())}
+              onClick={clearSelection}
               className="text-muted-foreground hover:text-foreground"
             >
               {t('clearSelection')}
@@ -779,7 +823,7 @@ export default function ContactsPage() {
                 >
                   <TableCell onClick={(e) => e.stopPropagation()}>
                     <Checkbox
-                      checked={selected.has(contact.id)}
+                      checked={isSelected(contact.id)}
                       onCheckedChange={() => toggleSelect(contact.id)}
                       aria-label={`Select ${contactLabel(contact)}`}
                       className={TABLE_CHECKBOX_CLASS}
@@ -987,10 +1031,10 @@ export default function ContactsPage() {
         <DialogContent className="bg-popover border-border text-popover-foreground sm:max-w-sm">
           <DialogHeader>
             <DialogTitle className="text-popover-foreground">
-              {t('deleteBulkTitle', { count: selected.size })}
+              {t('deleteBulkTitle', { count: selectedCount })}
             </DialogTitle>
             <DialogDescription className="text-muted-foreground">
-              {t('deleteBulkDesc', { count: selected.size })}{' '}
+              {t('deleteBulkDesc', { count: selectedCount })}{' '}
               {t('deleteBulkRecreate')}{' '}
               <strong className="font-semibold text-foreground">{t('deleteBulkIrreversible')}</strong>
             </DialogDescription>
@@ -1009,7 +1053,7 @@ export default function ContactsPage() {
               disabled={deleting}
             >
               {deleting && <Loader2 className="size-4 animate-spin" />}
-              {t('deleteBulkConfirm', { count: selected.size })}
+              {t('deleteBulkConfirm', { count: selectedCount })}
             </Button>
           </DialogFooter>
         </DialogContent>
