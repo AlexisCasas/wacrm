@@ -233,6 +233,8 @@ export function MessageThread({
   const activeConversationIdRef = useRef<string | undefined>(undefined);
   // Scroll geometry captured right before older rows are prepended, so the reader's position can be restored after layout.
   const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  // Discard a delayed older-page response if a resync has rebuilt the current window.
+  const latestPageGenerationRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const scrollContentRef = useRef<HTMLDivElement>(null);
   // This is intentionally a ref: recording every pixel of a user's scroll in
@@ -411,6 +413,7 @@ export function MessageThread({
           nextMessages = applied.messages;
           nextHasMoreOlder = applied.hasMoreOlder;
         }
+        latestPageGenerationRef.current += 1;
         hasMoreOlderRef.current = nextHasMoreOlder;
         setHasMoreOlder(nextHasMoreOlder);
         onMessagesLoadedRef.current(nextMessages);
@@ -568,7 +571,8 @@ export function MessageThread({
 
   // Load the page of messages immediately older than the oldest one held, keeping the reader exactly where they were.
   const loadOlder = useCallback(async () => {
-    if (!conversationId || loadingOlderRef.current || !hasMoreOlderRef.current) return;
+    if (!conversationId || loadingOlderRef.current || !hasMoreOlderRef.current || fetchedConversationIdRef.current !== conversationId) return;
+    const generation = latestPageGenerationRef.current;
     const cursor = oldestCursor(messagesRef.current);
     if (!cursor) return;
     loadingOlderRef.current = true;
@@ -576,8 +580,9 @@ export function MessageThread({
     const page = await fetchOlderPage(createClient(), conversationId, cursor);
     loadingOlderRef.current = false;
     setLoadingOlder(false);
-    // The reader moved to another conversation while the page was loading: drop it.
-    if (activeConversationIdRef.current !== conversationId) return;
+    // Discard after a conversation switch or a newer resync. Otherwise stale history
+    // could be inserted across a gap that the latest-page fetch intentionally reset.
+    if (activeConversationIdRef.current !== conversationId || latestPageGenerationRef.current !== generation) return;
     if (page.error) {
       console.error("Failed to fetch earlier messages:", page.error);
       return;
