@@ -29,14 +29,24 @@ The old container is deliberately **not** disconnected from the network first: t
 ## Usage
 ```bash
 # 1. image already built OFF the VPS and loaded (docker load), checksum verified (existing validate-loaded-image.sh pattern)
-ops/deploy/deploy.sh wacrm-app:<tag>              # DRY-RUN: preflight + plan, mutates nothing
-ops/deploy/deploy.sh --execute wacrm-app:<tag>    # deploy
+ops/deploy/deploy.sh wacrm-app:<tag>              # DRY-RUN: preflight + plan; no container mutation
+# Only AFTER verifying nobody depends on the old host-published port:
+ALLOW_DROP_HOST_PORTS=1 ops/deploy/deploy.sh wacrm-app:<tag>              # protected dry-run
+ALLOW_DROP_HOST_PORTS=1 ops/deploy/deploy.sh --execute wacrm-app:<tag>    # separate explicit production approval required
 ops/deploy/verify-no-502.sh --since 15m           # read-only proof
 ops/deploy/rollback.sh --execute                  # if needed
 ```
 **First rollout:** keep the default `READY_PATH=/api/health/ready` for `deploy.sh`. The **candidate** is the new image from this PR and already has the endpoint; the old live container is not checked for readiness during deployment. Do **not** set `READY_PATH=/` on deploy: WACRM's `/` redirects to `/dashboard` (and may redirect again to login), so HTTP 200 would not prove DB readiness.
 
-**First rollback compatibility:** the previous, pre-OPS image does not have `/api/health/ready`, but `rollback.sh` checks readiness on the previous container. Before attempting the first rollback, explicitly verify old-image DB connectivity and its authenticated request path in a controlled preflight. A rollback-only `READY_PATH=/` fallback is a *degraded HTTP-liveness check*, not a DB readiness check; it must never be presented as proof of database health. For later deployments both images include `/api/health/ready` and the default applies.
+**First rollback compatibility:** older images do not implement `/api/health/ready`. The deploy preflight and rollback can instead issue a *read-only* `accounts?select=id&limit=1` request to the Supabase REST API **from inside the old container**, using its existing service-role environment variables. Credentials and query data are not printed. It must return HTTP 200; redirects to dashboard/login are never accepted as readiness. If neither the new health endpoint nor the DB-backed fallback works, deployment/rollback is blocked. Check this behavior on the actual old image before the first production cutover.
+
+## Mandatory preflight — first production cutover (NO-GO until approved)
+- The current `docker-compose.yml` publishes `HOST_PORT:3000` on the VPS. The candidate **must omit this binding** while the old container owns it; after cutover the new container will not expose that host port. Before setting `ALLOW_DROP_HOST_PORTS=1`, inventory *all* host-port consumers (local probes, other containers, cron scripts, external integrations and monitoring) and either migrate them to `edge_proxy` or choose a different deployment architecture. Do not assume Caddy is the only client.
+- Validate `docker compose version` (**>=2.24.4** for `!override`) and `docker compose ... config` against the *actual* live overlays and environment. `deploy.sh` enforces the Compose configuration check before mutations.
+- Verify `edge_proxy`, shared Caddy reverse proxy, available memory/disk, live Compose project labels, candidate image checksum, all host/cron dependencies and the DB-backed rollback probe; take and verify a backup before the execute window.
+- Rehearse dual-service window with synthetic/test traffic where possible. The existing lab proves isolated DNS/connection behavior, **not** real Caddy no-502 under concurrent WhatsApp webhooks.
+- The deployed state file `last.env` is published **only after successful name swap**. An aborted candidate keeps the previously known-good rollback pointer.
+- **No production command, Caddy edit, shared Dentalpin change, restart or migration is authorized by merging this PR.** Run `--execute` only under a separate explicit approval.
 
 ## Rollback
 `rollback.sh` starts the stopped previous container (it rejoins `edge_proxy` with its aliases), waits for readiness, lets both serve,
@@ -44,8 +54,7 @@ then stops the failed release (kept as `wacrm-app-1-failed-<ts>`). Any failure *
 and removes the candidate. State of the last deploy: `/opt/backups/wacrm/deploy-state/last.env`.
 
 ## Confirming the 502s are gone
-`verify-no-502.sh` counts error lines for `/api/whatsapp/webhook` in the Caddy log (Caddy logs **errors only**, so zero lines = no failed
-upstream request) and probes readiness. Expected: `PASS` for a window that contains a deploy done with this procedure. Compare with the
+`verify-no-502.sh` counts error lines for `/api/whatsapp/webhook` in the Caddy log **only if the log is readable** and requires a successful DB-backed readiness probe. Zero error lines alone is *not proof* that no requests failed: absence of access logs or a logging gap could hide failures. Independently verify Meta delivery statuses and webhook retry counts. Expected: `PASS` for a window that contains a deploy done with this procedure. Compare with the
 same command over `--since 2026-11-10T18:00:00Z --until 2026-11-10T18:40:00Z`, which reports the 91 from the old procedure.
 For stronger evidence also watch Meta's webhook delivery dashboard (no retries around the deploy minute).
 
