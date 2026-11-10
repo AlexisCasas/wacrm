@@ -81,6 +81,11 @@ export QA_REST_URL="http://$IP:3000"
 export QA_JWT_SECRET="$SECRET"
 export QA_PG_CONTAINER="$DB"
 export QA_ENGINE_ADMIN_NOW=1
+# Node 20 supports a built-in WebSocket behind this flag. supabase-js builds
+# its Realtime client while the integration test creates a DB client, even
+# though these tests make no Realtime connections.
+export NODE_OPTIONS="--experimental-websocket"
+node -e 'if (typeof WebSocket !== "function") process.exit(1)'
 set +e
 npx vitest run "$QA_TEST_FILE" --reporter=verbose --no-file-parallelism 2>&1 | tee "$LOG"
 rc=$?
