@@ -17,7 +17,7 @@ if [ "${1:-}" = "--execute" ]; then EXECUTE=1; shift; fi
 IMAGE="${1:-}"; [ -n "$IMAGE" ] || die "usage: deploy.sh [--execute] <image:tag>"
 # The candidate is built from this release and must provide the DB-backed readiness route.
 # The home page redirects to dashboard/login and could return 200 with the DB unavailable.
-[ "$READY_PATH" != "/" ] || die "READY_PATH=/ is not a database readiness gate; use /api/health/ready for the candidate"
+[ "$READY_PATH" = "/api/health/ready" ] || die "READY_PATH is not a database readiness gate; use exactly /api/health/ready for the candidate"
 need docker; need flock
 export EXECUTE
 
