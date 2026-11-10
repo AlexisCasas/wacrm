@@ -36,7 +36,7 @@ vi.mock('./admin-client', () => {
   const client = url && process.env.QA_PG_CONTAINER ? createClient(url, token, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { fetch: (input, init) => { const u = typeof input === 'string' ? input : input instanceof URL ? input.href : (input as Request).url; if (!u.startsWith(url)) throw new Error(`blocked: ${u}`); return fetch(u.replace('/rest/v1', ''), init) } },
-  })
+  }) : null
   return { supabaseAdmin: () => {
     if (!client) throw new Error('Disposable QA PostgREST/PostgreSQL not configured')
     return client
