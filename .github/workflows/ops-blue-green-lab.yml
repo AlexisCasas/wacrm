@@ -20,6 +20,26 @@ jobs:
         run: |
           set -euo pipefail
           for script in ops/deploy/*.sh; do bash -n "$script"; done
+      - name: Verify bounded rename retry and fail-closed semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          . ops/deploy/lib.sh
+          attempt=0
+          docker() {
+            attempt=$((attempt + 1))
+            [ "$1" = rename ] || return 99
+            [ "$attempt" -ne 1 ]
+          }
+          retry_rename qa-old qa-live
+          [ "$attempt" -eq 2 ] || exit 1
+          attempt=0
+          docker() { attempt=$((attempt + 1)); return 1; }
+          if retry_rename qa-old qa-live; then
+            echo "OPS RENAME FAIL: persistent Docker error was accepted"; exit 1
+          fi
+          [ "$attempt" -eq 3 ] || exit 1
+          echo "OPS_RENAME_RETRY=PASS"
       - name: Pull disposable Node image
         run: docker pull node:20-alpine
       - name: Verify candidate Compose overlay parses without the public alias
