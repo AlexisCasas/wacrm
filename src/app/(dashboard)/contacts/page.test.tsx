@@ -195,6 +195,17 @@ describe('Contacts page — selection', () => {
     fireEvent.click(screen.getByText('clearSelection'))
     expect(screen.queryByText(/^selectedCount/)).toBeNull()
   })
+
+  it('header checkbox restores excluded rows to a global selection', async () => {
+    h.total = 60
+    render(<ContactsPage />); await loaded()
+    const header = await screen.findByRole('checkbox', { name: 'selectAllAria', hidden: true })
+    fireEvent.click(header)
+    fireEvent.click(await rowBox(1))
+    expect(screen.getByText('selectedCount:59')).toBeTruthy()
+    fireEvent.click(header)
+    expect(screen.getByText('selectedCount:60')).toBeTruthy()
+  })
 })
 
 describe('Contacts page — delete', () => {
@@ -262,6 +273,7 @@ describe('Contacts page — delete', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     expect(toast.success).not.toHaveBeenCalledWith('toastBulkDeleted:101')
     expect(screen.getByText('selectedCount:1')).toBeTruthy()
+    await waitFor(() => expect(h.queries.length).toBeGreaterThan(2))
   })
 
   it('a failed delete keeps the selection and shows the error', async () => {

@@ -318,7 +318,13 @@ export default function ContactsPage() {
   const someOnPageSelected = contacts.some((c) => isSelected(c.id));
 
   function toggleSelectAll() {
-    if (allMatchingSelected) return clearSelection();
+    if (allMatchingSelected) {
+      if (selected.size > 0) {
+        setSelected(new Set());
+        return;
+      }
+      return clearSelection();
+    }
     setSelected(new Set());
     setAllMatchingSelected(true);
   }
@@ -378,6 +384,7 @@ export default function ContactsPage() {
         } catch (error) {
           setAllMatchingSelected(false);
           setSelected(new Set(ids.slice(index)));
+          fetchContacts();
           throw error;
         }
       }
