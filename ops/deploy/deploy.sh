@@ -30,6 +30,15 @@ container_running "$OLD" || die "live container $OLD is not running: this script
 docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE is not loaded on this host"
 [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" != "$(docker inspect -f '{{.Image}}' "$OLD")" ] || die "$IMAGE is already the running image"
 docker network inspect "$EDGE_NETWORK" >/dev/null 2>&1 || die "network $EDGE_NETWORK not found"
+# The base Compose file publishes HOST_PORT:3000. Two instances cannot bind the
+# same host port, and the new candidate deliberately has no host publication.
+# Do not silently retire an endpoint consumed by other host-side integrations.
+PUBLISHED_PORTS="$(docker port "$OLD" 2>/dev/null || true)"
+if [ -n "$PUBLISHED_PORTS" ]; then
+  log "HOST PORT IMPACT: $OLD currently publishes: $PUBLISHED_PORTS"
+  [ "${ALLOW_DROP_HOST_PORTS:-0}" = "1" ] ||
+    die "candidate uses edge_proxy only and would remove the host-published port after cutover. Verify every host-port client and explicitly set ALLOW_DROP_HOST_PORTS=1 only when approved"
+fi
 
 # The live container's own compose definition: same files, same project working dir.
 PROJECT_DIR="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$OLD")"
@@ -43,6 +52,10 @@ for f in "${FILES[@]}"; do
   [ -f "$f" ] || die "compose file from labels not found: $f"
   COMPOSE_ARGS+=(-f "$f")
 done
+# Validate the live overlays and support for Compose !override BEFORE changing
+# state. This requires Docker Compose >= 2.24.4.
+( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "wacrm-cand-$TS" "${COMPOSE_ARGS[@]}" -f "$DIR/candidate.override.yml" config -q ) ||
+  die "candidate Compose overlay invalid, or Docker Compose too old for !override"
 IMAGE_OVERRIDE="$STATE_DIR/$TS-image-override.yml"
 log "live=$OLD  image(old)=$(docker inspect -f '{{.Config.Image}}' "$OLD")  ->  image(new)=$IMAGE"
 log "compose overlays kept: ${#COMPOSE_ARGS[@]} files; project dir $PROJECT_DIR"
@@ -69,7 +82,6 @@ YML
   echo "TS=$TS"; echo "OLD_NAME=$OLD"; echo "OLD_IMAGE=$(docker inspect -f '{{.Config.Image}}' "$OLD")"; echo "OLD_IMAGE_ID=$(docker inspect -f '{{.Image}}' "$OLD")"
   echo "NEW_IMAGE=$IMAGE"; echo "CAND=$CAND"
 } >"$STATE_DIR/$TS.env"
-cp "$STATE_DIR/$TS.env" "$STATE_DIR/last.env"
 
 log "1/7 starting candidate $CAND"
 ( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "wacrm-cand-$TS" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" up -d --no-build --no-deps app ) || { cleanup_candidate; die "candidate failed to start"; }
@@ -86,8 +98,14 @@ CAND_IP="$(container_ip "$CAND")"; OLD_IP="$(container_ip "$OLD")"
 log "4/7 adding the public alias to the candidate: both containers now serve $PUBLIC_ALIAS"
 # The candidate is already on the edge network with its private alias: re-attach it with both aliases (it is not public yet, so this is invisible).
 docker network disconnect "$EDGE_NETWORK" "$CAND" && docker network connect --alias "$CAND" --alias "$PUBLIC_ALIAS" "$EDGE_NETWORK" "$CAND" || { cleanup_candidate; die "could not add the public alias"; }
-GOT="$(resolve_from_edge "$IMAGE" "$PUBLIC_ALIAS" | tr '\n' ' ')"
-case "$GOT" in *"$CAND_IP"*"$OLD_IP"*|*"$OLD_IP"*"$CAND_IP"*) log "alias resolves to both: $GOT" ;; *) log "WARN alias resolution after connect: '$GOT' (expected both $OLD_IP and $CAND_IP)" ;; esac
+# Disconnect/reconnect can assign the candidate a *different* IP.
+CAND_IP="$(container_ip "$CAND")"
+GOT="$(resolve_from_edge "$IMAGE" "$PUBLIC_ALIAS")"
+if ! { grep -Fxq "$CAND_IP" <<<"$GOT" && grep -Fxq "$OLD_IP" <<<"$GOT"; }; then
+  cleanup_candidate
+  die "public alias does not resolve to BOTH old and candidate; traffic was not switched"
+fi
+log "alias resolves to both containers"
 [ "$(ready_status "$CAND")" = "200" ] || { docker network disconnect "$EDGE_NETWORK" "$CAND" >/dev/null 2>&1 || true; cleanup_candidate; die "candidate stopped being ready after taking traffic; rolled back to old only"; }
 
 log "5/7 both containers serve for ${DRAIN_SECONDS}s while both are checked (the old one is NOT disconnected from the network: that would cut its in-flight requests)"
@@ -100,10 +118,18 @@ log "6/7 SIGTERM to the old container (grace ${STOP_GRACE}s): it stops accepting
 docker stop -t "$STOP_GRACE" "$OLD" >/dev/null
 [ "$(docker inspect -f '{{.State.ExitCode}}' "$OLD")" = "0" ] || log "WARN old container exit code $(docker inspect -f '{{.State.ExitCode}}' "$OLD") (137 = killed after the grace window: raise STOP_GRACE)"
 GOT="$(resolve_from_edge "$IMAGE" "$PUBLIC_ALIAS")"
-[ "$GOT" = "$CAND_IP" ] || log "WARN public alias resolves to '$GOT', expected only $CAND_IP"
+[ "$GOT" = "$CAND_IP" ] || log "WARN after stopping old: public alias resolves to '$GOT', expected only $CAND_IP"
 
 log "7/7 swapping names so the host crons (docker exec $LIVE_NAME) hit the new container"
-docker rename "$OLD" "${OLD}-prev-$TS"
-docker rename "$CAND" "$LIVE_NAME"
-echo "PREV_NAME=${OLD}-prev-$TS" >>"$STATE_DIR/last.env"; echo "PREV_NAME=${OLD}-prev-$TS" >>"$STATE_DIR/$TS.env"
+PREV_NAME="${OLD}-prev-$TS"
+docker rename "$OLD" "$PREV_NAME"
+if ! docker rename "$CAND" "$LIVE_NAME"; then
+  log "CRITICAL: candidate rename failed; restoring previous name. Candidate is still serving the public alias."
+  docker rename "$PREV_NAME" "$LIVE_NAME" || log "CRITICAL: manual recovery of live container name required"
+  die "cutover incomplete: inspect containers and service before attempting another deploy"
+fi
+echo "PREV_NAME=$PREV_NAME" >>"$STATE_DIR/$TS.env"
+# A failed candidate must never replace the last KNOWN-GOOD rollback target.
+cp "$STATE_DIR/$TS.env" "$STATE_DIR/.last.env.tmp-$TS"
+mv -f "$STATE_DIR/.last.env.tmp-$TS" "$STATE_DIR/last.env"
 log "done. live=$LIVE_NAME image=$IMAGE. Previous container kept stopped as ${OLD}-prev-$TS. Verify: ops/deploy/verify-no-502.sh; roll back: ops/deploy/rollback.sh"
