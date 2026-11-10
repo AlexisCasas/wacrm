@@ -116,8 +116,8 @@ describe('GET /api/ads/results', () => {
     expect(rpc).toHaveBeenCalledWith('ads_results_product_ad_breakdown', expect.objectContaining({ p_account: A }))
     expect(body.ad_breakdown_available).toBe(true)
     expect(body.product_sales[0].ads).toEqual([
-      { source_id: 'AD1', headline: 'Oferta', buyers: 1, orders: 1, units: 2, sales: 150 },
-      { source_id: null, headline: null, buyers: 1, orders: 1, units: 1, sales: 50 },
+      { source_id: 'AD1', headline: 'Oferta', contacts: 4, buyers: 1, orders: 1, units: 2, sales: 150 },
+      { source_id: null, headline: null, contacts: null, buyers: 1, orders: 1, units: 1, sales: 50 },
     ])
     // product figures and the per-ad report are exactly what the existing functions returned
     expect(body.product_sales[0]).toMatchObject({ product: 'Laser', buyers: 1, orders: 2, units: 3, sales: 200, avg_ticket: 200 })

@@ -14,6 +14,8 @@ export interface ProductAdRow {
   source_id: string | null
   /** Same name the full per-ad table shows (headline of that ad's cohort in the period); null = "Sin título" there too. Never invented. */
   headline: string | null
+  /** Contacts of this AD in the period, exactly as the full per-ad table reports them (an ad-level figure, not product-specific). null = unattributed bucket. */
+  contacts: number | null
   /** Does NOT add up across ads: a contact who bought the product under two ads counts once in each. */
   buyers: number
   orders: number
@@ -59,7 +61,7 @@ const num = (v: unknown) => (typeof v === 'number' ? v : Number(v ?? 0)) || 0
 const money2 = (n: number) => Math.round(n * 100) / 100
 
 /** Rows of ads_results_product_ad_breakdown grouped by the product display name (identical to ads_results_by_product's). null = function unavailable. */
-export function buildProductAdBreakdown(rows: unknown[] | null | undefined, headlines: Map<string, string | null>): Map<string, ProductAdRow[]> | null {
+export function buildProductAdBreakdown(rows: unknown[] | null | undefined, adInfo: Map<string, { headline: string | null; contacts: number }>): Map<string, ProductAdRow[]> | null {
   if (!Array.isArray(rows)) return null
   const byProduct = new Map<string, ProductAdRow[]>()
   for (const r of rows) {
@@ -68,7 +70,8 @@ export function buildProductAdBreakdown(rows: unknown[] | null | undefined, head
     const source_id = typeof x.source_id === 'string' ? x.source_id : null
     const row: ProductAdRow = {
       source_id,
-      headline: source_id === null ? null : (headlines.get(source_id) ?? null),
+      headline: source_id === null ? null : (adInfo.get(source_id)?.headline ?? null),
+      contacts: source_id === null ? null : (adInfo.get(source_id)?.contacts ?? null),
       buyers: num(x.buyers),
       orders: num(x.orders),
       units: num(x.units),
@@ -116,7 +119,7 @@ export function buildAdsReport(rows: unknown[], from: string, to: string, produc
     .map((r) => ({ ...r, conversion_pct: r.contacts > 0 ? Math.round((r.buyers / r.contacts) * 1000) / 10 : null }))
   const unattributed = all.find((r) => r.source_id === null) ?? null
   // Names for the drilldown come from the very same rows the full per-ad table renders, so both always show the same name for an ad.
-  const breakdown = buildProductAdBreakdown(breakdownRows, new Map(ads.map((a) => [a.source_id as string, a.headline] as const)))
+  const breakdown = buildProductAdBreakdown(breakdownRows, new Map(ads.map((a) => [a.source_id as string, { headline: a.headline, contacts: a.contacts }] as const)))
   const product_sales = buildProductSales(productRows, breakdown)
   const attributedOrders = ads.reduce((a, r) => a + r.orders, 0)
   return {

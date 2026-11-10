@@ -224,9 +224,9 @@ describe('buildAdsReport: product -> ad breakdown', () => {
     const rep = buildAdsReport(adRows, 'f', 't', prod, bd)
     expect(rep.ad_breakdown_available).toBe(true)
     const laser = rep.product_sales![0]
-    expect(laser.ads!.map((a) => [a.source_id, a.headline])).toEqual([['A', 'Alpha'], ['B', null], [null, null]])
+    expect(laser.ads!.map((a) => [a.source_id, a.headline, a.contacts])).toEqual([['A', 'Alpha', 5], ['B', null, 2], [null, null, null]])
     for (const k of ['orders', 'units', 'sales'] as const) expect(laser.ads!.reduce((s, a) => s + a[k], 0)).toBe(laser[k])
-    expect(rep.product_sales![1].ads).toEqual([{ source_id: null, headline: null, buyers: 1, orders: 1, units: 1, sales: 20 }])
+    expect(rep.product_sales![1].ads).toEqual([{ source_id: null, headline: null, contacts: null, buyers: 1, orders: 1, units: 1, sales: 20 }])
   })
   it('ads with contacts and no sales stay in the per-ad list; a product with no breakdown rows gets []', () => {
     const rep = buildAdsReport(adRows, 'f', 't', [{ product: 'Nuevo', buyers: 1, orders: 1, units: 1, sales: 9, legacy_orders: 0 }], bd)

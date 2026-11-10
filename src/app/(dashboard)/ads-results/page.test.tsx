@@ -51,7 +51,7 @@ describe('Resultados de anuncios page states', () => {
     expect(card('Pedidos confirmados (con anuncio)')).toBe('3')
     expect(card('Pedidos sin atribución comprobable')).toBe('5')
     expect(card('Importe de pedidos confirmados')).toBe('350.00') // attributed + unattributed, exactly as in production
-    for (const gone of ['Consultaron', 'Ventas confirmadas', 'Ticket prom.']) expect(screen.queryByText(gone)).toBeNull()
+    for (const gone of ['Consultaron', 'Ventas confirmadas']) expect(screen.queryByText(gone)).toBeNull()
     const original = screen.getByText('Vista completa por anuncio').closest('[data-slot="card"]')!
     expect(Array.from(original.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio', 'Contactos', 'Pedidos', 'Importe pedidos', 'Unidades', 'Conversión', 'Productos', 'Ventas verificadas'])
     expect(Array.from(original.querySelectorAll('tbody td')).map((c) => c.textContent)).toEqual(['OfertaID AD1', '40', '3', '300.00', '4', '5%', 'Laser ×4', 'No disponible'])
@@ -59,11 +59,18 @@ describe('Resultados de anuncios page states', () => {
     expect(screen.getByTestId('sold-products').compareDocumentPosition(original) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     expect(screen.queryByText(/Ver anuncios/)).toBeNull()
   })
+  it('no "Consultaron"/"Conversión" columns at product level (no reliable source yet)', async () => {
+    vi.stubGlobal('fetch', withBreakdown())
+    render(<AdsResultsPage />)
+    const sec = await screen.findByTestId('sold-products')
+    expect(within(sec).queryByText('Consultaron')).toBeNull()
+    expect(within(sec).queryByText('Conversión')).toBeNull()
+  })
   it('Rendimiento por producto (no breakdown): columns, figures and the sold-vs-advertised clarification', async () => {
     vi.stubGlobal('fetch', reply(200, { ...buildAdsReport([], 'f', 't', [{ product: 'Taladro', buyers: 24, orders: 26, units: 35, sales: 3440, legacy_orders: 0 }]), meta_capi: null }))
     render(<AdsResultsPage />)
     const sec = await screen.findByTestId('sold-products')
-    expect(Array.from(sec.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Producto', 'Compradores', 'Pedidos', 'Unidades', 'Ventas', 'Ticket promedio'])
+    expect(Array.from(sec.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Producto vendido', 'Compradores', 'Pedidos', 'Unidades', 'Ventas', 'Ticket prom.'])
     expect(Array.from(sec.querySelectorAll('td')).map((c) => c.textContent)).toEqual(['Taladro', '24', '26', '35', '3,440.00', '143.33'])
     expect(sec.textContent).toMatch(/Producto vendido, no necesariamente producto publicitado/)
     for (const banned of ['Alcance', 'Impresiones', 'Gasto', 'CTR', 'CPC', 'CPM', 'CPA', 'ROAS', 'Pendiente Meta', 'N/A']) expect(within(sec).queryByText(banned)).toBeNull()
@@ -112,7 +119,7 @@ describe('Resultados de anuncios page states', () => {
     render(<AdsResultsPage />)
     const sec = await screen.findByTestId('sold-products')
     expect(within(sec).getByText('Rendimiento por producto')).toBeTruthy()
-    expect(Array.from(sec.querySelectorAll('thead th')).map((h) => h.textContent)).toEqual(['Producto', 'Compradores', 'Pedidos', 'Unidades', 'Ventas', 'Ticket promedio', 'Anuncios'])
+    expect(Array.from(sec.querySelectorAll('thead th')).map((h) => h.textContent)).toEqual(['Producto vendido', 'Compradores', 'Pedidos', 'Unidades', 'Ventas', 'Ticket prom.', 'Anuncios'])
     expect(screen.getByRole('button', { name: 'Ver anuncios de Taladro' }).textContent).toBe('Ver anuncios (2)') // AD1 + AD2; the unattributed bucket is not an ad
     expect(screen.getByRole('button', { name: 'Ver anuncios de Gel' }).textContent).toBe('Ver anuncios (0)')
     expect(screen.queryByTestId('product-ads')).toBeNull()
@@ -125,17 +132,18 @@ describe('Resultados de anuncios page states', () => {
     await screen.findByTestId('sold-products')
     fireEvent.click(screen.getByRole('button', { name: 'Ver anuncios de Taladro' }))
     const panel = await screen.findByTestId('product-ads')
-    expect(Array.from(panel.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio atribuido', 'Compradores', 'Pedidos', 'Unidades', 'Ventas'])
+    expect(Array.from(panel.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio atribuido', 'Contactos', 'Compradores', 'Pedidos', 'Unidades', 'Ventas'])
     expect(Array.from(panel.querySelectorAll('tbody tr')).filter((r) => r.querySelector('td')).map((r) => Array.from(r.querySelectorAll('td')).map((c) => c.textContent))).toEqual([
-      ['Anuncio en estadosID AD1', '2', '2', '3', '300.00'],
-      ['Sin títuloID AD2', '1', '1', '1', '100.00'],
-      ['Sin atribución comprobable', '1', '1', '1', '50.00'],
+      ['Anuncio en estadosID AD1', '10', '2', '2', '3', '300.00'],
+      ['Sin títuloID AD2', '4', '1', '1', '1', '100.00'],
+      ['Sin atribución comprobable', '—', '1', '1', '1', '50.00'],
     ])
     // orders/units/sales of the buckets add up to the product row (Taladro: 4 / 5 / 450)
     const cells = Array.from(panel.querySelectorAll('tbody tr')).filter((r) => r.querySelector('td')).map((r) => Array.from(r.querySelectorAll('td')).map((c) => parseFloat(c.textContent!.replace(/,/g, '')) || 0))
-    expect(cells.reduce((a, r) => a + r[2], 0)).toBe(4)
-    expect(cells.reduce((a, r) => a + r[3], 0)).toBe(5)
-    expect(cells.reduce((a, r) => a + r[4], 0)).toBe(450)
+    expect(cells.reduce((a, r) => a + r[3], 0)).toBe(4)
+    expect(cells.reduce((a, r) => a + r[4], 0)).toBe(5)
+    expect(cells.reduce((a, r) => a + r[5], 0)).toBe(450)
+    expect(panel.textContent).toMatch(/Contactos es el total de contactos del anuncio/)
     expect(panel.textContent).toMatch(/Compradores puede sumar más que los compradores únicos del producto/)
     // only that one row expanded; the product figures are unchanged
     expect(screen.getAllByTestId('product-ads')).toHaveLength(1)
@@ -161,7 +169,7 @@ describe('Resultados de anuncios page states', () => {
     vi.stubGlobal('fetch', reply(200, { ...buildAdsReport(ADS, 'f', 't', PRODUCTS, null), meta_capi: null }))
     render(<AdsResultsPage />)
     const sec = await screen.findByTestId('sold-products')
-    expect(Array.from(sec.querySelectorAll('thead th')).map((h) => h.textContent)).toEqual(['Producto', 'Compradores', 'Pedidos', 'Unidades', 'Ventas', 'Ticket promedio'])
+    expect(Array.from(sec.querySelectorAll('thead th')).map((h) => h.textContent)).toEqual(['Producto vendido', 'Compradores', 'Pedidos', 'Unidades', 'Ventas', 'Ticket prom.'])
     expect(screen.queryByText(/Ver anuncios/)).toBeNull()
     expect(screen.getByText('Importe pedidos')).toBeTruthy() // full table visible without any click
     expect(screen.getByText('Sin ventas')).toBeTruthy()
