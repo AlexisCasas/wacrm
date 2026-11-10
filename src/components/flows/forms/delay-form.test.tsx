@@ -37,7 +37,9 @@ describe("delay node form", () => {
   });
   it("an authorised account sees the wait type; a 13-minute wait shows its amount and unit (B: preserved on reload)", async () => {
     mount({ amount: 13, unit: "minutes", next_node_key: "after" }, true);
-    await waitFor(() => expect(screen.getByText("delayKind")).toBeTruthy());
+    // The label can render before the async capability gate resolves.
+    // Wait for the authorised durable-help state before asserting the form.
+    await screen.findByText("delayDurableHelp");
     expect((screen.getByLabelText("delayAmountLabel") as HTMLInputElement).value).toBe("13");
     expect(screen.getByText("delayUnit_minutes")).toBeTruthy(); expect(screen.getByText("delayKindDurable")).toBeTruthy();
     expect(screen.getByText("delayDurableHelp")).toBeTruthy();
