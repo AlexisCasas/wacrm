@@ -52,6 +52,30 @@ jobs:
         run: |
           set -euo pipefail
           bash ops/deploy/lab-real-rename-handoff.sh node:20-alpine
+      - name: Gate shutdown budget and private deploy state
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ops/deploy/lib.sh
+          MAX_WEBHOOK_DURATION="$(sed -nE 's/^export const maxDuration[[:space:]]*=[[:space:]]*([0-9]+).*/\\1/p' src/app/api/whatsapp/webhook/route.ts | head -1)"
+          [ -n "$MAX_WEBHOOK_DURATION" ] || { echo "Missing webhook maxDuration"; exit 1; }
+          [ "$STOP_GRACE" -gt "$MAX_WEBHOOK_DURATION" ] || { echo "Stop grace is shorter than webhook budget"; exit 1; }
+          grep -Eq "^[[:space:]]+stop_grace_period: ${STOP_GRACE}s$" ops/deploy/candidate.override.yml ||
+            { echo "Compose and docker stop grace disagree"; exit 1; }
+          TEMP="$(mktemp -d)"
+          trap 'rm -rf "$TEMP"' EXIT
+          STATE_DIR="$TEMP/state"
+          prepare_private_state_dir
+          [ "$(stat -c '%a' "$STATE_DIR")" = "700" ]
+          echo "TEST_ONLY=yes" > "$STATE_DIR/last.env"
+          private_state_manifest "$STATE_DIR/last.env"
+          chmod 644 "$STATE_DIR/last.env"
+          if private_state_manifest "$STATE_DIR/last.env"; then echo "Accepted exposed manifest"; exit 1; fi
+          chmod 600 "$STATE_DIR/last.env"
+          ln -s "$STATE_DIR" "$TEMP/symlink"
+          STATE_DIR="$TEMP/symlink"
+          if prepare_private_state_dir; then echo "Accepted state symlink"; exit 1; fi
+          echo "OPS_PRIVATE_STATE_AND_STOP_GRACE=PASS"
       - name: Verify candidate Compose overlay parses without the public alias
         shell: bash
         run: |
