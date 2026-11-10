@@ -23,6 +23,7 @@ type Call = { table?: string; ops: Array<[string, ...unknown[]]> }
 const h = vi.hoisted(() => ({
   total: 3,
   rows: [] as Array<Record<string, unknown>>,
+  idRows: null as Array<Record<string, unknown>> | null,
   queries: [] as Array<{ ops: Array<[string, ...unknown[]]> }>,
   rpcs: [] as Array<{ name: string; args: Record<string, unknown> }>,
   tags: [{ id: 't1', name: 'Cliente', color: '#00aa00' }],
@@ -39,7 +40,10 @@ vi.mock('@/lib/supabase/client', () => {
           if (table === 'tags') return Promise.resolve({ data: h.tags }).then(res)
           if (table === 'contact_tags') return Promise.resolve({ data: [] }).then(res)
           h.queries.push(call)
-          return Promise.resolve({ data: h.rows, count: h.total, error: null }).then(res)
+          const isIdOnly = call.ops.some(([name, columns]) => name === 'select' && columns === 'id')
+          const range = call.ops.find(([name]) => name === 'range')
+          const rows = isIdOnly && h.idRows ? h.idRows.slice(Number(range?.[1] ?? 0), Number(range?.[2] ?? h.idRows.length - 1) + 1) : h.rows
+          return Promise.resolve({ data: rows, count: h.total, error: null }).then(res)
         }
         return b
       },
@@ -57,7 +61,7 @@ const last = () => h.queries[h.queries.length - 1]
 const opsOf = (q: { ops: Array<[string, ...unknown[]]> }, name: string) => q.ops.filter((o) => o[0] === name)
 
 beforeEach(() => {
-  h.rows = mkRows(3); h.total = 3; h.queries = []; h.rpcs = []
+  h.rows = mkRows(3); h.idRows = null; h.total = 3; h.queries = []; h.rpcs = []
   fetchMock.mockReset(); fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, conversations_deleted: 2, messages_deleted: 5 }) })
   vi.stubGlobal('fetch', fetchMock)
 })
@@ -162,25 +166,45 @@ describe('Contacts page — selection', () => {
     expect((await rowBox(2)).getAttribute('aria-checked')).toBe('false')
   })
 
-  it('select all affects only the rows of the current page', async () => {
+  it('select all represents the complete current result set, not only the visible page', async () => {
     h.rows = mkRows(3); h.total = 60
     render(<ContactsPage />); await loaded()
     fireEvent.click(await screen.findByRole('checkbox', { name: 'selectAllAria', hidden: true }))
-    expect(screen.getByText('selectedCount:3')).toBeTruthy()
+    expect(screen.getByText('selectedCount:60')).toBeTruthy()
   })
 
-  it('changing page / search / tag / time clears the selection', async () => {
+  it('changing page keeps a global selection; changing search, tag or time clears it', async () => {
     h.total = 60
     render(<ContactsPage />); await settled()
-    const select = async () => { fireEvent.click(await rowBox(1)); expect(screen.getByText('selectedCount:1')).toBeTruthy() }
-    await select(); fireEvent.click(screen.getAllByRole('button').find((b) => b.querySelector('svg.lucide-chevron-right'))!)
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'selectAllAria', hidden: true }))
+    expect(screen.getByText('selectedCount:60')).toBeTruthy()
+    fireEvent.click(screen.getAllByRole('button').find((b) => b.querySelector('svg.lucide-chevron-right'))!)
+    await settled(); expect(screen.getByText('selectedCount:60')).toBeTruthy()
+    fireEvent.change(screen.getByPlaceholderText('searchPlaceholder'), { target: { value: 'x' } })
     await waitFor(() => expect(screen.queryByText(/^selectedCount/)).toBeNull()); await settled()
-    await select(); fireEvent.change(screen.getByPlaceholderText('searchPlaceholder'), { target: { value: 'x' } })
+    fireEvent.click(await rowBox(1)); fireEvent.click(screen.getAllByText('filterByTags')[0]); fireEvent.click(await screen.findByLabelText('Filter by Cliente'))
     await waitFor(() => expect(screen.queryByText(/^selectedCount/)).toBeNull()); await settled()
-    await select(); fireEvent.click(screen.getAllByText('filterByTags')[0]); fireEvent.click(await screen.findByLabelText('Filter by Cliente'))
-    await waitFor(() => expect(screen.queryByText(/^selectedCount/)).toBeNull()); await settled()
-    await select(); await pickTime('timeLast7')
+    fireEvent.click(await rowBox(1)); await pickTime('timeLast7')
     await waitFor(() => expect(screen.queryByText(/^selectedCount/)).toBeNull())
+  })
+
+  it('Clear removes the whole global selection', async () => {
+    h.total = 60
+    render(<ContactsPage />); await loaded()
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'selectAllAria', hidden: true }))
+    fireEvent.click(screen.getByText('clearSelection'))
+    expect(screen.queryByText(/^selectedCount/)).toBeNull()
+  })
+
+  it('header checkbox restores excluded rows to a global selection', async () => {
+    h.total = 60
+    render(<ContactsPage />); await loaded()
+    const header = await screen.findByRole('checkbox', { name: 'selectAllAria', hidden: true })
+    fireEvent.click(header)
+    fireEvent.click(await rowBox(1))
+    expect(screen.getByText('selectedCount:59')).toBeTruthy()
+    fireEvent.click(header)
+    expect(screen.getByText('selectedCount:60')).toBeTruthy()
   })
 })
 
@@ -226,6 +250,30 @@ describe('Contacts page — delete', () => {
     expect(confirm.disabled).toBe(true)
     release({ ok: true, json: async () => ({ deleted: 2 }) })
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+  })
+
+  it('deletes a global selection over 100 ids sequentially in batches of at most 100', async () => {
+    h.idRows = mkRows(101); h.total = 101
+    render(<ContactsPage />); await loaded()
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'selectAllAria', hidden: true }))
+    fireEvent.click(screen.getByText('deleteSelected'))
+    fireEvent.click(await screen.findByText('deleteBulkConfirm:101'))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    for (const [, init] of fetchMock.mock.calls) expect(JSON.parse(init.body).contact_ids.length).toBeLessThanOrEqual(100)
+  })
+
+  it('does not report a full success when a later batch fails and keeps the pending ids selected', async () => {
+    const { toast } = await import('sonner')
+    h.idRows = mkRows(101); h.total = 101
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ deleted: 100 }) }).mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ error: 'nope' }) })
+    render(<ContactsPage />); await loaded()
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'selectAllAria', hidden: true }))
+    fireEvent.click(screen.getByText('deleteSelected'))
+    fireEvent.click(await screen.findByText('deleteBulkConfirm:101'))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(toast.success).not.toHaveBeenCalledWith('toastBulkDeleted:101')
+    expect(screen.getByText('selectedCount:1')).toBeTruthy()
+    await waitFor(() => expect(h.queries.length).toBeGreaterThan(2))
   })
 
   it('a failed delete keeps the selection and shows the error', async () => {
