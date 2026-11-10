@@ -34,6 +34,7 @@
 
 import { LEGACY_IMPORT_TOKEN, renderTemplate } from "@/lib/variables";
 import { supabaseAdmin } from "./admin-client";
+import { describeSendError } from "@/lib/whatsapp/send-error-diagnostics";
 import {
   engineSendInteractiveButtons,
   engineSendInteractiveList,
@@ -1143,6 +1144,7 @@ async function advanceFromNodeKey(
     }
     if (node.node_type === "send_message") {
       const cfg = node.config as unknown as SendMessageNodeConfig;
+      const sendStartedAt = Date.now();
       try {
         const { whatsapp_message_id, recipient_kind } = await engineSendText({
           accountId: run.account_id,
@@ -1166,6 +1168,7 @@ async function advanceFromNodeKey(
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "send_text_failed",
           detail: err instanceof Error ? err.message : String(err),
+          diag: describeSendError(err, sendStartedAt),
         });
         await endRun(db, run.id, "failed", "send_text_failed");
         return { outcome: "completed" };
@@ -1175,6 +1178,7 @@ async function advanceFromNodeKey(
     }
     if (node.node_type === "send_media") {
       const cfg = node.config as unknown as SendMediaNodeConfig;
+      const sendStartedAt = Date.now();
       try {
         const { whatsapp_message_id, recipient_kind } = await engineSendMedia({
           accountId: run.account_id,
@@ -1213,6 +1217,7 @@ async function advanceFromNodeKey(
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "send_media_failed",
           detail: err instanceof Error ? err.message : String(err),
+          diag: describeSendError(err, sendStartedAt),
         });
         await endRun(db, run.id, "failed", "send_media_failed");
         return { outcome: "completed" };
@@ -1279,6 +1284,7 @@ async function advanceFromNodeKey(
         await logEvent(db, run.id, "error", node.node_key, {
           reason: "collect_input_prompt_failed",
           detail: err instanceof Error ? err.message : String(err),
+          diag: describeSendError(err),
         });
         await endRun(db, run.id, "failed", "collect_input_prompt_failed");
         return { outcome: "completed" };
@@ -1955,6 +1961,7 @@ async function handleReplyForActiveRun(
         await logEvent(db, run.id, "error", currentNode.node_key, {
           reason: "reprompt_send_failed",
           detail: err instanceof Error ? err.message : String(err),
+          diag: describeSendError(err),
         });
       }
     }
