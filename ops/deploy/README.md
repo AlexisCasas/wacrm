@@ -15,7 +15,7 @@ shorter than the drain Next.js recommends for `after()` work.
 4. Candidate gets the public alias `wacrm-app`: Docker DNS may return both IPs. This is **not** load balancing, nor does it guarantee that Caddy retries webhook POSTs.
 5. Dual-serve window (`DRAIN_SECONDS`), candidate re-checked.
 6. `docker stop -t 40` on the old container: Next receives SIGTERM and is given a bounded drain interval. After stopping, the old image is disconnected from the edge network **with force** and reconnected under a private-only alias for rollback; an isolated Docker preflight checks this behavior before the first candidate starts.
-7. Names swapped (`old -> wacrm-app-1-prev-<ts>`, `candidate -> wacrm-app-1`) with bounded rename retries, because host crons use `docker exec wacrm-app-1`. A persistent rename failure remains an operator incident (do not silently restore the live name to a stopped container).
+7. Names swapped while BOTH containers are still running (`old -> wacrm-app-1-prev-<ts>`, `candidate -> wacrm-app-1`); only THEN does the old container receive SIGTERM. This prevents the cron name from pointing to a stopped container. If the candidate rename fails, the running old container is renamed back to `wacrm-app-1` before the candidate is stopped. If Docker refuses both forward and restorative renames, the script stops with a CRITICAL operator incident and preserves both running containers rather than falsely claiming a safe result.
 
 The old container is deliberately **not** disconnected from the network first: that severs its in-flight connections.
 `lab-alias-flip.sh` shows it (isolated throwaway network, 12 slow requests in flight when the old one is stopped, ~50 req/s of keep-alive traffic):
@@ -63,7 +63,7 @@ For stronger evidence also watch Meta's webhook delivery dashboard (no retries a
 - **Caddy is untouched by this PR**, but the lab has observed an intermittent keep-alive socket error (1/784 requests in one run, 12/12 slow requests completed). Therefore `zero 502` is **NOT guaranteed by alias rotation alone**. Review the WACRM-only `keepalive off` option in `caddy-hardening.proposed.md`; any Caddy change is a separate decision requiring approval and regression checks for Dentalpin.
 - **Compose project label.** After the first run the live container belongs to project `wacrm-cand-<lowercase-ts>`, not `wacrm`. From then on deploy only
   with this script; do not run `docker compose -p wacrm up` for releases (it would try to create a second `wacrm-app-1`).
-- **Crons:** between the two `docker rename`s (~100 ms) `docker exec wacrm-app-1` can fail once; the flock'd per-minute scripts retry next tick.
+- **Crons:** between the two `docker rename`s, `docker exec wacrm-app-1` can briefly fail because the name is not yet assigned; however, a successful name lookup must never resolve to the stopped previous container. The scripts recover when the previous name can be restored. Persistent Docker rename failure remains an explicit manual-repair gate; do not claim zero missed cron ticks.
   Do not deploy inside the first 5 s of a minute if you want zero skipped ticks.
 - **Two app instances briefly run (seconds):** both can receive webhooks/cron calls. Webhook inbound inserts are idempotent
   (`ON CONFLICT (conversation_id, message_id) DO NOTHING`), flow wait claims use leases/compare-and-set, and cron endpoints are idempotent
