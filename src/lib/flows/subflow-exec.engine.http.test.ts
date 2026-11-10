@@ -278,6 +278,8 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     pass('S14', `8 nested waits due at once, two concurrent workers (${x.resumed} + ${y.resumed}): every contact got each message exactly once, every frame popped exactly once`)
   })
 
+  // These scenarios test the explicit active recovery path. D1 defaults to dry-run; its
+  // safe non-mutating behavior is independently covered in engine.recovery-selection.test.ts.
   it('S15: recovery: a run stranded between "wait consumed" and the first send is resumed; an intent without confirmation is NEVER resent', async () => {
     const admin = (await import('./admin-client')).supabaseAdmin()
     const strand = async () => {   // crash right after CONSUME: the cursor moved to the next node, nothing else happened
@@ -287,19 +289,19 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
       await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.messages set created_at = created_at - interval '20 minutes' where conversation_id='${r.conversation_id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`); return { w, c, r }
     }
     // (a) nothing happened after the cursor: safe to resume, the follow-up goes out once
-    const a = await strand(); const sa = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }); expect(sa.resumed).toBeGreaterThanOrEqual(1)
+    const a = await strand(); const sa = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' }); expect(sa.resumed).toBeGreaterThanOrEqual(1)
     expect(textsFor(a.c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE]); expect(await run(a.c)).toMatchObject({ status: 'completed' })
-    expect((await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 })).resumed).toBe(0); expect(textsFor(a.c)).toHaveLength(4)
+    expect((await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' })).resumed).toBe(0); expect(textsFor(a.c)).toHaveLength(4)
     // (b) an intent was written, the process died, no confirmation: outcome UNKNOWN -> not resent, incident on record
     const b = await strand(); await psql(`insert into public.flow_run_events (flow_run_id, event_type, node_key, payload) values ('${b.r.id}','node_entered','follow','{"reason":"send_intent","node_type":"send_message"}')`)
-    const sb = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }); expect(sb.ambiguous).toBeGreaterThanOrEqual(1)
+    const sb = await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' }); expect(sb.ambiguous).toBeGreaterThanOrEqual(1)
     expect(textsFor(b.c)).toEqual([INFO]); expect(await run(b.c)).toMatchObject({ status: 'failed', end_reason: 'send_outcome_unknown' }); expect((await reasons(b.r.id))).toContain('send_outcome_unknown')
     // (c) a message left after the cursor and the process died later: progress in memory is unknown -> not replayed
     const c3 = await strand(); await psql(`insert into public.flow_run_events (flow_run_id, event_type, node_key, payload, created_at) values ('${c3.r.id}','node_entered','follow','{"reason":"send_intent"}', clock_timestamp()), ('${c3.r.id}','message_sent','follow','{"node_type":"send_message"}', clock_timestamp() + interval '1 millisecond')`)
-    expect((await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 })).unsafe).toBeGreaterThanOrEqual(1); expect(await run(c3.c)).toMatchObject({ status: 'failed', end_reason: 'recovery_not_safe' }); expect(textsFor(c3.c)).toEqual([INFO])
+    expect((await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' })).unsafe).toBeGreaterThanOrEqual(1); expect(await run(c3.c)).toMatchObject({ status: 'failed', end_reason: 'recovery_not_safe' }); expect(textsFor(c3.c)).toEqual([INFO])
     // (d) runs that legitimately wait for the customer (buttons) are never "recovered"; a recent cursor is left alone
     const wb = await world({ kind: 'buttons' }); const cb = await contact(wb); await send(wb, cb); await psql(`update public.flow_runs set last_advanced_at = clock_timestamp() - interval '3 hours' where id='${(await run(cb)).id}'`)
-    await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }); expect(await run(cb)).toMatchObject({ status: 'active', current_node_key: 'ask' })
+    await engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' }); expect(await run(cb)).toMatchObject({ status: 'active', current_node_key: 'ask' })
     pass('S15', 'recovery: consume-then-crash with no evidence of a send is resumed and delivers once (a second pass does nothing); an intent without confirmation ends as send_outcome_unknown and is NOT resent; a confirmed send after the cursor is not replayed; a run waiting for a button tap is left alone')
   })
 
@@ -307,7 +309,7 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     const admin = (await import('./admin-client')).supabaseAdmin(); const w = await world(); const c = await contact(w); await send(w, c); const r = await run(c); await makeDue(r.id)
     const cl = await admin.rpc('claim_due_flow_waits', { p_account_ids: [acctA], p_limit: 50, p_lease_seconds: 300 }); const mine = (cl.data as { run_id: string; claim_token: string }[]).find((x) => x.run_id === r.id)!
     await admin.rpc('consume_flow_wait', { p_account_id: acctA, p_run_id: r.id, p_claim_token: mine.claim_token, p_next_node_key: 'check' }); await psql(`update public.flow_run_events set created_at = created_at - interval '20 minutes' where flow_run_id='${r.id}'; update public.messages set created_at = created_at - interval '20 minutes' where conversation_id='${r.conversation_id}'; update public.flow_runs set last_advanced_at = clock_timestamp() - interval '10 minutes' where id='${r.id}'`)
-    const [p, q] = await Promise.all([engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 }), engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60 })])
+    const [p, q] = await Promise.all([engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' }), engine.recoverStrandedRuns({ accountIds: [acctA], minAgeSeconds: 60, mode: 'active' })])
     expect(p.resumed + q.resumed).toBe(1); expect(textsFor(c)).toEqual([INFO, FOLLOW, MSG_C, CLOSE])
     pass('S16', 'two recovery passes at the same instant: one takes the run (compare-and-set on the cursor), the other skips it; each message delivered once')
   })
