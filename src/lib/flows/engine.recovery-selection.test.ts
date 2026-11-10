@@ -88,6 +88,15 @@ describe("recovery selection without starvation (69 legitimate waits + 1 strande
 });
 
 describe("max age (30 min): older runs are excluded from automatic recovery and reported, never modified", () => {
+  it("cannot expand D1 30-minute maximum via caller overrides", async () => {
+    const mem = setup([run("too-old-override", { current_node_key: "start", last_advanced_at: ago(3 * 3600) })]);
+    const before = snapshot(mem);
+    const summary = await recoverStrandedRuns({ accountIds: [A], mode: "active", minAgeSeconds: 60, maxAgeSeconds: 4 * 3600 });
+    expect(summary).toMatchObject({ mode: "active", too_old: 1, resumed: 0, would_resume: 0 });
+    expect(snapshot(mem)).toBe(before);
+    expect(sends()).toBe(0);
+  });
+
   it("a 3-hour-old stranded run (the 4bb8a367 shape) is listed for review, with its evidence, and left exactly as it is, in both modes", async () => {
     expect(RECOVERY_MAX_AGE_SECONDS).toBe(1800);
     const mem = setup([...waiting(69, 3 * 3600), run("stuck", { current_node_key: "start", last_advanced_at: ago(3 * 3600) })], { flow_run_events: [{ id: "ev-1", flow_run_id: "stuck", event_type: "node_entered", node_key: "send_buttons", payload: {}, created_at: ago(3 * 3600 - 1) }] });

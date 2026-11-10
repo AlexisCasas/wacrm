@@ -407,8 +407,8 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
     const kb = (await rows(`select trigger_config->'keywords'->>0 as k from public.flows where id='${other}'`))[0].k as string; const cb2 = await contact({ user: UB, acct: acctB })
     await engine.dispatchInboundToFlows({ accountId: acctB, userId: UB, contactId: cb2.contactId, conversationId: cb2.conversationId, message: { kind: 'text', text: kb, meta_message_id: `wamid.in.${randomUUID()}` }, isFirstInboundMessage: false })
     expect(textsFor(cb2)).toEqual(['Hola B']); const rb2 = await run(cb2); expect(rb2).toMatchObject({ status: 'completed', end_reason: 'end_node', current_flow_id: null })
-    expect((await events(rb2.id)).filter((e) => e.payload?.reason === 'send_intent')).toHaveLength(0)
-    pass('S20', 'flows without execute_flow: same messages, same end reasons, run vars untouched (only the usual contact_name seed), current_flow_id NULL, zero frames; the P6 durable wait is unchanged; an account without the switches gets the historic path (no send_intent event)')
+    { const evs = await events(rb2.id); expect(evs.filter((e) => e.payload?.reason === 'send_intent')).toHaveLength(evs.filter((e) => e.event_type === 'message_sent').length) }   // D2: every send has its durable intent, plain flows included
+    pass('S20', 'flows without execute_flow: same messages, same end reasons, run vars untouched (only the usual contact_name seed), current_flow_id NULL, zero frames; the P6 durable wait is unchanged; an account without the switches sends the same messages, each one preceded by its durable send_intent (D2)')
   })
 
   it('S21: the intent to send is written BEFORE every send, and when it cannot be written nothing is sent', async () => {
@@ -509,11 +509,11 @@ describe.skipIf(!REST || !CONTAINER)('P8 subflow execution with return (disposab
         const kw = (await rows(`select trigger_config->'keywords'->>0 as k from public.flows where id='${plain}'`))[0].k as string; const c = await contact(tenant)
         const d = (text: string) => engine.dispatchInboundToFlows({ accountId: tenant.acct, userId: tenant.user, contactId: c.contactId, conversationId: c.conversationId, message: { kind: 'text', text, meta_message_id: `wamid.in.${randomUUID()}` }, isFirstInboundMessage: false })
         await d(kw); expect(textsFor(c)).toEqual(['Hola legacy']); const r = await run(c); expect(r).toMatchObject({ status: 'active', current_node_key: 'b', current_flow_id: null })
-        expect((await events(r.id)).filter((e) => e.payload?.reason === 'send_intent')).toHaveLength(0)
+        { const evs = await events(r.id); expect(evs.filter((e) => e.payload?.reason === 'send_intent')).toHaveLength(evs.filter((e) => e.event_type === 'message_sent').length) }   // D2: every send has its durable intent, plain flows included
         await engine.dispatchInboundToFlows({ accountId: tenant.acct, userId: tenant.user, contactId: c.contactId, conversationId: c.conversationId, message: { kind: 'interactive_reply', reply_id: 'si', reply_title: 'Sí', meta_message_id: `wamid.in.${randomUUID()}` } as never, isFirstInboundMessage: false })
         expect(await run(c)).toMatchObject({ status: 'completed', end_reason: 'end_node' }); expect(Number(await psql(`select count(*) from public.flow_run_subflow_frames where flow_run_id='${r.id}'`))).toBe(0)
       }
-      pass('S27', 'with everything global ON, a plain message + buttons flow of two different companies runs exactly as before: same messages, same end reason, zero send_intent events, zero frames')
+      pass('S27', 'with everything global ON, a plain message + buttons flow of two different companies runs exactly as before: same messages, same end reason, one send_intent per message sent (D2), zero frames')
     } finally { await globalOff() }
   })
 
