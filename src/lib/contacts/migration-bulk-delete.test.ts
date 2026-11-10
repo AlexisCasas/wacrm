@@ -3,10 +3,10 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 // Contract of migration 20261105000000 (behaviour is proven against a real Postgres by qa/contacts-bulk-delete/scenarios.sql).
-const sql = readFileSync(join(__dirname, '../../../supabase/migrations/20261105000000_contacts_time_filter_bulk_delete.sql'), 'utf8')
+const sql = readFileSync(join(__dirname, '../../../supabase/migrations/20261105000001_contacts_time_filter_bulk_delete.sql'), 'utf8')
 const code = sql.replace(/^\s*--.*$/gm, '')
 
-describe('migration 20261105000000_contacts_time_filter_bulk_delete', () => {
+describe('migration 20261105000001_contacts_time_filter_bulk_delete', () => {
   it('is additive: it never redefines the original tag filter nor changes any foreign key', () => {
     expect(code).not.toMatch(/FUNCTION\s+(public\.)?filter_contacts_by_tags\s*\(/i)
     expect(code).not.toMatch(/ALTER\s+TABLE|DROP\s+(TABLE|FUNCTION|CONSTRAINT)|ON\s+DELETE\s+CASCADE/i)

@@ -1,5 +1,5 @@
 -- ============================================================
--- QA for migrations 20261105000000_contacts_time_filter_bulk_delete + 20261106000000_contacts_full_cleanup (apply both first) — run ONLY against a DISPOSABLE database that has the app schema
+-- QA for migrations 20261105000001_contacts_time_filter_bulk_delete + 20261106000000_contacts_full_cleanup (apply both first) — run ONLY against a DISPOSABLE database that has the app schema
 -- (e.g. a scratch postgres loaded with `pg_dump -s -n public` of the app). It creates its own accounts/users/contacts, never reads production data.
 --   docker exec -i <scratch> psql -U postgres -X -v ON_ERROR_STOP=1 < qa/contacts-bulk-delete/scenarios.sql
 -- Every scenario asserts with RAISE EXCEPTION; the last line prints PASS.

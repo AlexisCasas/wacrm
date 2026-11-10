@@ -14,7 +14,7 @@ Actualización basada en el informe operativo de Claude Code de **2026-11-06 a l
 | `20261102000000_order_sellers_from_members.sql` | APLICADA | introdujo la versión anterior de `create_order_confirmation` (MD5 `f99aebab9fd01bdae2da8d606f7362a8`), luego reemplazada por la migración multiproducto |
 | `20261103000000_whatsapp_config_messaging_account_id.sql` | APLICADA | existe `whatsapp_config.messaging_account_id` |
 | `20261104000000_contact_keyword_automations_pause.sql` | APLICADA | existe `contact_automation_settings` |
-| `20261105000000_contacts_time_filter_bulk_delete.sql` | APLICADA | existe `filter_contacts_by_tags_time` |
+| `20261105000001_contacts_time_filter_bulk_delete.sql` *(antes `20261105000000_contacts_time_filter_bulk_delete.sql`)* | APLICADA | existe `filter_contacts_by_tags_time` |
 | `20261105000000_order_confirmation_items.sql` | **APLICADA** (2026-11-06 05:36:52 UTC) | existen `order_confirmation_items`, restricción y trigger, con RLS y permisos verificados; `multiproduct_enabled BOOLEAN NOT NULL DEFAULT FALSE`; `create_order_confirmation` MD5 `a2bd25dd51bd5a7b8e715935e4f121ae` |
 | `20261106000000_contacts_full_cleanup.sql` | APLICADA | existe `contact_chat_media_candidates` |
 | `20261107000000_contact_media_cleanup_queue.sql` | APLICADA | existen `contact_media_cleanup_items` y `classify_chat_media_object` |
@@ -30,14 +30,17 @@ pedidos (#73). **No hay conflicto funcional**, porque tocan objetos disjuntos:
   `order_confirmations_id_account_unique` y una nueva versión de `create_order_confirmation`. Depende solo de `073_audio_guide_catalog` y
   `20261102000000`.
 
-Decisión: **no se renombra ningún archivo**.
+**Resolución de la colisión en el repositorio (2026-11-10, PR #102):**
 
-- **Contactos:** su archivo ya está aplicado, y renombrarlo daría la falsa impresión de que es una migración nueva.
-- **Pedidos:** su nombre ya está referenciado en la QA y en los runbooks.
+- Se trasladó la ruta Git `20261105000000_contacts_time_filter_bulk_delete.sql` a `20261105000001_contacts_time_filter_bulk_delete.sql` **sin alterar el blob SQL ni sus bytes** (hash Git original: `7fd59e8b589382e9c78a0e182be09063476c1880`).
+- El nombre original permanece aquí como evidencia histórica de la aplicación manual en producción. **Este cambio de nombre de archivo no ejecuta SQL y no representa una migración nueva para la VPS existente.**
+- El archivo de pedidos `20261105000000_order_confirmation_items.sql` mantiene su nombre y contenido original, referenciado en otros QA/runbooks. El orden lexicográfico de ambas migraciones queda `order_confirmation_items` → `contacts_time_filter_bulk_delete`; sus dependencias son independientes.
+- Auditoría read-only del esquema productivo (2026-11-10): existen las funciones de contactos (con sus posteriores redefiniciones), la tabla y restricciones de pedidos múltiples y los objetos de las cinco migraciones de Meta Ads; los cuerpos finales cotejados coinciden donde aplica. `supabase_migrations.schema_migrations` **no existe** en la base WACRM consultada. Esto no certifica fechas de aplicación ni reemplaza la evidencia operacional.
+- **Nunca ejecutar nuevamente estas migraciones históricas en producción** por el hecho de cambiar su ruta en Git. La renumeración sirve exclusivamente para la reconstrucción de bases desechables y el historial versionado futuro. En un proyecto con historial CLI ya creado en otra base se requiere conciliación previa antes de usar `db push`.
 
-**Reglas mientras exista la colisión:**
+**Reglas permanentes de operación productiva:**
 
-1. La migración de pedidos **ya se aplicó** por nombre completo; **no se debe volver a ejecutar**, ni procesar masivamente los archivos con prefijo `20261105`.
+1. Las migraciones de pedidos y contactos **ya están aplicadas en producción**; **no se deben volver a ejecutar**, ni procesar masivamente la carpeta de migraciones. Su renumeración en Git no autoriza un nuevo SQL.
 2. **Precheck histórico** (anterior a la aplicación, ahora obsoleto): la comprobación dio `t|t` antes de migrar. El siguiente SQL se conserva únicamente como evidencia y ya no es un gate reutilizable:
    ```sql
    SELECT to_regclass('public.order_confirmation_items') IS NULL,
@@ -45,8 +48,7 @@ Decisión: **no se renombra ningún archivo**.
      FROM pg_proc WHERE proname = 'create_order_confirmation';
    ```
 3. **Nunca** se vuelve a ejecutar `20261104`–`20261107` (contactos).
-4. Si en el futuro se adopta la CLI de Supabase (`schema_migrations`), hay que resolver la colisión antes, por ejemplo marcando como
-   aplicadas las versiones existentes y reasignando una versión única a la de pedidos.
+4. Si en el futuro se adopta la CLI de Supabase (`schema_migrations`) en WACRM, debe planificarse y verificarse una conciliación inicial del historial usando únicamente versiones únicas. **No aplicar en automático** migraciones ya ejecutadas manualmente ni introducir filas históricas sin respaldo y autorización.
 
 ## Verificación posterior al despliegue (solo lectura)
 
