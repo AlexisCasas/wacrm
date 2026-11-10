@@ -39,6 +39,11 @@ jobs:
           assert 'docker push' not in candidate and 'docker load' not in candidate
           assert 'SUPABASE_SERVICE_ROLE_KEY' not in candidate and 'META_APP_SECRET' not in candidate
           assert 'WACRM_NEXT_PUBLIC_SUPABASE_ANON_KEY' in candidate
+          assert 'Validate untrusted release input before checkout' in candidate
+          assert 'SHA="$RELEASE_SHA_INPUT"' in candidate
+          assert 'RELEASE_SHA_INPUT: ${{ inputs.release_sha }}' in candidate
+          assert 'SHA="${{ inputs.release_sha }}"' not in candidate
+          assert 'ref: ${{ steps.validated.outputs.sha }}' in candidate
           print('CANDIDATE_MANUAL_ONLY_CONTRACT=PASS')
           PY
 
