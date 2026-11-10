@@ -11,7 +11,14 @@ while [ $# -gt 0 ]; do case "$1" in --since) SINCE="$2"; shift 2 ;; --until) UNT
 PROXY="${PROXY_CONTAINER:-dentalpin-caddy-1}"      # the shared Caddy: only its LOG is read
 LIVE="${LIVE_NAME:-wacrm-app-1}"
 ARGS=(--since "$SINCE"); [ -n "$UNTIL" ] && ARGS+=(--until "$UNTIL")
-LOG="$(docker logs "${ARGS[@]}" "$PROXY" 2>&1 | grep 'whatsapp/webhook' || true)"
+# Missing Caddy logs must never be interpreted as zero webhook failures.
+docker inspect "$PROXY" >/dev/null 2>&1 || { echo "FAIL: Caddy container unavailable" >&2; exit 2; }
+if ! FULL_LOG="$(docker logs "${ARGS[@]}" "$PROXY" 2>&1)"; then
+  echo "FAIL: could not read Caddy log (unknown 502 count)" >&2
+  exit 2
+fi
+LOG="$(printf '%s' "$FULL_LOG" | grep 'whatsapp/webhook' || true)"
+unset FULL_LOG
 TOTAL="$(printf '%s' "$LOG" | grep -c . || true)"
 echo "window: since=$SINCE until=${UNTIL:-now}   webhook error lines in proxy log: $TOTAL"
 if [ "$TOTAL" -gt 0 ]; then
@@ -25,6 +32,9 @@ for line in sys.stdin:
     c[(d.get("status"), m[:80])] += 1
 for (status, msg), n in c.most_common(): print(f"  {n:4d}  status={status}  {msg}")'
 fi
-echo -n "live readiness: "; docker exec "$LIVE" node -e "fetch('http://127.0.0.1:3000/api/health/ready').then(r=>console.log(r.status)).catch(()=>console.log('unreachable'))"
+READY="$(docker exec "$LIVE" node -e 'const c=new AbortController();const t=setTimeout(()=>c.abort(),4000);fetch("http://127.0.0.1:3000/api/health/ready",{signal:c.signal}).then(r=>{clearTimeout(t);console.log(r.status)}).catch(()=>{clearTimeout(t);console.log("000")})' 2>/dev/null || echo 000)"
+echo "live DB-backed readiness: $READY"
 echo -n "restart count / started: "; docker inspect -f '{{.RestartCount}} {{.State.StartedAt}}' "$LIVE"
-[ "$TOTAL" -eq 0 ] && echo "PASS: no webhook 502 in the window" || { echo "FAIL: webhook errors present (expected only if the window includes an old-procedure deploy)"; exit 1; }
+if [ "$TOTAL" -gt 0 ]; then echo "FAIL: webhook errors present"; exit 1; fi
+if [ "$READY" != 200 ]; then echo "FAIL: live database-backed readiness not 200"; exit 1; fi
+echo "PASS: no webhook error lines and live DB-backed readiness 200 in inspected window"
