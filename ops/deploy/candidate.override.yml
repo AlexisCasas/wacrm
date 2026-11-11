@@ -1,12 +1,12 @@
 # Applied on top of the LIVE container's own compose files (deploy.sh reads them from its labels), so the candidate has exactly the same
 # env_file, environment, healthcheck, restart policy and networks as production. Only these things differ:
 #   - it does NOT take the public alias (wacrm-app) until it has passed readiness: it gets a private one;
-#   - it has a temporary container name (renamed to the live name after the old one is stopped);
+#   - it has a temporary container name (renamed to the live name while both instances are running);
 #   - a SIGTERM drain window long enough for in-flight requests and pending after() callbacks (Next's documented graceful shutdown).
 services:
   app:
     container_name: ${CAND_NAME}
-    stop_grace_period: 40s
+    stop_grace_period: 70s
     # Caddy dials the container over edge_proxy. Never bind the candidate to
     # the live container's published host port (Docker would reject the bind).
     # Removing a host-published endpoint after cutover needs an explicit gate

@@ -4,7 +4,7 @@
 (`docker compose up -d` recreating `wacrm-app-1`) leaves the app down for 5-6 s per deploy. Caddy answered **91 webhook POSTs with 502**
 in two such windows (13:04:18-13:04:23 and 13:32:45-13:32:51 Lima: 72 + 19, `connection refused` / Docker DNS `server misbehaving`),
 plus 5 isolated `connection reset`. Meta retries a non-2xx webhook, but late; and the old container is killed after Docker's default 10 s,
-shorter than the drain Next.js recommends for `after()` work.
+shorter than the drain Next.js recommends for `after()` work. The revised 70 s stop grace is a best-effort budget, not durable webhook processing: a crash, hard kill, or `after()` callback exceeding the runtime budget can still lose already-acknowledged work.
 
 ## What it does
 `deploy.sh` runs a **candidate** next to the live container, proves it is ready, lets both serve, then stops the old one gracefully:
@@ -15,7 +15,7 @@ shorter than the drain Next.js recommends for `after()` work.
 4. Candidate gets the public alias `wacrm-app`: Docker DNS may return both IPs. This is **not** load balancing, nor does it guarantee that Caddy retries webhook POSTs.
 5. Dual-serve window (`DRAIN_SECONDS`), candidate re-checked.
 6. Names are swapped while BOTH containers are running (`old -> wacrm-app-1-prev-<ts>`, `candidate -> wacrm-app-1`). The candidate is checked again for readiness under its final live name; on failure the running previous name is restored. A failed candidate rename restores the running old container to `wacrm-app-1`. Persistent Docker failures stop with a CRITICAL operator incident and preserve both instances for inspection.
-7. Only AFTER successful name swap and readiness, `docker stop -t 40` gracefully stops the old container; Next receives SIGTERM and a bounded drain interval. The stopped previous image is then forcibly disconnected from the edge network and reconnected under a private-only alias for rollback. The isolated Docker preflight must verify this behavior before the cutover.
+7. Only AFTER successful name swap and readiness, `docker stop -t 70` gracefully stops the old container; Next receives SIGTERM and a bounded drain interval. The stopped previous image is then forcibly disconnected from the edge network and reconnected under a private-only alias for rollback. The isolated Docker preflight must verify this behavior before the cutover.
 
 The old container is deliberately **not** disconnected from the network first: that severs its in-flight connections.
 `lab-alias-flip.sh` shows it (isolated throwaway network, 12 slow requests in flight when the old one is stopped, ~50 req/s of keep-alive traffic):
@@ -42,9 +42,10 @@ ops/deploy/rollback.sh --execute                  # if needed
 ## Mandatory preflight — first production cutover (NO-GO until approved)
 - The current `docker-compose.yml` publishes `HOST_PORT:3000` on the VPS. The candidate **must omit this binding** while the old container owns it; after cutover the new container will not expose that host port. Before setting `ALLOW_DROP_HOST_PORTS=1`, inventory *all* host-port consumers (local probes, other containers, cron scripts, external integrations and monitoring) and either migrate them to `edge_proxy` or choose a different deployment architecture. Do not assume Caddy is the only client.
 - Validate `docker compose version` (**>=2.24.4** for `!override`) and `docker compose ... config` against the *actual* live overlays and environment. `deploy.sh` enforces the Compose configuration check before mutations.
-- Verify `edge_proxy`, shared Caddy reverse proxy, available memory/disk, live Compose project labels, candidate image checksum, all host/cron dependencies and the DB-backed rollback probe; take and verify a backup before the execute window.
+- Verify `edge_proxy`, shared Caddy reverse proxy, available memory/disk, live Compose project labels, candidate image checksum, all host/cron dependencies and the DB-backed rollback probe; take and verify a **fresh full database backup with checksum** before the execute window. Without it: NO-GO.
+- Preserve current Flow recovery behavior only after explicitly configuring `FLOW_RECOVERY_ACTIVE=true` on the **candidate's runtime environment** and verifying it. The new code defaults to dry-run otherwise. `deploy.sh --execute` now aborts **before assigning the public Caddy alias** if the candidate is not explicitly active. The script does not edit environment files; operators must approve the setting, and the stricter 30-minute/evidence-based recovery policy remains a known functional difference. Version the host-only `run-meta-sync.sh` in a separate reviewed change after its sanitized bytes are available.
 - Rehearse dual-service window with synthetic/test traffic and the **actual Caddy** before an execute approval. The isolated lab has sometimes shown a dropped keep-alive socket, so a successful isolated trial alone is not sufficient. Do not retry non-idempotent POST webhooks unless delivery/idempotency can be proven. Stop on any 502 or lost webhook acknowledgement.
-- The deployed state file `last.env` is published **only after the name swap**. If the old image could not be parked privately, the cutover is marked `ROLLBACK_DISABLED=1`, the script fails loudly, and automated rollback refuses to start. Such an incident requires manual correction before another deploy.
+- The deployed state file `last.env` is published **only after the name swap**, inside a state directory with mode `0700`; the manifest and generated image override are mode `0600`. The deploy script creates or locks down these files only during `--execute`; rollback rejects symlinked/unprotected state. If the old image could not be parked privately, the cutover is marked `ROLLBACK_DISABLED=1`, the script fails loudly, and automated rollback refuses to start. Such an incident requires manual correction before another deploy.
 - **No production command, Caddy edit, shared Dentalpin change, restart or migration is authorized by merging this PR.** Run `--execute` only under a separate explicit approval.
 
 ## Rollback

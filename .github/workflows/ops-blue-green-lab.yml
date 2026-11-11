@@ -47,11 +47,53 @@ jobs:
           bash ops/deploy/lab-rename-handoff.sh
       - name: Pull disposable Node image
         run: docker pull node:20-alpine
+      - name: Refuse candidate with silent dry-run Flows recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ops/deploy/lib.sh
+          PREFIX="qa-flow-recovery-$RANDOM-$(date +%s%N)"
+          ACTIVE="$PREFIX-active"
+          INACTIVE="$PREFIX-unset"
+          WRONG="$PREFIX-wrong"
+          cleanup() { docker rm -f "$ACTIVE" "$INACTIVE" "$WRONG" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run -d --name "$ACTIVE" -e FLOW_RECOVERY_ACTIVE=true --entrypoint node node:20-alpine -e 'setInterval(()=>{},10000)' >/dev/null
+          docker run -d --name "$INACTIVE" --entrypoint node node:20-alpine -e 'setInterval(()=>{},10000)' >/dev/null
+          docker run -d --name "$WRONG" -e FLOW_RECOVERY_ACTIVE=TRUE --entrypoint node node:20-alpine -e 'setInterval(()=>{},10000)' >/dev/null
+          [ "$(flow_recovery_status "$ACTIVE")" = "active" ]
+          [ "$(flow_recovery_status "$INACTIVE")" = "dry-run" ]
+          [ "$(flow_recovery_status "$WRONG")" = "dry-run" ]
+          echo "OPS_FLOW_RECOVERY_CONTINUITY_GATE=PASS"
       - name: Exercise name handoff on disposable real Docker containers
         shell: bash
         run: |
           set -euo pipefail
           bash ops/deploy/lab-real-rename-handoff.sh node:20-alpine
+      - name: Gate shutdown budget and private deploy state
+        shell: bash
+        run: |
+          set -euo pipefail
+          source ops/deploy/lib.sh
+          MAX_WEBHOOK_DURATION="$(sed -nE 's/^export const maxDuration[[:space:]]*=[[:space:]]*([0-9]+).*/\1/p' src/app/api/whatsapp/webhook/route.ts | head -1)"
+          [ -n "$MAX_WEBHOOK_DURATION" ] || { echo "Missing webhook maxDuration"; exit 1; }
+          [ "$STOP_GRACE" -gt "$MAX_WEBHOOK_DURATION" ] || { echo "Stop grace is shorter than webhook budget"; exit 1; }
+          grep -Eq "^[[:space:]]+stop_grace_period: ${STOP_GRACE}s$" ops/deploy/candidate.override.yml ||
+            { echo "Compose and docker stop grace disagree"; exit 1; }
+          TEMP="$(mktemp -d)"
+          trap 'rm -rf "$TEMP"' EXIT
+          STATE_DIR="$TEMP/state"
+          prepare_private_state_dir
+          [ "$(stat -c '%a' "$STATE_DIR")" = "700" ]
+          echo "TEST_ONLY=yes" > "$STATE_DIR/last.env"
+          private_state_manifest "$STATE_DIR/last.env"
+          chmod 644 "$STATE_DIR/last.env"
+          if private_state_manifest "$STATE_DIR/last.env"; then echo "Accepted exposed manifest"; exit 1; fi
+          chmod 600 "$STATE_DIR/last.env"
+          ln -s "$STATE_DIR" "$TEMP/symlink"
+          STATE_DIR="$TEMP/symlink"
+          if prepare_private_state_dir; then echo "Accepted state symlink"; exit 1; fi
+          echo "OPS_PRIVATE_STATE_AND_STOP_GRACE=PASS"
       - name: Verify candidate Compose overlay parses without the public alias
         shell: bash
         run: |

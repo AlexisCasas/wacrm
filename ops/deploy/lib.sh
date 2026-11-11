@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # Shared helpers for the zero-downtime WACRM deploy. Sourced, never executed. No secrets are read or printed.
 set -euo pipefail
+# Deployment manifests may contain operational metadata and are sourced on rollback.
+# Restrict newly created files by default, including temporary manifests.
+umask 077
 
 : "${LIVE_NAME:=wacrm-app-1}"          # the container the host crons `docker exec` into (/usr/local/bin/wacrm-*cron.sh)
 : "${EDGE_NETWORK:=edge_proxy}"        # network shared with the reverse proxy (Caddy)
@@ -8,7 +11,7 @@ set -euo pipefail
 : "${APP_PORT:=3000}"
 : "${READY_PATH:=/api/health/ready}"
 : "${DRAIN_SECONDS:=15}"               # keep-alive connections to the old container settle before it is stopped
-: "${STOP_GRACE:=40}"                  # SIGTERM -> SIGKILL window: Next finishes in-flight requests and pending after() callbacks
+: "${STOP_GRACE:=70}"                  # SIGTERM -> SIGKILL window: Next finishes in-flight requests and pending after() callbacks
 : "${READY_PASSES:=3}"                 # consecutive readiness passes required
 : "${READY_TIMEOUT:=150}"              # seconds to wait for the candidate
 : "${STATE_DIR:=/opt/backups/wacrm/deploy-state}"
@@ -17,6 +20,19 @@ set -euo pipefail
 log()  { printf '%s [deploy] %s\n' "$(date -u +%FT%TZ)" "$*"; }
 die()  { log "ABORT: $*"; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "missing command: $1"; }
+
+# Private deployment metadata must not be readable by other local users.
+# Fail closed for symlinks to avoid following a redirected state directory.
+prepare_private_state_dir() {
+  [ ! -L "$STATE_DIR" ] || return 1
+  mkdir -p -m 700 -- "$STATE_DIR" || return 1
+  chmod 700 -- "$STATE_DIR" || return 1
+  [ "$(stat -c '%a' -- "$STATE_DIR")" = "700" ]
+}
+private_state_manifest() { # $1 path to an existing private regular file
+  [ -f "$1" ] && [ ! -L "$1" ] &&
+    [ "$(stat -c '%a' -- "$1")" = "600" ]
+}
 
 # EXECUTE=1 mutates; anything else prints what would happen. Mutating commands go through `run`.
 run() { if [ "${EXECUTE:-0}" = "1" ]; then "$@"; else log "DRY-RUN: $*"; fi; }
@@ -89,6 +105,14 @@ swap_running_live_name() {  # $1 previous-name, $2 candidate-name, $3 live-name
     return 2
   fi
   return 3
+}
+
+# The current production Flows cron actively resumes eligible runs. New code is
+# dry-run by default. Require explicit runtime continuity before the candidate
+# receives the public alias; never print or dump other environment variables.
+flow_recovery_status() {  # $1 running container
+  docker exec "$1" node -e 'process.stdout.write(process.env.FLOW_RECOVERY_ACTIVE === "true" ? "active" : "dry-run")' \
+    2>/dev/null || echo unknown
 }
 
 # Fetch READY_PATH from INSIDE a container (no published port is needed). Prints the HTTP status, or 000.

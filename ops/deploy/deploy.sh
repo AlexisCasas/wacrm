@@ -5,7 +5,7 @@
 #   deploy.sh --execute <image:tag>    # does it
 #
 # Order: candidate (private alias) -> readiness gate -> DNS check -> public alias added (both serve) -> dual-serve window ->
-# old gets SIGTERM and time to finish (it leaves DNS when it exits) -> old kept STOPPED for rollback -> names swapped so the host crons work.
+# swap names while both containers are RUNNING -> post-swap readiness -> SIGTERM old (70s grace) -> park stopped old privately for rollback.
 # The old container is deliberately NOT disconnected from the network: that severs its in-flight connections (see lab-alias-flip.sh).
 # Any failure before the old container is stopped leaves the old one serving and removes the candidate.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -92,7 +92,9 @@ fi
 bash "$DIR/lab-private-rollback.sh" "$IMAGE" ||
   die "this Docker Engine cannot safely park a stopped image; no live change"
 
-mkdir -p "$STATE_DIR"
+prepare_private_state_dir || die "cannot securely create deploy state dir (must be a real directory with mode 0700)"
+[ ! -e "$IMAGE_OVERRIDE" ] && [ ! -L "$IMAGE_OVERRIDE" ] || die "image override path already exists; refusing to overwrite"
+[ ! -e "$STATE_DIR/$TS.env" ] && [ ! -L "$STATE_DIR/$TS.env" ] || die "deployment manifest already exists; refusing to overwrite"
 cat >"$IMAGE_OVERRIDE" <<YML
 services:
   app:
@@ -102,6 +104,8 @@ YML
   echo "TS=$TS"; echo "OLD_NAME=$OLD"; echo "OLD_IMAGE=$(docker inspect -f '{{.Config.Image}}' "$OLD")"; echo "OLD_IMAGE_ID=$(docker inspect -f '{{.Image}}' "$OLD")"
   echo "NEW_IMAGE=$IMAGE"; echo "CAND=$CAND"
 } >"$STATE_DIR/$TS.env"
+chmod 600 -- "$IMAGE_OVERRIDE" "$STATE_DIR/$TS.env" || die "cannot restrict private deploy files"
+private_state_manifest "$STATE_DIR/$TS.env" || die "manifest permissions are not 0600"
 
 # Validate the *final* composed candidate after generating its image override.
 ( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "$COMPOSE_PROJECT" "${COMPOSE_ARGS[@]}" -f "$IMAGE_OVERRIDE" -f "$DIR/candidate.override.yml" config -q ) ||
@@ -112,6 +116,16 @@ log "1/7 starting candidate $CAND"
 
 log "2/7 readiness gate ($READY_PASSES consecutive 200s on $READY_PATH, timeout ${READY_TIMEOUT}s)"
 wait_ready "$CAND" || { docker logs --tail 30 "$CAND" 2>&1 | sed -E 's/(eyJ[A-Za-z0-9_.-]{20,}|sk-[A-Za-z0-9]{10,})/<redacted>/g' | tail -30; cleanup_candidate; die "candidate never became ready; old container still serving"; }
+
+# Operational gate: old production Flows recovery is ACTIVE. The new engine
+# defaults to dry-run unless the exact env value is true. Reject silent
+# regression BEFORE the candidate can receive webhooks under the public alias.
+FLOW_RECOVERY_STATUS="$(flow_recovery_status "$CAND")"
+if [ "$FLOW_RECOVERY_STATUS" != "active" ]; then
+  cleanup_candidate
+  die "candidate Flow recovery is not ACTIVE; explicitly configure FLOW_RECOVERY_ACTIVE=true before cutover (no config modified)"
+fi
+log "FLOW_RECOVERY_CONTINUITY=PASS (candidate active; no env values printed)"
 
 log "3/7 DNS: the candidate resolves by its private alias, and the public alias still points only at the old container"
 CAND_IP="$(container_ip "$CAND")"; OLD_IP="$(container_ip "$OLD")"
@@ -189,6 +203,8 @@ else
 fi
 cp "$STATE_DIR/$TS.env" "$STATE_DIR/.last.env.tmp-$TS"
 mv -f "$STATE_DIR/.last.env.tmp-$TS" "$STATE_DIR/last.env"
+chmod 600 -- "$STATE_DIR/last.env" || die "cannot secure rollback manifest"
+private_state_manifest "$STATE_DIR/last.env" || die "rollback manifest permissions are not 0600"
 if [ "$PARK_OK" != "1" ]; then
   die "cutover serving new image, but rollback is DISABLED; do not run rollback.sh or retry deployment until manual repair"
 fi
