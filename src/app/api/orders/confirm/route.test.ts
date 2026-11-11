@@ -12,11 +12,12 @@ const featureRead = vi.fn()
 const featureEq = vi.fn()
 const catalogRead = vi.fn()
 const catalogEq = vi.fn()
+const tablesTouched: string[] = []
 vi.mock('@/lib/auth/account', () => ({ requireRole: (...a: unknown[]) => requireRole(...a), toErrorResponse: (e: Error) => new Response(JSON.stringify({ error: e.message }), { status: e.message === 'forbidden' ? 403 : 500 }) }))
 vi.mock('@/lib/flows/admin-client', () => ({
   supabaseAdmin: () => ({
     rpc,
-    from: (table: string) => table === 'order_integration_settings'
+    from: (table: string) => (tablesTouched.push(table), table) === 'order_integration_settings'
       ? { select: () => ({ eq: (...args: unknown[]) => { featureEq(...args); return { maybeSingle: featureRead } } }) }
       : table === 'audio_guide_products' ? { select: () => {
           const chain = { eq: (...args: unknown[]) => { catalogEq(...args); return chain }, in: () => catalogRead() }
@@ -39,6 +40,7 @@ beforeEach(() => {
   featureEq.mockReset()
   catalogRead.mockReset()
   catalogEq.mockReset()
+  tablesTouched.length = 0
   featureRead.mockResolvedValue({ data: { multiproduct_enabled: false, product_tags_required: false }, error: null })
   catalogRead.mockResolvedValue({ data: [], error: null })
   requireRole.mockResolvedValue({ supabase: { from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ maybeSingle: async () => ({ data: { full_name: 'Asesor Uno' } }) }) }) }) }) }, accountId: ACCOUNT, userId: USER })
@@ -61,6 +63,23 @@ describe('POST /api/orders/confirm', () => {
     expect(args).toMatchObject({ p_account: ACCOUNT, p_actor: USER, p_actor_name: 'Asesor Uno', p_seller: SELLER, p_request_key: 'form-1' })
     expect(args.p_account).not.toBe(OTHER)
     expect(args.p_fields).toMatchObject({ phone: '51900000001', price: '99.90', quantity: 1, agency: 'Shalom' })
+  })
+
+  it('Confirmar pedido: automations are stopped by the SAME atomic RPC, so a failed confirmation writes no automation state and the route never touches those tables', async () => {
+    rpc.mockResolvedValue({ data: null, error: { code: 'XX000', message: 'boom' } })
+    const res = await post(valid)
+    expect(res.status).toBe(500)
+    expect(rpc).toHaveBeenCalledTimes(1)
+    expect(rpc.mock.calls[0][0]).toBe('create_order_confirmation')
+    for (const forbidden of ['contact_automation_settings', 'flow_runs', 'automation_pending_executions', 'contacts']) expect(tablesTouched).not.toContain(forbidden)
+  })
+
+  it('retry of the same request_key (created=false) performs the same single RPC and no automation write of its own: no duplicate effect', async () => {
+    rpc.mockResolvedValue({ data: [{ order_id: 'o-1', created: false }], error: null })
+    const res = await post(valid)
+    expect(res.status).toBe(200)
+    expect(rpc).toHaveBeenCalledTimes(1)
+    for (const forbidden of ['contact_automation_settings', 'flow_runs', 'automation_pending_executions', 'contacts']) expect(tablesTouched).not.toContain(forbidden)
   })
 
   it('the same request_key again is 200 with created=false (double click / retry)', async () => {

@@ -25,6 +25,9 @@ const h = vi.hoisted(() => ({
     conversationUpdateCalls: [] as Record<string, unknown>[],
     contactRow: { id: "ct-1", phone: "+15551234567" } as Record<string, unknown> | null,
     configRow: { phone_number_id: "pn-1", access_token: "token" } as Record<string, unknown> | null,
+    /** "Confirmar pedido" fence answer for the executions below; rpcCalls records what the guard asked. */
+    orderStopped: false,
+    rpcCalls: [] as Array<{ fn: string; args: Record<string, unknown> }>,
   },
 }));
 
@@ -54,6 +57,10 @@ vi.mock("@/lib/whatsapp/encryption", () => ({
 
 vi.mock("./admin-client", () => ({
   supabaseAdmin: () => ({
+    rpc(fn: string, args: Record<string, unknown>) {
+      h.state.rpcCalls.push({ fn, args });
+      return Promise.resolve({ data: h.state.orderStopped, error: null });
+    },
     from(table: string) {
       if (table === "contacts") {
         return {
@@ -100,7 +107,7 @@ vi.mock("./admin-client", () => ({
 }));
 
 import { engineSendText, engineSendMedia } from "./meta-send";
-import { ContactBlockedError } from "@/lib/contacts/blocking";
+import { AutomatedSendStoppedError, ContactBlockedError } from "@/lib/contacts/blocking";
 
 const TEXT_ARGS = {
   accountId: "acct-1",
@@ -122,6 +129,8 @@ const MEDIA_ARGS = {
 beforeEach(() => {
   vi.clearAllMocks();
   h.state.insertCalls = [];
+  h.state.orderStopped = false;
+  h.state.rpcCalls = [];
   h.state.insertError = null;
   h.state.conversationUpdateCalls = [];
   h.state.contactRow = { id: "ct-1", phone: "+15551234567" };
@@ -441,5 +450,55 @@ describe("blocked-contact guard — runs before transport is decided", () => {
     h.resolveOutboundTransport.mockReturnValue("meta");
     await expect(engineSendText(TEXT_ARGS)).resolves.toBeDefined();
     expect(h.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
+// "Confirmar pedido" fence, exercised through the REAL senders: the guard runs before any provider call (Meta or ManyChat).
+describe("order-stop fence — an execution started before the confirmed order cannot reach the provider", () => {
+  beforeEach(() => {
+    h.state.contactRow = { id: "ct-1", phone: "+15551234567", blocked: false };
+    h.state.orderStopped = true;
+  });
+
+  it("3. Flow text: the next outbound of an active run is refused, nothing is sent or stored (Meta)", async () => {
+    h.resolveOutboundTransport.mockReturnValue("meta");
+    await expect(engineSendText({ ...TEXT_ARGS, flowRunId: "run-old" })).rejects.toBeInstanceOf(AutomatedSendStoppedError);
+    expect(h.state.rpcCalls).toEqual([{ fn: "flow_run_stopped_by_order", args: { p_account: TEXT_ARGS.accountId, p_contact: TEXT_ARGS.contactId, p_run: "run-old" } }]);
+    expect(h.sendTextMessage).not.toHaveBeenCalled();
+    expect(h.state.insertCalls).toHaveLength(0);
+  });
+
+  it("Flow text under the ManyChat bridge is refused too, before the transport is decided", async () => {
+    h.resolveOutboundTransport.mockReturnValue("manychat");
+    await expect(engineSendText({ ...TEXT_ARGS, flowRunId: "run-old" })).rejects.toBeInstanceOf(AutomatedSendStoppedError);
+    expect(h.sendManyChatTextToContact).not.toHaveBeenCalled();
+  });
+
+  it("Flow media / voice note (Audio Guide style sends) are refused", async () => {
+    h.resolveOutboundTransport.mockReturnValue("meta");
+    await expect(engineSendMedia({ ...MEDIA_ARGS, flowRunId: "run-old" })).rejects.toBeInstanceOf(AutomatedSendStoppedError);
+    expect(h.sendMediaMessage).not.toHaveBeenCalled();
+  });
+
+  it("Automation sends (same sender, identified by their log id) are refused", async () => {
+    h.resolveOutboundTransport.mockReturnValue("meta");
+    await expect(engineSendText({ ...TEXT_ARGS, automationLogId: "log-old" })).rejects.toBeInstanceOf(AutomatedSendStoppedError);
+    expect(h.state.rpcCalls[0]).toMatchObject({ fn: "automation_run_stopped_by_order", args: { p_log: "log-old" } });
+    expect(h.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it("5. a NEW execution (started after the order, fence answers false) sends normally", async () => {
+    h.state.orderStopped = false;
+    h.resolveOutboundTransport.mockReturnValue("meta");
+    h.sendTextMessage.mockResolvedValue({ messageId: "wamid.new" });
+    await expect(engineSendText({ ...TEXT_ARGS, flowRunId: "run-new" })).resolves.toMatchObject({ whatsapp_message_id: "wamid.new" });
+    expect(h.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("7. a sender call without an origin (manual-style / AI) never consults the fence", async () => {
+    h.resolveOutboundTransport.mockReturnValue("meta");
+    h.sendTextMessage.mockResolvedValue({ messageId: "wamid.manual" });
+    await expect(engineSendText(TEXT_ARGS)).resolves.toMatchObject({ whatsapp_message_id: "wamid.manual" });
+    expect(h.state.rpcCalls).toHaveLength(0);
   });
 });

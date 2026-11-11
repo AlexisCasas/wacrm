@@ -190,7 +190,7 @@ vi.mock("./meta-send", () => ({
 
 import { startFlowManually, dispatchInboundToFlows } from "./engine";
 import { engineSendText } from "./meta-send";
-import { ContactBlockedError } from "@/lib/contacts/blocking";
+import { AutomatedSendStoppedError, ContactBlockedError } from "@/lib/contacts/blocking";
 
 const ACCOUNT = "acct-1";
 const OTHER_ACCOUNT = "acct-2";
@@ -756,6 +756,36 @@ describe("startFlowManually — first-advance outcome", () => {
     expect(result.outcome).toBe("started");
     expect(h.state.flowRuns[0].status).toBe("paused_by_agent");
     expect(h.state.flowRuns[0].end_reason).toBe("contact_blocked");
+  });
+
+  it("3. Confirmar pedido: an active run whose next outbound is refused by the shared guard ends 'paused_by_agent' / 'order_confirmed' and sends nothing more", async () => {
+    const flow = seedFlow({ entry_node_id: "send1" });
+    for (const [key, next] of [["send1", "send2"], ["send2", "send3"], ["send3", "end1"]] as const) {
+      h.state.flowNodes.push({ flow_id: flow.id, node_key: key, node_type: "send_message", config: { text: key, next_node_key: next } });
+    }
+    seedConversationAndContact();
+    // the first message went out; the order was confirmed before the next outbound: the guard refuses the second send
+    vi.mocked(engineSendText).mockResolvedValueOnce({ whatsapp_message_id: "wamid.1" } as never);
+    vi.mocked(engineSendText).mockRejectedValueOnce(new AutomatedSendStoppedError());
+    const sendsBefore = vi.mocked(engineSendText).mock.calls.length;
+
+    const result = await startFlowManually({ accountId: ACCOUNT, initiatedByUserId: AGENT_USER, flowId: "flow-1", conversationId: CONVERSATION });
+
+    expect(result.outcome).toBe("started");
+    expect(vi.mocked(engineSendText).mock.calls.length - sendsBefore).toBe(2); // send3 is never attempted
+    expect(h.state.flowRuns[0].status).toBe("paused_by_agent");
+    expect(h.state.flowRuns[0].end_reason).toBe("order_confirmed");
+    // every send of the run carries its run id, which is what the guard fences on
+    for (const call of vi.mocked(engineSendText).mock.calls.slice(sendsBefore)) expect(call[0]).toMatchObject({ flowRunId: h.state.flowRuns[0].id });
+  });
+
+  it("a refused FIRST send (order confirmed just before it) is also order_confirmed, not a failure and not 'contact_blocked'", async () => {
+    seedSendThenEndFlow();
+    seedConversationAndContact();
+    vi.mocked(engineSendText).mockRejectedValueOnce(new AutomatedSendStoppedError());
+    await startFlowManually({ accountId: ACCOUNT, initiatedByUserId: AGENT_USER, flowId: "flow-1", conversationId: CONVERSATION });
+    expect(h.state.flowRuns[0].status).toBe("paused_by_agent");
+    expect(h.state.flowRuns[0].end_reason).toBe("order_confirmed");
   });
 
   it("fails closed when the post-creation status lookup finds no row (maybeSingle data=null, error=null) — never reports 'started'", async () => {

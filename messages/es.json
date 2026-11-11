@@ -504,7 +504,7 @@
       "automationsPausedState": "Estado: Pausadas",
       "automationsPause": "Pausar",
       "automationsResume": "Reanudar",
-      "automationsHint": "Solo detiene NUEVOS inicios automáticos por palabra clave. Los flujos activos, botones e inicio manual siguen funcionando.",
+      "automationsHint": "Pausar solo evita NUEVOS inicios automáticos por palabra clave. Al confirmar un pedido también se detienen las automatizaciones, flujos y respuestas de IA de este contacto hasta que pulses Reanudar. Tus mensajes manuales y el inicio manual siguen funcionando.",
       "automationsToastPaused": "Automatizaciones por palabra clave pausadas",
       "automationsToastResumed": "Automatizaciones por palabra clave reanudadas",
       "automationsError": "No se pudo actualizar las automatizaciones. Inténtalo de nuevo.",

@@ -1,5 +1,6 @@
 import { renderTemplate } from '@/lib/variables'
 import { keywordAutomationsPausedFailClosed } from '@/lib/contacts/automation-pause'
+import { AutomatedSendStoppedError } from '@/lib/contacts/blocking'
 import type {
   Automation,
   AutomationLogStepResult,
@@ -912,6 +913,28 @@ async function stopExecution(
   return finishScope(args, results, outcome, detail)
 }
 
+/**
+ * "Confirmar pedido" fence: was this execution (its automation_logs row) created at or before the contact's order_stop_at?
+ * Same SQL helper the wait/retry schedulers use (automation_run_stopped_by_order), so every gate agrees. Executions that start AFTER the
+ * order (a contact that was resumed) are never stopped by it. A missing function (migration not applied yet) is "not stopped".
+ */
+async function isRunStoppedByOrder(
+  db: AdminClient,
+  accountId: string,
+  contactId: string,
+  logId: string | null,
+): Promise<'stopped' | 'ok' | 'error'> {
+  if (!logId) return 'ok'
+  const { data, error } = await db.rpc('automation_run_stopped_by_order', { p_account: accountId, p_contact: contactId, p_log: logId })
+  if (error) {
+    const code = (error as { code?: string }).code
+    if (code === '42883' || code === 'PGRST202') return 'ok'
+    console.error('[automations] order-stop check failed:', error.message)
+    return 'error'
+  }
+  return data === true ? 'stopped' : 'ok'
+}
+
 async function executeStepsFrom(args: ExecuteArgs): Promise<ExecutionOutcome> {
   const db = supabaseAdmin()
 
@@ -1171,6 +1194,22 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<ExecutionOutcome> {
         }
       }
 
+      // "Confirmar pedido" fence (migration 20261120000000). A run that STARTED before the contact's order_stop_at must not take ANY further
+      // step, in particular no outbound send. Placed after the Meta pacing sleep above and immediately before the step runs, so nothing
+      // slow sits between this check and the send. Fail closed on a real error; a database without the function yet means "not stopped".
+      if (args.contactId) {
+        const orderStop = await isRunStoppedByOrder(db, args.automation.account_id, args.contactId, args.logId)
+        if (orderStop === 'error') {
+          return stopExecution(
+            args, results, step, 'order_stop_check_failed',
+            { kind: 'failed', message: 'order_stop_check_failed' }, 'failed',
+          )
+        }
+        if (orderStop === 'stopped') {
+          return stopExecution(args, results, step, 'order_confirmed', { kind: 'paused' })
+        }
+      }
+
       const detail = await runStep(step, args)
       if (isMetaBoundStep) {
         // Only after runStep returns WITHOUT throwing — never before the
@@ -1194,6 +1233,12 @@ async function executeStepsFrom(args: ExecuteArgs): Promise<ExecutionOutcome> {
       })
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
+
+      // "Confirmar pedido" fence refused this send inside the shared sender guard (the last check before the provider call): the run
+      // stops here, auditable, and is NOT retried or failed.
+      if (err instanceof AutomatedSendStoppedError) {
+        return stopExecution(args, results, step, 'order_confirmed', { kind: 'paused' })
+      }
 
       // Meta 131056 durable retry (Phase 3) — ONLY for the 5 outbound
       // Meta send step types, and ONLY when there's a contact to retry
@@ -1345,6 +1390,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         userId: args.automation.user_id,
         conversationId,
         contactId: args.contactId,
+        automationLogId: args.logId ?? undefined,
         text,
       })
       return `sent (${whatsapp_message_id})`
@@ -1365,6 +1411,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         userId: args.automation.user_id,
         conversationId,
         contactId: args.contactId,
+        automationLogId: args.logId ?? undefined,
         payload,
       })
       return `interactive sent via Meta (${whatsapp_message_id})`
@@ -1398,6 +1445,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         userId: args.automation.user_id,
         conversationId,
         contactId: args.contactId,
+        automationLogId: args.logId ?? undefined,
         templateName: cfg.template_name,
         language: cfg.language,
         params,
@@ -1415,6 +1463,7 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
         userId: args.automation.user_id,
         conversationId,
         contactId: args.contactId,
+        automationLogId: args.logId ?? undefined,
         kind: cfg.media_type,
         link: cfg.media_url,
         caption: cfg.caption,

@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, fireEvent, cleanup } from "@testing-library/react";
 
 import { ContactAutomationToggle } from "./contact-automation-toggle";
+import { ORDERS_CHANGED_EVENT } from "@/components/orders/order-history";
 
 vi.mock("next-intl", () => ({ useTranslations: () => (key: string) => key }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -106,5 +107,50 @@ describe("ContactAutomationToggle", () => {
     expect(await screen.findByText("automationsPause")).toBeTruthy();
     expect(status()).toBe("automationsActive");
     expect(h.reads).toEqual(["contact_automation_settings:angelo", "contact_automation_settings:keyler"]);
+  });
+});
+
+describe("ContactAutomationToggle — Confirmar pedido", () => {
+  it("2. an active contact flips from Pausar to Reanudar when an order is confirmed, without a reload and without any extra control", async () => {
+    render(<ContactAutomationToggle contactId="keyler" />);
+    expect(await screen.findByText("automationsPause")).toBeTruthy();
+    expect(status()).toBe("automationsActive");
+    h.paused.keyler = true; // what create_order_confirmation just did on the server
+    window.dispatchEvent(new Event(ORDERS_CHANGED_EVENT));
+    await waitFor(() => expect(screen.getByText("automationsResume")).toBeTruthy());
+    expect(status()).toBe("automationsPausedState");
+    expect(screen.queryByText("automationsPause")).toBeNull();
+    expect(screen.getAllByRole("button")).toHaveLength(1); // still the one existing button
+    expect(fetchMock).not.toHaveBeenCalled(); // the UI only re-reads: it never writes the pause itself
+  });
+
+  it("keeps showing the current state while it re-reads (no flicker back to a spinner)", async () => {
+    render(<ContactAutomationToggle contactId="keyler" />);
+    await screen.findByText("automationsPause");
+    window.dispatchEvent(new Event(ORDERS_CHANGED_EVENT));
+    expect(screen.queryByRole("status")).toBeNull();
+    await waitFor(() => expect(h.reads.length).toBeGreaterThanOrEqual(2));
+    expect(screen.getByText("automationsPause")).toBeTruthy();
+  });
+
+  it("9/11. Reanudar writes only the existing pause flag, and a NEW confirmation afterwards pauses (Reanudar) again", async () => {
+    render(<ContactAutomationToggle contactId="angelo" />);
+    fireEvent.click(await screen.findByText("automationsResume"));
+    await waitFor(() => expect(screen.getByText("automationsPause")).toBeTruthy());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/contacts/angelo/automation-pause");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ paused: false }); // nothing about runs, waits or pendings is sent
+    h.paused.angelo = true; // second order confirmed
+    window.dispatchEvent(new Event(ORDERS_CHANGED_EVENT));
+    await waitFor(() => expect(screen.getByText("automationsResume")).toBeTruthy());
+    expect(status()).toBe("automationsPausedState");
+  });
+
+  it("12. the sidebar control never blocks anything: it only offers the existing pause/resume button to agents who can send", async () => {
+    h.canSendMessages = false;
+    render(<ContactAutomationToggle contactId="angelo" />);
+    await screen.findByTestId("automations-status");
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(status()).toBe("automationsPausedState");
   });
 });

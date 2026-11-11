@@ -6,6 +6,7 @@ import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { ORDERS_CHANGED_EVENT } from "@/components/orders/order-history";
 import { useAuth } from "@/hooks/use-auth";
 import { createClient } from "@/lib/supabase/client";
 
@@ -16,7 +17,8 @@ interface ContactAutomationToggleProps {
 /**
  * Inbox sidebar "AUTOMATIZACIONES": pauses/resumes NEW keyword-triggered automation (Flows by keyword + `keyword_match` automations) for this
  * contact only. Read through RLS, written through PUT /api/contacts/[id]/automation-pause (agent+). It never touches running flows or waits.
- * The sidebar keys it by contact id and the state also remembers which contact it was loaded for, so a previous contact's state is never shown.
+ * Confirming an order pauses it on the server (create_order_confirmation); the ORDERS_CHANGED_EVENT the confirm dialog already dispatches makes it
+ * re-read the state, so "Pausar" turns into "Reanudar" without a reload. The sidebar keys it by contact id and the state also remembers which contact it was loaded for, so a previous contact's state is never shown.
  */
 export function ContactAutomationToggle({ contactId }: ContactAutomationToggleProps) {
   const t = useTranslations("Inbox.sidebar");
@@ -26,6 +28,14 @@ export function ContactAutomationToggle({ contactId }: ContactAutomationTogglePr
   const [state, setState] = useState<{ contactId: string; paused: boolean } | null>(null);
   const [loadError, setLoadError] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Bumped when an order is confirmed: confirming stops this contact's automations on the server, so the state is read again at once.
+  const [reloadTick, setReloadTick] = useState(0);
+
+  useEffect(() => {
+    const onOrderChanged = () => setReloadTick((n) => n + 1);
+    window.addEventListener(ORDERS_CHANGED_EVENT, onOrderChanged);
+    return () => window.removeEventListener(ORDERS_CHANGED_EVENT, onOrderChanged);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,7 +58,7 @@ export function ContactAutomationToggle({ contactId }: ContactAutomationTogglePr
       }
     })();
     return () => { cancelled = true; };
-  }, [contactId, supabase]);
+  }, [contactId, supabase, reloadTick]);
 
   async function toggle(next: boolean) {
     if (busy || !canSendMessages) return;

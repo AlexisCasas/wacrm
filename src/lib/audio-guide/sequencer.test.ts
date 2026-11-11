@@ -240,6 +240,47 @@ describe("runAudioSequence: stopping before a send", () => {
   });
 });
 
+describe("runAudioSequence: Confirmar pedido fence (order_stop_at)", () => {
+  const fenced = (t: ReturnType<typeof setup>, stopped: boolean | "error", calls: Row[] = []) => ({
+    ...t.db,
+    rpc: (fn: string, args: Row) => {
+      if (fn === "flow_run_stopped_by_order") {
+        calls.push(args);
+        return Promise.resolve(stopped === "error" ? { data: null, error: { code: "XX000", message: "boom" } } : { data: stopped, error: null });
+      }
+      return (t.db as unknown as { rpc: (f: string, a: Row) => unknown }).rpc(fn, args);
+    },
+  }) as unknown as SequencerDb;
+  const base = (t: ReturnType<typeof setup>, db: SequencerDb) => makeHaltCheck({ db, accountId: A, contactId: "ct-1", conversationId: "cv-1", runId: "run-1", requestCreatedAtIso: new Date(t.clock.now()).toISOString() });
+
+  it("an audio sequence of a Flow run that started before the order halts with order_confirmed (the deferred resumer uses the same check)", async () => {
+    const t = setup();
+    const calls: Row[] = [];
+    expect(await base(t, fenced(t, true, calls))()).toBe("order_confirmed");
+    expect(calls).toEqual([{ p_account: A, p_contact: "ct-1", p_run: "run-1" }]);
+  });
+
+  it("a sequence of a run started after the order (contact resumed) keeps going", async () => {
+    const t = setup();
+    expect(await base(t, fenced(t, false))()).toBeNull();
+  });
+
+  it("fails closed when the fence cannot be read", async () => {
+    const t = setup();
+    expect(await base(t, fenced(t, "error"))()).toBe("halt_check_failed");
+  });
+
+  it("a halted sequence sends no further audio and skips the pending ones", async () => {
+    const t = setup();
+    const requestId = await t.open();
+    let sent = 0;
+    const deps = t.deps({ sendVoiceNote: async () => { sent += 1; return { whatsappMessageId: `wamid.${sent}` }; }, haltReason: async () => (sent >= 1 ? "order_confirmed" : null) });
+    const outcome = await runAudioSequence({ db: t.db, context: CTX, requestId, deps });
+    expect(outcome).toMatchObject({ kind: "halted", sent: 1, reason: "order_confirmed" });
+    expect(t.sendsOf(requestId)).toBe("1:sent,2:skipped,3:skipped");
+  });
+});
+
 describe("resumeAudioRequests", () => {
   it("skips accounts that are not enabled, and leaves their audios pending", async () => {
     const t = setup([5]);

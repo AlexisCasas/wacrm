@@ -504,7 +504,7 @@
       "automationsPausedState": "Status: Paused",
       "automationsPause": "Pause",
       "automationsResume": "Resume",
-      "automationsHint": "Only stops new automatic starts by keyword. Active flows, buttons and manual start keep working.",
+      "automationsHint": "Pausing only prevents NEW automatic starts by keyword. Confirming an order also stops this contact's automations, flows and AI replies until you press Resume. Your manual messages and manual start keep working.",
       "automationsToastPaused": "Keyword automations paused",
       "automationsToastResumed": "Keyword automations resumed",
       "automationsError": "Couldn't update automations. Please try again.",

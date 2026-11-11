@@ -9,6 +9,7 @@ import { buildHandoffSummary, HANDOFF_CUSTOMER_NOTICE } from './handoff'
 import { logAiUsage } from './usage'
 import { latestUserMessage } from './query'
 import { sendAiTextToConversation } from './send'
+import { isExecutionStoppedByOrder } from '@/lib/contacts/blocking'
 import { checkRateLimit, RATE_LIMITS } from '@/lib/rate-limit'
 import { keywordAutomationsPausedFailClosed } from '@/lib/contacts/automation-pause'
 import type { AiConfig, ChatMessage } from './types'
@@ -71,8 +72,9 @@ async function handOffConversation(args: {
   config: AiConfig
   messages: ChatMessage[]
   reason: 'model' | 'cap'
+  activityStartedAt?: string
 }): Promise<void> {
-  const { db, accountId, conversationId, contactId, configOwnerUserId, conv, config, messages, reason } =
+  const { db, accountId, conversationId, contactId, configOwnerUserId, conv, config, messages, reason, activityStartedAt } =
     args
 
   const summary = buildHandoffSummary({
@@ -123,6 +125,7 @@ async function handOffConversation(args: {
       contactId,
       text: HANDOFF_CUSTOMER_NOTICE,
       configOwnerUserId,
+      activityStartedAt,
     })
   } catch (err) {
     console.error(
@@ -162,11 +165,20 @@ export async function dispatchInboundToAiReply(
     suppressWhenAutomationsActive,
   } = args
 
+  // When this AI activity started: the "Confirmar pedido" fence refuses a reply whose activity began before the order (even if the
+  // contact is resumed afterwards) and any reply while the contact is still paused by the order. Manual messages never come through here.
+  const activityStartedAt = new Date().toISOString()
+
   try {
     const db = supabaseAdmin()
 
     const config = await loadAiConfig(db, accountId)
     if (!config || !config.autoReplyEnabled) return
+
+    // Stand down before spending anything (no model call, no handoff, no reply slot) when an order stopped this contact's automations.
+    // A read error fails closed: the dispatch's own catch below logs it and nothing is sent.
+    const stoppedByOrder = () => isExecutionStoppedByOrder(db, accountId, contactId, { aiActivityStartedAt: activityStartedAt })
+    if (await stoppedByOrder()) return
 
     // Deterministic, user-configured responders win over the LLM — but
     // only on paths that actually dispatch Automations for this same
@@ -230,6 +242,7 @@ export async function dispatchInboundToAiReply(
         config,
         messages,
         reason: 'cap',
+        activityStartedAt,
       })
       return
     }
@@ -284,6 +297,9 @@ export async function dispatchInboundToAiReply(
       usage,
     })
 
+    // The order may have been confirmed while the model was generating: re-check right before anything is persisted or sent.
+    if (await stoppedByOrder()) return
+
     if (handoff || !text) {
       // The model can't (or shouldn't) answer — stop auto-replying on
       // this thread and hand it to a human (pause, route, notify the
@@ -298,6 +314,7 @@ export async function dispatchInboundToAiReply(
         config,
         messages,
         reason: 'model',
+        activityStartedAt,
       })
       return
     }
@@ -335,6 +352,7 @@ export async function dispatchInboundToAiReply(
       contactId,
       text,
       configOwnerUserId,
+      activityStartedAt,
     })
   } catch (err) {
     console.error('[ai auto-reply] dispatch failed:', err)

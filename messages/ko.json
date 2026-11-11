@@ -343,7 +343,7 @@
       "automationsPausedState": "상태: 일시중지됨",
       "automationsPause": "일시중지",
       "automationsResume": "재개",
-      "automationsHint": "키워드로 인한 새 자동 시작만 중지합니다. 진행 중인 플로우, 버튼, 수동 시작은 계속 작동합니다.",
+      "automationsHint": "일시중지는 키워드로 인한 새 자동 시작만 막습니다. 주문을 확인하면 재개를 누를 때까지 이 연락처의 자동화, 플로우, AI 답변도 중지됩니다. 직접 보내는 메시지와 수동 시작은 계속 작동합니다.",
       "automationsToastPaused": "키워드 자동화가 일시중지되었습니다",
       "automationsToastResumed": "키워드 자동화가 재개되었습니다",
       "automationsError": "자동화를 업데이트하지 못했습니다. 다시 시도해 주세요.",

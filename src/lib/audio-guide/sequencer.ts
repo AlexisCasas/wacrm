@@ -17,7 +17,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
-import { ContactBlockedError } from "@/lib/contacts/blocking";
+import { ContactBlockedError, isExecutionStoppedByOrder } from "@/lib/contacts/blocking";
 import { buildVoiceNotePublicUrl } from "@/lib/media/voice-note-path";
 import { MetaApiError } from "@/lib/whatsapp/meta-api";
 
@@ -188,6 +188,15 @@ export function makeHaltCheck(args: {
     const { data: contact, error } = await db.from("contacts").select("blocked").eq("id", contactId).eq("account_id", accountId).maybeSingle();
     if (error || !contact) return "halt_check_failed";
     if ((contact as { blocked?: boolean }).blocked) return "contact_blocked";
+    // "Confirmar pedido" fence: a sequence that belongs to a Flow run started before the contact's order_stop_at must not send another audio
+    // (the deferred resumer included). Fails closed like the rest of this check.
+    if (runId) {
+      try {
+        if (await isExecutionStoppedByOrder(db as never, accountId, contactId, { flowRunId: runId })) return "order_confirmed";
+      } catch {
+        return "halt_check_failed";
+      }
+    }
     if (runId) {
       const { data: run, error: runError } = await db.from("flow_runs").select("status").eq("id", runId).eq("account_id", accountId).maybeSingle();
       if (runError || !run) return "halt_check_failed";

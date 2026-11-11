@@ -25,6 +25,10 @@ const h = vi.hoisted(() => ({
      *  actually reports it. */
     handoffUpdateError: null as { message: string } | null,
     contactBlocked: false as boolean,
+    /** "Confirmar pedido" fence (ai_reply_stopped_by_order): 1-indexed call number from which it answers true (null = never). */
+    orderStopFromCall: null as number | null,
+    orderStopCalls: [] as { p_account: string; p_contact: string; p_since: string }[],
+    orderStopError: false as boolean,
   },
 }))
 
@@ -104,6 +108,12 @@ vi.mock('./admin-client', () => ({
       }
     },
     rpc: (name: string, args: unknown) => {
+      if (name === 'ai_reply_stopped_by_order') {
+        h.state.orderStopCalls.push(args as { p_account: string; p_contact: string; p_since: string })
+        if (h.state.orderStopError) return Promise.resolve({ data: null, error: { code: 'XX000', message: 'boom' } })
+        const stopped = h.state.orderStopFromCall !== null && h.state.orderStopCalls.length >= h.state.orderStopFromCall
+        return Promise.resolve({ data: stopped, error: null })
+      }
       h.state.rpcCalls.push({ name, args })
       return Promise.resolve({ data: h.state.claim, error: null })
     },
@@ -151,6 +161,9 @@ beforeEach(() => {
   h.state.rpcCalls = []
   h.state.handoffUpdateError = null
   h.state.contactBlocked = false
+  h.state.orderStopFromCall = null
+  h.state.orderStopCalls = []
+  h.state.orderStopError = false
   h.loadAiConfig.mockResolvedValue(aiConfig())
   h.buildConversationContext.mockResolvedValue([{ role: 'user', content: 'hi' }])
   h.retrieveKnowledge.mockResolvedValue([])
@@ -631,3 +644,68 @@ describe('handOffConversation — the handoff UPDATE can fail without throwing (
 // persist-only-after-confirm, sender_type='bot', never touching
 // flow_runs) is exhaustively covered by send.test.ts, which is unaffected
 // by these changes and still passes unchanged.
+
+describe('dispatchInboundToAiReply — Confirmar pedido fence (order_stop_at)', () => {
+  it('1-3. the AI starts generating, the order is confirmed before the send: the automatic reply does NOT go out (nothing claimed, handed off or sent)', async () => {
+    // check #1 (before generating): not stopped; the order is confirmed while the model runs; check #2 (after generating) is stopped
+    h.state.orderStopFromCall = 2
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.generateReply).toHaveBeenCalledTimes(1)
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.state.rpcCalls).toEqual([]) // the reply slot was not even claimed
+    expect(h.state.updateCalls).toEqual([]) // and no handoff was persisted either
+  })
+
+  it('the very last check is in the shared sender guard: an order confirmed between the slot claim and the send still blocks the message', async () => {
+    h.state.orderStopFromCall = 3 // #1 start, #2 after generating, #3 inside sendAiTextToConversation
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.state.orderStopCalls).toHaveLength(3)
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('a contact still paused by an order gets no AI reply at all (no model call, no handoff notice)', async () => {
+    h.state.orderStopFromCall = 1
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+    expect(h.state.updateCalls).toEqual([])
+  })
+
+  it('a handoff to a human is not performed either while the order stop is active (no assignment, no customer notice)', async () => {
+    h.generateReply.mockResolvedValue({ text: '', handoff: true })
+    h.state.orderStopFromCall = 2
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.state.updateCalls).toEqual([])
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('1-4. order confirmed -> Reanudar -> a NEW customer interaction: the AI answers normally again', async () => {
+    h.state.orderStopFromCall = null // after Reanudar the SQL fence answers false for activity that starts after order_stop_at
+    const before = Date.now()
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+    expect(h.engineSendText).toHaveBeenCalledWith(expect.objectContaining({ contactId: 'contact-1', text: 'Hello!', aiGenerated: true }))
+    expect(h.state.rpcCalls).toEqual([{ name: 'claim_ai_reply_slot', args: { conversation_id: 'conv-1', max_replies: 3 } }])
+    // every check carries this dispatch's own contact and its start time (what the SQL fence compares with order_stop_at)
+    expect(h.state.orderStopCalls.length).toBeGreaterThanOrEqual(3)
+    for (const call of h.state.orderStopCalls) {
+      expect(call).toMatchObject({ p_account: 'acct-1', p_contact: 'contact-1' })
+      expect(Date.parse(call.p_since)).toBeGreaterThanOrEqual(before - 5)
+    }
+    expect(new Set(h.state.orderStopCalls.map((c) => c.p_since)).size).toBe(1)
+  })
+
+  it('a read error of the fence fails closed: nothing is generated or sent (the dispatcher logs it and never throws)', async () => {
+    h.state.orderStopError = true
+    await expect(dispatchInboundToAiReply(ARGS)).resolves.toBeUndefined()
+    expect(h.generateReply).not.toHaveBeenCalled()
+    expect(h.engineSendText).not.toHaveBeenCalled()
+  })
+
+  it('a database without the fence function yet (migration not applied) behaves exactly as before: the AI answers', async () => {
+    h.state.orderStopError = false
+    h.state.orderStopFromCall = null
+    await dispatchInboundToAiReply(ARGS)
+    expect(h.engineSendText).toHaveBeenCalledTimes(1)
+  })
+})
