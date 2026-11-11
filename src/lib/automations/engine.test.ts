@@ -65,6 +65,9 @@ const h = vi.hoisted(() => ({
     scheduleWaitError: null as { message: string } | null,
     scheduleWaitBlocked: false,
     scheduleWaitCalls: [] as Record<string, unknown>[],
+    /** "Confirmar pedido" fence: 1-indexed call number of automation_run_stopped_by_order from which it answers true (null = never). */
+    orderStopFromCall: null as number | null,
+    orderStopCalls: [] as Record<string, unknown>[],
     /** Meta 131056 durable retry (Phase 3) — same knobs as the wait
      *  scheduler above, for schedule_automation_retry_if_contact_active. */
     scheduleRetryError: null as { message: string } | null,
@@ -359,6 +362,11 @@ vi.mock("./admin-client", () => {
         return builder(t);
       },
       rpc: (name: string, args: Record<string, unknown>) => {
+        if (name === "automation_run_stopped_by_order") {
+          state.orderStopCalls.push(args);
+          const stopped = state.orderStopFromCall !== null && state.orderStopCalls.length >= state.orderStopFromCall;
+          return Promise.resolve({ data: stopped, error: null });
+        }
         if (name === "schedule_automation_wait_if_contact_active") {
           state.scheduleWaitCalls.push(args);
           if (state.scheduleWaitError) {
@@ -444,6 +452,7 @@ import {
   engineSendInteractive as mockEngineSendInteractive,
 } from "./meta-send";
 import { MetaApiError } from "@/lib/whatsapp/meta-api";
+import { AutomatedSendStoppedError } from "@/lib/contacts/blocking";
 import type { Automation, KeywordMatchTriggerConfig } from "@/types";
 
 const ACCOUNT = "acct-1";
@@ -465,6 +474,8 @@ beforeEach(() => {
   h.state.contactsSelectCount = 0;
   h.state.blockContactFromCall = null;
   h.state.contactsSelectErrorFromCall = null;
+  h.state.orderStopFromCall = null;
+  h.state.orderStopCalls = [];
   // Default: a valid, still-running pending row matching what every
   // existing resumePendingExecution test already passes as `pending`.
   // Tests that specifically simulate a cancellation override this.
@@ -3625,5 +3636,63 @@ describe("Meta pacing (Phase 4)", () => {
     await resume;
 
     expect(mockEngineSendText).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("Confirmar pedido — an Automation already running cannot send after the order (fence on order_stop_at)", () => {
+  const run = () => runAutomationsForTrigger({ accountId: ACCOUNT, triggerType: "tag_added", contactId: "c1", context: { tag_id: "PROGRAMAR_PRUEBAS_ENVIO" } });
+  const sendStep = (position: number) => ({ ...sendMessageStep(position, null, null), id: `send-${position}` });
+
+  beforeEach(() => {
+    h.state.owned = { id: "c1", blocked: false };
+    h.state.automations = [tagAddedAutomation()];
+    h.state.conversationLookup = { id: "conv-1" };
+    vi.mocked(mockEngineSendText).mockClear();
+  });
+
+  it("1/2. two consecutive sends: the first goes out, the order is confirmed in between, the SECOND is never sent and the stop is auditable", async () => {
+    h.state.steps = [sendStep(0), sendStep(1)];
+    h.state.orderStopFromCall = 2; // 1st check (before step 0): not stopped; the order is confirmed before step 1
+    await run();
+    expect(mockEngineSendText).toHaveBeenCalledTimes(1);
+    expect(h.state.logUpdates).toHaveLength(1);
+    expect(h.state.logUpdates[0]).toMatchObject({ status: "partial", error_message: "order_confirmed" });
+    const steps = h.state.logUpdates[0].steps_executed as Array<{ step_id: string; status: string; detail?: string }>;
+    expect(steps.at(-1)).toMatchObject({ step_id: "send-1", status: "skipped", detail: "order_confirmed" });
+  });
+
+  it("an order confirmed before the very first step sends nothing at all", async () => {
+    h.state.steps = [sendStep(0), sendStep(1)];
+    h.state.orderStopFromCall = 1;
+    await run();
+    expect(mockEngineSendText).not.toHaveBeenCalled();
+  });
+
+  it("the check sits right before the step runs: it is asked with this execution's own log id and contact, once per step", async () => {
+    h.state.steps = [sendStep(0), sendStep(1)];
+    await run();
+    expect(mockEngineSendText).toHaveBeenCalledTimes(2);
+    expect(h.state.orderStopCalls).toHaveLength(2);
+    expect(h.state.orderStopCalls[0]).toMatchObject({ p_account: ACCOUNT, p_contact: "c1" });
+    expect(h.state.orderStopCalls[0].p_log).toBeTruthy();
+    // and every outbound carries the same log id into the shared sender guard (the closest check, right before the provider call)
+    for (const call of vi.mocked(mockEngineSendText).mock.calls) expect(call[0]).toMatchObject({ automationLogId: h.state.orderStopCalls[0].p_log });
+  });
+
+  it("5. a NEW execution started after the order (contact resumed) is not fenced and sends normally", async () => {
+    h.state.steps = [sendStep(0), sendStep(1)];
+    h.state.orderStopFromCall = null; // the SQL fence answers false for a log created after order_stop_at
+    await run();
+    expect(mockEngineSendText).toHaveBeenCalledTimes(2);
+    expect(h.state.logUpdates[0]).toMatchObject({ status: "success" });
+  });
+
+  it("the shared sender guard refusing the send (order confirmed during the send itself) stops the run: not failed, not retried, no further step", async () => {
+    h.state.steps = [sendStep(0), sendStep(1)];
+    vi.mocked(mockEngineSendText).mockRejectedValueOnce(new AutomatedSendStoppedError());
+    await run();
+    expect(mockEngineSendText).toHaveBeenCalledTimes(1);
+    expect(h.state.scheduleRetryCalls).toHaveLength(0);
+    expect(h.state.logUpdates[0]).toMatchObject({ status: "partial", error_message: "order_confirmed" });
   });
 });

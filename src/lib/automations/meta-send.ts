@@ -52,6 +52,8 @@ interface SendTextArgs {
   conversationId: string
   contactId: string
   text: string
+  /** automation_logs.id of the running execution (order-stop fence, see src/lib/contacts/blocking.ts). */
+  automationLogId?: string
 }
 
 interface SendTemplateArgs {
@@ -62,6 +64,7 @@ interface SendTemplateArgs {
   templateName: string
   language?: string
   params?: string[]
+  automationLogId?: string
 }
 
 /**
@@ -93,6 +96,7 @@ interface SendMediaArgs {
   /** Temporary ManyChat coexistence bridge — see `send_media`'s
    *  `manychat_bridge_flow_ns` config field. */
   manychatBridgeFlowNs?: string
+  automationLogId?: string
 }
 
 /**
@@ -117,6 +121,7 @@ export async function engineSendMedia(
     caption: args.caption,
     filename: args.filename,
     manychatBridgeFlowNs: args.manychatBridgeFlowNs,
+    automationLogId: args.automationLogId,
   })
 }
 
@@ -126,6 +131,7 @@ interface SendInteractiveArgs {
   conversationId: string
   contactId: string
   payload: InteractiveMessagePayload
+  automationLogId?: string
 }
 
 /**
@@ -142,8 +148,8 @@ interface SendInteractiveArgs {
 export async function engineSendInteractive(
   args: SendInteractiveArgs,
 ): Promise<{ whatsapp_message_id: string }> {
-  const { payload, accountId, userId, conversationId, contactId } = args
-  const common = { accountId, userId, conversationId, contactId }
+  const { payload, accountId, userId, conversationId, contactId, automationLogId } = args
+  const common = { accountId, userId, conversationId, contactId, automationLogId }
   if (payload.kind === 'buttons') {
     return engineSendInteractiveButtons({
       ...common,
@@ -177,7 +183,7 @@ async function sendTemplateViaMeta(
   // Template sends have no ManyChat bridge (Meta-only) but still share
   // the one central blocked-contact guard, same as every other engine
   // sender — see src/lib/contacts/blocking.ts.
-  await assertContactCanReceive(db, input.accountId, input.contactId)
+  await assertContactCanReceive(db, input.accountId, input.contactId, { automationLogId: input.automationLogId })
 
   // Scope the contact + config lookups by account_id, not user_id.
   // The engine uses the service-role client (bypassing RLS); without

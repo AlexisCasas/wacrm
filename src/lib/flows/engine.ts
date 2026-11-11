@@ -69,7 +69,7 @@ import {
   withSendReference,
 } from "@/lib/flows/customer-reply-condition";
 import { isSubflowExecutionEnabledForAccount, type OnCustomerReply } from "@/lib/flows/subflow-execution-capability";
-import { ContactBlockedError } from "@/lib/contacts/blocking";
+import { AutomatedSendStoppedError, ContactBlockedError } from "@/lib/contacts/blocking";
 import { BsuidSendBlockedError, ContactRecipientUnavailableError, resolveContactTarget } from "@/lib/whatsapp/recipient";
 import { executeSendProductAudios } from "@/lib/flows/product-audios";
 import {
@@ -1002,9 +1002,16 @@ async function endRunForContactBlocked(
   db: AdminClient,
   runId: string,
   nodeKey: string | null,
+  /** "order_confirmed" when the shared send guard refused the send because "Confirmar pedido" stopped this run (AutomatedSendStoppedError). */
+  reason: "contact_blocked" | "order_confirmed" = "contact_blocked",
 ): Promise<void> {
-  await logEvent(db, runId, "error", nodeKey, { reason: "contact_blocked" });
-  await endRun(db, runId, "paused_by_agent", "contact_blocked");
+  await logEvent(db, runId, "error", nodeKey, { reason });
+  await endRun(db, runId, "paused_by_agent", reason);
+}
+
+/** Why the shared send guard refused: a blocked contact, or an order confirmed after this run started. */
+function sendGuardReason(err: unknown): "contact_blocked" | "order_confirmed" {
+  return err instanceof AutomatedSendStoppedError ? "order_confirmed" : "contact_blocked";
 }
 
 /** Re-read what the push / pop RPCs changed on the run, so the in-memory copy never disagrees with the database. */
@@ -1169,7 +1176,7 @@ async function advanceFromNodeKey(
         if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
         if (err instanceof ContactBlockedError) {
-          await endRunForContactBlocked(db, run.id, node.node_key);
+          await endRunForContactBlocked(db, run.id, node.node_key, sendGuardReason(err));
           return { outcome: "completed" };
         }
         await logEvent(db, run.id, "error", node.node_key, {
@@ -1218,7 +1225,7 @@ async function advanceFromNodeKey(
         if (referenceKeys.has(node.node_key)) await recordSendReference(db, run, node.node_key, whatsapp_message_id);
       } catch (err) {
         if (err instanceof ContactBlockedError) {
-          await endRunForContactBlocked(db, run.id, node.node_key);
+          await endRunForContactBlocked(db, run.id, node.node_key, sendGuardReason(err));
           return { outcome: "completed" };
         }
         await logEvent(db, run.id, "error", node.node_key, {
@@ -1246,6 +1253,11 @@ async function advanceFromNodeKey(
         return { outcome: "completed" };
       }
       if (result.kind === "paused") {
+        // "Confirmar pedido" stopped this run (its audio sequence halted): close it with the same status/end_reason the guard uses.
+        if (result.reason === "order_confirmed") {
+          await endRunForContactBlocked(db, run.id, node.node_key, "order_confirmed");
+          return { outcome: "completed" };
+        }
         // A person took over (the run is no longer active): stop quietly, exactly like a delay that wakes up to a paused run.
         await logEvent(db, run.id, "error", node.node_key, { reason: result.reason });
         return { outcome: "completed" };
@@ -1285,7 +1297,7 @@ async function advanceFromNodeKey(
           .eq("id", run.id);
       } catch (err) {
         if (err instanceof ContactBlockedError) {
-          await endRunForContactBlocked(db, run.id, node.node_key);
+          await endRunForContactBlocked(db, run.id, node.node_key, sendGuardReason(err));
           return { outcome: "completed" };
         }
         await logEvent(db, run.id, "error", node.node_key, {

@@ -1,17 +1,17 @@
 'use client'
 
-import { Fragment, useEffect, useState } from 'react'
+import { Fragment, useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import {
   MESSAGING_LABELS, MESSAGING_TOOLTIP, minorToMajor,
-  type ExtMetrics, type MessagingKey, type MetaPerformance, type MetaPerformanceAvailable, type PerfDetail, type PerfMetrics, type PerfRow, type SyncState,
+  type ExtMetrics, type MessagingKey, type MetaPerformanceAvailable, type PerfDetail, type PerfMetrics, type PerfRow, type SyncState,
 } from '@/lib/meta-ads/performance'
 
-// "Rendimiento Meta Ads": everything here is what META reports, read from our cache (/api/ads/meta-performance). Independent of the WACRM report: if it cannot load it
-// renders NOTHING and the rest of the page is unaffected. Rows are keyed by Meta ids; names are display only. Reach / frequency come from Meta's aggregate for the window
+// "Rendimiento Meta Ads": everything here is what META reports, read from our cache (/api/ads/meta-performance, fetched by the page via useMetaPerformance). Independent of the
+// WACRM report: if it cannot load the page does not render this card at all. Rows are keyed by Meta ids; names are display only. Reach / frequency come from Meta's aggregate for the window
 // (never a sum of daily reach). When the extended cache is unavailable (data.extended absent) the section is exactly the previous one: no Reach / Frecuencia columns,
 // no traffic / messaging groups, no detail rows.
 
@@ -281,27 +281,8 @@ function PerfTable({ view, data }: { view: View; data: MetaPerformanceAvailable 
   )
 }
 
-export function MetaAdsPerformance({ days }: { days: number }) {
-  // The response is stored together with the period it answers, so a stale period is never rendered while the next one loads.
-  const [loaded, setLoaded] = useState<{ days: number; body: MetaPerformance | null } | null>(null)
+export function MetaAdsPerformance({ data }: { data: MetaPerformanceAvailable }) {
   const [view, setView] = useState<View>('campaigns')
-
-  useEffect(() => {
-    let cancelled = false
-    ;(async () => {
-      try {
-        const res = await fetch(`/api/ads/meta-performance?days=${days}`)
-        const body = res.ok ? ((await res.json()) as MetaPerformance) : null
-        if (!cancelled) setLoaded({ days, body })
-      } catch {
-        if (!cancelled) setLoaded({ days, body: null })
-      }
-    })()
-    return () => { cancelled = true }
-  }, [days])
-
-  const data = loaded && loaded.days === days ? loaded.body : null
-  if (!data || !data.available) return null // not configured / not synced / unavailable: the section is simply not offered
   const ext = data.extended?.available ? data.extended.summary : undefined
   return (
     <Card data-testid="meta-performance">

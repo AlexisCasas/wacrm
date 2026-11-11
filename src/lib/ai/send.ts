@@ -17,6 +17,8 @@ export interface SendAiTextArgs {
   text: string
   /** WhatsApp config owner — only consulted on the Meta path (it's `engineSendText`'s audit column). */
   configOwnerUserId: string
+  /** ISO time at which this AI activity started (the auto-reply dispatch). Feeds the "Confirmar pedido" fence in the shared guard below. */
+  activityStartedAt?: string
 }
 
 export interface SendAiTextResult {
@@ -60,7 +62,7 @@ export interface SendAiTextResult {
 export async function sendAiTextToConversation(
   args: SendAiTextArgs,
 ): Promise<SendAiTextResult> {
-  const { accountId, conversationId, contactId, text, configOwnerUserId } = args
+  const { accountId, conversationId, contactId, text, configOwnerUserId, activityStartedAt } = args
 
   // MUST run before the transport branch below. The Meta branch's
   // `engineSendText` already checks this internally, but this
@@ -68,7 +70,9 @@ export async function sendAiTextToConversation(
   // `sendManyChatTextToContact` without ever going through
   // `engineSendText` — without this, a blocked contact bridged through
   // ManyChat could still receive an AI reply.
-  await assertContactCanReceive(supabaseAdmin(), accountId, contactId)
+  // Also the LAST check before either transport for an AI reply: a reply of activity that started before the contact's confirmed order
+  // (or any AI reply while the contact is still paused by the order) is refused here (AutomatedSendStoppedError). Manual sends never come here.
+  await assertContactCanReceive(supabaseAdmin(), accountId, contactId, { aiActivityStartedAt: activityStartedAt })
 
   if (resolveOutboundTransport(accountId) !== 'manychat') {
     return engineSendText({

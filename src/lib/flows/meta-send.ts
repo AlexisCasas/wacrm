@@ -56,6 +56,9 @@ interface SendTextEngineArgs {
   /** The Flow run that sends this message. Set ONLY by the Flows engine; it is what lets a phone-less (BSUID) contact be served, and it is
    *  re-checked against the database (an active run of this contact whose whole flow stack is authorized) on every send. */
   flowRunId?: string
+  /** The Automation execution (automation_logs.id) that sends this message; set ONLY by the Automation engine. Used for the "Confirmar pedido"
+   *  order-stop fence in the shared guard, never for recipient resolution. */
+  automationLogId?: string
   /** Marks the persisted message row `ai_generated = true` so the inbox
    *  badges it as an AI reply. Only the auto-reply bot sets this;
    *  deterministic Flow/automation sends leave it false. */
@@ -94,7 +97,7 @@ export async function engineSendText(
   // has its own send call that never touches the Meta-only contact
   // lookup further down, so checking blocked status after resolving
   // transport would let a blocked contact's message through ManyChat.
-  await assertContactCanReceive(supabaseAdmin(), args.accountId, args.contactId)
+  await assertContactCanReceive(supabaseAdmin(), args.accountId, args.contactId, { flowRunId: args.flowRunId, automationLogId: args.automationLogId })
 
   if (resolveOutboundTransport(args.accountId) === 'manychat') {
     return sendTextViaManyChat(args)
@@ -250,6 +253,7 @@ interface SendMediaEngineArgs {
   conversationId: string
   contactId: string
   flowRunId?: string
+  automationLogId?: string
   kind: MediaKind
   /** Public URL Meta fetches at send time — also the canonical asset
    *  reference persisted regardless of transport (see the ManyChat
@@ -300,7 +304,7 @@ export async function engineSendMedia(
 ): Promise<{ whatsapp_message_id: string; recipient_kind?: 'phone' | 'bsuid' }> {
   // Same ordering requirement as engineSendText above — must run
   // before the ManyChat-vs-Meta branch, not after.
-  await assertContactCanReceive(supabaseAdmin(), args.accountId, args.contactId)
+  await assertContactCanReceive(supabaseAdmin(), args.accountId, args.contactId, { flowRunId: args.flowRunId, automationLogId: args.automationLogId })
 
   // Voice-note contract (see `voice` above). Checked before any transport is
   // chosen so a misconfigured node can never reach a provider, and so the
@@ -508,6 +512,7 @@ interface SendInteractiveButtonsEngineArgs {
   conversationId: string
   contactId: string
   flowRunId?: string
+  automationLogId?: string
   bodyText: string
   buttons: InteractiveButton[]
   headerText?: string
@@ -520,6 +525,7 @@ interface SendInteractiveListEngineArgs {
   conversationId: string
   contactId: string
   flowRunId?: string
+  automationLogId?: string
   bodyText: string
   buttonLabel: string
   sections: InteractiveListSection[]
@@ -566,7 +572,7 @@ async function sendInteractiveViaMeta(
   // Interactive messages have no ManyChat bridge (Meta-only), but the
   // guard still runs first for the same reason as engineSendText/Media:
   // one shared place decides "blocked contacts never receive outbound".
-  await assertContactCanReceive(db, input.accountId, input.contactId)
+  await assertContactCanReceive(db, input.accountId, input.contactId, { flowRunId: input.flowRunId, automationLogId: input.automationLogId })
 
   // Scope the contact + whatsapp_config lookups by account_id —
   // same defense-in-depth rationale as automations/meta-send.ts.

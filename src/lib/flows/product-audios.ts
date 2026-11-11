@@ -198,7 +198,7 @@ export async function executeSendProductAudios(args: { db: Db; run: FlowRunRow; 
       return { kind: "next", nodeKey: cfg.next_node_key, detail: { ...detail, route: "next" } };
     case "halted":
       if (outcome.reason === "contact_blocked") return { kind: "blocked" };
-      if (outcome.reason === "run_not_active" || outcome.reason === "human_takeover") return { kind: "paused", reason: outcome.reason };
+      if (outcome.reason === "run_not_active" || outcome.reason === "human_takeover" || outcome.reason === "order_confirmed") return { kind: "paused", reason: outcome.reason };
       return { kind: "failed", reason: `audio_sequence_halted:${outcome.reason}`, detail };
     case "deferred":
       return { kind: "failed", reason: "audio_sequence_incomplete", detail: { ...detail, why: "time_budget", resumable: true } };
