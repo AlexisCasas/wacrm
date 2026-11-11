@@ -113,11 +113,11 @@ describe('Rendimiento Meta Ads section', () => {
 
 describe('FALLBACK: the existing /ads-results never depends on Meta Ads', () => {
   const unchanged = async () => {
-    await waitFor(() => expect(screen.getByTestId('sold-products')).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('full-ads')).toBeTruthy())
     const card = (l: string) => screen.getByText(l).nextSibling?.textContent
     expect(card('Contactos atribuidos')).toBe('40')
     expect(card('Pedidos confirmados (con anuncio)')).toBe('3')
-    expect(screen.getByText('Rendimiento por producto')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Por producto' })).toBeTruthy() // product view still offered
     expect(screen.getByTestId('full-ads')).toBeTruthy()
   }
   it('Meta Ads not configured: no section and NO extra request', async () => {
@@ -144,7 +144,7 @@ describe('FALLBACK: the existing /ads-results never depends on Meta Ads', () => 
     const cards = async (report: unknown) => {
       vi.stubGlobal('fetch', router(report, ok(perf())))
       const { container, unmount } = render(<AdsResultsPage />)
-      await waitFor(() => expect(screen.getByTestId('sold-products')).toBeTruthy())
+      await waitFor(() => expect(screen.getByTestId('full-ads')).toBeTruthy())
       await waitFor(() => (report as { meta_ads?: unknown }).meta_ads ? expect(screen.getByTestId('meta-performance')).toBeTruthy() : undefined)
       const text = [...container.querySelectorAll('[data-slot="card"]')].filter((c) => !c.querySelector('[data-testid="meta-performance"]') && c.getAttribute('data-testid') !== 'meta-performance').slice(0, 5).map((c) => c.textContent)
       unmount()

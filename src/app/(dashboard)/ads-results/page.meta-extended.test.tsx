@@ -155,12 +155,12 @@ describe('Rendimiento Meta Ads — extended metrics', () => {
     for (const meta of [ok({ available: false, reason: 'unavailable' }), async () => ({ ok: false, status: 500, json: async () => ({}) }), async () => { throw new Error('down') }]) {
       vi.stubGlobal('fetch', router(wacrm(), meta))
       const { unmount } = render(<AdsResultsPage />)
-      await waitFor(() => expect(screen.getByTestId('sold-products')).toBeTruthy())
+      await waitFor(() => expect(screen.getByTestId('full-ads')).toBeTruthy())
       expect(screen.queryByTestId('meta-performance')).toBeNull()
       const card = (l: string) => screen.getByText(l).nextSibling?.textContent
       expect(card('Contactos atribuidos')).toBe('40')
       expect(card('Pedidos confirmados (con anuncio)')).toBe('3')
-      expect(screen.getByText('Rendimiento por producto')).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Por producto' })).toBeTruthy() // product view still offered
       expect(screen.getByTestId('full-ads')).toBeTruthy()
       unmount()
     }

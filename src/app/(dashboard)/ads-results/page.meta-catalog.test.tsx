@@ -24,18 +24,17 @@ const report = () =>
 const cat: CatalogRow = { ad_id: ID1, name: 'Rectificadora Video', adset_name: 'Conjunto A', campaign_name: 'Campaña A', status: 'ACTIVE', effective_status: 'ACTIVE', last_synced_at: 'x' }
 
 describe('Resultados de anuncios — real ad names from the Meta catalog', () => {
-  it('full ad table: the REAL name leads and the Meta Ad ID stays small below it; an ad missing from the catalog says so (never its headline)', async () => {
+  it('ad list: the REAL name leads and the Meta Ad ID stays small below it; an ad missing from the catalog says so (never its headline)', async () => {
     vi.stubGlobal('fetch', reply({ ...attachMetaCatalog(report(), [cat], '2026-11-10T16:00:00Z'), meta_capi: null }))
     render(<AdsResultsPage />)
     await waitFor(() => expect(screen.getByTestId('full-ads')).toBeTruthy())
-    fireEvent.click(within(screen.getByTestId('full-ads')).getByRole('button', { name: 'Detalle por anuncio' }))
     const full = screen.getByTestId('full-ads')
-    const cells = Array.from(full.querySelectorAll('tbody tr')).map((r) => r.querySelector('td')!.textContent)
-    expect(cells).toEqual([`Rectificadora Video${ID1}ActivoVer detalle`, `Anuncio no sincronizado${ID2}Ver detalle`])
+    const first = (el: Element) => el.querySelector('[role="cell"]')!.textContent
+    expect(screen.getAllByTestId('ad-item').map(first)).toEqual([`Rectificadora VideoID: ${ID1}Activo`, `Anuncio no sincronizadoID: ${ID2}`])
     expect(full.textContent).not.toContain('InkaClick') // the account-name headline is no longer what identifies the ad
-    const idLine = Array.from(full.querySelectorAll('span')).find((d) => d.textContent === ID1)!
+    const idLine = Array.from(full.querySelectorAll('span')).find((d) => d.textContent === `ID: ${ID1}`)!
     expect(idLine.className).toContain('text-xs') // the id is secondary: small, muted, monospace
-    // campaign / ad set moved to the per-ad detail (same data the row already received)
+    // campaign / ad set live in the expanded detail (same data the row already received)
     fireEvent.click(within(full).getByLabelText('Ver detalle de Rectificadora Video'))
     const d = screen.getByTestId(`ad-detail-${ID1}`)
     expect(d.textContent).toMatch(/Campaña.*Campaña A.*Conjunto.*Conjunto A.*Estado.*Activo/)
@@ -44,28 +43,29 @@ describe('Resultados de anuncios — real ad names from the Meta catalog', () =>
   it('drilldown "Anuncio atribuido" shows the same identity: real name + ID', async () => {
     vi.stubGlobal('fetch', reply({ ...attachMetaCatalog(report(), [cat], '2026-11-10T16:00:00Z'), meta_capi: null }))
     render(<AdsResultsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Por producto' }))
     await waitFor(() => expect(screen.getByTestId('sold-products')).toBeTruthy())
     fireEvent.click(screen.getByText(/Ver anuncios \(1\)/))
     const drill = screen.getByTestId('product-ads')
     expect(drill.querySelector('tbody td')!.textContent).toContain('Rectificadora Video')
     expect(drill.querySelector('tbody td')!.textContent).toContain(`ID ${ID1}`)
   })
-  it('FALLBACK without Meta: exactly today\'s screen (headline + ID, no note), numbers untouched', async () => {
+  it('FALLBACK without Meta: exactly today\'s data (headline + ID, no note, no status badge), numbers untouched', async () => {
     vi.stubGlobal('fetch', reply({ ...report(), meta_capi: null }))
     render(<AdsResultsPage />)
-    await waitFor(() => expect(screen.getByTestId('sold-products')).toBeTruthy())
-    fireEvent.click(within(screen.getByTestId('full-ads')).getByRole('button', { name: 'Detalle por anuncio' }))
-    const full = screen.getByTestId('full-ads')
-    expect(Array.from(full.querySelectorAll('tbody tr')).map((r) => r.querySelector('td')!.textContent)).toEqual([`InkaClick${ID1}Ver detalle`, `InkaClick${ID2}Ver detalle`])
+    await waitFor(() => expect(screen.getByTestId('full-ads')).toBeTruthy())
+    const first = (el: Element) => el.querySelector('[role="cell"]')!.textContent
+    expect(screen.getAllByTestId('ad-item').map(first)).toEqual([`InkaClickID: ${ID1}`, `InkaClickID: ${ID2}`])
     expect(screen.queryByTestId('meta-catalog-note')).toBeNull()
     expect(screen.queryByText('Anuncio no sincronizado')).toBeNull()
-    expect(Array.from(full.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio', 'Contactos', 'Pedidos', 'Importe pedidos', 'Unidades', 'Conversión', 'Productos'])
+    expect(screen.queryAllByTestId('ad-status')).toHaveLength(0)
+    expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Anuncio', 'Contactos', 'Pedidos', 'Venta', 'Productos', 'Detalle'])
   })
   it('summary cards are identical with and without the catalog', async () => {
     const cards = async (body: unknown) => {
       vi.stubGlobal('fetch', reply(body))
       const { container, unmount } = render(<AdsResultsPage />)
-      await waitFor(() => expect(screen.getByTestId('sold-products')).toBeTruthy())
+      await waitFor(() => expect(screen.getByTestId('full-ads')).toBeTruthy())
       const text = Array.from(container.querySelectorAll('[data-slot="card"]')).slice(0, 4).map((c) => c.textContent)
       unmount()
       return text

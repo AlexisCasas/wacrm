@@ -1,33 +1,33 @@
 'use client'
 
-import { Fragment, useCallback, useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import type { AdsReport, MetaAdInfo, ProductAdRow } from '@/lib/meta-capi/report'
+import { useCallback, useEffect, useState } from 'react'
+import { CalendarDays, Loader2, ShoppingCart, Unlink, Users, Wallet } from 'lucide-react'
+import { Card, CardContent } from '@/components/ui/card'
+import type { AdsReport } from '@/lib/meta-capi/report'
 import { AdsResultsByAd } from './ads-results-by-ad'
+import { AdsResultsByProduct } from './ads-results-by-product'
 import { MetaAdsPerformance } from './meta-ads-performance'
+import { useMetaPerformance } from './use-meta-performance'
 
 const RANGES = [7, 30, 90] as const
 const money = (n: number) => new Intl.NumberFormat('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n)
 
+type View = 'ads' | 'products'
+
 /**
  * Resultados por anuncio — read-only and isolated (own route, no existing screen changed). Orders are CONFIRMED orders, not collected sales: the
- * "ventas verificadas" and ROAS columns are shown as not available until InkaClick reports payment and ad spend exists.
+ * "ventas verificadas" and ROAS figures are shown as not available until InkaClick reports payment and ad spend exists.
+ * Reading order: summary -> "Detalle por anuncio" (or "Por producto") -> Meta's own global performance (separate card, clearly labelled as Meta's data).
  */
 export default function AdsResultsPage() {
   const [days, setDays] = useState<(typeof RANGES)[number]>(30)
   const [report, setReport] = useState<AdsReport | null>(null)
   const [error, setError] = useState<null | 'forbidden' | 'failed'>(null)
-  // Which product rows are expanded (by product name) and whether the user toggled the full per-ad table (null = default for this report).
-  const [openProducts, setOpenProducts] = useState<ReadonlySet<string>>(new Set())
-  const [fullAdsOverride, setFullAdsOverride] = useState<boolean | null>(null)
+  const [view, setView] = useState<View>('ads')
 
   const load = useCallback(async () => {
     setReport(null)
     setError(null)
-    setOpenProducts(new Set())
     const to = new Date()
     const from = new Date(to.getTime() - days * 86_400_000)
     try {
@@ -47,19 +47,34 @@ export default function AdsResultsPage() {
     void load()
   }, [load])
 
-  // The drilldown needs both the product table and the breakdown. Without it the full per-ad table starts OPEN (exactly the previous screen).
-  const hasDrilldown = !!report?.ad_breakdown_available && !!report?.product_sales
-  const fullAdsOpen = fullAdsOverride ?? !hasDrilldown
+  // Meta's numbers (one fetch, shared by the per-ad detail and the global card). Only asked for when the report says Meta Ads is configured.
+  const perf = useMetaPerformance(days, !!report?.meta_ads?.configured)
+  // The product view needs the product table; the drilldown additionally needs the breakdown.
+  const hasProducts = !!report?.product_sales
+  const hasDrilldown = !!report?.ad_breakdown_available && hasProducts
+  const current: View = hasProducts ? view : 'ads'
 
   return (
-    <div className="space-y-4 p-4 md:p-6">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-xl font-semibold">Resultados por anuncio</h1>
-        <div className="flex gap-1" role="group" aria-label="Periodo">
+    <div className="mx-auto w-full max-w-[1400px] space-y-6 p-4 md:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight">Resultados por anuncio</h1>
+          <p className="mt-1 text-sm text-muted-foreground">Rendimiento comercial de tus anuncios: contactos, pedidos, ventas y productos atribuidos.</p>
+        </div>
+        <div className="flex items-center gap-1 rounded-xl border bg-card p-1" role="group" aria-label="Periodo">
+          <CalendarDays className="ml-2 mr-1 h-4 w-4 text-muted-foreground" aria-hidden />
           {RANGES.map((d) => (
-            <Button key={d} size="sm" variant={d === days ? 'default' : 'outline'} onClick={() => setDays(d)}>
+            <button
+              key={d}
+              type="button"
+              aria-pressed={d === days}
+              onClick={() => setDays(d)}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                d === days ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              }`}
+            >
               {d} días
-            </Button>
+            </button>
           ))}
         </div>
       </div>
@@ -70,92 +85,49 @@ export default function AdsResultsPage() {
 
       {report && (
         <>
-          <p className="text-xs text-muted-foreground" data-testid="capi-status">
-            {report.meta_capi?.enabled
-              ? `Envío de conversiones a Meta: activo${report.meta_capi.test_mode ? ' (modo de prueba)' : ''}.`
-              : 'Envío de conversiones a Meta: desactivado. Este reporte funciona igual.'}
-          </p>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Stat label="Contactos atribuidos" value={String(report.totals.contacts)} />
-            <Stat label="Pedidos confirmados (con anuncio)" value={String(report.totals.attributed_orders)} />
-            <Stat label="Pedidos sin atribución comprobable" value={String(report.totals.unattributed_orders)} />
-            <Stat label="Importe de pedidos confirmados" value={money(report.totals.order_amount)} />
+            <Stat icon={<Users className="h-5 w-5" />} label="Contactos atribuidos" value={String(report.totals.contacts)} />
+            <Stat icon={<ShoppingCart className="h-5 w-5" />} label="Pedidos confirmados (con anuncio)" value={String(report.totals.attributed_orders)} />
+            <Stat icon={<Wallet className="h-5 w-5" />} label="Importe de pedidos confirmados" value={money(report.totals.order_amount)} />
+            <Stat icon={<Unlink className="h-5 w-5" />} label="Pedidos sin atribución comprobable" value={String(report.totals.unattributed_orders)} />
           </div>
 
-          {report.product_sales && (
-            <Card data-testid="sold-products">
-              <CardHeader>
-                <CardTitle className="text-base">Rendimiento por producto</CardTitle>
-              </CardHeader>
-              <CardContent className="overflow-x-auto">
-                {report.product_sales.length === 0 ? (
-                  <p className="text-sm text-muted-foreground">Sin pedidos confirmados en este periodo.</p>
-                ) : (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Producto vendido</TableHead>
-                        <TableHead className="text-right">Compradores</TableHead>
-                        <TableHead className="text-right">Pedidos</TableHead>
-                        <TableHead className="text-right">Unidades</TableHead>
-                        <TableHead className="text-right">Ventas confirmadas</TableHead>
-                        <TableHead className="text-right">Ticket prom.</TableHead>
-                        {hasDrilldown && <TableHead className="text-right">Anuncios atribuidos</TableHead>}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {report.product_sales.map((p) => {
-                        const key = p.product.toLowerCase()
-                        const open = openProducts.has(key)
-                        const realAds = (p.ads ?? []).filter((a) => a.source_id !== null).length
-                        return (
-                          <Fragment key={key}>
-                            <TableRow>
-                              <TableCell className="font-medium">{p.product}</TableCell>
-                              <TableCell className="text-right">{p.buyers}</TableCell>
-                              <TableCell className="text-right">{p.orders}</TableCell>
-                              <TableCell className="text-right">{p.units}</TableCell>
-                              <TableCell className="text-right">{money(p.sales)}</TableCell>
-                              <TableCell className="text-right">{p.avg_ticket === null ? '—' : money(p.avg_ticket)}</TableCell>
-                              {hasDrilldown && (
-                                <TableCell className="text-right">
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    aria-expanded={open}
-                                    aria-label={`Ver anuncios de ${p.product}`}
-                                    onClick={() => setOpenProducts((prev) => { const n = new Set(prev); if (n.has(key)) n.delete(key); else n.add(key); return n })}
-                                  >
-                                    {open ? <ChevronDown className="mr-1 h-4 w-4" aria-hidden /> : <ChevronRight className="mr-1 h-4 w-4" aria-hidden />}
-                                    Ver anuncios ({realAds})
-                                  </Button>
-                                </TableCell>
-                              )}
-                            </TableRow>
-                            {hasDrilldown && open && (
-                              <TableRow data-testid="product-ads">
-                                <TableCell colSpan={7} className="bg-muted/30">
-                                  <AdBreakdown ads={p.ads ?? []} />
-                                </TableCell>
-                              </TableRow>
-                            )}
-                          </Fragment>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
-                )}
-                <p className="mt-2 text-xs text-muted-foreground">
-                  Producto vendido, no necesariamente producto publicitado. Todos los pedidos confirmados del periodo, con o sin anuncio; las ventas son importes de
-                  pedidos confirmados (no cobrados) tomados de las líneas del pedido, y en pedidos antiguos sin detalle, del importe del pedido.
+          <section className="space-y-3" aria-label="Resultados comerciales">
+            <div className="flex flex-wrap items-end justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold">{current === 'ads' ? 'Detalle por anuncio' : 'Rendimiento por producto'}</h2>
+                <p className="text-xs text-muted-foreground">
+                  {current === 'ads' ? 'Resultados comerciales atribuidos a cada anuncio.' : 'Todos los pedidos confirmados del periodo, agrupados por producto vendido.'}
                 </p>
-              </CardContent>
-            </Card>
-          )}
+              </div>
+              {hasProducts && (
+                <div className="flex gap-1 rounded-xl border bg-card p-1" role="group" aria-label="Vista">
+                  {(
+                    [
+                      ['ads', 'Por anuncio'],
+                      ['products', 'Por producto'],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      aria-pressed={current === key}
+                      onClick={() => setView(key)}
+                      className={`rounded-lg px-3 py-1.5 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${
+                        current === key ? 'bg-muted text-foreground shadow-sm' : 'text-muted-foreground hover:bg-muted/60 hover:text-foreground'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
 
-          <AdsResultsByAd ads={report.ads} open={fullAdsOpen} onToggle={() => setFullAdsOverride(!fullAdsOpen)} />
+            {current === 'ads' ? <AdsResultsByAd ads={report.ads} perf={perf} /> : <AdsResultsByProduct productSales={report.product_sales ?? []} hasDrilldown={hasDrilldown} />}
+          </section>
 
-          {report.meta_ads?.configured && <MetaAdsPerformance days={days} />}
+          {perf && <MetaAdsPerformance data={perf} />}
 
           {report.meta_catalog?.available && report.meta_catalog.synced_at && (
             <p className="text-xs text-muted-foreground" data-testid="meta-catalog-note">
@@ -163,6 +135,11 @@ export default function AdsResultsPage() {
               provienen de WACRM.
             </p>
           )}
+          <p className="text-xs text-muted-foreground" data-testid="capi-status">
+            {report.meta_capi?.enabled
+              ? `Envío de conversiones a Meta: activo${report.meta_capi.test_mode ? ' (modo de prueba)' : ''}.`
+              : 'Envío de conversiones a Meta: desactivado. Este reporte funciona igual.'}
+          </p>
           <p className="text-xs text-muted-foreground">
             Los importes son pedidos confirmados, no ventas cobradas. {report.verified_sales.reason} ROAS no disponible: {report.roas.reason} Conversión = contactos del
             anuncio que pidieron ÷ contactos del anuncio en el periodo.
@@ -173,78 +150,18 @@ export default function AdsResultsPage() {
   )
 }
 
-const STATUS_LABEL: Record<string, string> = { ACTIVE: 'Activo', PAUSED: 'Pausado', ARCHIVED: 'Archivado', DELETED: 'Eliminado' }
-
-/**
- * Ad name + technical id. With the Meta catalog synced (meta !== undefined) the REAL ad name leads and the Meta Ad ID stays small below it;
- * an ad missing from the catalog says so (never guessed from the headline). Without the catalog (meta undefined) it is exactly the previous
- * rendering: headline (or "Sin título") and the id.
- */
-function AdIdentity({ sourceId, headline, meta }: { sourceId: string | null; headline: string | null; meta?: MetaAdInfo | null }) {
-  const name = meta === undefined ? (headline ?? 'Sin título') : meta === null ? 'Anuncio no sincronizado' : (meta.name ?? headline ?? 'Sin título')
-  const detail = meta
-    ? [meta.campaign_name && `Campaña: ${meta.campaign_name}`, meta.adset_name && `Conjunto: ${meta.adset_name}`, (STATUS_LABEL[meta.effective_status ?? meta.status ?? ''] ?? null)]
-        .filter(Boolean)
-        .join(' · ')
-    : ''
+function Stat({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <>
-      <div className="font-medium">{name}</div>
-      <div className="text-xs text-muted-foreground">ID {sourceId}</div>
-      {detail && <div className="text-xs text-muted-foreground">{detail}</div>}
-    </>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <Card>
-      <CardContent className="p-4">
-        <div className="text-xs text-muted-foreground">{label}</div>
-        <div className="text-2xl font-semibold">{value}</div>
+    <Card className="py-0">
+      <CardContent className="flex items-center gap-3 p-4">
+        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary" aria-hidden>
+          {icon}
+        </span>
+        <div className="min-w-0">
+          <div className="truncate text-xs text-muted-foreground">{label}</div>
+          <div className="text-2xl font-semibold leading-8 tabular-nums">{value}</div>
+        </div>
       </CardContent>
     </Card>
-  )
-}
-
-function AdBreakdown({ ads }: { ads: ProductAdRow[] }) {
-  return (
-    <div className="space-y-2">
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Anuncio atribuido</TableHead>
-            <TableHead className="text-right">Contactos del anuncio</TableHead>
-            <TableHead className="text-right">Compradores del producto</TableHead>
-            <TableHead className="text-right">Pedidos del producto</TableHead>
-            <TableHead className="text-right">Unidades del producto</TableHead>
-            <TableHead className="text-right">Ventas confirmadas</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {ads.map((a) => (
-            <TableRow key={a.source_id ?? '__none__'}>
-              <TableCell>
-                {a.source_id === null ? (
-                  <div className="font-medium">Sin atribución comprobable</div>
-                ) : (
-                  <AdIdentity sourceId={a.source_id} headline={a.headline} meta={a.meta} />
-                )}
-              </TableCell>
-              <TableCell className="text-right">{a.contacts === null ? '—' : a.contacts}</TableCell>
-              <TableCell className="text-right">{a.buyers}</TableCell>
-              <TableCell className="text-right">{a.orders}</TableCell>
-              <TableCell className="text-right">{a.units}</TableCell>
-              <TableCell className="text-right">{money(a.sales)}</TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-      <p className="text-xs text-muted-foreground">
-        Los contactos corresponden al total del anuncio en el período. No representan necesariamente consultas por este producto. Pedidos, unidades y ventas suman el
-        total del producto; Compradores puede sumar más que los compradores únicos del producto si una misma persona compró este producto en pedidos atribuidos a anuncios
-        distintos.
-      </p>
-    </div>
   )
 }

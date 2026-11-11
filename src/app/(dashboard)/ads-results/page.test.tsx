@@ -8,6 +8,9 @@ const reply = (status: number, body: unknown) => vi.fn().mockResolvedValue({ ok:
 beforeEach(() => { vi.stubGlobal('fetch', undefined) })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
+// "Por producto" is a view of the page now (default: "Por anuncio"): switch to it and return its section
+const openProducts = async () => { fireEvent.click(await screen.findByRole('button', { name: 'Por producto' })); return screen.findByTestId('sold-products') }
+
 describe('Resultados de anuncios page states', () => {
   it('no data: explains it and still shows Meta sending as disabled', async () => {
     vi.stubGlobal('fetch', reply(200, { ...buildAdsReport([], 'f', 't'), meta_capi: { enabled: false, test_mode: false } }))
@@ -25,7 +28,7 @@ describe('Resultados de anuncios page states', () => {
     await waitFor(() => expect(screen.getByText('Oferta')).toBeTruthy())
     expect(screen.getByTestId('capi-status').textContent).toMatch(/activo.*modo de prueba/)
     expect(screen.getByText('Pedidos sin atribución comprobable').nextSibling?.textContent).toBe('3')
-    expect(screen.getByText('25.0%')).toBeTruthy() // same value as before (25), presented with a consistent decimal
+    expect(screen.getByText('25.0% conversión')).toBeTruthy() // same value as before (25), presented with a consistent decimal
     expect(screen.queryByText('No disponible')).toBeNull() // "Ventas verificadas" moved to the per-ad detail
   })
   it('no permission (403): shows a permission message, no report', async () => {
@@ -39,37 +42,37 @@ describe('Resultados de anuncios page states', () => {
     render(<AdsResultsPage />)
     await waitFor(() => expect(screen.getByText(/No se pudo cargar/)).toBeTruthy())
   })
-  it('REGRESSION vs production: original cards, labels, figures and ad-table columns are unchanged; without the breakdown the full ad table is OPEN (previous screen) after the product section', async () => {
+  it('REGRESSION: the four summary figures are the production ones; the ad list shows the same values; products live behind "Por producto"', async () => {
     vi.stubGlobal('fetch', reply(200, { ...buildAdsReport([
       { source_id: 'AD1', headline: 'Oferta', contacts: 40, buyers: 2, orders: 3, order_amount: 300, units: 4, products: [{ name: 'Laser', units: 4 }] },
       { source_id: null, contacts: 0, buyers: 0, orders: 5, order_amount: 50, units: 5, products: [] },
     ], 'f', 't', [{ product: 'Taladro', buyers: 24, orders: 26, units: 35, sales: 3440, legacy_orders: 0 }]), meta_capi: null }))
     render(<AdsResultsPage />)
-    await waitFor(() => expect(screen.getByTestId('sold-products')).toBeTruthy())
+    await waitFor(() => expect(screen.getByTestId('full-ads')).toBeTruthy())
     const card = (l: string) => screen.getByText(l).nextSibling?.textContent
     expect(card('Contactos atribuidos')).toBe('40')
     expect(card('Pedidos confirmados (con anuncio)')).toBe('3')
     expect(card('Pedidos sin atribución comprobable')).toBe('5')
     expect(card('Importe de pedidos confirmados')).toBe('350.00') // attributed + unattributed, exactly as in production
     for (const gone of ['Consultaron']) expect(screen.queryByText(gone)).toBeNull()
-    const original = screen.getByTestId('full-ads')
-    expect(Array.from(original.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio', 'Contactos', 'Pedidos', 'Importe pedidos', 'Unidades', 'Conversión', 'Productos'])
-    expect(Array.from(original.querySelectorAll('tbody td')).map((c) => c.textContent)).toEqual(['OfertaAD1Ver detalle', '40', '3', '300.00', '4', '5.0%', 'Laser ×4'])
-    // order: summary, products, then the (here open) full ad table; no drilldown column without the breakdown
-    expect(screen.getByTestId('sold-products').compareDocumentPosition(original) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    const row = screen.getByTestId('ad-item')
+    expect(Array.from(row.querySelectorAll('[role="cell"]')).map((c) => c.textContent)).toEqual(['OfertaID: AD1', 'Contactos40', 'Pedidos3 pedidos4 unidades', 'Venta300.005.0% conversión', 'ProductosLaser ×4', ''])
+    // the summary comes first, then the ad list; the product table is a separate view, not stacked above
+    expect(screen.getByText('Contactos atribuidos').compareDocumentPosition(screen.getByTestId('full-ads')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.queryByTestId('sold-products')).toBeNull()
     expect(screen.queryByText(/Ver anuncios/)).toBeNull()
   })
   it('no "Consultaron"/"Conversión" columns at product level (no reliable source yet)', async () => {
     vi.stubGlobal('fetch', withBreakdown())
     render(<AdsResultsPage />)
-    const sec = await screen.findByTestId('sold-products')
+    const sec = await openProducts()
     expect(within(sec).queryByText('Consultaron')).toBeNull()
     expect(within(sec).queryByText('Conversión')).toBeNull()
   })
   it('Rendimiento por producto (no breakdown): columns, figures and the sold-vs-advertised clarification', async () => {
     vi.stubGlobal('fetch', reply(200, { ...buildAdsReport([], 'f', 't', [{ product: 'Taladro', buyers: 24, orders: 26, units: 35, sales: 3440, legacy_orders: 0 }]), meta_capi: null }))
     render(<AdsResultsPage />)
-    const sec = await screen.findByTestId('sold-products')
+    const sec = await openProducts()
     expect(Array.from(sec.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Producto vendido', 'Compradores', 'Pedidos', 'Unidades', 'Ventas confirmadas', 'Ticket prom.'])
     expect(Array.from(sec.querySelectorAll('td')).map((c) => c.textContent)).toEqual(['Taladro', '24', '26', '35', '3,440.00', '143.33'])
     expect(sec.textContent).toMatch(/Producto vendido, no necesariamente producto publicitado/)
@@ -117,19 +120,20 @@ describe('Resultados de anuncios page states', () => {
   it('drilldown: Anuncios column + "Ver anuncios (N)" per product; the full ad table starts COLLAPSED', async () => {
     vi.stubGlobal('fetch', withBreakdown())
     render(<AdsResultsPage />)
-    const sec = await screen.findByTestId('sold-products')
-    expect(within(sec).getByText('Rendimiento por producto')).toBeTruthy()
+    const sec = await openProducts()
+    expect(screen.getByRole('heading', { level: 2, name: 'Rendimiento por producto' })).toBeTruthy()
     expect(Array.from(sec.querySelectorAll('thead th')).map((h) => h.textContent)).toEqual(['Producto vendido', 'Compradores', 'Pedidos', 'Unidades', 'Ventas confirmadas', 'Ticket prom.', 'Anuncios atribuidos'])
     expect(screen.getByRole('button', { name: 'Ver anuncios de Taladro' }).textContent).toBe('Ver anuncios (2)') // AD1 + AD2; the unattributed bucket is not an ad
     expect(screen.getByRole('button', { name: 'Ver anuncios de Gel' }).textContent).toBe('Ver anuncios (0)')
     expect(screen.queryByTestId('product-ads')).toBeNull()
-    expect(screen.queryByText('Importe pedidos')).toBeNull() // full ad table collapsed
-    expect(screen.getByRole('button', { name: /Detalle por anuncio/ }).getAttribute('aria-expanded')).toBe('false')
+    fireEvent.click(screen.getByRole('button', { name: 'Por anuncio' })) // the default view is the ad list
+    expect(screen.getByRole('heading', { level: 2, name: 'Detalle por anuncio' })).toBeTruthy()
+    expect(screen.queryByTestId('sold-products')).toBeNull()
   })
   it('expanding a product shows its ads (name + ID), the unattributed bucket, reconciles, and does not touch other rows', async () => {
     vi.stubGlobal('fetch', withBreakdown())
     render(<AdsResultsPage />)
-    await screen.findByTestId('sold-products')
+    await openProducts()
     fireEvent.click(screen.getByRole('button', { name: 'Ver anuncios de Taladro' }))
     const panel = await screen.findByTestId('product-ads')
     expect(Array.from(panel.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio atribuido', 'Contactos del anuncio', 'Compradores del producto', 'Pedidos del producto', 'Unidades del producto', 'Ventas confirmadas'])
@@ -154,25 +158,23 @@ describe('Resultados de anuncios page states', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Ver anuncios de Taladro' }))
     expect(screen.getAllByTestId('product-ads')).toHaveLength(1)
   })
-  it('"Detalle por anuncio" opens on demand and shows EXACTLY the current table, including ads with contacts and no sales', async () => {
+  it('"Detalle por anuncio" is the default view and shows every ad, including ads with contacts and no sales', async () => {
     vi.stubGlobal('fetch', withBreakdown())
     render(<AdsResultsPage />)
-    await screen.findByTestId('sold-products')
-    fireEvent.click(screen.getByRole('button', { name: /Detalle por anuncio/ }))
+    await waitFor(() => expect(screen.getByTestId('full-ads')).toBeTruthy())
     const full = screen.getByTestId('full-ads')
-    expect(Array.from(full.querySelectorAll('th')).map((h) => h.textContent)).toEqual(['Anuncio', 'Contactos', 'Pedidos', 'Importe pedidos', 'Unidades', 'Conversión', 'Productos'])
     expect(within(full).getByText('Sin ventas')).toBeTruthy() // AD3: 5 contacts, 0 orders
-    expect(within(full).getByText('AD3')).toBeTruthy()
+    expect(within(full).getByText('ID: AD3')).toBeTruthy()
     expect(within(full).getByText('Anuncio en estados')).toBeTruthy()
+    expect(within(full).getAllByTestId('ad-item')).toHaveLength(3) // the unattributed bucket is not an ad row
   })
-  it('breakdown unavailable (RPC missing/failing): products stay, no Anuncios column, full ad table OPEN like before', async () => {
+  it('breakdown unavailable (RPC missing/failing): products stay, no Anuncios column, the ad list is the default view', async () => {
     vi.stubGlobal('fetch', reply(200, { ...buildAdsReport(ADS, 'f', 't', PRODUCTS, null), meta_capi: null }))
     render(<AdsResultsPage />)
-    const sec = await screen.findByTestId('sold-products')
+    await waitFor(() => expect(screen.getByText('Sin ventas')).toBeTruthy()) // ad list visible without any click
+    const sec = await openProducts()
     expect(Array.from(sec.querySelectorAll('thead th')).map((h) => h.textContent)).toEqual(['Producto vendido', 'Compradores', 'Pedidos', 'Unidades', 'Ventas confirmadas', 'Ticket prom.'])
     expect(screen.queryByText(/Ver anuncios/)).toBeNull()
-    expect(screen.getByText('Importe pedidos')).toBeTruthy() // full table visible without any click
-    expect(screen.getByText('Sin ventas')).toBeTruthy()
   })
   it('products unavailable (old DB): product card hidden, full ad table open, 4 cards intact', async () => {
     vi.stubGlobal('fetch', reply(200, { ...buildAdsReport(ADS, 'f', 't', null, BREAKDOWN), meta_capi: null }))
@@ -185,7 +187,7 @@ describe('Resultados de anuncios page states', () => {
     const f = withBreakdown()
     vi.stubGlobal('fetch', f)
     render(<AdsResultsPage />)
-    await screen.findByTestId('sold-products')
+    await openProducts()
     fireEvent.click(screen.getByRole('button', { name: 'Ver anuncios de Taladro' }))
     expect(screen.getAllByTestId('product-ads')).toHaveLength(1)
     fireEvent.click(screen.getByText('7 días'))
