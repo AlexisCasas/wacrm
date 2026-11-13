@@ -23,6 +23,7 @@ interface ConfigRow {
 
 const h = vi.hoisted(() => ({
   configs: [] as ConfigRow[],
+  enqueueFails: false,
 }))
 
 vi.mock('next/server', () => ({
@@ -77,7 +78,10 @@ vi.mock('@/lib/whatsapp/template-webhook', () => ({
 }))
 
 vi.mock('@/lib/whatsapp/webhook-inbox', () => ({
-  enqueueVerifiedWebhook: async () => 'qa-event',
+  enqueueVerifiedWebhook: async () => {
+    if (h.enqueueFails) throw new Error('database unavailable')
+    return 'qa-event'
+  },
   drainWebhookInbox: async () => ({ claimed: 0, processed: 0, failed: 0 }),
 }))
 
@@ -159,6 +163,7 @@ function req(body: string, signature: string | null) {
 
 beforeEach(() => {
   h.configs = []
+  h.enqueueFails = false
 })
 
 describe('POST /api/whatsapp/webhook — multi-tenant signature verification', () => {
@@ -350,5 +355,16 @@ describe('POST /api/whatsapp/webhook — cross-entry intersection, not a global 
     const body = multiEntryBody(messageEntry('waba-a', 'pn-a'))
     const res = await POST(req(body, sign(body, 'secret-a')))
     expect(res.status).toBe(200)
+  })
+})
+
+// A valid Meta signature is NOT enough to acknowledge; durable storage is required.
+describe('POST /api/whatsapp/webhook — durable acknowledgement', () => {
+  it('returns 503 when the HMAC is valid but the inbox insert fails', async () => {
+    h.configs.push({ id: 'cfg-a', account_id: 'acct-a', phone_number_id: 'pn-a', waba_id: 'waba-a', app_secret: encrypt('secret-a') })
+    h.enqueueFails = true
+    const body = messageBody('waba-a', 'pn-a')
+    const res = await POST(req(body, sign(body, 'secret-a')))
+    expect(res.status).toBe(503)
   })
 })
