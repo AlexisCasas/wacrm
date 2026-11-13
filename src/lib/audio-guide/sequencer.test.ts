@@ -461,3 +461,42 @@ describe("resumeAudioRequests: operation, recovery and what the original run sho
     expect(t.log).toHaveLength(0);
   });
 });
+
+describe("BSUID plumbing: the originating Flow run reaches every voice-note send", () => {
+  it("classifySendError: a BSUID refusal (raised before any provider call) is a certain failure with its own code, not 'uncertain'", () => {
+    const refusal = Object.assign(new Error("BSUID send blocked: bsuid_automated_blocked"), { name: "BsuidSendBlockedError", code: "bsuid_automated_blocked" });
+    expect(classifySendError(refusal)).toEqual({ status: "failed", code: "bsuid_automated_blocked" });
+    expect(classifySendError(new Error("something else"))).toEqual({ status: "uncertain", code: "ambiguous_error" });
+  });
+
+  it("runAudioSequence hands the context's flowRunId to every sendVoiceNote call", async () => {
+    const t = setup([5, 5]);
+    const requestId = await t.open();
+    const seen: Array<string | undefined> = [];
+    const ctx: SendContext = { ...CTX, flowRunId: "run-1" };
+    await runAudioSequence({ db: t.db, context: ctx, requestId, deps: t.deps({ sendVoiceNote: async (a) => { seen.push(a.flowRunId); return { whatsappMessageId: `w${seen.length}` }; } }) });
+    expect(seen).toEqual(["run-1", "run-1"]);
+  });
+
+  it("a BSUID refusal is recorded as a certain failure of that audio, the rest are skipped and nothing is retried", async () => {
+    const t = setup([5, 5]);
+    const requestId = await t.open();
+    const refuse = async () => { throw Object.assign(new Error("BSUID send blocked: bsuid_flow_not_authorized"), { name: "BsuidSendBlockedError", code: "bsuid_flow_not_authorized" }); };
+    const outcome = await runAudioSequence({ db: t.db, context: { ...CTX, flowRunId: "run-1" }, requestId, deps: t.deps({ sendVoiceNote: refuse }) });
+    expect(outcome.kind).toBe("incomplete");
+    expect(t.sendsOf(requestId)).toBe("1:failed,2:skipped");
+    expect(t.mem.table("audio_guide_sends")[0]).toMatchObject({ error_code: "bsuid_flow_not_authorized" });
+  });
+
+  it("the resumer rebuilds the context WITH the request's stored flow_run_id (so a run that already ended is refused by the BSUID check, never sent around it)", async () => {
+    const t = setup(Array(6).fill(5));
+    const requestId = await t.open();
+    await runAudioSequence({ db: t.db, context: CTX, requestId, deps: t.deps(), budgetMs: 17_000 });
+    t.clock.advance(6_000);
+    t.mem.table("conversations").push({ id: "cv-1", account_id: A, user_id: "u-1" });
+    const contexts: SendContext[] = [];
+    await resumeAudioRequests({ db: t.db, isEnabled: () => true, depsFor: (c) => { contexts.push(c); return t.deps(); }, now: t.clock.now });
+    expect(contexts).toHaveLength(1);
+    expect(contexts[0].flowRunId).toBe("run-1");
+  });
+});

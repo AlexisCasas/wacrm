@@ -183,7 +183,7 @@ export async function executeSendProductAudios(args: { db: Db; run: FlowRunRow; 
   }
 
   // ---- 6b. run the sequence
-  const context: SendContext = { accountId, userId: run.user_id, conversationId, contactId };
+  const context: SendContext = { accountId, userId: run.user_id, conversationId, contactId, flowRunId: run.id };
   const { data: created } = await db.from("audio_guide_requests").select("created_at").eq("id", opened.request_id).eq("account_id", accountId).maybeSingle();
   const createdAt = (created as { created_at?: string } | null)?.created_at ?? new Date().toISOString();
   const deps: SequencerDeps = {

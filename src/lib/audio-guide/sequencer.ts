@@ -33,6 +33,12 @@ export interface SendContext {
   userId: string;
   conversationId: string;
   contactId: string;
+  /**
+   * The Flow run that originated this audio. It MUST reach `engineSendMedia`: for a hidden-number (BSUID) contact `resolveContactTarget`
+   * only accepts an automatic send that names a real, ACTIVE, authorized run (`bsuid_flow_send_check`); without it the send is refused.
+   * Contacts with a phone number ignore it. The resumer passes the stored run id, so a run that already ended is refused there (fail closed).
+   */
+  flowRunId?: string;
 }
 
 export interface SequencerDeps {
@@ -78,6 +84,10 @@ export interface SendFailure {
  */
 export function classifySendError(err: unknown): SendFailure {
   if (err instanceof ContactBlockedError) return { status: "failed", code: "contact_blocked" };
+  // The hidden-number (BSUID) rules refused it BEFORE any provider call: nothing was sent, so it is a certain failure, not an uncertain one.
+  if (err instanceof Error && err.name === "BsuidSendBlockedError") {
+    return { status: "failed", code: String((err as { code?: unknown }).code ?? "bsuid_blocked").slice(0, 80) };
+  }
   if (err instanceof MetaApiError || (err instanceof Error && err.name === "MetaApiError")) {
     const e = err as MetaApiError;
     return { status: "failed", code: `meta_${e.code ?? e.httpStatus ?? "error"}`.slice(0, 80) };
@@ -261,7 +271,7 @@ export async function resumeAudioRequests(args: {
       const { data: conversation } = await db.from("conversations").select("user_id").eq("id", r.conversation_id).eq("account_id", row.account_id).maybeSingle();
       const userId = (conversation as { user_id?: string } | null)?.user_id;
       if (!userId) { summary.errors++; continue; }
-      const context: SendContext = { accountId: row.account_id, userId, conversationId: r.conversation_id, contactId: r.contact_id };
+      const context: SendContext = { accountId: row.account_id, userId, conversationId: r.conversation_id, contactId: r.contact_id, ...(r.flow_run_id ? { flowRunId: r.flow_run_id } : {}) };
       const base = args.depsFor(context);
       const deps: SequencerDeps = {
         ...base,
