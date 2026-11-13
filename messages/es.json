@@ -1943,6 +1943,13 @@
       "title": "Miembros del equipo",
       "description": "Personas con acceso a esta cuenta. Los roles controlan lo que cada compañero puede hacer.",
       "inviteMember": "Invitar miembro",
+      "operationalArea": "Área operativa",
+      "operational": {
+        "none": "Sin asignar",
+        "commercial": "Comercial",
+        "logistics": "Logística",
+        "supervisor": "Supervisor"
+      },
       "online": "en línea",
       "away": "ausente",
       "offline": "desconectado",

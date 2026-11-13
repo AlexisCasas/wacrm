@@ -74,6 +74,8 @@ export interface AccountMember {
   email: string | null;
   avatar_url: string | null;
   role: AccountRole;
+  /** Area operativa (commercial | logistics | supervisor). Independent of `role`; null unless the account has logistics_mvp_enabled. */
+  operational_role?: "commercial" | "logistics" | "supervisor" | null;
   joined_at: string;
 }
 
