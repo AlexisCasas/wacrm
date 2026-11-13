@@ -1943,6 +1943,13 @@
       "title": "Team members",
       "description": "People with access to this account. Roles control what each teammate can do.",
       "inviteMember": "Invite member",
+      "operationalArea": "Operational area",
+      "operational": {
+        "none": "Unassigned",
+        "commercial": "Commercial",
+        "logistics": "Logistics",
+        "supervisor": "Supervisor"
+      },
       "online": "online",
       "away": "away",
       "offline": "offline",
