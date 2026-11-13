@@ -1,3 +1,4 @@
+import * as metaSend from "./meta-send";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ============================================================
@@ -111,6 +112,16 @@ describe("send_product_audios in the runner: the right audios, as voice notes, i
     expect(entered(mem)).toEqual(["start", "vp", "ok"]);
     expect(mem.table("flow_run_events").find((e) => e.event_type === "message_sent")).toMatchObject({ node_key: "vp", payload: { node_type: "send_product_audios", route: "next", sent: n } });
     expect(errors(mem)).toHaveLength(0);
+  });
+
+  it("BSUID: every voice note names the originating Flow run (resolveContactTarget needs it for a hidden-number contact)", async () => {
+    const mem = setup({ items: items([5, 5]) });
+    const real = metaSend.engineSendMedia;
+    const spy = vi.spyOn(metaSend, "engineSendMedia").mockImplementation((args) => real(args));
+    await run();
+    const runId = lastRun(mem).id;
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(spy.mock.calls.map((c) => c[0].flowRunId)).toEqual([runId, runId]);
   });
 
   it("picks the audio of the contact's product, not another's, whatever the case, accents or spacing of the Producto value", async () => {

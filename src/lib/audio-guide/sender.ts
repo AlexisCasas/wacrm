@@ -8,6 +8,9 @@ export async function sendVoiceNoteViaEngine(args: SendContext & { link: string 
     userId: args.userId,
     conversationId: args.conversationId,
     contactId: args.contactId,
+    // Names the originating run so a BSUID contact's per-send authorization (`bsuid_flow_send_check`) can be evaluated. Never bypasses
+    // resolveContactTarget: engineSendMedia is the only transport.
+    flowRunId: args.flowRunId,
     kind: "audio",
     link: args.link,
     voice: true,
