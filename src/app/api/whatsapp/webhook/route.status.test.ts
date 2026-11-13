@@ -7,6 +7,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
 const h = vi.hoisted(() => ({
   afterCallbacks: [] as (() => Promise<void> | void)[],
+  inboxPayload: null as unknown,
+
   configsByPhone: {} as Record<string, { account_id: string }[]>,
   configLookups: [] as [string, string][],
   rpcCalls: [] as { name: string; args: Record<string, unknown> }[],
@@ -64,6 +66,19 @@ vi.mock('@/lib/automations/engine', () => ({ runAutomationsForTrigger: vi.fn() }
 vi.mock('@/lib/flows/engine', () => ({ dispatchInboundToFlows: vi.fn() }))
 vi.mock('@/lib/ai/auto-reply', () => ({ dispatchInboundToAiReply: vi.fn() }))
 vi.mock('@/lib/whatsapp/template-webhook', () => ({ isTemplateWebhookField: () => false, handleTemplateWebhookChange: vi.fn() }))
+
+vi.mock('@/lib/whatsapp/webhook-inbox', () => ({
+  // Existing route tests focus on downstream processing. The queue/RPC
+  // contract, lease fencing and failure handling have their own tests.
+  enqueueVerifiedWebhook: async (_db: unknown, _raw: string, payload: unknown) => {
+    h.inboxPayload = payload
+    return 'qa-event'
+  },
+  drainWebhookInbox: async (_db: unknown, handler: (payload: unknown) => Promise<void>) => {
+    await handler(h.inboxPayload)
+    return { claimed: 1, processed: 1, failed: 0 }
+  },
+}))
 
 import { POST } from './route'
 
