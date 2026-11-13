@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const requireRole = vi.fn()
 const rpc = vi.fn()
@@ -31,7 +31,11 @@ const perf = (level: string) => {
   return [{ id: level === 'campaign' ? C1 : S1, name: level === 'campaign' ? 'Campaña' : 'Conjunto', status: 'ACTIVE', campaign_id: C1, campaign_name: 'Campaña', adset_id: level === 'campaign' ? null : S1, adset_name: null, spend: 205.15, impressions: 39976, clicks: 903 }]
 }
 
+// The route computes the Meta window from Date.now(); the fixtures cover up to 2026-11-10. Freeze ONLY the clock (timers/promises stay real) at
+// 2026-11-11 11:00 America/Bogota so the 7-day window ends on 2026-11-10 and the test no longer drifts to 'syncing' as the calendar advances.
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-11-11T16:00:00Z'))
   for (const f of [requireRole, rpc, settings, states, recon]) f.mockReset()
   recon.mockResolvedValue({ data: { ok: true, checked_at: '2026-11-10T16:00:00Z', date_from: '2026-11-03', date_to: '2026-11-09' }, error: null })
   requireRole.mockResolvedValue({
@@ -41,6 +45,10 @@ beforeEach(() => {
   settings.mockResolvedValue({ data: { account_timezone: 'America/Bogota', currency: 'PEN' }, error: null })
   states.mockResolvedValue({ data: [{ job: 'catalog', status: 'ok' }, { job: 'insights', status: 'ok', last_success_at: '2026-11-10T16:00:00Z', covered_from: '2026-08-12', covered_to: '2026-11-10' }], error: null })
   rpc.mockImplementation(async (n: string, a: { p_level: string }) => ({ data: n === 'meta_ads_range_metrics' ? [] : perf(a.p_level), error: null }))
+})
+
+afterEach(() => {
+  vi.useRealTimers()
 })
 
 describe('GET /api/ads/meta-performance', () => {
