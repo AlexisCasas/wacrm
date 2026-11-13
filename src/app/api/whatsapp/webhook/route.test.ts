@@ -267,8 +267,14 @@ vi.mock('@/lib/whatsapp/webhook-inbox', () => ({
     return 'qa-event'
   },
   drainWebhookInbox: async (_db: unknown, handler: (payload: unknown) => Promise<void>) => {
-    await handler(h.inboxPayload)
-    return { claimed: 1, processed: 1, failed: 0 }
+    // Real worker records errors for retry rather than propagating them
+    // beyond Next after(); the route still returned 200 after enqueue.
+    try {
+      await handler(h.inboxPayload)
+      return { claimed: 1, processed: 1, failed: 0 }
+    } catch {
+      return { claimed: 1, processed: 0, failed: 1 }
+    }
   },
 }))
 
