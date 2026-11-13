@@ -1,6 +1,6 @@
 -- Executed only by GitHub's disposable local Supabase Postgres after all migrations.
--- This test runs in a transaction and never leaves test events behind.
-BEGIN;
+-- Single DO statement: supabase db query uses a prepared statement and rejects
+-- BEGIN/DO/ROLLBACK in one file. This database is disposable on CI.
 DO $qa$
 DECLARE
   a uuid; b uuid; claim record; reclaim record;
@@ -53,4 +53,3 @@ BEGIN
   SELECT count(*) INTO n FROM public.whatsapp_webhook_inbox WHERE id=b AND state='dead';
   IF n <> 1 THEN RAISE EXCEPTION 'prune deleted dead letter'; END IF;
 END $qa$;
-ROLLBACK;
