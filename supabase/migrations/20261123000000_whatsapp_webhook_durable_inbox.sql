@@ -57,6 +57,25 @@ CREATE OR REPLACE FUNCTION public.whatsapp_webhook_inbox_claim(
 RETURNS TABLE(id uuid, payload jsonb, token uuid)
 LANGUAGE plpgsql SECURITY INVOKER SET search_path = public AS $$
 BEGIN
+  -- A worker can crash during its final (10th) attempt. The failed-
+  -- handler never runs, so an expired terminal lease must be moved to
+  -- dead-letter here rather than remaining 'processing' indefinitely.
+  WITH exhausted AS (
+    SELECT q.id FROM public.whatsapp_webhook_inbox q
+    WHERE (p_event_id IS NULL OR q.id = p_event_id)
+      AND q.state = 'processing'
+      AND q.attempts >= 10
+      AND q.lease_until < now()
+    ORDER BY q.lease_until
+    LIMIT 20
+    FOR UPDATE SKIP LOCKED
+  )
+  UPDATE public.whatsapp_webhook_inbox q
+  SET state = 'dead', claim_token = NULL, lease_until = NULL,
+      last_error_code = 'lease_exhausted'
+  FROM exhausted
+  WHERE q.id = exhausted.id;
+
   RETURN QUERY
   WITH due AS (
     SELECT q.id FROM public.whatsapp_webhook_inbox q
