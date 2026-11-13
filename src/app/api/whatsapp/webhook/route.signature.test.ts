@@ -76,6 +76,11 @@ vi.mock('@/lib/whatsapp/template-webhook', () => ({
   handleTemplateWebhookChange: vi.fn(),
 }))
 
+vi.mock('@/lib/whatsapp/webhook-inbox', () => ({
+  enqueueVerifiedWebhook: async () => 'qa-event',
+  drainWebhookInbox: async () => ({ claimed: 0, processed: 0, failed: 0 }),
+}))
+
 import { POST } from './route'
 import { encrypt } from '@/lib/whatsapp/encryption'
 
