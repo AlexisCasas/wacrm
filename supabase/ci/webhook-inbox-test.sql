@@ -3,7 +3,7 @@
 -- BEGIN/DO/ROLLBACK in one file. This database is disposable on CI.
 DO $qa$
 DECLARE
-  a uuid; b uuid; claim record; reclaim record;
+  a uuid; b uuid; c uuid; claim record; reclaim record;
   n integer; ok boolean;
 BEGIN
   IF has_table_privilege('anon','public.whatsapp_webhook_inbox','SELECT')
@@ -46,6 +46,20 @@ BEGIN
   IF NOT public.whatsapp_webhook_inbox_fail(b,claim.token,'processing_failed') THEN RAISE EXCEPTION 'final failure could not be marked'; END IF;
   SELECT state INTO claim FROM public.whatsapp_webhook_inbox WHERE id=b;
   IF claim.state <> 'dead' THEN RAISE EXCEPTION 'dead-letter not recorded'; END IF;
+
+  -- Regression: a worker crashes on attempt #10; no fail() RPC is called.
+  -- The next claim must retire the expired lease instead of leaving an
+  -- unclaimable processing row forever.
+  c := public.whatsapp_webhook_inbox_enqueue(repeat('c',64), '{"entry":[]}'::jsonb);
+  UPDATE public.whatsapp_webhook_inbox SET attempts=9, next_attempt_at=now()-interval '1 second' WHERE id=c;
+  SELECT * INTO claim FROM public.whatsapp_webhook_inbox_claim(1,c);
+  IF claim.token IS NULL THEN RAISE EXCEPTION 'final lease test could not claim'; END IF;
+  UPDATE public.whatsapp_webhook_inbox SET lease_until=now()-interval '1 second' WHERE id=c;
+  SELECT count(*) INTO n FROM public.whatsapp_webhook_inbox_claim(1,c);
+  IF n <> 0 THEN RAISE EXCEPTION 'exhausted crashed lease was claimed again'; END IF;
+  SELECT state, last_error_code INTO claim FROM public.whatsapp_webhook_inbox WHERE id=c;
+  IF claim.state <> 'dead' OR claim.last_error_code <> 'lease_exhausted'
+  THEN RAISE EXCEPTION 'exhausted crashed lease stuck processing'; END IF;
 
   UPDATE public.whatsapp_webhook_inbox SET processed_at=now()-interval '8 days' WHERE id=a;
   n := public.whatsapp_webhook_inbox_prune(200);
