@@ -5,6 +5,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // fake ids; nothing here is a real person or number.
 const h = vi.hoisted(() => ({
   db: null as unknown as import('@/test/in-memory-db').InMemoryDb,
+  inboxPayload: null as unknown,
+
   after: [] as (() => Promise<void> | void)[],
   dispatchInboundToFlows: vi.fn(),
   dispatchInboundToAiReply: vi.fn(),
@@ -32,6 +34,19 @@ vi.mock('@/lib/automations/engine', () => ({ runAutomationsForTrigger: h.runAuto
 vi.mock('@/lib/flows/engine', () => ({ dispatchInboundToFlows: h.dispatchInboundToFlows }))
 vi.mock('@/lib/ai/auto-reply', () => ({ dispatchInboundToAiReply: h.dispatchInboundToAiReply }))
 vi.mock('@/lib/webhooks/deliver', () => ({ dispatchWebhookEvent: h.dispatchWebhookEvent }))
+
+vi.mock('@/lib/whatsapp/webhook-inbox', () => ({
+  // Existing route tests focus on downstream processing. The queue/RPC
+  // contract, lease fencing and failure handling have their own tests.
+  enqueueVerifiedWebhook: async (_db: unknown, _raw: string, payload: unknown) => {
+    h.inboxPayload = payload
+    return 'qa-event'
+  },
+  drainWebhookInbox: async (_db: unknown, handler: (payload: unknown) => Promise<void>) => {
+    await handler(h.inboxPayload)
+    return { claimed: 1, processed: 1, failed: 0 }
+  },
+}))
 
 import { POST } from './route'
 import { createInMemoryDb } from '@/test/in-memory-db'
