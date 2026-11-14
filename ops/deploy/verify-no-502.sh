@@ -37,4 +37,9 @@ echo "live DB-backed readiness: $READY"
 echo -n "restart count / started: "; docker inspect -f '{{.RestartCount}} {{.State.StartedAt}}' "$LIVE"
 if [ "$TOTAL" -gt 0 ]; then echo "FAIL: webhook errors present"; exit 1; fi
 if [ "$READY" != 200 ]; then echo "FAIL: live database-backed readiness not 200"; exit 1; fi
-echo "PASS: no webhook error lines and live DB-backed readiness 200 in inspected window"
+# App readiness alone cannot detect the exact incident where Caddy lost the
+# public wacrm-app alias. Require the real proxy route as well.
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+bash "$DIR/guard-public-proxy.sh" "$LIVE" ||
+  { echo "FAIL: shared Caddy cannot reach WACRM public alias"; exit 1; }
+echo "PASS: no webhook error lines, DB-backed readiness and public Caddy route"
