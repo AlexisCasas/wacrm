@@ -81,7 +81,7 @@ vi.mock("@/lib/supabase/client", () => ({
         },
         range: (from: number, to: number) => {
           const rows = source === "contact" ? h.contactSearchRows : h.messageSearchRows;
-          if (source !== "normal") h.searchedRanges.push({ source, from, to });
+          if (source === "contact" || source === "message") h.searchedRanges.push({ source, from, to });
           return Promise.resolve({ data: rows.slice(from, to + 1).map((row) => idOnly ? { id: row.id } : row), error: null });
         },
         then: (resolve: (result: unknown) => unknown) => {
@@ -309,7 +309,7 @@ describe("ConversationList — database-backed search", () => {
     const shared = conv({
       id: "conv-both",
       contact_id: "ct-both",
-      contact: { ...contact("Matching"), phone: "981629790" },
+      contact: { ...contact("Matching")!, phone: "981629790" },
       last_message_text: "981629790",
     });
     h.contactSearchRows = [shared];
