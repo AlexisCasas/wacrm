@@ -54,6 +54,14 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { decrypt } from './encryption'
 
+/** Distinguishes a failed config lookup from an unknown tenant / invalid HMAC. */
+export class WebhookSignatureConfigUnavailableError extends Error {
+  constructor() {
+    super('webhook_signature_config_unavailable')
+    this.name = 'WebhookSignatureConfigUnavailableError'
+  }
+}
+
 export interface WebhookSecretCandidateIds {
   /** `change.value.metadata.phone_number_id` — exact-match candidates. */
   phoneNumberIds: string[]
@@ -162,10 +170,11 @@ export async function resolveWebhookSignatureSecrets(
       .from('whatsapp_config')
       .select(columns)
       .in('phone_number_id', phoneNumberIds)
-    if (error) {
-      console.error('[webhook] config lookup by phone_number_id failed:', error.message)
+    if (error || !Array.isArray(data)) {
+      console.error('[webhook] signature config lookup by phone_number_id unavailable', { code: error?.code ?? 'invalid_result' })
+      throw new WebhookSignatureConfigUnavailableError()
     } else {
-      for (const row of (data ?? []) as CandidateConfigRow[]) {
+      for (const row of data as CandidateConfigRow[]) {
         const bucket = rowsByPhoneNumberId.get(row.phone_number_id) ?? []
         bucket.push(row)
         rowsByPhoneNumberId.set(row.phone_number_id, bucket)
@@ -179,10 +188,11 @@ export async function resolveWebhookSignatureSecrets(
       .from('whatsapp_config')
       .select(columns)
       .in('waba_id', wabaIds)
-    if (error) {
-      console.error('[webhook] config lookup by waba_id failed:', error.message)
+    if (error || !Array.isArray(data)) {
+      console.error('[webhook] signature config lookup by waba_id unavailable', { code: error?.code ?? 'invalid_result' })
+      throw new WebhookSignatureConfigUnavailableError()
     } else {
-      for (const row of (data ?? []) as CandidateConfigRow[]) {
+      for (const row of data as CandidateConfigRow[]) {
         if (!row.waba_id) continue
         const bucket = rowsByWabaId.get(row.waba_id) ?? []
         bucket.push(row)
