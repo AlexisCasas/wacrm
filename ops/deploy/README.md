@@ -71,3 +71,53 @@ For stronger evidence also watch Meta's webhook delivery dashboard (no retries a
   claims; the in-process state is per-request. Confirm in staging before the first production run.
 - **Memory:** measure actual free RAM, swap, image size and peak usage of *two* containers in the mandatory VPS preflight; do not rely on historic ~5 GB availability.
 - **Builds stay off the VPS** (see `docs/ops` build instructions); this script never builds.
+
+## Incident safeguard: F3 network alias regression (2026-11-14)
+
+**Observed:** WACRM itself returned 200 and PostgreSQL was healthy, but the
+shared Caddy returned upstream DNS errors:
+`lookup wacrm-app on 127.0.0.11:53: server misbehaving`.
+The public upstream alias `wacrm-app` had not been preserved by a manual
+Compose image swap / rollback. A manual network reconnection restored it.
+
+**Root deployment hazard:** the live container's Compose labels contain
+`ops/deploy/candidate.override.yml` paths from prior blue/green handoffs.
+Those overlays intentionally replace the `edge_proxy` aliases with a *private
+candidate name* (`aliases: !override`). They must NEVER be reused as ordinary
+live Compose overlays. Merely checking that a new Compose config differs only
+by `services.app.image` is insufficient: both configurations may be missing
+the public alias.
+
+**Required operational rules:**
+
+1. Do not run `docker compose up -d` with all files blindly copied from the
+   live container labels. Never reuse any historical
+   `*/candidate.override.yml` as a final live overlay.
+2. Use the reviewed `ops/deploy/deploy.sh` blue/green mechanism for releases,
+   with a separate production approval, validated backup and migration gate.
+   It now strips historical candidate overrides, blocks deployment if Caddy
+   cannot reach the existing live alias, checks the promoted candidate from
+   Caddy before stopping the old image, and requires a working proxy route at
+   the end. `rollback.sh` also checks the public route before declaring PASS.
+3. Run `bash ops/deploy/guard-public-proxy.sh wacrm-app-1` before and
+   after releases/rollbacks. Expected: `CADDY_PUBLIC_UPSTREAM=PASS`,
+   `WACRM_PUBLIC_ROUTE=PASS`. The gate is read-only; the default HTTPS
+   host is `crm.globaltechup.com` and can be overridden with
+   `WACRM_PUBLIC_HOST` after verifying the actual Caddy site.
+4. For an *exceptional approved single-instance Compose recreation*, use
+   `ops/deploy/live-proxy-alias.override.yml` as the **last** live-only
+   override, after all inherited files have been filtered, and verify
+   the merged `services.app.networks.edge_proxy.aliases` contains
+   `wacrm-app` before making changes. Do not apply this override to the
+   pre-readiness candidate; its public alias must remain private until ready.
+5. A DB-ready container is **not** proof of an accessible website. Require
+   the real Caddy-to-alias HTTP check and HTTPS route. Verify webhook/cron
+   health independently; no procedure can promise absolute zero downtime.
+
+**Production state at diagnosis:** application restored to
+`wacrm-app:order-fix-dee19459`, network alias manually repaired. The F3
+database migration was left applied and the ledger was empty. These repo
+changes DO NOT redeploy F3, edit Caddy, change the database, or modify
+the running host's Compose files. The host-only
+`/opt/apps/wacrm/docker-compose.prod.yml` is not versioned here and must
+be reviewed separately before any permanent host edit.
