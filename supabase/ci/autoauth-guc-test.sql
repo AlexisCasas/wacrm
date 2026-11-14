@@ -5,7 +5,12 @@ DECLARE
   u uuid := gen_random_uuid(); acct uuid := gen_random_uuid(); fid uuid; ch text; n int; bad text := '';
 BEGIN
   INSERT INTO auth.users(id, email) VALUES (u, 'autoauth-guc-qa@example.test');
-  INSERT INTO public.accounts(id, name, owner_user_id) VALUES (acct, 'autoauth-guc-qa', u);
+  -- The real Supabase auth trigger creates an account automatically. Reuse
+  -- that account instead of violating idx_accounts_one_per_owner in CI.
+  SELECT id INTO acct FROM public.accounts WHERE owner_user_id = u;
+  IF acct IS NULL THEN
+    INSERT INTO public.accounts(id, name, owner_user_id) VALUES (acct, 'autoauth-guc-qa', u);
+  END IF;
   INSERT INTO public.bsuid_flow_autoauth(account_id, enabled, audio_enabled) VALUES (acct, true, false);
   -- Fire the deferred node trigger right after each statement so a failure is caught per flow below; the same function also runs at COMMIT in the app.
   SET CONSTRAINTS public.bsuid_flow_autoauth_node IMMEDIATE;
