@@ -189,7 +189,9 @@ vi.mock('@supabase/supabase-js', () => ({
       }
     },
     rpc: (name: string, args: Record<string, unknown>) => {
-      h.state.rpcCalls.push({ name, args })
+      // The dispatch ledger (F3) answers "unavailable" here (data: null), which must reproduce the previous behaviour exactly; its own
+      // calls are not part of what these tests assert about the business RPCs.
+      if (!name.startsWith('inbound_dispatch_')) h.state.rpcCalls.push({ name, args })
       return Promise.resolve({ data: null, error: null })
     },
     // Service-role Storage, used by the inbound-media mirror (#466).

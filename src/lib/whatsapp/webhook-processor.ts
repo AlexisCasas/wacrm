@@ -19,6 +19,7 @@ import { runAutomationsForTrigger } from '@/lib/automations/engine'
 import { dispatchInboundToFlows } from '@/lib/flows/engine'
 import { dispatchInboundToAiReply } from '@/lib/ai/auto-reply'
 import { dispatchWebhookEvent } from '@/lib/webhooks/deliver'
+import { ledgerBegin, ledgerClaim, ledgerRun, ledgerSkipLegacy, type LedgerRun, type LedgerStep } from '@/lib/whatsapp/dispatch-ledger'
 import { captureAdAttribution } from '@/lib/whatsapp/ad-attribution'
 import { recordAdClick } from '@/lib/whatsapp/ad-click-history'
 import { captureMessagePricing } from '@/lib/whatsapp/message-pricing'
@@ -662,6 +663,9 @@ async function processMessage(
     .eq('sender_type', 'customer')
   const isFirstInboundMessage = (priorCustomerMsgCount ?? 0) === 0
 
+  // F3 write-ahead intent: recorded BEFORE the message exists, so a stored message always has its dispatch ledger row.
+  const ledgerState = await ledgerBegin(supabaseAdmin(), accountId, message.id, isFirstInboundMessage, contactOutcome.wasCreated)
+
   // Idempotent insert. Meta retries webhook deliveries (a slow ack, a
   // transient 5xx), and each retry replays the exact same message.id. The
   // unique index on (conversation_id, message_id) added in migration 037
@@ -706,16 +710,49 @@ async function processMessage(
   // no-op. Returning here is what keeps a retry from double-bumping unread,
   // re-advancing flows, re-firing automations, re-invoking AI handling, and
   // re-dispatching public webhooks (issue #367).
-  if (!insertedRows || insertedRows.length === 0) {
+  const isReplay = !insertedRows || insertedRows.length === 0
+  if (isReplay) {
     console.info(
       '[webhook] duplicate inbound message ignored (idempotent replay):',
       hasPhone(contactRecord) ? message.id : messageRef(message.id)
     )
-    return
+    // No ledger (unavailable) keeps the previous behaviour. A freshly created ledger row means the message PREDATES the ledger (legacy
+    // message or an old redelivery): it was handled by the code of its time, so it is recorded as handled and never dispatched now.
+    if (ledgerState !== 'existed') {
+      if (ledgerState === 'created') await ledgerSkipLegacy(supabaseAdmin(), accountId, message.id)
+      return
+    }
   }
 
+  // Take ownership of the dispatch fan-out (fenced by a lease token). A replay resumes only what a crashed attempt did not finish.
+  let ledger: LedgerRun | null = null
+  let isFirstEffective = isFirstInboundMessage
+  let contactCreatedEffective = contactOutcome.wasCreated
+  if (ledgerState !== 'off') {
+    const claim = await ledgerClaim(supabaseAdmin(), accountId, message.id)
+    if (claim?.outcome === 'claimed' && claim.token) {
+      ledger = ledgerRun(supabaseAdmin(), accountId, message.id, claim, contactRecord.id)
+      // The flags of the FIRST attempt are authoritative: on a replay the message and the contact already exist.
+      if (isReplay) { isFirstEffective = claim.isFirstInbound; contactCreatedEffective = claim.contactCreated }
+    } else if (claim?.outcome === 'busy') {
+      throw new Error('dispatch_in_progress') // another worker owns it; the durable inbox retries later
+    } else if (!claim && !isReplay) {
+      // The intent exists but we cannot take ownership of it (transient ledger failure). Dispatching now WITHOUT the ledger would leave
+      // every step 'pending' and a later replay would dispatch the whole fan-out a second time. Fail instead: the message is already
+      // stored, and the retry resumes through the ledger exactly once.
+      throw new Error('dispatch_ledger_claim_unavailable')
+    }
+  }
+  if (isReplay && !ledger) return // already completed, parked for reconciliation, or ledger unavailable: nothing to resume
+
+  // Runs one dispatch step under the ledger (or plainly, exactly as before, when there is no ledger).
+  const step = async <T,>(name: LedgerStep, fn: () => Promise<T>, opts?: { consumedOf?: (r: T) => boolean }): Promise<{ ran: boolean; value?: T }> =>
+    ledger ? ledger.step(name, fn, opts) : { ran: true, value: await fn() }
+
+  try {
+
   // Ad attribution ("Origen del cliente"). Additive and isolated: only on a genuine first insert, never throws, never changes how the message is processed.
-  if (message.referral) {
+  if (message.referral && !isReplay) {
     await captureAdAttribution(supabaseAdmin(), { accountId, contactId: contactRecord.id, referral: message.referral })
     // Additive click history for Meta conversions (best effort, never throws).
     await recordAdClick(supabaseAdmin(), { accountId, contactId: contactRecord.id, referral: message.referral })
@@ -728,6 +765,8 @@ async function processMessage(
   // both reads see the same value and write the same increment, losing one
   // (issue #369). The RPC increments in a single UPDATE and refreshes the
   // last-message summary in the same statement.
+  // Bookkeeping that is NOT idempotent (unread counter, reopen, broadcast reply) runs only on the first insert, never on a resume.
+  if (!isReplay) {
   const { error: convError } = await supabaseAdmin().rpc(
     'bump_conversation_on_inbound',
     {
@@ -750,6 +789,7 @@ async function processMessage(
   // so the broadcast's `replied_count` advances (via the aggregate
   // trigger installed in migration 003).
   await flagBroadcastReplyIfAny(accountId, contactRecord.id)
+  }
 
   // ============================================================
   // Flow runner dispatch.
@@ -790,6 +830,7 @@ async function processMessage(
   // Automations, tags-triggered sequences and the AI stay held, and so do external webhooks. With no authorized flow (the default) this is
   // exactly the previous hold. Every decision is audited. The send side re-checks the authorization on every message of the run.
   if (bsuidEnabled && !hasPhone(contactRecord)) {
+    await step('flows', async () => {
     const allowedFlows = await bsuidFlowScope(accountId, contactRecord.id)
     let flowOutcome = 'not_offered'
     if (allowedFlows.length > 0) {
@@ -799,7 +840,7 @@ async function processMessage(
         contactId: contactRecord.id,
         conversationId: conversation.id,
         message: flowInboundMessage,
-        isFirstInboundMessage,
+        isFirstInboundMessage: isFirstEffective,
         restrictToFlowIds: allowedFlows,
       })
       flowOutcome = heldResult.consumed ? `flow_${heldResult.outcome ?? 'consumed'}` : 'no_flow_matched'
@@ -809,18 +850,23 @@ async function processMessage(
       .then(undefined, () => undefined)
     // External endpoints get nothing for a phone-less contact during the pilot; the reception stays recorded internally.
     await auditExternalEventHeld(supabaseAdmin(), accountId, contactRecord.id, 'message.received')
+    }) // end step 'flows' (phone-less contact)
+    if (ledger) { await ledger.skip('automations'); await ledger.skip('ai'); await ledger.skip('webhook'); await ledger.finish() }
     return
   }
 
-  const flowResult = await dispatchInboundToFlows({
+  const flowStep = await step('flows', () => dispatchInboundToFlows({
     accountId,
     userId: configOwnerUserId,
     contactId: contactRecord.id,
     conversationId: conversation.id,
     message: flowInboundMessage,
-    isFirstInboundMessage,
-  })
-  const flowConsumed = flowResult.consumed
+    isFirstInboundMessage: isFirstEffective,
+  }), { consumedOf: (r) => r.consumed })
+  // On a resume where the Flow step already finished, its recorded verdict decides the content-level triggers below.
+  // A Flow step left in reconciliation has an unknown verdict: assume it consumed the message, so content-level automations / the AI
+  // never answer a message a Flow may already have answered.
+  const flowConsumed = flowStep.ran ? flowStep.value?.consumed === true : (ledger?.flowConsumed ?? true)
 
   // Fire any automations that react to this webhook event. All dispatches
   // run here (not earlier) so the contact, conversation, and inbound
@@ -853,8 +899,8 @@ async function processMessage(
   // manually-imported contacts sending for the first time. We dispatch both
   // so users can pick whichever semantic they want; an automation that
   // listens to only one trigger runs only when that trigger matches.
-  if (contactOutcome.wasCreated) automationTriggers.unshift('new_contact_created')
-  if (isFirstInboundMessage) automationTriggers.unshift('first_inbound_message')
+  if (contactCreatedEffective) automationTriggers.unshift('new_contact_created')
+  if (isFirstEffective) automationTriggers.unshift('first_inbound_message')
   // Awaited — not fire-and-forget. We're inside the route's `after()`
   // block, which only keeps the function alive for promises it can see, so
   // a detached dispatch can be frozen part-way through: the log row is
@@ -863,6 +909,7 @@ async function processMessage(
   // logging zero steps. `runAutomationsForTrigger` owns its own try/catch
   // and never throws; the `.catch` is belt-and-braces so one trigger
   // type's failure can't skip the rest of the loop.
+  await step('automations', async () => {
   for (const triggerType of automationTriggers) {
     await runAutomationsForTrigger({
       accountId,
@@ -877,6 +924,7 @@ async function processMessage(
       },
     }).catch((err) => console.error('[automations] dispatch failed:', err))
   }
+  })
 
   // AI auto-reply. Runs only for plain-text inbound the deterministic
   // flow runner did NOT consume (flows win over the LLM), and only when
@@ -884,12 +932,14 @@ async function processMessage(
   // the webhook dispatch below); `dispatchInboundToAiReply` owns its
   // eligibility gates + try/catch and never throws.
   if (!flowConsumed && !interactiveReplyId && inboundText.trim()) {
-    await dispatchInboundToAiReply({
+    await step('ai', () => dispatchInboundToAiReply({
       accountId,
       conversationId: conversation.id,
       contactId: contactRecord.id,
       configOwnerUserId,
-    })
+    }))
+  } else if (ledger) {
+    await ledger.skip('ai')
   }
 
   // message.received webhook (public API). Awaited — not fire-and-forget
@@ -899,13 +949,19 @@ async function processMessage(
   // when the account has no matching endpoint and never throws.
   // (conversation.created is emitted earlier, right after the thread is
   // opened.)
-  await dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
+  await step('webhook', () => dispatchWebhookEvent(supabaseAdmin(), accountId, 'message.received', {
     conversation_id: conversation.id,
     contact_id: contactRecord.id,
     whatsapp_message_id: message.id,
     content_type: contentType,
     text: contentText,
-  })
+  }))
+  if (ledger) await ledger.finish()
+  } catch (err) {
+    // Hand the row back so the next retry resumes at once instead of waiting for the lease; the error still reaches the durable inbox.
+    if (ledger) await ledger.release(err instanceof Error ? err.message.slice(0, 60) : 'error')
+    throw err
+  }
 }
 
 async function parseMessageContent(
