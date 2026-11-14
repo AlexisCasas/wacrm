@@ -132,7 +132,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Invalid signature' }, { status: 401 })
   }
 
-  const candidateSecrets = await resolveWebhookSignatureSecrets(supabaseAdmin(), body)
+  // A lookup outage is not evidence of an invalid Meta signature. Return
+  // a retryable status instead of falsely classifying the request as 401.
+  let candidateSecrets: string[]
+  try {
+    candidateSecrets = await resolveWebhookSignatureSecrets(supabaseAdmin(), body)
+  } catch {
+    console.error('[webhook] signature config lookup unavailable; request not acknowledged')
+    return NextResponse.json(
+      { error: 'Webhook temporarily unavailable' },
+      { status: 503, headers: { 'Retry-After': '5' } },
+    )
+  }
   if (candidateSecrets.length === 0) {
     // No whatsapp_config row could be identified from this payload at
     // all — never fall back to accepting on the strength of the global
