@@ -38,14 +38,32 @@ const h = vi.hoisted(() => ({
   searchedRanges: [] as { source: "contact" | "message"; from: number; to: number }[],
   contactSearchFilters: [] as string[],
   signals: [] as AbortSignal[],
+  searchProjections: [] as string[],
+  hydratedBatches: [] as string[][],
 }));
 
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
     from: (table: string) => {
-      let source: "normal" | "contact" | "message" = "normal";
+      let source: "normal" | "contact" | "message" | "hydrate" = "normal";
+      let idOnly = false;
+      let hydratedIds: string[] = [];
       const builder = {
-        select: () => builder,
+        select: (columns?: string) => {
+          if (table === "conversations" && columns?.startsWith("id, contact:contacts!inner(")) {
+            idOnly = true;
+            h.searchProjections.push(columns);
+          }
+          return builder;
+        },
+        in: (column: string, ids: string[]) => {
+          if (column === "id") {
+            source = "hydrate";
+            hydratedIds = ids;
+            h.hydratedBatches.push(ids);
+          }
+          return builder;
+        },
         eq: () => builder,
         order: () => builder,
         abortSignal: (signal: AbortSignal) => {
@@ -64,12 +82,19 @@ vi.mock("@/lib/supabase/client", () => ({
         range: (from: number, to: number) => {
           const rows = source === "contact" ? h.contactSearchRows : h.messageSearchRows;
           if (source !== "normal") h.searchedRanges.push({ source, from, to });
-          return Promise.resolve({ data: rows.slice(from, to + 1), error: null });
+          return Promise.resolve({ data: rows.slice(from, to + 1).map((row) => idOnly ? { id: row.id } : row), error: null });
         },
         then: (resolve: (result: unknown) => unknown) => {
           if (table === "tags") {
             h.tagsFetchCount++;
             return Promise.resolve({ data: h.tagsCatalog, error: null }).then(resolve);
+          }
+          if (source === "hydrate") {
+            const unique = new Map<string, Conversation>();
+            for (const row of [...h.contactSearchRows, ...h.messageSearchRows]) {
+              if (hydratedIds.includes(row.id)) unique.set(row.id, row);
+            }
+            return Promise.resolve({ data: [...unique.values()], error: null }).then(resolve);
           }
           return Promise.resolve({ data: [], error: null }).then(resolve);
         },
@@ -87,6 +112,8 @@ beforeEach(() => {
   h.searchedRanges = [];
   h.contactSearchFilters = [];
   h.signals = [];
+  h.searchProjections = [];
+  h.hydratedBatches = [];
 });
 
 function contact(name: string) {
@@ -238,6 +265,15 @@ describe("ConversationList — database-backed search", () => {
     expect(h.contactSearchFilters).toContain(
       "name.ilike.%981629790%,phone.ilike.%981629790%,wa_username.ilike.%981629790%",
     );
+    // The expensive search stages must fetch IDs only. Full rows are
+    // hydrated exactly once per id and no IN clause exceeds 100 IDs.
+    expect(h.searchProjections).toHaveLength(2);
+    expect(h.searchProjections.every((s) => !s.includes("contact_tags"))).toBe(true);
+    expect(h.hydratedBatches.length).toBeGreaterThan(1);
+    expect(h.hydratedBatches.every((batch) => batch.length <= 100)).toBe(true);
+    const hydratedIds = h.hydratedBatches.flat();
+    expect(new Set(hydratedIds).size).toBe(hydratedIds.length);
+    expect(hydratedIds).toContain("conv-misael");
   });
 
   it("searches once per pause in typing, not once per keystroke", async () => {
