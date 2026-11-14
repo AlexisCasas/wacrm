@@ -276,6 +276,64 @@ describe("ConversationList — database-backed search", () => {
     expect(hydratedIds).toContain("conv-misael");
   });
 
+  it("keeps numeric matches that occur only in last_message_text", async () => {
+    h.messageSearchRows = [
+      conv({
+        id: "conv-number-in-message",
+        contact_id: "ct-message",
+        contact: contact("Lucia"),
+        last_message_text: "Referencia 981629790",
+      }),
+    ];
+    const onConversationsLoaded = vi.fn();
+    render(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={onConversationsLoaded}
+      />,
+    );
+    await waitFor(() => expect(onConversationsLoaded).toHaveBeenCalled());
+    fireEvent.change(screen.getByPlaceholderText("searchPlaceholder"), {
+      target: { value: "981629790" },
+    });
+    await waitFor(() => {
+      const latest = onConversationsLoaded.mock.calls.at(-1)?.[0] as Conversation[];
+      expect(latest.some((c) => c.id === "conv-number-in-message")).toBe(true);
+    });
+    expect(h.hydratedBatches.flat()).toContain("conv-number-in-message");
+  });
+
+  it("hydrates a conversation only once when contact and message both match", async () => {
+    const shared = conv({
+      id: "conv-both",
+      contact_id: "ct-both",
+      contact: { ...contact("Matching"), phone: "981629790" },
+      last_message_text: "981629790",
+    });
+    h.contactSearchRows = [shared];
+    h.messageSearchRows = [shared];
+    const onConversationsLoaded = vi.fn();
+    render(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={onConversationsLoaded}
+      />,
+    );
+    await waitFor(() => expect(onConversationsLoaded).toHaveBeenCalled());
+    fireEvent.change(screen.getByPlaceholderText("searchPlaceholder"), {
+      target: { value: "981629790" },
+    });
+    await waitFor(() => {
+      const latest = onConversationsLoaded.mock.calls.at(-1)?.[0] as Conversation[];
+      expect(latest.map((c) => c.id)).toEqual(["conv-both"]);
+    });
+    expect(h.hydratedBatches.flat()).toEqual(["conv-both"]);
+  });
+
   it("searches once per pause in typing, not once per keystroke", async () => {
     const onConversationsLoaded = vi.fn();
     render(
