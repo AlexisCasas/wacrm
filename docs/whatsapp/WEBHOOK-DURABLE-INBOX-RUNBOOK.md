@@ -12,7 +12,7 @@ Previously POST /api/whatsapp/webhook returned HTTP 200 before processing even a
 4. If persistence fails: return **503** and `Retry-After: 5`, never 200. A duplicate exact delivery updates only delivery counters; it never reopens a processed event.
 5. Once persisted: return 200, schedule immediate processing through Next `after()`, AND rely on an independent authenticated cron to catch any abandoned delivery. Both consumers call the same atomic claim RPC with a 180-second lease and fencing token.
 6. On success: mark processed. On a thrown core error: release with exponential retry; after 10 failed attempts (including an expired tenth lease after a worker crash): `dead`, retained for investigation. The worker does not log customer content or identifiers.
-7. Prune only `processed` rows older than 7 days. Never prune `pending`, `processing` or `dead`.
+7. Prune only `processed` rows older than 72 hours (3 days). Never prune `pending`, `processing` or `dead`.
 
 **Limits:** the existing `messages(conversation_id,message_id)` unique index prevents a replay from storing and dispatching a duplicate inbound message. It cannot guarantee exactly-once delivery of outbound/third-party actions if the process crashes between their own side effects. Also, some existing downstream noncritical errors are best-effort (e.g. unread bump, AI, public webhooks) and are outside this P0. This PR must not be advertised as an absolute zero-loss/exactly-once guarantee.
 
@@ -21,7 +21,7 @@ Previously POST /api/whatsapp/webhook returned HTTP 200 before processing even a
 The user will separately instruct Claude Code in the VPS after GitHub QA. Do not merge or deploy automatically from this runbook.
 
 1. Freeze the exact commit and confirm production image/migrations. Preserve current image and a usable DB backup.
-2. Validate the SQL migration on a disposable restore, including anonymous access denial, a 503 simulation, duplicate enqueue, lease fencing, expired lease reclaim, processed retention and a dead-letter case.
+2. Validate the SQL migration on a disposable restore, including anonymous access denial, a 503 simulation, duplicate enqueue, lease fencing, expired lease reclaim, 72-hour processed retention (71h kept / 73h pruned), and a dead-letter case.
 3. Apply **`20261123000000_whatsapp_webhook_durable_inbox.sql` first**. Check that RPCs and indexes exist. Do not run the new image before the migration is ready: otherwise the app returns 503 to authentic webhook requests.
 4. **Install a root-owned recurring POST cron every minute** to `https://crm.globaltechup.com/api/whatsapp/webhook/cron` with the existing `AUTOMATION_CRON_SECRET` in the `x-cron-secret` header. Keep credentials in a protected local file, not in the URL, shell history, git, process command line, or audit logs. No cron = events may wait indefinitely after a process crash.
 5. Deploy only the approved, tested image. Smoke check signature 401 for invalid signatures, 503 when storage is simulated unavailable (isolated QA only), 200 on authenticated durable insert, and POST-only cron 401/405 guards.

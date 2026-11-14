@@ -132,7 +132,7 @@ DECLARE v_count integer;
 BEGIN
   WITH old AS (
     SELECT id FROM public.whatsapp_webhook_inbox
-    WHERE state = 'processed' AND processed_at < now() - interval '7 days'
+    WHERE state = 'processed' AND processed_at < now() - interval '72 hours'
     ORDER BY processed_at
     LIMIT LEAST(1000, GREATEST(1, COALESCE(p_limit, 200)))
     FOR UPDATE SKIP LOCKED
