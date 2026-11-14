@@ -152,9 +152,23 @@ export function ConversationList({
         // Search in the database instead of filtering the already-capped
         // Inbox load, and page each branch so a matching conversation cannot
         // disappear merely because it falls after that cap.
+        // SEARCH-01 phase 2A (candidate): fetch only matching IDs first.
+        // The old search hydrated the full conversation + all contact columns
+        // + tags for EACH match in EACH branch, including duplicates.
+        // Keep the same predicates, full pagination and RLS-scoped inner join;
+        // fetch full records only once for the distinct matching IDs.
         const PAGE_SIZE = 1_000;
-        const fetchAll = async (query: ReturnType<typeof baseQuery>) => {
-          const rows: InboxRows = [];
+        const SEARCH_ID_SELECT = "id, contact:contacts!inner(id, blocked)";
+        const searchIdsQuery = () =>
+          supabase
+            .from("conversations")
+            .select(SEARCH_ID_SELECT)
+            .eq("contact.blocked", false)
+            .order("last_message_at", { ascending: false })
+            .abortSignal(controller.signal);
+
+        const fetchIds = async (query: ReturnType<typeof searchIdsQuery>) => {
+          const ids: string[] = [];
           for (let from = 0; ; from += PAGE_SIZE) {
             requests++;
             const { data: page, error: pageError } = await query.range(
@@ -162,30 +176,55 @@ export function ConversationList({
               from + PAGE_SIZE - 1,
             );
             if (pageError) throw pageError;
-            rows.push(...(page ?? []));
-            if ((page?.length ?? 0) < PAGE_SIZE) return rows;
+            for (const row of page ?? []) ids.push(row.id as string);
+            if ((page?.length ?? 0) < PAGE_SIZE) return ids;
           }
         };
 
         const pattern = `%${term}%`;
         try {
-          // PostgREST cannot OR predicates from an embedded table and the
-          // parent table in one expression. Keep the pre-existing criteria
-          // by querying each side and de-duplicating conversations below.
-          const [contactMatches, messageMatches] = await Promise.all([
-            fetchAll(
-              baseQuery().or(
+          // PostgREST cannot OR across embedded + parent columns in one
+          // expression. Both branches stay enabled (including numeric text
+          // in last_message_text); preserve every result beyond 1,000.
+          const [contactMatchIds, messageMatchIds] = await Promise.all([
+            fetchIds(
+              searchIdsQuery().or(
                 `name.ilike.${pattern},phone.ilike.${pattern},wa_username.ilike.${pattern}`,
                 { referencedTable: "contact" },
               ),
             ),
-            fetchAll(baseQuery().ilike("last_message_text", pattern)),
+            fetchIds(searchIdsQuery().ilike("last_message_text", pattern)),
           ]);
-          const unique = new Map<string, (typeof contactMatches)[number]>();
-          for (const conversation of [...contactMatches, ...messageMatches]) {
-            unique.set(conversation.id, conversation);
+          const uniqueIds = [...new Set([...contactMatchIds, ...messageMatchIds])];
+
+          // PostgREST URLs must remain bounded: hydrate in batches of IDs,
+          // with at most four requests in flight. Keep the full projection for
+          // onSelect, tags/company filters, realtime and existing consumers.
+          const HYDRATE_BATCH_SIZE = 100;
+          const HYDRATE_PARALLELISM = 4;
+          const hydrated: InboxRows = [];
+          for (
+            let from = 0;
+            from < uniqueIds.length;
+            from += HYDRATE_BATCH_SIZE * HYDRATE_PARALLELISM
+          ) {
+            const group: string[][] = [];
+            for (let offset = from; offset < Math.min(
+              uniqueIds.length,
+              from + HYDRATE_BATCH_SIZE * HYDRATE_PARALLELISM,
+            ); offset += HYDRATE_BATCH_SIZE) {
+              group.push(uniqueIds.slice(offset, offset + HYDRATE_BATCH_SIZE));
+            }
+            requests += group.length;
+            const responses = await Promise.all(
+              group.map((ids) => baseQuery().in("id", ids)),
+            );
+            for (const response of responses) {
+              if (response.error) throw response.error;
+              hydrated.push(...((response.data ?? []) as InboxRows));
+            }
           }
-          data = Array.from(unique.values());
+          data = hydrated;
         } catch (searchError) {
           error = {
             message:
