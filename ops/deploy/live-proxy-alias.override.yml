@@ -1,0 +1,10 @@
+# LIVE-ONLY WACRM override; do not apply to a blue/green candidate.
+# Intended for single-instance/manual Compose operations after explicit review.
+# ops/deploy/candidate.override.yml intentionally replaces these aliases with
+# a private candidate name until readiness. Never promote it as a live override.
+services:
+  app:
+    networks:
+      edge_proxy:
+        aliases:
+          - wacrm-app
