@@ -116,7 +116,7 @@ beforeEach(() => {
   h.hydratedBatches = [];
 });
 
-function contact(name: string) {
+function contact(name: string): NonNullable<Conversation["contact"]> {
   return {
     id: `ct-${name}`,
     account_id: "acct-1",
@@ -124,7 +124,7 @@ function contact(name: string) {
     phone: "+15550000000",
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
-  } as Conversation["contact"];
+  } as NonNullable<Conversation["contact"]>;
 }
 
 function taggedContact(
@@ -309,7 +309,7 @@ describe("ConversationList — database-backed search", () => {
     const shared = conv({
       id: "conv-both",
       contact_id: "ct-both",
-      contact: { ...contact("Matching")!, phone: "981629790" },
+      contact: { ...contact("Matching"), phone: "981629790" },
       last_message_text: "981629790",
     });
     h.contactSearchRows = [shared];
