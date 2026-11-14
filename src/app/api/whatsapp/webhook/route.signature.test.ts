@@ -23,6 +23,9 @@ interface ConfigRow {
 
 const h = vi.hoisted(() => ({
   configs: [] as ConfigRow[],
+  enqueueFails: false,
+  configLookupFails: false,
+  enqueueCalls: 0,
 }))
 
 vi.mock('next/server', () => ({
@@ -48,10 +51,9 @@ vi.mock('@supabase/supabase-js', () => ({
       return {
         select: () => ({
           in: (col: 'phone_number_id' | 'waba_id', values: string[]) =>
-            Promise.resolve({
-              data: h.configs.filter((c) => values.includes(c[col] as string)),
-              error: null,
-            }),
+            Promise.resolve(h.configLookupFails
+              ? { data: null, error: { code: 'PGRST_COMMUNICATION_FAILURE' } }
+              : { data: h.configs.filter((c) => values.includes(c[col] as string)), error: null }),
         }),
       }
     },
@@ -74,6 +76,15 @@ vi.mock('@/lib/webhooks/deliver', () => ({ dispatchWebhookEvent: vi.fn() }))
 vi.mock('@/lib/whatsapp/template-webhook', () => ({
   isTemplateWebhookField: () => false,
   handleTemplateWebhookChange: vi.fn(),
+}))
+
+vi.mock('@/lib/whatsapp/webhook-inbox', () => ({
+  enqueueVerifiedWebhook: async () => {
+    h.enqueueCalls++
+    if (h.enqueueFails) throw new Error('database unavailable')
+    return 'qa-event'
+  },
+  drainWebhookInbox: async () => ({ claimed: 0, processed: 0, failed: 0 }),
 }))
 
 import { POST } from './route'
@@ -154,6 +165,9 @@ function req(body: string, signature: string | null) {
 
 beforeEach(() => {
   h.configs = []
+  h.enqueueFails = false
+  h.configLookupFails = false
+  h.enqueueCalls = 0
 })
 
 describe('POST /api/whatsapp/webhook — multi-tenant signature verification', () => {
@@ -345,5 +359,41 @@ describe('POST /api/whatsapp/webhook — cross-entry intersection, not a global 
     const body = multiEntryBody(messageEntry('waba-a', 'pn-a'))
     const res = await POST(req(body, sign(body, 'secret-a')))
     expect(res.status).toBe(200)
+  })
+})
+
+// A valid Meta signature is NOT enough to acknowledge; durable storage is required.
+describe('POST /api/whatsapp/webhook — durable acknowledgement', () => {
+  it('returns 503 when the HMAC is valid but the inbox insert fails', async () => {
+    h.configs.push({ id: 'cfg-a', account_id: 'acct-a', phone_number_id: 'pn-a', waba_id: 'waba-a', app_secret: encrypt('secret-a') })
+    h.enqueueFails = true
+    const body = messageBody('waba-a', 'pn-a')
+    const res = await POST(req(body, sign(body, 'secret-a')))
+    expect(res.status).toBe(503)
+  })
+})
+
+describe('POST /api/whatsapp/webhook — signature-lookup outage (F1)', () => {
+  it('returns retryable 503, not invalid-signature 401, when the phone-number config query fails', async () => {
+    h.configLookupFails = true
+    const body = messageBody('waba-a', 'pn-a')
+    const res = await POST(req(body, sign(body, 'secret-a')))
+    expect(res.status).toBe(503)
+    expect(h.enqueueCalls).toBe(0)
+  })
+
+  it('returns retryable 503 when a WABA-only template event config query fails', async () => {
+    h.configLookupFails = true
+    const body = templateBody('waba-a')
+    const res = await POST(req(body, sign(body, 'secret-a')))
+    expect(res.status).toBe(503)
+    expect(h.enqueueCalls).toBe(0)
+  })
+
+  it('continues to reject an unknown tenant with 401 when the lookup succeeds', async () => {
+    const body = messageBody('waba-unknown', 'pn-unknown')
+    const res = await POST(req(body, sign(body, 'secret-a')))
+    expect(res.status).toBe(401)
+    expect(h.enqueueCalls).toBe(0)
   })
 })

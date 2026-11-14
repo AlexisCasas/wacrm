@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Shared, hoisted state the module mocks close over. Reset per test.
 const h = vi.hoisted(() => ({
   runAutomationsForTrigger: vi.fn(),
+  inboxPayload: null as unknown,
+
   dispatchInboundToFlows: vi.fn(),
   dispatchInboundToAiReply: vi.fn(),
   dispatchWebhookEvent: vi.fn(),
@@ -255,6 +257,25 @@ vi.mock('@/lib/ai/auto-reply', () => ({
 }))
 vi.mock('@/lib/webhooks/deliver', () => ({
   dispatchWebhookEvent: h.dispatchWebhookEvent,
+}))
+
+vi.mock('@/lib/whatsapp/webhook-inbox', () => ({
+  // Existing route tests focus on downstream processing. The queue/RPC
+  // contract, lease fencing and failure handling have their own tests.
+  enqueueVerifiedWebhook: async (_db: unknown, _raw: string, payload: unknown) => {
+    h.inboxPayload = payload
+    return 'qa-event'
+  },
+  drainWebhookInbox: async (_db: unknown, handler: (payload: unknown) => Promise<void>) => {
+    // Real worker records errors for retry rather than propagating them
+    // beyond Next after(); the route still returned 200 after enqueue.
+    try {
+      await handler(h.inboxPayload)
+      return { claimed: 1, processed: 1, failed: 0 }
+    } catch {
+      return { claimed: 1, processed: 0, failed: 1 }
+    }
+  },
 }))
 
 import { POST } from './route'

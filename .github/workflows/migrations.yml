@@ -81,3 +81,6 @@ jobs:
       # just the absence of an error.
       - name: Verify the resulting schema
         run: supabase db query --local --file supabase/ci/verify-schema.sql
+
+      - name: Verify durable webhook inbox leases, deduplication and RLS
+        run: supabase db query --local --file supabase/ci/webhook-inbox-test.sql
