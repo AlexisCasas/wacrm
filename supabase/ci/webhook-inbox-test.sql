@@ -3,7 +3,7 @@
 -- BEGIN/DO/ROLLBACK in one file. This database is disposable on CI.
 DO $qa$
 DECLARE
-  a uuid; b uuid; c uuid; d uuid; claim record; reclaim record;
+  a uuid; b uuid; c uuid; d uuid; e uuid; claim record; reclaim record;
   n integer; ok boolean;
 BEGIN
   IF has_table_privilege('anon','public.whatsapp_webhook_inbox','SELECT')
@@ -67,6 +67,11 @@ BEGIN
   SELECT * INTO claim FROM public.whatsapp_webhook_inbox_claim(1,d);
   IF claim.token IS NULL OR NOT public.whatsapp_webhook_inbox_complete(d,claim.token)
   THEN RAISE EXCEPTION 'retention boundary test completion failed'; END IF;
+  e := public.whatsapp_webhook_inbox_enqueue(repeat('e',64), '{"entry":[]}'::jsonb);
+  UPDATE public.whatsapp_webhook_inbox
+  SET first_seen_at=now()-interval '96 hours',
+      next_attempt_at=now()-interval '96 hours'
+  WHERE id=e;
   UPDATE public.whatsapp_webhook_inbox SET processed_at=now()-interval '73 hours' WHERE id=a;
   UPDATE public.whatsapp_webhook_inbox SET processed_at=now()-interval '71 hours' WHERE id=d;
   n := public.whatsapp_webhook_inbox_prune(200);
@@ -79,6 +84,6 @@ BEGIN
   IF n <> 1 THEN RAISE EXCEPTION 'prune deleted dead letter'; END IF;
   SELECT count(*) INTO n FROM public.whatsapp_webhook_inbox WHERE id=c AND state='dead';
   IF n <> 1 THEN RAISE EXCEPTION 'prune deleted expired terminal lease'; END IF;
-  SELECT count(*) INTO n FROM public.whatsapp_webhook_inbox WHERE state='pending';
-  IF n <> 0 THEN RAISE EXCEPTION 'unexpected pending rows in retention test'; END IF;
+  SELECT count(*) INTO n FROM public.whatsapp_webhook_inbox WHERE id=e AND state='pending';
+  IF n <> 1 THEN RAISE EXCEPTION 'prune deleted old pending delivery'; END IF;
 END $qa$;
