@@ -96,4 +96,8 @@ echo "FAILED_NAME=${LIVE_NAME}-failed-$TS" >>"$STATE_DIR/.last.env.rollback-$TS"
 mv -f "$STATE_DIR/.last.env.rollback-$TS" "$STATE_DIR/last.env"
 chmod 600 -- "$STATE_DIR/last.env" || die "cannot secure post-rollback manifest"
 private_state_manifest "$STATE_DIR/last.env" || die "post-rollback manifest permissions not 0600"
+# A rollback is not complete merely because the container is running/healthy.
+# The shared proxy must resolve the public alias and serve the old application.
+bash "$DIR/guard-public-proxy.sh" "$LIVE_NAME" ||
+  die "CRITICAL: rollback image is running but Caddy cannot serve WACRM; restore the edge_proxy alias immediately"
 log "rolled back. live=$LIVE_NAME image=$OLD_IMAGE. Failed release kept stopped as ${LIVE_NAME}-failed-$TS. Verify with verify-no-502.sh"
