@@ -84,3 +84,6 @@ jobs:
 
       - name: Verify durable webhook inbox leases, deduplication and RLS
         run: supabase db query --local --file supabase/ci/webhook-inbox-test.sql
+
+      - name: Verify BSUID autoauth node trigger with digit-leading flow UUIDs
+        run: supabase db query --local --file supabase/ci/autoauth-guc-test.sql
