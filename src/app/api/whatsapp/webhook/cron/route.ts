@@ -39,6 +39,9 @@ export async function POST(request: Request) {
     )
     const cleanup = await db.rpc('whatsapp_webhook_inbox_prune', { p_limit: 200 })
     if (cleanup.error) console.error('[webhook-inbox] cleanup failed', { code: cleanup.error.code ?? 'unknown' })
+    // Dispatch-ledger retention (completed rows only, 14 days). Best effort: never affects the drain result.
+    const ledgerCleanup = await db.rpc('inbound_dispatch_prune', { p_limit: 200 })
+    if (ledgerCleanup.error) console.error('[dispatch-ledger] cleanup failed', { code: ledgerCleanup.error.code ?? 'unknown' })
     // Logs only aggregate counts — payloads, contacts and identifiers are private.
     console.info('[webhook-inbox] cron', { ...result, pruned: cleanup.error ? null : cleanup.data })
     return NextResponse.json({ ...result, pruned: cleanup.error ? null : cleanup.data }, { headers: HEADERS })
