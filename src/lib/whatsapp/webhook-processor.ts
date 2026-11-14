@@ -736,6 +736,11 @@ async function processMessage(
       if (isReplay) { isFirstEffective = claim.isFirstInbound; contactCreatedEffective = claim.contactCreated }
     } else if (claim?.outcome === 'busy') {
       throw new Error('dispatch_in_progress') // another worker owns it; the durable inbox retries later
+    } else if (!claim && !isReplay) {
+      // The intent exists but we cannot take ownership of it (transient ledger failure). Dispatching now WITHOUT the ledger would leave
+      // every step 'pending' and a later replay would dispatch the whole fan-out a second time. Fail instead: the message is already
+      // stored, and the retry resumes through the ledger exactly once.
+      throw new Error('dispatch_ledger_claim_unavailable')
     }
   }
   if (isReplay && !ledger) return // already completed, parked for reconciliation, or ledger unavailable: nothing to resume

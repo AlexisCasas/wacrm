@@ -87,7 +87,17 @@ select account_id, count(*) from inbound_dispatch_ledger where state in ('needs_
 select count(*) from inbound_dispatch_ledger where state='processing' and lease_until < now() - interval '5 minutes';
 ```
 
-## 7. Residual risks
+## 7. Manual reconciliation procedure (rows in `needs_reconciliation`)
+
+1. List them (read-only, internal ids only): `supabase/ci/dispatch-ledger-monitor.sql`, queries M2 / M2b.
+2. For each row open the conversation (`conversation_id`) in the Inbox and look at what the customer received after their message:
+   - `ai = reconcile` -> was the customer answered (by the AI, a Flow or an agent)? If not, reply manually.
+   - `webhook = reconcile` -> check the receiving system for that message id (the delivery may or may not have happened); re-send manually only if missing.
+   - `flows = reconcile` / `automations = reconcile` -> check the contact's Flow run / automation log started after the message; start or cancel by hand if needed.
+3. Nothing is ever re-run automatically. When handled, close the row: `update inbound_dispatch_ledger set state='completed', completed_at=now(), last_error_code='reconciled_manually' where account_id=<id> and wamid=<wamid> and state='needs_reconciliation';` (a human decision, run by an operator).
+4. `failed` rows (5 attempts exhausted) and `pending` rows older than 10 minutes follow the same review (monitor M3).
+
+## 8. Residual risks
 
 Steps with unknown outcome are never repeated, so a kill during an AI reply or a public webhook loses that effect (flagged, not
 duplicated). A kill inside a Flow after it started but before its first recorded event is repeated only when the database shows
