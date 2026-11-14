@@ -2,7 +2,7 @@
 
 import { ContactPhoneLine } from "@/components/contacts/contact-phone-line";
 import { contactLabel } from "@/lib/contacts/display";
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Link from 'next/link';
 import { createClient } from '@/lib/supabase/client';
 import { toast } from 'sonner';
@@ -65,10 +65,13 @@ import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
 import { useIntlLocaleTag } from '@/lib/date-locale';
 import { bulkDeleteContacts } from '@/lib/contacts/bulk-delete-api';
+import { startSearchTimer } from '@/lib/perf/search-timing';
 import { TIME_FILTERS, resolveTimeRange, isTimeFilterActive, type TimeFilter, type TimeRange } from '@/lib/contacts/time-filter';
 
 const PAGE_SIZE = 25;
 const BULK_DELETE_BATCH_SIZE = 100;
+// Wait for the user to pause typing before querying: a 10-digit phone number used to fire ten searches with an exact count each (SEARCH-01).
+const SEARCH_DEBOUNCE_MS = 300;
 
 // base-ui renders the checkbox as an inline <span>. In a table cell an inline element ignores width/height (measured in Chromium: display inline,
 // 2x17 px box), so only the two vertical borders painted and it looked like a line. inline-flex makes the size apply; min-size / shrink-0 /
@@ -81,6 +84,9 @@ interface ContactWithTags extends Contact {
   tags?: Tag[];
 }
 
+// What a fetch stores: the page's contacts plus their tag ids. The Tag objects are resolved at render from `tagsMap`, so the tag catalog arriving late no longer re-creates fetchContacts and refetches the page.
+type ContactRow = Contact & { tagIds: string[] };
+
 export default function ContactsPage() {
   const t = useTranslations('Contacts.page');
   const intlLocale = useIntlLocaleTag();
@@ -88,9 +94,12 @@ export default function ContactsPage() {
   const canEdit = useCan('send-messages');
   const canEditSettings = useCan('edit-settings');
 
-  const [contacts, setContacts] = useState<ContactWithTags[]>([]);
+  const [contactRows, setContactRows] = useState<ContactRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // `search` is what the box shows; `appliedSearch` is the term the queries use (it follows `search` after a pause, or immediately when cleared).
   const [search, setSearch] = useState('');
+  const [appliedSearch, setAppliedSearch] = useState('');
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   // Tag filter — contacts shown must have ANY of these tags (OR).
@@ -130,6 +139,8 @@ export default function ContactsPage() {
   // results. Without this, rapidly toggling tag filters could let a slower
   // earlier request resolve last and render stale rows.
   const fetchSeq = useRef(0);
+  // Aborts the in-flight requests of the fetch that a newer one supersedes.
+  const fetchAbort = useRef<AbortController | null>(null);
 
   const fetchTags = useCallback(async () => {
     const { data } = await supabase.from('tags').select('*');
@@ -148,10 +159,14 @@ export default function ContactsPage() {
 
   const fetchContacts = useCallback(async () => {
     const seq = ++fetchSeq.current;
+    fetchAbort.current?.abort();
+    const controller = new AbortController();
+    fetchAbort.current = controller;
     setLoading(true);
     const from = page * PAGE_SIZE;
     const to = from + PAGE_SIZE - 1;
-    const term = search.trim();
+    const term = appliedSearch.trim();
+    const finishTimer = startSearchTimer('contacts', term.length);
 
     let contactRows: Contact[];
     let count: number;
@@ -170,15 +185,16 @@ export default function ContactsPage() {
             p_offset: from,
             p_created_from: timeRange.from,
             p_created_to: timeRange.to,
-          })
+          }).abortSignal(controller.signal)
         : await supabase.rpc('filter_contacts_by_tags', {
             p_tag_ids: selectedTagIds,
             p_search: term || null,
             p_limit: PAGE_SIZE,
             p_offset: from,
-          });
-      if (seq !== fetchSeq.current) return; // superseded by a newer fetch
+          }).abortSignal(controller.signal);
+      if (seq !== fetchSeq.current) { finishTimer({ requests: 1, aborted: true }); return; } // superseded by a newer fetch
       if (error) {
+        finishTimer({ requests: 1, failed: true });
         toast.error(t('toastFailedLoad'));
         setLoading(false);
         return;
@@ -191,7 +207,8 @@ export default function ContactsPage() {
         .from('contacts')
         .select('*', { count: 'exact' })
         .order('created_at', { ascending: false })
-        .range(from, to);
+        .range(from, to)
+        .abortSignal(controller.signal);
 
       if (term) {
         const like = `%${term}%`;
@@ -201,8 +218,9 @@ export default function ContactsPage() {
       if (timeRange.to) query = query.lt('created_at', timeRange.to);
 
       const { data, count: exactCount, error } = await query;
-      if (seq !== fetchSeq.current) return; // superseded by a newer fetch
+      if (seq !== fetchSeq.current) { finishTimer({ requests: 1, aborted: true }); return; } // superseded by a newer fetch
       if (error) {
+        finishTimer({ requests: 1, failed: true });
         toast.error(t('toastFailedLoad'));
         setLoading(false);
         return;
@@ -214,7 +232,8 @@ export default function ContactsPage() {
     setTotalCount(count);
 
     if (contactRows.length === 0) {
-      setContacts([]);
+      finishTimer({ requests: 1, rows: 0 });
+      setContactRows([]);
       setLoading(false);
       return;
     }
@@ -224,8 +243,9 @@ export default function ContactsPage() {
     const { data: contactTags } = await supabase
       .from('contact_tags')
       .select('contact_id, tag_id')
-      .in('contact_id', contactIds);
-    if (seq !== fetchSeq.current) return; // superseded by a newer fetch
+      .in('contact_id', contactIds)
+      .abortSignal(controller.signal);
+    if (seq !== fetchSeq.current) { finishTimer({ requests: 2, aborted: true }); return; } // superseded by a newer fetch
 
     const tagsByContact: Record<string, string[]> = {};
     contactTags?.forEach((ct) => {
@@ -233,16 +253,16 @@ export default function ContactsPage() {
       tagsByContact[ct.contact_id].push(ct.tag_id);
     });
 
-    const enriched: ContactWithTags[] = contactRows.map((c) => ({
-      ...c,
-      tags: (tagsByContact[c.id] ?? [])
-        .map((tid) => tagsMap[tid])
-        .filter(Boolean),
-    }));
-
-    setContacts(enriched);
+    finishTimer({ requests: 2, rows: contactRows.length });
+    setContactRows(contactRows.map((c) => ({ ...c, tagIds: tagsByContact[c.id] ?? [] })));
     setLoading(false);
-  }, [supabase, page, search, selectedTagIds, timeRange, tagsMap, t]);
+  }, [supabase, page, appliedSearch, selectedTagIds, timeRange, t]);
+
+  // Tag objects are resolved here (not inside the fetch) so a late tag catalog updates the badges without another query.
+  const contacts: ContactWithTags[] = useMemo(
+    () => contactRows.map(({ tagIds, ...c }) => ({ ...c, tags: tagIds.map((tid) => tagsMap[tid]).filter(Boolean) })),
+    [contactRows, tagsMap],
+  );
 
   // Load-once-on-mount-ish data fetches. Each setter inside runs
   // inside an async promise completion (Supabase await), not
@@ -257,6 +277,12 @@ export default function ContactsPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchContacts();
   }, [fetchContacts]);
+
+  // Cancel a pending debounce and any in-flight request when the page unmounts.
+  useEffect(() => () => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    fetchAbort.current?.abort();
+  }, []);
 
   function openAddForm() {
     setEditContact(null);
@@ -310,6 +336,22 @@ export default function ContactsPage() {
     setAllMatchingSelected(false);
   }
 
+  // Typing updates the box at once; the query term follows after a pause (or immediately when the box is cleared). The selection is dropped both when typing starts and when the new term is applied, so a "select all matching" made on the old list can never carry over to the new one.
+  function handleSearchChange(value: string) {
+    setSearch(value);
+    clearSelection();
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    const apply = () => {
+      searchTimer.current = null;
+      clearSelection();
+      setAppliedSearch(value);
+      // Reset pagination when the query changes — the result set shrinks/grows, page N may no longer be valid.
+      setPage(0);
+    };
+    if (value.trim() === '') apply();
+    else searchTimer.current = setTimeout(apply, SEARCH_DEBOUNCE_MS);
+  }
+
   const isSelected = (id: string) => allMatchingSelected ? !selected.has(id) : selected.has(id);
   const selectedCount = allMatchingSelected ? Math.max(0, totalCount - selected.size) : selected.size;
 
@@ -341,7 +383,8 @@ export default function ContactsPage() {
   async function resolveAllMatchingIds(): Promise<string[]> {
     const ids: string[] = [];
     const excluded = selected;
-    const term = search.trim();
+    // The term the list on screen was loaded with — never the half-typed one.
+    const term = appliedSearch.trim();
     for (let offset = 0; ids.length < totalCount; offset += BULK_DELETE_BATCH_SIZE) {
       if (selectedTagIds.length > 0) {
         const { data, error } = isTimeFilterActive(timeRange)
@@ -522,13 +565,7 @@ export default function ContactsPage() {
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-4 text-muted-foreground" />
             <Input
               value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                clearSelection();
-                // Reset pagination when the query changes — the result
-                // set shrinks/grows, page N may no longer be valid.
-                setPage(0);
-              }}
+              onChange={(e) => handleSearchChange(e.target.value)}
               placeholder={t('searchPlaceholder')}
               className="pl-8 bg-card border-border text-foreground placeholder:text-muted-foreground"
             />
