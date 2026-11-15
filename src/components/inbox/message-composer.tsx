@@ -589,10 +589,21 @@ export function MessageComposer({
       setRecording(true);
       setRecordSeconds(0);
       timerRef.current = setInterval(() => setRecordSeconds((s) => s + 1), 1000);
-    } catch {
+    } catch (err) {
       void recorderRef.current?.stop().catch(() => {});
       recorderRef.current = null;
-      toast.error(t("micAccessDenied"));
+      // Only a real permission/device error is a microphone problem. Anything
+      // else (worker/worklet load, AudioContext, unsupported browser) used to
+      // be reported as "access denied" too, which hid the actual cause.
+      const name = err instanceof Error ? err.name : "";
+      console.error("[voice-note] recorder start failed", name, err);
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        toast.error(t("micAccessDenied"));
+      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+        toast.error(t("micNotFound"));
+      } else {
+        toast.error(t("micRecorderFailed"));
+      }
     }
   }, [inputsDisabled, busy, recording, finalizeRecording]);
 
