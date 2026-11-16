@@ -11,6 +11,8 @@
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib.sh
 . "$DIR/lib.sh"
+# shellcheck source=compose-overlays.sh
+. "$DIR/compose-overlays.sh"
 
 EXECUTE=0
 if [ "${1:-}" = "--execute" ]; then EXECUTE=1; shift; fi
@@ -20,7 +22,7 @@ IMAGE="${1:-}"; [ -n "$IMAGE" ] || die "usage: deploy.sh [--execute] <image:tag>
 # The candidate is built from this release and must provide the DB-backed readiness route.
 # The home page redirects to dashboard/login and could return 200 with the DB unavailable.
 [ "$READY_PATH" = "/api/health/ready" ] || die "READY_PATH is not a database readiness gate; use exactly /api/health/ready for the candidate"
-need docker; need flock
+need docker; need flock; need cmp
 export EXECUTE
 
 exec 9>"$LOCK_FILE"; flock -n 9 || die "another deploy is running ($LOCK_FILE)"
@@ -53,19 +55,11 @@ fi
 PROJECT_DIR="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$OLD")"
 FILES_LABEL="$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' "$OLD")"
 [ -d "$PROJECT_DIR" ] && [ -n "$FILES_LABEL" ] || die "cannot read the live compose definition from $OLD labels"
-COMPOSE_ARGS=()
-IFS=',' read -r -a FILES <<<"$FILES_LABEL"
-for f in "${FILES[@]}"; do
-  # the previous release's image override is replaced by ours; every other overlay (prod, bsuid-vars, ...) is kept as is
-  # When our previous candidate became the live container, its Compose labels
-  # include our old generated image override and candidate overlay. Never
-  # accumulate those overlays: exactly one of each belongs to this release.
-  case "$f" in
-    */new-image-override.yml|"$STATE_DIR"/*-image-override.yml|"$DIR/candidate.override.yml") continue ;;
-  esac
-  [ -f "$f" ] || die "compose file from labels not found: $f"
-  COMPOSE_ARGS+=(-f "$f")
-done
+# Reuse all production overlays but replace previous release image/candidate
+# overrides with this release's. An old candidate is skipped only when its
+# bytes match the reviewed template; different legacy overlays fail closed.
+select_live_compose_files "$FILES_LABEL" "$DIR/candidate.override.yml" "$STATE_DIR" ||
+  die "cannot safely select live Compose overlays; compare the legacy candidate before retrying"
 # Validate the live overlays and support for Compose !override BEFORE changing
 # state. This requires Docker Compose >= 2.24.4.
 ( cd "$PROJECT_DIR" && CAND_NAME="$CAND" docker compose -p "$COMPOSE_PROJECT" "${COMPOSE_ARGS[@]}" -f "$DIR/candidate.override.yml" config -q ) ||
