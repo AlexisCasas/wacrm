@@ -133,6 +133,9 @@ export function ConversationList({
           .select(INBOX_CONVERSATION_SELECT)
           .eq("contact.blocked", false)
           .order("last_message_at", { ascending: false })
+          // Stable tie-break: the previous offset search omitted 73 of
+          // 12,000 QA matches because thousands shared a timestamp.
+          .order("id", { ascending: true })
           .abortSignal(controller.signal);
 
       type InboxRows = Parameters<typeof normalizeConversations>[0];
