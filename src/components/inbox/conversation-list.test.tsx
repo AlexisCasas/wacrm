@@ -37,6 +37,7 @@ const h = vi.hoisted(() => ({
   messageSearchRows: [] as Conversation[],
   searchedRanges: [] as { source: "contact" | "message"; from: number; to: number }[],
   contactSearchFilters: [] as string[],
+  conversationOrderColumns: [] as string[],
   signals: [] as AbortSignal[],
 }));
 
@@ -47,7 +48,10 @@ vi.mock("@/lib/supabase/client", () => ({
       const builder = {
         select: () => builder,
         eq: () => builder,
-        order: () => builder,
+        order: (column: string) => {
+          if (table === "conversations") h.conversationOrderColumns.push(column);
+          return builder;
+        },
         abortSignal: (signal: AbortSignal) => {
           h.signals.push(signal);
           return builder;
@@ -86,6 +90,7 @@ beforeEach(() => {
   h.messageSearchRows = [];
   h.searchedRanges = [];
   h.contactSearchFilters = [];
+  h.conversationOrderColumns = [];
   h.signals = [];
 });
 
@@ -238,6 +243,8 @@ describe("ConversationList — database-backed search", () => {
     expect(h.contactSearchFilters).toContain(
       "name.ilike.%981629790%,phone.ilike.%981629790%,wa_username.ilike.%981629790%",
     );
+    expect(h.conversationOrderColumns).toContain("last_message_at");
+    expect(h.conversationOrderColumns).toContain("id");
   });
 
   it("searches once per pause in typing, not once per keystroke", async () => {
