@@ -1,26 +1,29 @@
--- SEARCH-01: DRAFT ONLY. NOT AN APPLIED MIGRATION.
--- Before any database change, generate a migration via \`supabase migration new\`
--- in a verified disposable WACRM QA checkout; copy/review this content
--- there, then verify migration ordering and the RLS/security QA gates.
+-- SEARCH-01 V2: DRAFT ONLY. NOT A DEPLOYABLE/APPLIED MIGRATION.
+-- Generated/tested on a disposable QA only, after explicit approval.
+-- Do not reuse the old (p_search text) RPC: that signature performs
+-- LIMIT/OFFSET at the REST layer and repeats large scans.
 --
--- Returns native conversations rows so PostgREST can embed
--- contact:contacts!inner(*,contact_tags(tags(*))) on the RPC result.
--- A normal (read-only) SECURITY INVOKER function preserves RLS on both
--- conversations and contacts. No caller-supplied account_id or
--- SECURITY DEFINER, and contacts must have the same account as the chat.
+-- Returns native conversations for PostgREST embedding. All rows are
+-- checked by the caller's existing conversations/contacts RLS policies:
+-- SECURITY INVOKER; never SECURITY DEFINER; no caller-supplied account.
 --
--- Intentionally NO LIMIT: the client pages deterministically to retain
--- conversations after the first 1,000 matches.
+-- Keyset cursor: last_message_at DESC NULLS LAST, id ASC. Two values
+-- suffice for a stable *unique* total order even with 12,000 equal
+-- timestamps. The client uses the final row as the next cursor. SQL
+-- enforces a bounded page, not an OFFSET. Client-side final rendering
+-- still uses the canonical activity sorter (created_at tie-break).
 --
--- The phone_normalized equality path is strictly additive for complete
--- phone-looking inputs. Existing substring criteria for name, phone,
--- wa_username and last_message_text remain unchanged.
---
--- The SQL function does NOT by itself guarantee faster search:
--- ILIKE '%term%' still needs query-plan inspection and likely trigram
--- indexes in a separately authorized migration.
+-- This avoids increasing OFFSET sorting/scan overhead, but DOES NOT
+-- eliminate the need to evaluate search predicates on later pages.
+-- Benchmark under RLS is mandatory; pg_trgm indexes are a separate
+-- QA experiment, not an automatic production recommendation.
 
-CREATE OR REPLACE FUNCTION public.search_inbox_conversations(p_search text)
+CREATE OR REPLACE FUNCTION public.search_inbox_conversations_page(
+  p_search TEXT,
+  p_cursor_last_message_at TIMESTAMPTZ DEFAULT NULL,
+  p_cursor_id UUID DEFAULT NULL,
+  p_page_size INTEGER DEFAULT 1000
+)
 RETURNS SETOF public.conversations
 LANGUAGE sql
 STABLE
@@ -46,20 +49,47 @@ AS $search$
   WHERE (SELECT auth.uid()) IS NOT NULL
     AND n.term IS NOT NULL
     AND ct.blocked IS FALSE
+    -- A null cursor ID means the FIRST page. Non-null ID with a null
+    -- timestamp means we already entered the NULLS LAST portion.
+    AND (
+      p_cursor_id IS NULL
+      OR (
+        p_cursor_last_message_at IS NULL
+        AND c.last_message_at IS NULL
+        AND c.id > p_cursor_id
+      )
+      OR (
+        p_cursor_last_message_at IS NOT NULL
+        AND (
+          c.last_message_at < p_cursor_last_message_at
+          OR (
+            c.last_message_at = p_cursor_last_message_at
+            AND c.id > p_cursor_id
+          )
+          OR c.last_message_at IS NULL
+        )
+      )
+    )
     AND (
       ct.name ILIKE '%' || n.term || '%'
       OR ct.phone ILIKE '%' || n.term || '%'
       OR ct.wa_username ILIKE '%' || n.term || '%'
       OR c.last_message_text ILIKE '%' || n.term || '%'
       OR (n.exact_phone IS NOT NULL AND ct.phone_normalized = n.exact_phone)
-    );
+    )
+  ORDER BY c.last_message_at DESC NULLS LAST, c.id ASC
+  LIMIT LEAST(GREATEST(COALESCE(p_page_size, 1000), 1), 1000);
 $search$;
 
-REVOKE ALL ON FUNCTION public.search_inbox_conversations(text)
-  FROM PUBLIC, anon;
-GRANT EXECUTE ON FUNCTION public.search_inbox_conversations(text)
-  TO authenticated;
+REVOKE ALL ON FUNCTION public.search_inbox_conversations_page(
+  TEXT, TIMESTAMPTZ, UUID, INTEGER
+) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.search_inbox_conversations_page(
+  TEXT, TIMESTAMPTZ, UUID, INTEGER
+) TO authenticated;
 
--- PostgREST needs a schema cache reload after the function is created:
+-- QA ONLY, after DDL with a verified PostgREST QA instance:
 -- NOTIFY pgrst, 'reload schema';
--- Execute that only as part of a separately authorized QA migration.
+--
+-- Existing search_inbox_conversations(text) may remain in QA because
+-- this V2 has a DIFFERENT name; no production function is touched.
