@@ -1478,7 +1478,13 @@ async function advanceFromNodeKey(
       continue;
     }
     if (node.node_type === "send_buttons") {
-      await sendButtonsAndSuspend(db, run, node);
+      try {
+        await sendButtonsAndSuspend(db, run, node);
+      } catch (err) {
+        if (!(err instanceof ContactBlockedError)) throw err;
+        await endRunForContactBlocked(db, run.id, node.node_key, sendGuardReason(err));
+        return { outcome: "completed" };
+      }
       // Persist the new current_node_key via optimistic UPDATE.
       const advanced = await advanceCurrentNodeKey(
         db,
@@ -1494,7 +1500,13 @@ async function advanceFromNodeKey(
       return { outcome: "advanced" };
     }
     if (node.node_type === "send_list") {
-      await sendListAndSuspend(db, run, node);
+      try {
+        await sendListAndSuspend(db, run, node);
+      } catch (err) {
+        if (!(err instanceof ContactBlockedError)) throw err;
+        await endRunForContactBlocked(db, run.id, node.node_key, sendGuardReason(err));
+        return { outcome: "completed" };
+      }
       const advanced = await advanceCurrentNodeKey(
         db,
         run.id,
@@ -1966,10 +1978,18 @@ async function handleReplyForActiveRun(
     ) {
       return { consumed: true, flow_run_id: run.id, outcome: "fallback_fired" };
     }
-    if (currentNode.node_type === "send_buttons") {
-      await sendButtonsAndSuspend(db, run, currentNode);
-    } else if (currentNode.node_type === "send_list") {
-      await sendListAndSuspend(db, run, currentNode);
+    if (currentNode.node_type === "send_buttons" || currentNode.node_type === "send_list") {
+      try {
+        if (currentNode.node_type === "send_buttons") {
+          await sendButtonsAndSuspend(db, run, currentNode);
+        } else {
+          await sendListAndSuspend(db, run, currentNode);
+        }
+      } catch (err) {
+        if (!(err instanceof ContactBlockedError)) throw err;
+        await endRunForContactBlocked(db, run.id, currentNode.node_key, sendGuardReason(err));
+        return { consumed: true, flow_run_id: run.id, outcome: "completed" };
+      }
     } else if (currentNode.node_type === "collect_input") {
       // Customer typed something we couldn't accept (empty after trim,
       // or var_key missing — rare). Re-send the prompt so they try again.
