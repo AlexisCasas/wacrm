@@ -39,6 +39,49 @@ ops/deploy/rollback.sh --execute                  # if needed
 
 **First rollback compatibility:** older images do not implement `/api/health/ready`. The deploy preflight and rollback can instead issue a *read-only* `accounts?select=id&limit=1` request to the Supabase REST API **from inside the old container**, using its existing service-role environment variables. Credentials and query data are not printed. It must return HTTP 200; redirects to dashboard/login are never accepted as readiness. If neither the new health endpoint nor the DB-backed fallback works, deployment/rollback is blocked. Check this behavior on the actual old image before the first production cutover.
 
+## Historical candidate overlays (safe filter)
+
+A live container may carry Compose labels from a previous release, such as
+`/opt/backups/wacrm/f3-scheduled-20261114/ops/candidate.override.yml`.
+Stacking that old candidate overlay on top of the current
+`ops/deploy/candidate.override.yml` may override or duplicate deployment-only
+configuration.
+
+`deploy.sh` now calls `compose-overlays.sh` during **dry-run**, before any
+new container or manifest is created. The filter:
+
+- Preserves production, BSUID and other non-candidate overlays **in order**.
+- Replaces the generated image override as before.
+- Omits only the current candidate template and a historical
+  `*/ops/candidate.override.yml` whose **file contents exactly match** the
+  current reviewed template. It checks readability and rejects symlinks.
+- **Stops with NO-GO** if an old candidate is missing, unreadable, a symlink
+  or has different contents. A path/filename match alone is not permission
+  to discard changes. Review the old version under an authorized root
+  session and decide whether it contains configuration that must be carried
+  forward before retrying.
+
+Local, Docker-free regression test (also run by CI):
+
+```bash
+bash ops/deploy/test-compose-overlays.sh
+```
+
+Operator-only read-only verification of the historical overlay, **without
+printing its contents or exposing secrets**:
+
+```bash
+sudo cmp -s -- /opt/backups/wacrm/f3-scheduled-20261114/ops/candidate.override.yml \
+  /home/deploy/wacrm-qa-main/ops/deploy/candidate.override.yml
+printf 'legacy_overlay_cmp_exit=%s\\n' "$?"
+```
+
+Exit code `0`: byte-identical; `1`: different, **stop and review**;
+`2`: compare/read error. This command is a diagnostic and is not
+an authorization to execute `deploy.sh --execute`. The *final*
+`docker compose ... config -q` still validates the complete overlay stack;
+the backup, rollback, app readiness and Flow recovery gates remain mandatory.
+
 ## Mandatory preflight — first production cutover (NO-GO until approved)
 - The current `docker-compose.yml` publishes `HOST_PORT:3000` on the VPS. The candidate **must omit this binding** while the old container owns it; after cutover the new container will not expose that host port. Before setting `ALLOW_DROP_HOST_PORTS=1`, inventory *all* host-port consumers (local probes, other containers, cron scripts, external integrations and monitoring) and either migrate them to `edge_proxy` or choose a different deployment architecture. Do not assume Caddy is the only client.
 - Validate `docker compose version` (**>=2.24.4** for `!override`) and `docker compose ... config` against the *actual* live overlays and environment. `deploy.sh` enforces the Compose configuration check before mutations.
