@@ -1,6 +1,6 @@
 # SEARCH-01 — Runbook de QA para RPC de búsqueda (PR #124)
 
-**Estado:** pendiente de ejecución. Solo aplicable a una QA PostgreSQL/PostgREST desechable y verificada. No tocar WACRM productivo ni QA115.
+**Estado V2:** primera ejecución QA con 68 PASS / 1 FAIL (timeout del caso de 12.000). Se corrigió el código en GitHub para usar keyset; falta repetir el QA. Los recursos propios `search01-rpcqa` permanecen **detenidos** con datos ficticios. No tocar WACRM productivo ni QA115.
 
 ## 0. Alcance y seguridad
 
@@ -15,7 +15,7 @@
 ## 1. Preflight VPS (solo lectura)
 
 1. Verificar `docker ps -a`, `docker network ls`, `docker volume ls`, `docker system df -v`, `free -h`, `df -h` y carga actual.
-2. Verificar que no existen objetos activos de la QA anterior `search01-qa-*`; QA115 permanece detenido y sin cambios. Si hay objetos con el prefijo nuevo `search01-rpcqa`, detenerse para analizar su procedencia y no reutilizarlos por suposición.
+2. Verificar que `search01-rpcqa-pg`, `search01-rpcqa-rest`, `search01-rpcqa-pgdata` y la red pertenecen **exactamente al QA sintético preservado de la primera ejecución**. Confirmar IDs y etiquetas del manifiesto de Claude. Si no coinciden, detenerse; no recrear/editar objetos desconocidos. QA115 permanece detenido y sin cambios.
 3. Identificar imágenes disponibles (Postgres 17 y PostgREST 14.17), versión/digest y puertos ocupados. Usar referencias de imagen verificadas o digests; no hacer `pull` automático.
 4. Inspeccionar solo el código/migraciones de GitHub para identificar el esquema **exacto que la RPC necesita**. No considerar equivalentes políticas RLS simplificadas sin un cotejo explícito con las políticas de WACRM.
 
@@ -36,11 +36,11 @@ La consulta de la RPC y las dos ramas antiguas deben ejecutarse a través de la 
 ```sql
 SELECT p.oid::regprocedure AS signature, p.prosecdef AS security_definer
 FROM pg_proc AS p
-WHERE p.oid = to_regprocedure('public.search_inbox_conversations(text)');
+WHERE p.oid = to_regprocedure('public.search_inbox_conversations_page(text,timestamp with time zone,uuid,integer)');
 
 SELECT
-  has_function_privilege('anon', 'public.search_inbox_conversations(text)', 'EXECUTE') AS anon_can_execute,
-  has_function_privilege('authenticated', 'public.search_inbox_conversations(text)', 'EXECUTE') AS authenticated_can_execute;
+  has_function_privilege('anon', 'public.search_inbox_conversations_page(text,timestamp with time zone,uuid,integer)', 'EXECUTE') AS anon_can_execute,
+  has_function_privilege('authenticated', 'public.search_inbox_conversations_page(text,timestamp with time zone,uuid,integer)', 'EXECUTE') AS authenticated_can_execute;
 
 SELECT n.nspname, c.relname, c.relrowsecurity, c.relforcerowsecurity
 FROM pg_class AS c
@@ -52,7 +52,7 @@ ORDER BY c.relname;
 
 **Expected:** `security_definer = false`, `anon_can_execute = false`, `authenticated_can_execute = true`, RLS habilitado en las tres tablas y políticas aplicables a las cuentas de QA. Comprobar también que un JWT inexistente/malformado y la ausencia de sesión no permiten recuperar chats.
 
-Probar la respuesta exacta a `rpc('search_inbox_conversations', { p_search: term }).select(INBOX_CONVERSATION_SELECT)`: `id`, `contact` y `contact_tags` con forma compatible con `normalizeConversations`. Una prueba que solamente consulta `SELECT * FROM public.search_inbox_conversations(...)` **no valida** el embed de PostgREST.
+Probar la respuesta exacta a `rpc('search_inbox_conversations_page', { p_search: term, p_cursor_last_message_at: null, p_cursor_id: null, p_page_size: 1000 }).select(INBOX_CONVERSATION_SELECT)`: `id`, `contact` y `contact_tags` con forma compatible con `normalizeConversations`. Una prueba que solamente consulta `SELECT * FROM public.search_inbox_conversations(...)` **no valida** el embed de PostgREST.
 
 ### Casos de paridad obligatorios
 
@@ -79,3 +79,30 @@ Probar la respuesta exacta a `rpc('search_inbox_conversations', { p_search: term
 - En QA: se permite corregir scripts/fixtures que solo afecten esa instancia, pero ninguna mutación de producción.
 - Detener el stack QA al terminar. **No eliminar el volumen/configuración/secretos** antes de confirmar que la evidencia necesaria está guardada y obtener autorización de limpieza; no borrar recursos ajenos ni realizar `docker system prune`.
 - Si RLS, paridad, URLs o función PostgREST fallan, detener el benchmark, reportar FAIL y entregar el mínimo cambio de código necesario para un PR correctivo.
+
+
+## Segunda iteración V2: ejecución recomendada (sin producción)
+
+**Precedente:** en primera QA, 12.000 conversaciones con el mismo `last_message_at` dispararon `57014 statement_timeout` en la RPC V1 por `OFFSET`; 68 de 69 controles de seguridad/función fueron PASS. La ruta #120 perdió 73 IDs porque usaba `ORDER BY last_message_at DESC` sin desempate. El benchmark se detuvo sin 25 muestras; sus tiempos eran orientativos.
+
+### 1. Código
+
+- Actualizar exclusivamente worktree `/home/deploy/wacrm-qa-pr124` al SHA vigente del PR #124, verificando árbol limpio. Mantener CI con placeholders y `NEXT_PUBLIC_SEARCH01_INBOX_RPC=false`.
+- Ejecutar `npm run typecheck`, `npm run lint`, `npx vitest run src/lib/inbox/search-rpc.test.ts src/components/inbox/conversation-list.test.tsx`, `npm test`, y build con las mismas variables ficticias de `.github/workflows/ci.yml`. Las pruebas anteriores correspondían a la V1; **no reutilizar resultados antiguos como PASS de V2**.
+
+### 2. SQL en la QA existente
+
+- Identificar los recursos propios **ya existentes y detenidos**. Verificar UUID/labels/red/puerto y que las credenciales estén aisladas. Reanudar solamente `search01-rpcqa-pg` y `search01-rpcqa-rest`, **tras cotejar manifest y capacidades**. No crear un stack nuevo; no iniciar QA115.
+- Instalar **solo en esta QA** el SQL V2 de `qa/search-01/search_inbox_conversations.rpc.sql`. La función V2 se llama `search_inbox_conversations_page`, distinta de la V1: no sobreescribir la función vieja. Recargar caché PostgREST en QA.
+- Confirmar firma, `SECURITY INVOKER`, `GRANT authenticated`, `REVOKE anon`, e imposibilidad de consultar cross-tenant con JWT y RLS reales. Probar el mismo embed de contactos y etiquetas.
+- Control de página: verificar `p_page_size <= 1000` aunque se solicite 1500; nulidad `last_message_at`; 1.000, 1.001 y 12.000 filas; 12.000/12.000 IDs únicos con empates; el cursor debe avanzar sin repetir IDs, aun tras terminar página completa.
+- Verificar que la ruta tradicional del mismo commit con `ORDER BY last_message_at DESC, id ASC` ya no pierde los 73 IDs originales. Comparar en cuenta A y B con los filtros y límites reales de QA.
+- El primer control `57014`, pérdida de IDs, error SQL de firma o fuga entre tenants implica **FAIL inmediato, detener el benchmark**, conservar logs y no tocar producción.
+
+### 3. Análisis de rendimiento en dos brazos claramente separados
+
+**A. SIN índices nuevos:** repetir diagnósticos de un solo disparo por escenario para detectar timeout. Si todos los gates funcionales pasan, medir cinco calentamientos y 25 muestras por caso y versión, con recurso fijo y sin resembrar. Registrar p50/p95, HTTP requests, bytes y `EXPLAIN (ANALYZE, BUFFERS)` del rol autenticado de QA.
+
+**B. CON índices experimentales, solo si A indica scans costosos:** ejecutar `qa/search-01/EXPERIMENT_ONLY_trgm.sql` **únicamente en la QA sintética** y repetir mediciones. El script añade `pg_trgm`, índices GIN en nombre, teléfono, `wa_username` y último mensaje, y un B-tree por tenant/cursor. Distinguir mejora de p95 por índices frente a mejora por keyset. Un índice que el optimizador ignore no cuenta como solución.
+
+**No extrapolar** tiempos de una VPS limitada a producción sin planes SQL y datos realistas; no habilitar flag ni cambiar índices productivos con esta autorización. Detener los dos contenedores QA al terminar y mantener volumen/secretos/configuración para revisión y limpieza autorizada.
