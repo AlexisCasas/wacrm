@@ -14,8 +14,11 @@ const PHONE_LOOKING_TERM = /^[+() .0-9-]+$/;
  * isolated RLS/contract QA and has been deployed. The UI keeps this off by
  * default using NEXT_PUBLIC_SEARCH01_INBOX_RPC.
  *
- * Paging preserves results beyond PostgREST's 1,000-row default cap. A
- * deterministic ID tiebreaker avoids skipping tied last_message_at rows.
+ * Server-side keyset pagination preserves results past PostgREST's 1,000
+ * row cap. The SQL RPC orders by last_message_at DESC NULLS LAST, id ASC.
+ * Each call advances using the final row's timestamp + unique UUID, so
+ * identical timestamps never cause OFFSET loss or work proportional to
+ * the page number. The SQL search still needs an RLS performance gate.
  */
 export async function fetchInboxSearchViaRpc(
   supabase: SupabaseClient,
@@ -26,22 +29,53 @@ export async function fetchInboxSearchViaRpc(
   if (!term.trim() || signal.aborted) return [];
 
   const rows: Parameters<typeof normalizeConversations>[0] = [];
-  for (let from = 0; ; from += INBOX_SEARCH_PAGE_SIZE) {
-    if (signal.aborted) return rows;
+  const seenIds = new Set<string>();
+  let cursorLastMessageAt: string | null = null;
+  let cursorId: string | null = null;
+
+  for (;;) {
+    if (signal.aborted) return [];
     onRequest();
 
     const { data, error } = await supabase
-      .rpc("search_inbox_conversations", { p_search: term.trim() })
+      .rpc("search_inbox_conversations_page", {
+        p_search: term.trim(),
+        p_cursor_last_message_at: cursorLastMessageAt,
+        p_cursor_id: cursorId,
+        p_page_size: INBOX_SEARCH_PAGE_SIZE,
+      })
       .select(INBOX_CONVERSATION_SELECT)
-      .order("last_message_at", { ascending: false })
+      .order("last_message_at", { ascending: false, nullsFirst: false })
       .order("id", { ascending: true })
-      .range(from, from + INBOX_SEARCH_PAGE_SIZE - 1)
       .abortSignal(signal);
 
+    if (signal.aborted) return [];
     if (error) throw error;
+
     const page = (data ?? []) as unknown as Parameters<typeof normalizeConversations>[0];
+    if (page.length > INBOX_SEARCH_PAGE_SIZE) {
+      throw new Error("Inbox search RPC returned more than the allowed page size");
+    }
+
+    // A page response must have stable UUIDs. A duplicate across calls
+    // signals a cursor/ordering contract regression; fail rather than
+    // silently dropping or duplicating conversations.
+    for (const row of page) {
+      if (!row.id || seenIds.has(row.id)) {
+        throw new Error("Inbox search RPC returned a missing or repeated conversation ID");
+      }
+      seenIds.add(row.id);
+    }
     rows.push(...page);
     if (page.length < INBOX_SEARCH_PAGE_SIZE) return rows;
+
+    const last = page[page.length - 1];
+    const nextAt = last.last_message_at ?? null;
+    if (cursorId === last.id && cursorLastMessageAt === nextAt) {
+      throw new Error("Inbox search RPC cursor did not advance");
+    }
+    cursorId = last.id;
+    cursorLastMessageAt = nextAt;
   }
 }
 
