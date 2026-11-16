@@ -27,6 +27,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { startSearchTimer } from "@/lib/perf/search-timing";
+import { fetchInboxSearchViaRpc, matchesInboxRpcSearch } from "@/lib/inbox/search-rpc";
 
 interface ConversationListProps {
   activeConversationId: string | null;
@@ -147,6 +148,23 @@ export function ConversationList({
       if (!term) {
         requests++;
         ({ data, error } = await baseQuery());
+      } else if (process.env.NEXT_PUBLIC_SEARCH01_INBOX_RPC === "true") {
+        // Opt-in only. The SQL RPC must be installed and RLS-verified in QA
+        // before this build-time flag is enabled for any environment.
+        try {
+          data = await fetchInboxSearchViaRpc(
+            supabase,
+            term,
+            controller.signal,
+            () => { requests++; },
+          );
+        } catch (searchError) {
+          error = {
+            message: searchError instanceof Error
+              ? searchError.message
+              : "Failed to search conversations",
+          };
+        }
       } else {
         // PostgREST caps an un-ranged response (commonly at 1,000 rows).
         // Search in the database instead of filtering the already-capped
@@ -290,6 +308,9 @@ export function ConversationList({
     if (appliedSearch.trim()) {
       const q = appliedSearch.toLowerCase();
       result = result.filter((c) => {
+        if (process.env.NEXT_PUBLIC_SEARCH01_INBOX_RPC === "true") {
+          return matchesInboxRpcSearch(c, appliedSearch);
+        }
         const name = c.contact?.name?.toLowerCase() ?? "";
         const phone = contactSearchText(c.contact);
         const lastMsg = c.last_message_text?.toLowerCase() ?? "";
