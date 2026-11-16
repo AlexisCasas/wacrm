@@ -35,7 +35,7 @@ vi.mock('@/lib/supabase/client', () => {
       from: (table: string) => {
         const call: Call = { table, ops: [] }
         const b: Record<string, unknown> = {}
-        for (const m of ['select', 'order', 'range', 'or', 'gte', 'lt', 'in', 'eq']) b[m] = (...a: unknown[]) => { call.ops.push([m, ...a]); return b }
+        for (const m of ['select', 'order', 'range', 'or', 'gte', 'lt', 'in', 'eq', 'abortSignal']) b[m] = (...a: unknown[]) => { call.ops.push([m, ...a]); return b }
         b.then = (res: (v: unknown) => unknown) => {
           if (table === 'tags') return Promise.resolve({ data: h.tags }).then(res)
           if (table === 'contact_tags') return Promise.resolve({ data: [] }).then(res)
@@ -49,7 +49,8 @@ vi.mock('@/lib/supabase/client', () => {
       },
       rpc: (name: string, args: Record<string, unknown>) => {
         h.rpcs.push({ name, args })
-        return Promise.resolve({ data: h.rows.map((c) => ({ contact: c, total_count: h.total })), error: null })
+        const result = Promise.resolve({ data: h.rows.map((c) => ({ contact: c, total_count: h.total })), error: null })
+        return Object.assign(result, { abortSignal: () => result })
       },
   }
   return { createClient: () => client }
@@ -67,8 +68,8 @@ beforeEach(() => {
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
-// The first load runs twice (tags arrive -> fetchContacts is re-created -> it refetches) and each fetch drops the selection: wait for both.
-async function loaded() { await screen.findByText('Contacto 1'); await waitFor(() => { expect(h.queries.length).toBeGreaterThanOrEqual(2); expect(screen.queryByText('loading')).toBeNull() }) }
+// The first load runs once now: the tag catalog is resolved at render, so its arrival no longer re-creates fetchContacts and refetches.
+async function loaded() { await screen.findByText('Contacto 1'); await waitFor(() => { expect(h.queries.length).toBeGreaterThanOrEqual(1); expect(screen.queryByText('loading')).toBeNull() }) }
 // rows visible AND the fetch finished (a fetch drops the selection when it starts, so ticking during it would be lost)
 async function settled() { await waitFor(() => { expect(screen.queryByText('loading')).toBeNull(); expect(screen.getByText('Contacto 1')).toBeTruthy() }) }
 const pickTime = async (label: string) => {
@@ -79,6 +80,30 @@ const pickTime = async (label: string) => {
 // hidden: true — a base-ui Popover/Dialog marks the rest of the page aria-hidden while it is open
 // findBy: base-ui renders the checkbox semantics one tick after the row text
 const rowBox = (n: number) => screen.findByRole('checkbox', { name: `Select Contacto ${n}`, hidden: true })
+
+describe('Contacts page — search debounce', () => {
+  it('queries once per pause in typing and keeps the OR over the same four columns', async () => {
+    render(<ContactsPage />); await loaded()
+    const box = screen.getByPlaceholderText('searchPlaceholder')
+    for (const value of ['9', '98', '981', '9816']) fireEvent.change(box, { target: { value } })
+    await waitFor(() => expect(h.queries.some((q) => opsOf(q, 'or').length > 0)).toBe(true))
+    await new Promise((resolve) => setTimeout(resolve, 500))
+    const searches = h.queries.filter((q) => opsOf(q, 'or').length > 0)
+    expect(searches).toHaveLength(1)
+    expect(opsOf(searches[0], 'or')[0][1]).toBe('name.ilike.%9816%,phone.ilike.%9816%,email.ilike.%9816%,wa_username.ilike.%9816%')
+  })
+
+  it('clearing the box restores the unfiltered list immediately', async () => {
+    render(<ContactsPage />); await loaded()
+    const box = screen.getByPlaceholderText('searchPlaceholder')
+    fireEvent.change(box, { target: { value: 'Juan' } })
+    await waitFor(() => expect(h.queries.some((q) => opsOf(q, 'or').length > 0)).toBe(true))
+    const before = h.queries.length
+    fireEvent.change(box, { target: { value: '' } })
+    await waitFor(() => expect(h.queries.length).toBeGreaterThan(before), { timeout: 200 })
+    expect(opsOf(last(), 'or')).toHaveLength(0)
+  })
+})
 
 describe('Contacts page — time filter (server-side, created_at)', () => {
   it('no time filter: the list query has no created_at window (existing behaviour)', async () => {
@@ -115,7 +140,8 @@ describe('Contacts page — time filter (server-side, created_at)', () => {
     render(<ContactsPage />); await loaded()
     fireEvent.change(screen.getByPlaceholderText('searchPlaceholder'), { target: { value: 'Juan' } })
     await pickTime('timeOlder90')
-    await waitFor(() => expect(opsOf(last(), 'lt')).toHaveLength(1))
+    // the typed term reaches the query only after the debounce pause
+    await waitFor(() => { expect(opsOf(last(), 'lt')).toHaveLength(1); expect(opsOf(last(), 'or')).toHaveLength(1) })
     expect(String(opsOf(last(), 'or')[0][1])).toContain('%Juan%')
   })
 
@@ -139,8 +165,11 @@ describe('Contacts page — time filter (server-side, created_at)', () => {
     fireEvent.click(screen.getAllByText('filterByTags')[0])
     fireEvent.click(await screen.findByLabelText('Filter by Cliente'))
     await pickTime('timeLast30')
-    await waitFor(() => expect(h.rpcs[h.rpcs.length - 1].name).toBe('filter_contacts_by_tags_time'))
-    expect(h.rpcs[h.rpcs.length - 1].args).toMatchObject({ p_tag_ids: ['t1'], p_search: 'Juan', p_offset: 0, p_limit: 25 })
+    // the typed term reaches the RPC only after the debounce pause
+    await waitFor(() => {
+      expect(h.rpcs[h.rpcs.length - 1].name).toBe('filter_contacts_by_tags_time')
+      expect(h.rpcs[h.rpcs.length - 1].args).toMatchObject({ p_tag_ids: ['t1'], p_search: 'Juan', p_offset: 0, p_limit: 25 })
+    })
   })
 
   it('"Todos" removes the window again', async () => {
@@ -229,7 +258,8 @@ describe('Contacts page — delete', () => {
     render(<ContactsPage />); await loaded()
     await pickTime('timeOlder90')
     fireEvent.change(screen.getByPlaceholderText('searchPlaceholder'), { target: { value: 'Juan' } })
-    await waitFor(() => expect(screen.getByText('Contacto 1')).toBeTruthy())
+    // wait until the debounced term has been applied (applying it drops any selection), then until the list has settled
+    await waitFor(() => expect(opsOf(last(), 'or')).toHaveLength(1)); await settled()
     fireEvent.click(await rowBox(1)); fireEvent.click(await rowBox(3))
     fireEvent.click(screen.getByText('deleteSelected'))
     fireEvent.click(await screen.findByText('deleteBulkConfirm:2'))

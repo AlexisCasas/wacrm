@@ -37,6 +37,8 @@ const h = vi.hoisted(() => ({
   messageSearchRows: [] as Conversation[],
   searchedRanges: [] as { source: "contact" | "message"; from: number; to: number }[],
   contactSearchFilters: [] as string[],
+  conversationOrderColumns: [] as string[],
+  signals: [] as AbortSignal[],
 }));
 
 vi.mock("@/lib/supabase/client", () => ({
@@ -46,7 +48,14 @@ vi.mock("@/lib/supabase/client", () => ({
       const builder = {
         select: () => builder,
         eq: () => builder,
-        order: () => builder,
+        order: (column: string) => {
+          if (table === "conversations") h.conversationOrderColumns.push(column);
+          return builder;
+        },
+        abortSignal: (signal: AbortSignal) => {
+          h.signals.push(signal);
+          return builder;
+        },
         or: (filters: string) => {
           source = "contact";
           h.contactSearchFilters.push(filters);
@@ -81,6 +90,8 @@ beforeEach(() => {
   h.messageSearchRows = [];
   h.searchedRanges = [];
   h.contactSearchFilters = [];
+  h.conversationOrderColumns = [];
+  h.signals = [];
 });
 
 function contact(name: string) {
@@ -232,6 +243,74 @@ describe("ConversationList — database-backed search", () => {
     expect(h.contactSearchFilters).toContain(
       "name.ilike.%981629790%,phone.ilike.%981629790%,wa_username.ilike.%981629790%",
     );
+    // A unique tie-breaker prevents OFFSET from losing rows when
+    // thousands of conversations share last_message_at.
+    expect(h.conversationOrderColumns).toContain("last_message_at");
+    expect(h.conversationOrderColumns).toContain("id");
+  });
+
+  it("searches once per pause in typing, not once per keystroke", async () => {
+    const onConversationsLoaded = vi.fn();
+    render(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={onConversationsLoaded}
+      />,
+    );
+    await waitFor(() => expect(onConversationsLoaded).toHaveBeenCalled());
+
+    const box = screen.getByPlaceholderText("searchPlaceholder");
+    for (const value of ["9", "98", "981", "9816"]) {
+      fireEvent.change(box, { target: { value } });
+    }
+
+    await waitFor(() => expect(h.contactSearchFilters.length).toBeGreaterThan(0));
+    // Let any (wrongly) pending extra searches show up before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(h.contactSearchFilters).toEqual([
+      "name.ilike.%9816%,phone.ilike.%9816%,wa_username.ilike.%9816%",
+    ]);
+  });
+
+  it("clearing the search box reloads the list without waiting for the pause", async () => {
+    const onConversationsLoaded = vi.fn();
+    render(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={onConversationsLoaded}
+      />,
+    );
+    await waitFor(() => expect(onConversationsLoaded).toHaveBeenCalledTimes(1));
+    const box = screen.getByPlaceholderText("searchPlaceholder");
+    fireEvent.change(box, { target: { value: "981" } });
+    await waitFor(() => expect(h.contactSearchFilters.length).toBe(1));
+    await waitFor(() => expect(onConversationsLoaded).toHaveBeenCalledTimes(2));
+
+    fireEvent.change(box, { target: { value: "" } });
+    // Well under the debounce delay: the full list must already be loading.
+    await waitFor(() => expect(onConversationsLoaded).toHaveBeenCalledTimes(3), { timeout: 200 });
+  });
+
+  it("cancels its in-flight requests when the list unmounts", async () => {
+    const onConversationsLoaded = vi.fn();
+    const { unmount } = render(
+      <ConversationList
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={[]}
+        onConversationsLoaded={onConversationsLoaded}
+      />,
+    );
+    await waitFor(() => expect(onConversationsLoaded).toHaveBeenCalled());
+    expect(h.signals.length).toBeGreaterThan(0);
+    expect(h.signals.every((signal) => !signal.aborted)).toBe(true);
+
+    unmount();
+    expect(h.signals.every((signal) => signal.aborted)).toBe(true);
   });
 });
 

@@ -25,6 +25,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
+import { startSearchTimer } from "@/lib/perf/search-timing";
 
 interface ConversationListProps {
   activeConversationId: string | null;
@@ -60,6 +62,10 @@ const STATUS_COLORS: Record<ConversationStatus, string> = {
 
 type InboxFilter = ConversationStatus | "all" | "unread" | "needs_human";
 
+// Wait for the user to pause typing before hitting the database: a 10-digit
+// phone number used to fire ten searches (SEARCH-01).
+const SEARCH_DEBOUNCE_MS = 300;
+
 export function ConversationList({
   activeConversationId,
   onSelect,
@@ -80,6 +86,8 @@ export function ConversationList({
   ], [t]);
 
   const [search, setSearch] = useState("");
+  // The term the database search and the in-memory filter actually use.
+  const appliedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [loading, setLoading] = useState(true);
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
@@ -109,15 +117,23 @@ export function ConversationList({
   useEffect(() => {
     const supabase = createClient();
     let cancelled = false;
+    // Cancels this run's in-flight requests when a newer search/resync
+    // supersedes it (or the list unmounts), instead of letting the server
+    // keep working on a result nobody will read.
+    const controller = new AbortController();
 
     (async () => {
-      const term = search.trim();
+      const term = appliedSearch.trim();
+      const finishTimer = startSearchTimer("inbox", term.length);
+      let requests = 0;
       const baseQuery = () =>
         supabase
           .from("conversations")
           .select(INBOX_CONVERSATION_SELECT)
           .eq("contact.blocked", false)
-          .order("last_message_at", { ascending: false });
+          .order("last_message_at", { ascending: false })
+          .order("id", { ascending: true })
+          .abortSignal(controller.signal);
 
       type InboxRows = Parameters<typeof normalizeConversations>[0];
       type InboxQueryError = {
@@ -130,6 +146,7 @@ export function ConversationList({
       let error: InboxQueryError | null = null;
 
       if (!term) {
+        requests++;
         ({ data, error } = await baseQuery());
       } else {
         // PostgREST caps an un-ranged response (commonly at 1,000 rows).
@@ -140,6 +157,7 @@ export function ConversationList({
         const fetchAll = async (query: ReturnType<typeof baseQuery>) => {
           const rows: InboxRows = [];
           for (let from = 0; ; from += PAGE_SIZE) {
+            requests++;
             const { data: page, error: pageError } = await query.range(
               from,
               from + PAGE_SIZE - 1,
@@ -179,9 +197,13 @@ export function ConversationList({
         }
       }
 
-      if (cancelled) return;
+      if (cancelled) {
+        finishTimer({ requests, aborted: true });
+        return;
+      }
 
       if (error) {
+        finishTimer({ requests, failed: true });
         // Supabase errors have non-enumerable properties — log fields explicitly
         console.error("Failed to fetch conversations:", {
           message: error.message,
@@ -193,6 +215,7 @@ export function ConversationList({
         return;
       }
 
+      finishTimer({ requests, rows: data?.length ?? 0 });
       onConversationsLoadedRef.current(
         sortConversationsByActivity(normalizeConversations(data ?? [])),
       );
@@ -201,11 +224,12 @@ export function ConversationList({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
     // `resyncToken` is included so the parent can force a refetch when
     // the realtime channel reconnects or the tab regains focus — catches
     // up on any events sent while the WS was disconnected or throttled.
-  }, [resyncToken, search]);
+  }, [resyncToken, appliedSearch]);
 
   // Tag definitions for the filter picker — loaded once (labels/colours
   // stay stable regardless of which conversations happen to be loaded),
@@ -264,8 +288,8 @@ export function ConversationList({
       );
     }
 
-    if (search.trim()) {
-      const q = search.toLowerCase();
+    if (appliedSearch.trim()) {
+      const q = appliedSearch.toLowerCase();
       result = result.filter((c) => {
         const name = c.contact?.name?.toLowerCase() ?? "";
         const phone = contactSearchText(c.contact);
@@ -275,7 +299,7 @@ export function ConversationList({
     }
 
     return result;
-  }, [conversations, filter, search, selectedTagIds, selectedCompany]);
+  }, [conversations, filter, appliedSearch, selectedTagIds, selectedCompany]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
