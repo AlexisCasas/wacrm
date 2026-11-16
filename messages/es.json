@@ -344,7 +344,7 @@
       "errorActiveFlow": "Este contacto ya tiene un Flow activo: {flowName}.",
       "errorServiceWindow": "No se puede iniciar un Flow fuera de la ventana de servicio de 24 horas.",
       "errorContactBlocked": "Este contacto está bloqueado. Desbloquéalo primero para iniciar un Flow.",
-      "errorBsuidFlowNotAuthorized": "Este contacto todavía no está listo para iniciar el Flow. Espera a que su número de WhatsApp se sincronice o revisa su autorización.",
+      "errorBsuidFlowNotAuthorized": "Este Flow no está autorizado para contactos sin número visible (nombre de usuario). Revisa que el Flow y sus subflujos no tengan nombre de prueba (Prueba/Test) o pide que se revise su autorización BSUID.",
       "errorContactRecipientUnavailable": "Este contacto todavía no tiene una identidad de WhatsApp disponible para iniciar el Flow.",
       "errorFailedImmediately": "No se pudo iniciar el Flow. Revisa los datos del contacto o la configuración e inténtalo nuevamente.",
       "errorGeneric": "No se pudo iniciar el flow. Intenta de nuevo."
@@ -398,7 +398,9 @@
       "aiUnreachable": "No se pudo contactar al asistente de IA.",
       "recordingTooLong": "La grabación es demasiado larga (más de 16 MB).",
       "voiceNoteUnsupported": "La grabación de voz no es compatible con este navegador.",
-      "micAccessDenied": "Acceso al micrófono denegado o no disponible."
+      "micAccessDenied": "Acceso al micrófono denegado. Permite el micrófono para este sitio en la configuración del navegador.",
+      "micNotFound": "No se encontró ningún micrófono en este dispositivo.",
+      "micRecorderFailed": "No se pudo iniciar el grabador de audio. Recarga la página o prueba con otro navegador."
     },
     "bubble": {
       "deliveryFailed": "No se pudo entregar el mensaje",
