@@ -73,7 +73,7 @@ printing its contents or exposing secrets**:
 ```bash
 sudo cmp -s -- /opt/backups/wacrm/f3-scheduled-20261114/ops/candidate.override.yml \
   /home/deploy/wacrm-qa-main/ops/deploy/candidate.override.yml
-printf 'legacy_overlay_cmp_exit=%s\\n' "$?"
+printf 'legacy_overlay_cmp_exit=%s\n' "$?"
 ```
 
 Exit code `0`: byte-identical; `1`: different, **stop and review**;
