@@ -1,0 +1,58 @@
+name: P0 Flows DB QA (isolated)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/p0-flows-db-qa.yml"
+      - "qa/p0-flows-db/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p0-flows-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  isolated-flows:
+    name: "${{ matrix.label }} / PostgreSQL 17 + PostgREST"
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "PR 95 / send intent S01-S29"
+            target_sha: "9968ac89d51487c0d74b89ef071a1596f2d8ea5b"
+          - label: "PR 96 / recovery S01-S29"
+            target_sha: "8e1283f55670f336bb6807a603d1ff71fb5fcb71"
+    steps:
+      - name: Checkout isolated QA harness
+        uses: actions/checkout@v7
+        with:
+          path: qa-harness
+          persist-credentials: false
+
+      - name: Checkout fixed target commit
+        uses: actions/checkout@v7
+        with:
+          ref: "${{ matrix.target_sha }}"
+          path: source
+          persist-credentials: false
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: source/package-lock.json
+
+      - name: Install source dependencies
+        working-directory: source
+        run: npm ci
+
+      - name: Verify isolated Flow engine against disposable database
+        env:
+          QA_PROJECT_ROOT: "${{ github.workspace }}/source"
+          QA_TEST_FILE: src/lib/flows/subflow-exec.engine.http.test.ts
+        run: bash qa-harness/qa/p0-flows-db/run.sh
