@@ -4,6 +4,7 @@ import { Suspense, useState, useCallback, useEffect, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
+import { useHandoffConversationGuard } from "@/hooks/use-handoff-conversation-guard";
 import {
   INBOX_CONVERSATION_SELECT,
   normalizeConversation,
@@ -749,6 +750,9 @@ function InboxPageInner() {
     },
     [activeConversation, handleCloseConversation]
   );
+
+  // Comercial -> Logistica handoff: once the order is persisted, the conversation leaves the commercial Inbox immediately (see the hook).
+  useHandoffConversationGuard(activeConversation?.id, handleContactBlocked);
 
   // On mobile (<lg) we show a SINGLE pane — either the list or the
   // thread — rather than cramming both side-by-side. Selecting a

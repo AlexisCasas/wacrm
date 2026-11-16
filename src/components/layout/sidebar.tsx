@@ -8,6 +8,7 @@ import { useAuth } from "@/hooks/use-auth";
 import { useTotalUnread } from "@/hooks/use-total-unread";
 import { useUnreadNotifications } from "@/hooks/use-unread-notifications";
 import { useAudioGuideEnabled } from "@/hooks/use-audio-guide-enabled";
+import { useConfirmedOrdersAccess } from "@/hooks/use-confirmed-orders-access";
 import {
   Bell,
   Bot,
@@ -18,6 +19,7 @@ import {
   Megaphone,
   MessageSquare,
   Mic,
+  PackageCheck,
   Radio,
   Settings,
   Shield,
@@ -110,6 +112,9 @@ const audioGuideNavItem: NavItem = { href: "/audio-guide", labelKey: "audioGuide
 // Ad results (read-only report). Same visibility rule as its API: agent role or higher.
 const adsResultsNavItem: NavItem = { href: "/ads-results", labelKey: "adsResults", icon: Megaphone };
 
+// Confirmed orders workspace (PR-02). Shown only when the server says so: logistics_mvp_enabled AND the user has an operational area.
+const confirmedOrdersNavItem: NavItem = { href: "/confirmed-orders", labelKey: "confirmedOrders", icon: PackageCheck };
+
 const bottomNavItems = [
   { href: "/settings", labelKey: "settings", icon: Settings },
 ];
@@ -131,7 +136,9 @@ export function Sidebar({ open = false, onClose }: SidebarProps) {
   const audioGuideEnabled = useAudioGuideEnabled();
   const canSeeAdsResults = accountRole === "owner" || accountRole === "admin" || accountRole === "agent";
   const baseNavItems = canSeeAdsResults ? [...navItems, adsResultsNavItem] : navItems;
-  const visibleNavItems = audioGuideEnabled ? [...baseNavItems, audioGuideNavItem] : baseNavItems;
+  const confirmedOrdersAllowed = useConfirmedOrdersAccess();
+  const withAudio = audioGuideEnabled ? [...baseNavItems, audioGuideNavItem] : baseNavItems;
+  const visibleNavItems = confirmedOrdersAllowed === true ? [...withAudio, confirmedOrdersNavItem] : withAudio;
   // Only surface the account-name strip when it actually carries
   // information. A solo user's personal account is named after them
   // (the 017 signup trigger seeds it from `full_name`), so showing it
