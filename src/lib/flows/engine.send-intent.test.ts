@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // shows an intent without its confirmation, which recovery classifies as ambiguous. Simulated Meta, in-memory database, no real sends.
 // ============================================================
 
-const h = vi.hoisted(() => ({ db: null as unknown, sendTextMessage: vi.fn(), sendInteractiveButtons: vi.fn() }));
+const h = vi.hoisted(() => ({ db: null as unknown, sendTextMessage: vi.fn(), sendInteractiveButtons: vi.fn(), sendInteractiveList: vi.fn() }));
 vi.mock("./admin-client", () => ({ supabaseAdmin: () => h.db }));
 vi.mock("@/lib/whatsapp/send-message", () => ({ resolveOutboundTransport: () => "meta" }));
 vi.mock("@/lib/whatsapp/encryption", () => ({ decrypt: (v: string) => v }));
@@ -14,6 +14,7 @@ vi.mock("@/lib/whatsapp/meta-api", async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   sendTextMessage: (...a: unknown[]) => h.sendTextMessage(...a),
   sendInteractiveButtons: (...a: unknown[]) => h.sendInteractiveButtons(...a),
+  sendInteractiveList: (...a: unknown[]) => h.sendInteractiveList(...a),
 }));
 
 import { classifyStrandedRun, dispatchInboundToFlows } from "./engine";
@@ -62,6 +63,17 @@ async function say(text: string, who: "A" | "B" = "A", id = "wamid.IN1"): Promis
   return pending;
 }
 
+function useListNode(mem: Mem) {
+  const menu = mem.table("flow_nodes").find((row) => row.flow_id === "flow-1" && row.node_key === "menu");
+  if (!menu) throw new Error("Missing synthetic menu node");
+  menu.node_type = "send_list";
+  menu.config = {
+    text: "Choose a service",
+    button_label: "Options",
+    sections: [{ title: "Services", rows: [{ reply_id: "l1", title: "Details", next_node_key: "fin" }] }],
+  };
+}
+
 const networkError = () => Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error("socket hang up"), { code: "ECONNRESET" }) });
 const waitingRun = (): Row => ({ id: "run-1", flow_id: "flow-1", account_id: A, user_id: "u-1", contact_id: "ct-1", conversation_id: "cv-1", status: "active", vars: {}, reprompt_count: 0, started_at: "2026-11-10T11:59:00Z", last_advanced_at: "2026-11-10T11:59:00Z", current_node_key: "menu" });
 
@@ -69,6 +81,7 @@ beforeEach(() => {
   vi.useFakeTimers(); vi.setSystemTime(new Date("2026-11-10T12:00:00Z"));
   h.sendTextMessage.mockReset().mockResolvedValue({ messageId: "wamid.TXT" });
   h.sendInteractiveButtons.mockReset().mockResolvedValue({ messageId: "wamid.BTN" });
+  h.sendInteractiveList.mockReset().mockResolvedValue({ messageId: "wamid.LIST" });
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
@@ -162,5 +175,78 @@ describe("durable send_intent for every Flows engine send (D2)", () => {
     expect(intents(mem)).toHaveLength(2);
     expect(h.sendTextMessage).toHaveBeenCalledTimes(1);
     expect(h.sendTextMessage.mock.calls[0][0]).toMatchObject({ phoneNumberId: "pn-2" });
+  });
+});
+
+
+describe("blocked contact in interactive Flows (no new sends)", () => {
+  for (const nodeType of ["send_buttons", "send_list"] as const) {
+    it(`closes a new ${nodeType} run when the contact is blocked between the text and interactive send`, async () => {
+      const mem = setup();
+      if (nodeType === "send_list") useListNode(mem);
+
+      // A real blocked-contact race: the first send is allowed, then
+      // the contact becomes blocked before the interactive guard runs.
+      h.sendTextMessage.mockImplementationOnce(async () => {
+        mem.table("contacts").find((row) => row.id === "ct-1")!.blocked = true;
+        return { messageId: "wamid.TXT" };
+      });
+
+      const result = await say("hola");
+      expect(result).toMatchObject({ consumed: true, outcome: "completed" });
+      expect(h.sendTextMessage).toHaveBeenCalledTimes(1);
+      expect(h.sendInteractiveButtons).not.toHaveBeenCalled();
+      expect(h.sendInteractiveList).not.toHaveBeenCalled();
+      expect(intents(mem).map((event) => event.node_key)).toEqual(["m1", "menu"]);
+      expect(sent(mem).map((event) => event.node_key)).toEqual(["m1"]);
+      expect(errors(mem)).toContain("contact_blocked");
+      expect(errors(mem)).not.toContain("send_interactive_failed");
+      expect(mem.table("flow_runs").at(-1)).toMatchObject({
+        status: "paused_by_agent",
+        end_reason: "contact_blocked",
+      });
+    });
+
+    it(`closes a blocked ${nodeType} reprompt without retrying Meta`, async () => {
+      const mem = setup({}, [waitingRun()]);
+      if (nodeType === "send_list") useListNode(mem);
+      mem.table("contacts").find((row) => row.id === "ct-1")!.blocked = true;
+
+      const result = await say("no entiendo");
+      expect(result).toMatchObject({ consumed: true, outcome: "completed" });
+      expect(h.sendTextMessage).not.toHaveBeenCalled();
+      expect(h.sendInteractiveButtons).not.toHaveBeenCalled();
+      expect(h.sendInteractiveList).not.toHaveBeenCalled();
+      expect(intents(mem).filter((event) => (event.payload as Row).reprompt === true)).toHaveLength(1);
+      expect(sent(mem)).toHaveLength(0);
+      expect(errors(mem)).toContain("contact_blocked");
+      expect(errors(mem)).not.toContain("send_interactive_failed");
+      expect(mem.table("flow_runs").find((row) => row.id === "run-1")).toMatchObject({
+        status: "paused_by_agent",
+        end_reason: "contact_blocked",
+      });
+    });
+  }
+
+  it("distinguishes an order-confirmed guard from a blocked contact", async () => {
+    let orderConfirmed = false;
+    const mem = setup({
+      rpc: {
+        flow_run_stopped_by_order: () => ({ data: orderConfirmed }),
+      },
+    });
+    h.sendTextMessage.mockImplementationOnce(async () => {
+      orderConfirmed = true;
+      return { messageId: "wamid.TXT" };
+    });
+    const result = await say("hola");
+    expect(result).toMatchObject({ consumed: true, outcome: "completed" });
+    expect(h.sendInteractiveButtons).not.toHaveBeenCalled();
+    expect(errors(mem)).toContain("order_confirmed");
+    expect(errors(mem)).not.toContain("send_interactive_failed");
+    expect(mem.table("flow_runs").at(-1)).toMatchObject({
+      status: "paused_by_agent",
+      end_reason: "order_confirmed",
+    });
   });
 });
