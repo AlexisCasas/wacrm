@@ -40,6 +40,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Deploy overlay regression (Docker-free)
+        run: |
+          for script in ops/deploy/deploy.sh ops/deploy/compose-overlays.sh ops/deploy/test-compose-overlays.sh; do
+            bash -n "$script"
+          done
+          bash ops/deploy/test-compose-overlays.sh
+
       - name: Lint
         run: npm run lint
 
