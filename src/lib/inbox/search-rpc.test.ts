@@ -39,12 +39,23 @@ type Call = {
   signal?: AbortSignal;
 };
 
+type MockRpcResult = {
+  data: Conversation[] | null;
+  error: { message: string } | null;
+};
+type MockRpcBuilder = {
+  select: (selection: string) => MockRpcBuilder;
+  order: (column: string, options: { ascending: boolean }) => MockRpcBuilder;
+  range: (from: number, to: number) => MockRpcBuilder;
+  abortSignal: (signal: AbortSignal) => Promise<MockRpcResult>;
+};
+
 function fakeClient(rows: Conversation[], failure?: { message: string }) {
   const calls: Call[] = [];
   const rpc = vi.fn((name: string, params: Record<string, unknown>) => {
     const call: Call = { name, params, orders: [] };
     calls.push(call);
-    const builder = {
+    const builder: MockRpcBuilder = {
       select(selection: string) {
         call.selection = selection;
         return builder;
