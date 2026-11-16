@@ -132,6 +132,7 @@ export function ConversationList({
           .select(INBOX_CONVERSATION_SELECT)
           .eq("contact.blocked", false)
           .order("last_message_at", { ascending: false })
+          .order("id", { ascending: true })
           .abortSignal(controller.signal);
 
       type InboxRows = Parameters<typeof normalizeConversations>[0];
