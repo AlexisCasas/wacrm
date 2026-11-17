@@ -2669,6 +2669,18 @@
     "groupCustom": "Campos personalizados",
     "groupFlow": "Variables del flujo"
   },
+  "Routing": {
+    "derive": "Derivar a Comercial",
+    "deriveTitle": "¿Derivar esta conversación a Comercial?",
+    "deriveDescription": "Úsalo cuando el cliente quiera realizar una nueva compra. Los pedidos logísticos existentes seguirán visibles para Logística.",
+    "cancel": "Cancelar",
+    "confirm": "Derivar",
+    "derivedToast": "Conversación derivada a Comercial",
+    "deriveError": "No se pudo derivar la conversación",
+    "invalidTransition": "Esta conversación ya no está en etapa logística",
+    "sharedBadge": "Compartida con Comercial",
+    "derivedBy": "Derivada a Comercial por {name} · {when}"
+  },
   "ConfirmedOrders": {
     "title": "Pedidos confirmados",
     "subtitle": "Pedidos confirmados listos para gestión logística.",

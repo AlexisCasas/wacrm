@@ -2669,6 +2669,18 @@
     "groupCustom": "Custom fields",
     "groupFlow": "Flow variables"
   },
+  "Routing": {
+    "derive": "Hand over to Commercial",
+    "deriveTitle": "Hand this conversation over to Commercial?",
+    "deriveDescription": "Use it when the customer wants to make a new purchase. Existing logistics orders will stay visible to Logistics.",
+    "cancel": "Cancel",
+    "confirm": "Hand over",
+    "derivedToast": "Conversation handed over to Commercial",
+    "deriveError": "The conversation could not be handed over",
+    "invalidTransition": "This conversation is no longer in the logistics stage",
+    "sharedBadge": "Shared with Commercial",
+    "derivedBy": "Handed over to Commercial by {name} · {when}"
+  },
   "ConfirmedOrders": {
     "title": "Confirmed orders",
     "subtitle": "Confirmed orders ready for logistics management.",

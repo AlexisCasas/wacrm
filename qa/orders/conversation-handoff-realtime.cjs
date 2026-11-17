@@ -84,8 +84,10 @@ async function main() {
   check('PRE  logistics cannot write a message', !!insLogiPre, insLogiPre ? insLogiPre.code : 'no error')
 
   // ===== HANDOFF: the order is persisted =====
-  const { error: oe } = await admin.from('order_confirmations').insert({ account_id: acc, conversation_id: conv.id, customer_name: 'RT cliente', phone: '900000000', product: 'Prod', quantity: 1, price: 10, destination: 'Lima', seller_name: 'Seller', confirmed_by_name: 'Seller', request_key: 'RT-' + tag, delivery_status: 'held' })
+  const { data: ord, error: oe } = await admin.from('order_confirmations').insert({ account_id: acc, conversation_id: conv.id, customer_name: 'RT cliente', phone: '900000000', product: 'Prod', quantity: 1, price: 10, destination: 'Lima', seller_name: 'Seller', confirmed_by_name: 'Seller', request_key: 'RT-' + tag, delivery_status: 'held' }).select('id').single()
   if (oe) throw oe
+  // PR-03: the stage comes from conversation_routing, which create_order_confirmation writes with the order. This script inserts the order directly, so apply the same internal step.
+  { const { error: re } = await admin.rpc('apply_order_confirmed_routing', { p_account: acc, p_conversation: conv.id, p_actor: null, p_actor_name: 'RT', p_order: ord.id }); if (re) throw re }
   r = await matrix()
   check('POST PostgREST read: sup 1/4, comm 0/0, logi 1/4 (the SAME conversation, whole history), none 0/0', eq(r, { sup: '1/4', comm: '0/0', logi: '1/4', none: '0/0' }), JSON.stringify(r))
   const { data: hist } = await logi.client.from('messages').select('content_text, sender_type').eq('conversation_id', conv.id).order('created_at')

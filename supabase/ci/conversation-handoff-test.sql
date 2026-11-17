@@ -1,4 +1,7 @@
--- Behaviour test for 20261127000000_conversation_handoff_rls.sql (Comercial -> Logistica handoff enforced by RLS).
+-- Behaviour test for the Inbox RLS of 20261127000000_conversation_handoff_rls.sql AS EVOLVED by 20261128000000_conversation_routing.sql:
+-- the stage is now conversation_routing (not the mere existence of an order), so every order below also applies the order-confirmed routing
+-- (exactly what create_order_confirmation does). The full routing matrix (shared, derive, audit) is in conversation-routing-test.sql.
+-- Original description: 20261127000000_conversation_handoff_rls.sql (Comercial -> Logistica handoff enforced by RLS).
 -- Run against a database that already has ALL migrations applied:  psql -v ON_ERROR_STOP=1 -f supabase/ci/conversation-handoff-test.sql
 -- One transaction that ends in ROLLBACK, synthetic users/accounts only: nothing persists, no existing row is touched.
 BEGIN;
@@ -39,6 +42,7 @@ BEGIN
   END LOOP;
   INSERT INTO order_confirmations (account_id, conversation_id, customer_name, phone, product, quantity, price, destination, seller_name, confirmed_by_name, request_key, delivery_status)
     VALUES (acc, (SELECT v FROM ids WHERE k = 'conv_post'), 'HND cliente', '900000000', 'Prod', 1, 10, 'Lima', 'Seller', 'Seller', 'HND-ORDER-1', 'held');
+  PERFORM public.apply_order_confirmed_routing(acc, (SELECT v FROM ids WHERE k = 'conv_post'), NULL, 'HND', (SELECT id FROM order_confirmations WHERE request_key = 'HND-ORDER-1'));
 END $$;
 
 CREATE FUNCTION pg_temp.uid(p text) RETURNS uuid LANGUAGE sql AS $$ SELECT v FROM ids WHERE k = p $$;
@@ -109,13 +113,13 @@ BEGIN
   PERFORM pg_temp.expect('handoff: before the order, commercial works the PRE conversation', pg_temp.probe('comm','conv_pre'), OPEN_);
   INSERT INTO order_confirmations (account_id, conversation_id, customer_name, phone, product, quantity, price, destination, seller_name, confirmed_by_name, request_key, delivery_status)
     VALUES (pg_temp.uid('acc'), pg_temp.uid('conv_pre'), 'HND cliente 2', '900000000', 'Prod', 1, 10, 'Lima', 'Seller', 'Seller', 'HND-ORDER-2', 'held');
+  PERFORM public.apply_order_confirmed_routing(pg_temp.uid('acc'), pg_temp.uid('conv_pre'), NULL, 'HND', (SELECT id FROM order_confirmations WHERE request_key = 'HND-ORDER-2'));
   PERFORM pg_temp.expect('handoff: after the order, commercial loses it (same conversation_id)', pg_temp.probe('comm','conv_pre'), BLOCK);
   PERFORM pg_temp.expect('handoff: after the order, logistics gets it with the whole history', pg_temp.probe('logi','conv_pre'), OPEN_);
   INSERT INTO messages (conversation_id, sender_type, content_type, content_text) VALUES (pg_temp.uid('conv_pre'), 'customer', 'text', 'el cliente vuelve a escribir');
   PERFORM pg_temp.expect('the customer writes again: still logistics (3 msgs), never back to commercial', pg_temp.run('logi', 'select count(*) from public.messages where content_text is distinct from ''x'' and conversation_id = ' || quote_literal(pg_temp.uid('conv_pre'))), '3');
   PERFORM pg_temp.expect('the customer writes again: commercial still sees nothing', pg_temp.run('comm', 'select count(*) from public.messages where content_text is distinct from ''x'' and conversation_id = ' || quote_literal(pg_temp.uid('conv_pre'))), '0');
-  DELETE FROM order_confirmations WHERE request_key = 'HND-ORDER-2';   -- a failed/rolled-back confirmation leaves no order: commercial keeps the chat
-  PERFORM pg_temp.expect('no persisted order -> commercial keeps the chat (incl. the new customer message)', pg_temp.probe('comm','conv_pre'), '1/3/1/1/OK');
+  -- (a failed confirmation leaves no order and no routing change: covered in conversation-routing-test.sql with the real create_order_confirmation)
 
   -- ================= FLAG OFF: exactly the legacy behaviour =================
   UPDATE order_integration_settings SET logistics_mvp_enabled = FALSE WHERE account_id = pg_temp.uid('acc');
