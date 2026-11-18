@@ -3,8 +3,9 @@ import { NextResponse } from 'next/server'
 import { getCurrentAccount, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { accessDeniedResponse, resolveLogisticsAccess } from '@/lib/orders/logistics/access'
-import { MAX_DOCUMENT_BYTES } from '@/lib/orders/logistics/constants'
+import { MAX_DOCUMENT_BYTES, UPLOAD_RATE_LIMIT } from '@/lib/orders/logistics/constants'
 import { listDocuments, uploadVoucher, type ServiceResult } from '@/lib/orders/logistics/documents'
+import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
 
 // PR-04 · vouchers.
 //
@@ -27,6 +28,8 @@ export async function POST(request: Request) {
     const ctx = await getCurrentAccount()
     const denied = accessDeniedResponse(await resolveLogisticsAccess(ctx))
     if (denied) return denied
+    const limit = checkRateLimit(`logistics-upload:${ctx.userId}`, UPLOAD_RATE_LIMIT)
+    if (!limit.success) return rateLimitResponse(limit) as NextResponse
 
     const declared = Number(request.headers.get('content-length') ?? 0)
     if (Number.isFinite(declared) && declared > MAX_DOCUMENT_BYTES + 64 * 1024) {

@@ -27,3 +27,11 @@ export const DOCUMENT_PUBLIC_COLUMNS =
   'id, order_id, kind, status, association, version, row_version, batch_id, original_filename, mime_type, size_bytes, ocr_status, ocr_attempts, ocr_error_code, validated_at, created_at' as const
 
 export type LogisticsStatus = 'pending_voucher' | 'voucher_validated' | 'packing' | 'ready_for_dispatch'
+
+/** Time budget of ONE OCR attempt (the provider is aborted after it) and the age after which an unfinished attempt may be retaken. */
+export const OCR_TIMEOUT_MS = 30_000
+export const OCR_STALE_SECONDS = 120
+
+/** Per-user ceilings for the endpoints that move bytes or spend provider budget (in-memory limiter of the app, same as /api/whatsapp/send). */
+export const UPLOAD_RATE_LIMIT = { limit: 60, windowMs: 60_000 } as const
+export const OCR_RATE_LIMIT = { limit: 30, windowMs: 60_000 } as const
