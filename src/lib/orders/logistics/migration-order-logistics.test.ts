@@ -14,6 +14,7 @@ const MODEL = '20261129000000_order_logistics_model.sql'
 const SECURITY = '20261129000001_order_logistics_security_rpcs.sql'
 const STORAGE = '20261129000002_order_docs_storage.sql'
 const EVIDENCE = '20261129000003_order_evidence_rpc.sql'
+const DISPATCH = '20261129000004_order_template_dispatch_rpcs.sql'
 const TABLES = ['order_logistics_settings', 'order_documents', 'order_template_dispatches', 'order_logistics', 'order_logistics_events']
 const RPCS = [
   'register_order_document',
@@ -30,11 +31,11 @@ describe('PR-04 migrations · ordering and additivity', () => {
     const all = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
     const base = all.indexOf('20261128000000_conversation_routing.sql')
     expect(base).toBeGreaterThanOrEqual(0)
-    expect(all.slice(base + 1, base + 5)).toEqual([MODEL, SECURITY, STORAGE, EVIDENCE])
+    expect(all.slice(base + 1, base + 6)).toEqual([MODEL, SECURITY, STORAGE, EVIDENCE, DISPATCH])
   })
 
   it('never ALTER or DROP an existing object (only ENABLE ROW LEVEL SECURITY / OWNER on the new ones)', () => {
-    for (const name of [MODEL, SECURITY, STORAGE, EVIDENCE]) {
+    for (const name of [MODEL, SECURITY, STORAGE, EVIDENCE, DISPATCH]) {
       const code = strip(read(name))
       expect(code, name).not.toMatch(/\bDROP\s+(TABLE|COLUMN|FUNCTION|INDEX|CONSTRAINT|TYPE|POLICY\s+IF\s+EXISTS\s+(?!order_))/i)
       for (const m of code.matchAll(/ALTER\s+TABLE\s+(?:IF EXISTS\s+)?(?:ONLY\s+)?(?:public\.)?(\w+)\s+([A-Z ]+)/gi)) {
@@ -47,7 +48,7 @@ describe('PR-04 migrations · ordering and additivity', () => {
   })
 
   it('does not activate any account, create settings rows or hardcode a template', () => {
-    for (const name of [MODEL, SECURITY, STORAGE, EVIDENCE]) {
+    for (const name of [MODEL, SECURITY, STORAGE, EVIDENCE, DISPATCH]) {
       const code = strip(read(name))
       expect(code, name).not.toMatch(/logistics_mvp_enabled\s*=\s*(TRUE|true)/)
       expect(code, name).not.toMatch(/INSERT\s+INTO\s+(public\.)?(order_integration_settings|order_logistics_settings)/i)
@@ -175,5 +176,39 @@ describe(`${EVIDENCE}`, () => {
   it('creates nothing else: no table, policy, bucket or trigger, and it does not touch messages / chat-media', () => {
     expect(code).not.toMatch(/CREATE TABLE|CREATE POLICY|CREATE TRIGGER|storage\.buckets|chat-media/i)
     expect(code).not.toMatch(/(UPDATE|DELETE FROM|INSERT INTO)\s+(public\.)?(messages|conversations|conversation_routing)/i)
+  })
+})
+
+describe(`${DISPATCH}`, () => {
+  const code = strip(read(DISPATCH))
+  const PUBLIC_RPCS = ['begin_template_dispatch', 'mark_template_dispatch_sending', 'finish_template_dispatch', 'resolve_template_dispatch']
+
+  it.each(PUBLIC_RPCS)('%s is SECURITY DEFINER, pins search_path, re-validates the actor and is executable only by service_role', (rpc) => {
+    const start = code.indexOf(`CREATE OR REPLACE FUNCTION public.${rpc}(`)
+    expect(start, rpc).toBeGreaterThanOrEqual(0)
+    const body = code.slice(start, code.indexOf('$$;', start))
+    expect(body).toMatch(/SECURITY DEFINER\s+SET search_path = public/)
+    expect(body).toMatch(/public\.order_logistics_actor\(p_account, p_actor\)/)
+    expect(code).toMatch(new RegExp(`REVOKE ALL ON FUNCTION public\\.${rpc}\\([^)]*\\) FROM PUBLIC, anon, authenticated;`))
+    expect(code).toMatch(new RegExp(`GRANT EXECUTE ON FUNCTION public\\.${rpc}\\([^)]*\\) TO service_role;`))
+  })
+
+  it('the internal completion helper is callable by nobody but the RPCs (owner)', () => {
+    expect(code).toMatch(/REVOKE ALL ON FUNCTION public\.order_logistics_complete_packaging\([^)]*\) FROM PUBLIC, anon, authenticated, service_role;/)
+    expect(code).not.toMatch(/GRANT EXECUTE ON FUNCTION public\.order_logistics_complete_packaging/)
+  })
+
+  it('an interrupted send is never re-sent: stale sending becomes uncertain, the order only completes with a sent dispatch', () => {
+    expect(code).toMatch(/send_interrupted/)
+    expect(code).toMatch(/claim_expired/)
+    expect(code).toMatch(/'ready_for_dispatch'[\s\S]*?completed_dispatch_id = p_dispatch/)
+    expect(code).not.toMatch(/status = 'ready_for_dispatch'[^;]*WHERE[^;]*status = 'voucher_validated'/)
+  })
+
+  it('creates nothing else and does not touch delivery_status / messages / routing / financial or tracking concepts', () => {
+    expect(code).not.toMatch(/CREATE TABLE|CREATE POLICY|CREATE TRIGGER|storage\.buckets/i)
+    expect(code).not.toMatch(/delivery_status/)
+    expect(code).not.toMatch(/(UPDATE|DELETE FROM|INSERT INTO)\s+(public\.)?(messages|conversations|conversation_routing|order_confirmations)/i)
+    expect(code).not.toMatch(/(saldo|cobranza|payment|shalom|tracking)/i)
   })
 })

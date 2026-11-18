@@ -428,4 +428,120 @@ BEGIN
   UPDATE order_integration_settings SET logistics_mvp_enabled = TRUE WHERE account_id = pg_temp.uid('acc');
 END $$;
 
+-- ================= OPERATIONAL TEMPLATE DISPATCH (begin / sending / finish / resolve) =================
+CREATE FUNCTION pg_temp.bd(p_actor text, p_order text, p_key text) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT pg_temp.rpc(format('select public.begin_template_dispatch(%L,%L,%L,%L,%L,%L)', pg_temp.uid('acc'), pg_temp.uid(p_actor), pg_temp.uid(p_order), p_key, 'tpl_test', 'es')) $$;
+CREATE FUNCTION pg_temp.dsp(p_order text, p_key text) RETURNS uuid LANGUAGE sql AS $$
+  SELECT id FROM public.order_template_dispatches WHERE order_id = pg_temp.uid(p_order) AND request_key = p_key $$;
+CREATE FUNCTION pg_temp.mk(p_actor text, p_dispatch uuid) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT pg_temp.rpc(format('select public.mark_template_dispatch_sending(%L,%L,%L)', pg_temp.uid('acc'), pg_temp.uid(p_actor), p_dispatch)) $$;
+CREATE FUNCTION pg_temp.fin(p_actor text, p_dispatch uuid, p_outcome text, p_msg uuid DEFAULT NULL, p_wamid text DEFAULT NULL, p_code text DEFAULT NULL) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT pg_temp.rpc(format('select public.finish_template_dispatch(%L,%L,%L,%L,%L,%L,%L,%L)', pg_temp.uid('acc'), pg_temp.uid(p_actor), p_dispatch, p_outcome, p_msg, p_wamid, p_code, 'detail')) $$;
+CREATE FUNCTION pg_temp.res(p_actor text, p_dispatch uuid, p_resolution text, p_wamid text DEFAULT NULL) RETURNS jsonb LANGUAGE sql AS $$
+  SELECT pg_temp.rpc(format('select public.resolve_template_dispatch(%L,%L,%L,%L,%L)', pg_temp.uid('acc'), pg_temp.uid(p_actor), p_dispatch, p_resolution, p_wamid)) $$;
+CREATE FUNCTION pg_temp.dcol(p_order text, p_key text, p_col text) RETURNS text LANGUAGE plpgsql AS $$
+DECLARE r text; BEGIN EXECUTE format('select %I::text from public.order_template_dispatches where order_id = %L and request_key = %L', p_col, pg_temp.uid(p_order), p_key) INTO r; RETURN COALESCE(r, 'none'); END $$;
+CREATE FUNCTION pg_temp.devs(p_order text) RETURNS text LANGUAGE sql AS $$
+  SELECT pg_temp.ev('order_id = ' || quote_literal(pg_temp.uid(p_order)) || ' AND event_type IN (''template_send_started'',''template_sent'',''template_failed'',''template_uncertain'',''template_resolved'',''packaging_completed'')') $$;
+
+DO $$
+DECLARE d1 uuid; d2 uuid; d3 uuid; d4 uuid; msg uuid; fq text;
+BEGIN
+  FOREACH fq IN ARRAY ARRAY[
+    'public.begin_template_dispatch(uuid,uuid,uuid,text,text,text)',
+    'public.mark_template_dispatch_sending(uuid,uuid,uuid)',
+    'public.finish_template_dispatch(uuid,uuid,uuid,text,uuid,text,text,text)',
+    'public.resolve_template_dispatch(uuid,uuid,uuid,text,text)'] LOOP
+    PERFORM pg_temp.expect('dispatch RPC is service-role only: ' || fq,
+      (has_function_privilege('authenticated', fq, 'EXECUTE') OR has_function_privilege('anon', fq, 'EXECUTE'))::text || '/' || has_function_privilege('service_role', fq, 'EXECUTE')::text, 'false/true');
+  END LOOP;
+  PERFORM pg_temp.expect('the internal completion helper is not callable by anyone but the RPCs',
+    (has_function_privilege('service_role', 'public.order_logistics_complete_packaging(uuid,uuid,text,uuid,uuid)', 'EXECUTE') OR has_function_privilege('authenticated', 'public.order_logistics_complete_packaging(uuid,uuid,text,uuid,uuid)', 'EXECUTE'))::text, 'false');
+
+  -- fixture: omulti (packing, voucher validated) gets chat evidence from ITS conversation (c3)
+  INSERT INTO ids SELECT 'm4', gen_random_uuid();
+  INSERT INTO messages (id, conversation_id, sender_type, content_type, media_url) VALUES (pg_temp.uid('m4'), pg_temp.uid('conv_c3'), 'customer', 'image', 'https://example.invalid/m4.jpg');
+
+  -- ---- who may start a dispatch ----
+  PERFORM pg_temp.expect('dispatch: commercial / viewer / no-area / other account refused',
+    pg_temp.sm(pg_temp.bd('comm', 'omulti', 'x1')) || '/' || pg_temp.sm(pg_temp.bd('logiv', 'omulti', 'x2')) || '/' || pg_temp.sm(pg_temp.bd('none', 'omulti', 'x3')) || '/' || pg_temp.sm(pg_temp.bd('foreign', 'omulti', 'x4')),
+    'ERR:42501:forbidden/ERR:42501:forbidden/ERR:42501:forbidden/ERR:42501:forbidden');
+  PERFORM pg_temp.expect('dispatch: an order that is not packing is refused', pg_temp.sm(pg_temp.bd('logi', 'o3', 'x5')), 'no:not_packing');
+  PERFORM pg_temp.expect('dispatch: packing without evidence is refused', pg_temp.sm(pg_temp.bd('logi', 'omulti', 'x6')), 'no:evidence_required');
+  PERFORM pg_temp.expect('dispatch: evidence from the order chat is selected first', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'omulti', 'm4', 'ev-k-multi', 'ev-seed-multi')), 'ok:created=true');
+
+  -- ---- claim ----
+  PERFORM pg_temp.expect('begin: the dispatch is claimed for (order, request_key), attempt 1, with the order evidence and conversation',
+    pg_temp.sm(pg_temp.bd('logi', 'omulti', 'tk-1')) || '/' || pg_temp.dcol('omulti', 'tk-1', 'status') || '/' || pg_temp.dcol('omulti', 'tk-1', 'attempt')
+    || '/' || (pg_temp.dcol('omulti', 'tk-1', 'evidence_document_id') = pg_temp.docid('ev-k-multi')::text)::text || '/' || (pg_temp.dcol('omulti', 'tk-1', 'conversation_id') = pg_temp.uid('conv_c3')::text)::text,
+    'ok/claimed/1/true/true');
+  d1 := pg_temp.dsp('omulti', 'tk-1');
+  PERFORM pg_temp.expect('double click: the same key while in flight -> in_progress (no second send)', pg_temp.sm(pg_temp.bd('sup', 'omulti', 'tk-1')), 'no:in_progress');
+  PERFORM pg_temp.expect('another key while one is open -> dispatch_open (two operators)', pg_temp.sm(pg_temp.bd('sup', 'omulti', 'tk-2')), 'no:dispatch_open');
+  PERFORM pg_temp.expect('the evidence can not change while the dispatch is open', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'omulti', 'm4', 'ev-k-multi-2', 'ev-seed-multi-2')), 'no:dispatch_open');
+  PERFORM pg_temp.expect('mark sending (right before the Meta call)', pg_temp.sm(pg_temp.mk('logi', d1)) || '/' || pg_temp.dcol('omulti', 'tk-1', 'status'), 'ok/sending');
+  PERFORM pg_temp.expect('mark sending twice is refused (state machine)', pg_temp.sm(pg_temp.mk('logi', d1)), 'no:invalid_state');
+  PERFORM pg_temp.expect('while sending the same key is still in_progress', pg_temp.sm(pg_temp.bd('logi', 'omulti', 'tk-1')), 'no:in_progress');
+
+  -- ---- failure BEFORE success: the order stays in packing and the same operation can be retried ----
+  PERFORM pg_temp.expect('finish failed (Meta rejected): order stays packing, error recorded without text', pg_temp.sm(pg_temp.fin('logi', d1, 'failed', NULL, NULL, 'meta_error')) || '/' || pg_temp.lrow('omulti', 'status') || '/' || pg_temp.dcol('omulti', 'tk-1', 'error_code'), 'ok:changed=true/packing/meta_error');
+  PERFORM pg_temp.expect('finish with an invalid error code is refused', pg_temp.sm(pg_temp.fin('logi', pg_temp.dsp('omulti', 'tk-1'), 'failed', NULL, NULL, 'Bad Code')), 'ERR:22023:invalid_error_code');
+  PERFORM pg_temp.expect('retry of the SAME operation (same key) is a new attempt, not a new dispatch', pg_temp.sm(pg_temp.bd('logi', 'omulti', 'tk-1')) || '/' || pg_temp.dcol('omulti', 'tk-1', 'attempt') || '/' || pg_temp.dcol('omulti', 'tk-1', 'status') || '/' || pg_temp.cnt('order_template_dispatches WHERE order_id = ' || quote_literal(pg_temp.uid('omulti'))), 'ok/2/claimed/1');
+
+  -- ---- uncertain: never re-sent automatically ----
+  PERFORM pg_temp.mk('logi', d1);
+  PERFORM pg_temp.expect('finish uncertain (Meta may have accepted but the message was not saved): order stays packing', pg_temp.sm(pg_temp.fin('logi', d1, 'uncertain', NULL, NULL, 'persist_failed')) || '/' || pg_temp.lrow('omulti', 'status'), 'ok:changed=true/packing');
+  PERFORM pg_temp.expect('uncertain: the same key does NOT resend (needs a person)', pg_temp.sm(pg_temp.bd('logi', 'omulti', 'tk-1')), 'no:uncertain');
+  PERFORM pg_temp.expect('uncertain: a new key does NOT resend either', pg_temp.sm(pg_temp.bd('logi', 'omulti', 'tk-3')), 'no:dispatch_open');
+  PERFORM pg_temp.expect('uncertain: the order can not complete by itself', pg_temp.lrow('omulti', 'status') || '/' || pg_temp.lrow('omulti', 'completed_dispatch_id'), 'packing/none');
+  PERFORM pg_temp.expect('only a logistics / supervisor person can resolve (commercial / foreign refused)', pg_temp.sm(pg_temp.res('comm', d1, 'confirmed_sent')) || '/' || pg_temp.sm(pg_temp.res('foreign', d1, 'confirmed_sent')), 'ERR:42501:forbidden/ERR:42501:forbidden');
+  PERFORM pg_temp.expect('an unknown resolution is refused', pg_temp.sm(pg_temp.res('sup', d1, 'maybe')), 'ERR:22023:invalid_resolution');
+  PERFORM pg_temp.expect('resolution: the person confirms it was NOT sent -> failed, still packing, audited', pg_temp.sm(pg_temp.res('sup', d1, 'confirmed_not_sent')) || '/' || pg_temp.dcol('omulti', 'tk-1', 'status') || '/' || pg_temp.dcol('omulti', 'tk-1', 'resolution') || '/' || pg_temp.lrow('omulti', 'status'), 'ok:changed=true/failed/confirmed_not_sent/packing');
+  PERFORM pg_temp.expect('resolving the same way again is idempotent', pg_temp.sm(pg_temp.res('sup', d1, 'confirmed_not_sent')), 'ok:changed=false');
+  PERFORM pg_temp.expect('a dispatch that is not uncertain can not be resolved', pg_temp.sm(pg_temp.res('sup', d1, 'confirmed_sent')), 'no:not_uncertain');
+
+  -- ---- a legitimate NEW send (new key) after the failure, then success completes the packaging in ONE transaction ----
+  PERFORM pg_temp.expect('a new key is a new, legitimate send (nothing is open)', pg_temp.sm(pg_temp.bd('logi', 'omulti', 'tk-4')) || '/' || pg_temp.cnt('order_template_dispatches WHERE order_id = ' || quote_literal(pg_temp.uid('omulti'))), 'ok/2');
+  d2 := pg_temp.dsp('omulti', 'tk-4');
+  PERFORM pg_temp.expect('finish sent without calling mark_sending first is refused', pg_temp.sm(pg_temp.fin('logi', d2, 'sent', NULL, 'wamid.X')), 'no:invalid_state');
+  PERFORM pg_temp.mk('logi', d2);
+  PERFORM pg_temp.expect('finish sent needs the wamid', pg_temp.sm(pg_temp.fin('logi', d2, 'sent')), 'ERR:22023:wamid_required');
+  INSERT INTO ids SELECT 'sentmsg', gen_random_uuid();
+  INSERT INTO messages (id, conversation_id, sender_type, content_type, content_text, template_name, message_id, status) VALUES (pg_temp.uid('sentmsg'), pg_temp.uid('conv_c3'), 'agent', 'template', 'plantilla', 'tpl_test', 'wamid.T1', 'sent');
+  PERFORM pg_temp.expect('finish sent: dispatch sent + order ready_for_dispatch, atomically', pg_temp.sm(pg_temp.fin('logi', d2, 'sent', pg_temp.uid('sentmsg'), 'wamid.T1'))
+    || '/' || pg_temp.dcol('omulti', 'tk-4', 'status') || '/' || pg_temp.dcol('omulti', 'tk-4', 'wamid') || '/' || pg_temp.lrow('omulti', 'status'), 'ok:changed=true/sent/wamid.T1/ready_for_dispatch');
+  PERFORM pg_temp.expect('the order records who / when and which dispatch completed it', (pg_temp.lrow('omulti', 'completed_dispatch_id') = d2::text)::text || '/' || (pg_temp.lrow('omulti', 'packaging_completed_by') = pg_temp.uid('logi')::text)::text || '/' || (pg_temp.lrow('omulti', 'packaging_completed_at') <> 'none')::text, 'true/true/true');
+  PERFORM pg_temp.expect('the persisted message is linked (same conversation as the order)', (SELECT (m.conversation_id = pg_temp.uid('conv_c3'))::text FROM messages m JOIN order_template_dispatches t ON t.message_row_id = m.id WHERE t.id = d2), 'true');
+  PERFORM pg_temp.expect('finish sent again is idempotent (no second packaging_completed)', pg_temp.sm(pg_temp.fin('logi', d2, 'sent', pg_temp.uid('sentmsg'), 'wamid.T1')) || '/' || pg_temp.cnt('order_logistics_events WHERE order_id = ' || quote_literal(pg_temp.uid('omulti')) || ' AND event_type = ''packaging_completed'''), 'ok:changed=false/1');
+  PERFORM pg_temp.expect('double click AFTER success: the same key answers the sent dispatch (replay), nothing is sent again', pg_temp.sm(pg_temp.bd('sup', 'omulti', 'tk-4')) || '/' || pg_temp.cnt('order_template_dispatches WHERE order_id = ' || quote_literal(pg_temp.uid('omulti'))), 'ok/2');
+  PERFORM pg_temp.expect('another key after ready_for_dispatch is refused', pg_temp.sm(pg_temp.bd('logi', 'omulti', 'tk-5')), 'no:already_ready');
+  PERFORM pg_temp.expect('ready_for_dispatch is final for PR-04 (packaging / vouchers / evidence refused)',
+    pg_temp.sm(pg_temp.rpc(format('select public.start_order_packaging(%L,%L,%L)', pg_temp.uid('acc'), pg_temp.uid('logi'), pg_temp.uid('omulti')))) || '/' || pg_temp.sm(pg_temp.reg('logi', 'acc', 'omulti', 'late-v', 'late-seed'))
+    || '/' || pg_temp.sm(pg_temp.evsel('logi', 'acc', 'omulti', 'm4', 'ev-late', 'ev-late-seed')), 'no:already_ready/no:order_locked/no:already_ready');
+  PERFORM pg_temp.expect('the dispatch audit of the order', pg_temp.devs('omulti'),
+    'template_send_started,template_failed!,template_send_started,template_uncertain!,template_resolved,template_send_started,template_sent,packaging_completed');
+  PERFORM pg_temp.expect('dispatch audit has no PII / provider text', (SELECT bool_and(detail::text NOT LIKE '%detail%' AND detail::text NOT LIKE '%example.invalid%')::text FROM order_logistics_events WHERE order_id = pg_temp.uid('omulti') AND event_type LIKE 'template_%'), 'true');
+
+  -- ---- interrupted sends (process died): stale claim is retaken; stale sending becomes uncertain, never resent ----
+  -- o2 already has a claimed dispatch (dsp-o2, inserted by the evidence tests) on its active evidence
+  PERFORM pg_temp.expect('o2: a fresh claim blocks others', pg_temp.sm(pg_temp.bd('logi', 'o2', 'k-o2-b')), 'no:dispatch_open');
+  UPDATE order_template_dispatches SET claimed_at = now() - interval '10 minutes' WHERE request_key = 'dsp-o2';
+  PERFORM pg_temp.expect('o2: a claim that never reached Meta (process died) expires and a new send can start', pg_temp.sm(pg_temp.bd('logi', 'o2', 'k-o2-b')) || '/' || pg_temp.dcol('o2', 'dsp-o2', 'status') || '/' || pg_temp.dcol('o2', 'dsp-o2', 'error_code'), 'ok/failed/claim_expired');
+  d3 := pg_temp.dsp('o2', 'k-o2-b');
+  PERFORM pg_temp.mk('logi', d3);
+  UPDATE order_template_dispatches SET sending_at = now() - interval '10 minutes' WHERE id = d3;
+  PERFORM pg_temp.expect('o2: a send that started and never reported becomes UNCERTAIN (never resent)', pg_temp.sm(pg_temp.bd('logi', 'o2', 'k-o2-b')) || '/' || pg_temp.dcol('o2', 'k-o2-b', 'status') || '/' || pg_temp.dcol('o2', 'k-o2-b', 'error_code'), 'no:uncertain/uncertain/send_interrupted');
+  PERFORM pg_temp.expect('o2: a DIFFERENT key sees the interrupted send as open, and as uncertain', pg_temp.sm(pg_temp.bd('sup', 'o2', 'k-o2-c')), 'no:dispatch_open');
+  PERFORM pg_temp.expect('o2: a person confirms it WAS sent (looked at the chat) -> ready_for_dispatch, audited', pg_temp.sm(pg_temp.res('sup', d3, 'confirmed_sent', 'wamid.T2')) || '/' || pg_temp.lrow('o2', 'status') || '/' || pg_temp.dcol('o2', 'k-o2-b', 'resolved_by') || '/' || pg_temp.dcol('o2', 'k-o2-b', 'wamid'), 'ok:changed=true/ready_for_dispatch/' || pg_temp.uid('sup')::text || '/wamid.T2');
+  PERFORM pg_temp.expect('o2 audit of the resolution', pg_temp.devs('o2'), 'template_send_started,template_uncertain!,template_resolved,packaging_completed');
+
+  -- ---- flag OFF ----
+  UPDATE order_integration_settings SET logistics_mvp_enabled = FALSE WHERE account_id = pg_temp.uid('acc');
+  PERFORM pg_temp.expect('flag OFF: begin / resolve refuse', pg_temp.sm(pg_temp.bd('logi', 'omulti', 'tk-off')) || '/' || pg_temp.sm(pg_temp.res('sup', d3, 'confirmed_sent')), 'ERR:42501:feature_disabled/ERR:42501:feature_disabled');
+  UPDATE order_integration_settings SET logistics_mvp_enabled = TRUE WHERE account_id = pg_temp.uid('acc');
+
+  -- ---- the dispatch table itself: browser can read it only as logistics / supervisor ----
+  PERFORM pg_temp.expect('dispatch rows: logistics / supervisor read them, commercial / other account do not', pg_temp.run('logi', 'select count(*) from public.order_template_dispatches where order_id = ' || quote_literal(pg_temp.uid('omulti'))) || '/' || pg_temp.run('comm', 'select count(*) from public.order_template_dispatches') || '/' || pg_temp.run('foreign', 'select count(*) from public.order_template_dispatches'), '2/0/0');
+END $$;
+
 ROLLBACK;
