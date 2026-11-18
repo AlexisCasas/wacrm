@@ -37,3 +37,17 @@ export function accessDeniedResponse(access: LogisticsAccess): NextResponse | nu
   if (access.kind === 'forbidden') return NextResponse.json({ error: 'operational_role_required' }, { status: 403 })
   return null
 }
+
+/**
+ * Second wall for READ services that use the caller's own client: the database answers, with the caller's identity, whether this person works the
+ * logistics stage of this account (flag ON + logistics/supervisor + agent+). Needed where PR-02's own policies would otherwise let another area read
+ * the underlying rows (commercial reads orders). `null` = allowed; otherwise the failure to return.
+ */
+export async function denyUnlessLogisticsInDatabase(ctx: Pick<LogisticsCaller, 'supabase' | 'accountId'>): Promise<{ status: number; error: string } | null> {
+  const { data, error } = await ctx.supabase.rpc('order_logistics_access', { p_account_id: ctx.accountId })
+  if (error) {
+    console.error('[logistics] access check failed:', error.code)
+    return { status: 500, error: 'internal_error' }
+  }
+  return data === true ? null : { status: 404, error: 'not_found' }
+}

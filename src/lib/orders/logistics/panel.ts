@@ -1,4 +1,4 @@
-import type { LogisticsCaller } from '@/lib/orders/logistics/access'
+import { denyUnlessLogisticsInDatabase, type LogisticsCaller } from '@/lib/orders/logistics/access'
 import { DOCUMENT_PUBLIC_COLUMNS, type LogisticsStatus } from '@/lib/orders/logistics/constants'
 import { fail, type DocumentView, type ServiceResult } from '@/lib/orders/logistics/documents'
 import { isUuid } from '@/lib/orders/logistics/files'
@@ -55,15 +55,10 @@ const EVENT_LIMIT = 100
 export async function getOrderPanel(ctx: LogisticsCaller, orderId: string): Promise<ServiceResult<OrderPanel>> {
   if (!isUuid(orderId)) return fail(400, 'invalid_order_id')
 
-  // Second wall (the route already checked the same thing): the database decides, with the caller's own identity, whether this person works the
-  // logistics stage of this account (flag ON + logistics/supervisor + agent+). Commercial can read orders through PR-02's own policy, but the logistics
-  // panel is not theirs, so it answers exactly like a non-existent order.
-  const { data: allowed, error: accessError } = await ctx.supabase.rpc('order_logistics_access', { p_account_id: ctx.accountId })
-  if (accessError) {
-    console.error('[logistics] panel access check failed:', accessError.code)
-    return fail(500, 'internal_error')
-  }
-  if (allowed !== true) return fail(404, 'not_found')
+  // Second wall (the route already checked the same thing): commercial can read orders through PR-02's own policy, but the logistics panel is not
+  // theirs, so it answers exactly like a non-existent order.
+  const denied = await denyUnlessLogisticsInDatabase(ctx)
+  if (denied) return fail(denied.status, denied.error)
 
   const { data: orderRow, error: orderError } = await ctx.supabase.from('order_confirmations').select(CONFIRMED_ORDER_COLUMNS).eq('account_id', ctx.accountId).eq('id', orderId).maybeSingle()
   if (orderError) {
