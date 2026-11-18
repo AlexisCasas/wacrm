@@ -79,7 +79,7 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
         const out: Row[] = []
         for (const input of list) {
           const row: Row = { id: randomUUID(), created_at: tick(), updated_at: tick(), blocked: false, ...input }
-          if (table === 'contacts') { row.phone_optional ??= false; row.wa_username ??= null; row.phone ??= '' }
+          if (table === 'contacts') { row.phone_optional ??= false; row.wa_username ??= null; row.phone ??= ''; row.name_locked ??= false }
           if (op === 'upsert' && table === 'messages') {
             if (tables.messages.some((m) => m.conversation_id === row.conversation_id && m.message_id === row.message_id)) continue
           }
@@ -140,7 +140,7 @@ export function createInMemoryDb(seed: Record<string, Row[]> = {}): InMemoryDb {
       const found = tables.contact_identities.find((i) => i.account_id === a.p_account_id && i.kind === 'bsuid' && i.value === a.p_bsuid)
       if (found) return { data: [{ contact_id: found.contact_id, created: false }], error: null }
       const name = String(a.p_name ?? '').trim() || String(a.p_username ?? '').trim() || 'WhatsApp user'
-      const contact: Row = { id: randomUUID(), account_id: a.p_account_id, user_id: a.p_owner_user_id, phone: '', phone_optional: true, name, wa_username: a.p_username ?? null, blocked: false, created_at: tick(), updated_at: tick() }
+      const contact: Row = { id: randomUUID(), account_id: a.p_account_id, user_id: a.p_owner_user_id, phone: '', phone_optional: true, name, wa_username: a.p_username ?? null, blocked: false, name_locked: false, created_at: tick(), updated_at: tick() }
       tables.contacts.push(contact)
       tables.contact_identities.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: contact.id, kind: 'bsuid', value: a.p_bsuid, superseded_at: null, send_authorized_remaining: 0, source: 'webhook' })
       if (a.p_parent_bsuid) tables.contact_identities.push({ id: randomUUID(), account_id: a.p_account_id, contact_id: contact.id, kind: 'parent_bsuid', value: a.p_parent_bsuid, superseded_at: null, source: 'webhook' })

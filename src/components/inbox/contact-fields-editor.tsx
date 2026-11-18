@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/use-auth";
 import { createClient } from "@/lib/supabase/client";
 import { changedCustomFieldIds } from "@/lib/contacts/field-diff";
+import { manualNameChange } from "@/lib/contacts/name-lock";
 import type { Contact, CustomField } from "@/types";
 
 type StandardValues = { name: string; email: string; company: string };
@@ -148,6 +149,17 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
       }
     }
     if (Object.keys(patch).length === 0) return;
+    // FIX 03: a changed name is saved together with its lock; an emptied name is rejected.
+    if ("name" in patch) {
+      const nameChange = manualNameChange(dbContact.name, patch.name);
+      if (!nameChange.ok) {
+        toast.error(t("nameRequired"));
+        return;
+      }
+      delete patch.name;
+      Object.assign(patch, nameChange.patch);
+      if (Object.keys(patch).length === 0) return;
+    }
     setSavingStandard(true);
     try {
       const { data, error } = await supabase.from("contacts")

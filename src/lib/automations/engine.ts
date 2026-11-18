@@ -1591,9 +1591,17 @@ async function runStep(step: AutomationStep, args: ExecuteArgs): Promise<string>
       // Defense in depth: scope the service-role write to the account so
       // a future caller that skips the entry-point ownership guard still
       // cannot write across tenants.
+      // FIX 03: setting the name from an automation is a deliberate edit — save it with its lock so inbound
+      // WhatsApp messages do not overwrite it. An empty name is never written (it would blank the contact).
+      const patch: Record<string, unknown> = { [cfg.field]: value, updated_at: new Date().toISOString() }
+      if (cfg.field === 'name') {
+        if (!String(value ?? '').trim()) return 'name must not be empty'
+        patch.name = String(value).trim()
+        patch.name_locked = true
+      }
       await db
         .from('contacts')
-        .update({ [cfg.field]: value, updated_at: new Date().toISOString() })
+        .update(patch)
         .eq('id', args.contactId)
         .eq('account_id', args.automation.account_id)
       return `${cfg.field} updated`

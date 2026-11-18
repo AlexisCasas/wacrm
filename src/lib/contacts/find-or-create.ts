@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
+import { applyAutomaticName } from '@/lib/contacts/name-lock'
 import { normalizePhone } from '@/lib/whatsapp/phone-utils'
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -59,11 +60,11 @@ export async function findOrCreateContact(
     // right after this call anyway (never reaches conversation/message
     // creation for a blocked contact), but this name update happens
     // inside find-or-create itself, before that check runs.
-    if (!existingContact.blocked && name && name !== existingContact.name) {
-      await db
-        .from('contacts')
-        .update({ name, updated_at: new Date().toISOString() })
-        .eq('id', existingContact.id)
+    //
+    // FIX 03: a name a person set (`name_locked`) is never overwritten, and the
+    // conditional UPDATE keeps that true even against a concurrent manual edit.
+    if (!existingContact.blocked && !existingContact.name_locked && name && name !== existingContact.name) {
+      await applyAutomaticName(db, existingContact.id, name)
     }
     return { contact: existingContact, wasCreated: false }
   }

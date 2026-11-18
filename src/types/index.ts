@@ -108,6 +108,8 @@ export interface Contact {
   phone_normalized?: string;
   /** True for a contact identified only by a WhatsApp business-scoped user id (migration 077): `phone` is then ''. */
   phone_optional?: boolean;
+  /** true when the name was set by a person/API/automation; the WhatsApp profile-name sync never overwrites it. */
+  name_locked?: boolean;
   /** WhatsApp username, display only (it can change; never an identifier). */
   wa_username?: string | null;
   name?: string;

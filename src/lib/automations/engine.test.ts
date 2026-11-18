@@ -9,7 +9,7 @@ const h = vi.hoisted(() => ({
     automations: [] as Record<string, unknown>[],
     steps: [] as Record<string, unknown>[],
     fromCalls: [] as string[],
-    updateCalls: [] as { table: string; filters: [string, string, unknown][] }[],
+    updateCalls: [] as { table: string; filters: [string, string, unknown][]; payload?: unknown }[],
     upsertCalls: [] as { table: string; payload: unknown }[],
     logInserts: [] as Record<string, unknown>[],
     logUpdates: [] as Record<string, unknown>[],
@@ -112,7 +112,7 @@ vi.mock("./admin-client", () => {
     const { table, type } = ops;
     if (table === "contacts") {
       if (type === "update") {
-        state.updateCalls.push({ table, filters: ops.filters });
+        state.updateCalls.push({ table, filters: ops.filters, payload: ops.payload });
         if (state.advanceClockOnContactUpdateMs != null) {
           // vi.setSystemTime (NOT vi.advanceTimersByTimeAsync) — this
           // only needs Date.now() to read later, never to fire any
@@ -584,6 +584,34 @@ describe("runAutomationsForTrigger — tenant isolation", () => {
     const filters = h.state.updateCalls[0].filters;
     expect(filters).toContainEqual(["eq", "id", "c1"]);
     expect(filters).toContainEqual(["eq", "account_id", ACCOUNT]);
+  });
+});
+
+describe("update_contact_field — FIX 03 name lock", () => {
+  const run = async (step: ReturnType<typeof customStep>) => {
+    h.state.owned = { id: "c1" };
+    h.state.automations = [automationWithUpdateStep()];
+    h.state.steps = [step];
+    await runAutomationsForTrigger({ accountId: ACCOUNT, triggerType: "new_message_received", contactId: "c1", context: {} });
+  };
+
+  it("setting the name saves it together with name_locked=true (same UPDATE, account-scoped)", async () => {
+    await run(customStep("name", "  Cliente Fijo "));
+    expect(h.state.updateCalls).toHaveLength(1);
+    expect(h.state.updateCalls[0].payload).toMatchObject({ name: "Cliente Fijo", name_locked: true });
+    expect(h.state.updateCalls[0].filters).toContainEqual(["eq", "account_id", ACCOUNT]);
+  });
+
+  it("an empty name is never written", async () => {
+    await run(customStep("name", "   "));
+    expect(h.state.updateCalls).toHaveLength(0);
+  });
+
+  it("email/company keep their previous behaviour and never touch the lock", async () => {
+    await run(customStep("company", "ACME"));
+    expect(h.state.updateCalls).toHaveLength(1);
+    expect("name_locked" in (h.state.updateCalls[0].payload as object)).toBe(false);
+    expect("name" in (h.state.updateCalls[0].payload as object)).toBe(false);
   });
 });
 

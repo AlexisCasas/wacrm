@@ -9,6 +9,7 @@ vi.mock("next-intl", () => ({
   useTranslations: () => (key: string) => key,
 }));
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+import { toast } from "sonner";
 
 type Row = { id: string; contact_id: string; custom_field_id: string; value: string | null };
 
@@ -19,6 +20,7 @@ const h = vi.hoisted(() => ({
   valueQueries: [] as string[],
   inserts: [] as Record<string, unknown>[],
   updates: [] as { contact_id?: string }[],
+  contactUpdates: [] as Record<string, unknown>[],
 }));
 
 vi.mock("@/hooks/use-auth", () => ({
@@ -34,7 +36,8 @@ vi.mock("@/lib/supabase/client", () => ({
       const run = () => {
         if (table === "contacts") {
           const id = filters.id as string;
-          return { data: { id, account_id: "acct-1", name: `name-${id}`, phone: `phone-${id}`,
+          if (op === "update") h.contactUpdates.push(payload);
+          return { data: { id, ...(op === "update" ? payload : {}), account_id: "acct-1", name: `name-${id}`, phone: `phone-${id}`,
             email: null, company: null, wa_username: null, phone_optional: null,
             updated_at: "t0" }, error: null };
         }
@@ -92,6 +95,7 @@ beforeEach(() => {
   h.valueQueries = [];
   h.inserts = [];
   h.updates = [];
+  h.contactUpdates = [];
 });
 afterEach(cleanup);
 
@@ -182,5 +186,37 @@ describe("InboxContactFields — per-contact custom values", () => {
     expect(input("Precio").disabled).toBe(false);
     fireEvent.change(input("Precio"), { target: { value: "120" } });
     expect((screen.getByText("fieldsSaveCustom").closest("button") as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe("InboxContactFields — FIX 03 name lock", () => {
+  const nameInput = () => screen.getByText("fieldsName").closest("label")!.querySelector("input")!;
+  const emailInput = () => screen.getByText("fieldsEmail").closest("label")!.querySelector("input")!;
+
+  it("a changed name is saved together with name_locked=true in the same update", async () => {
+    await renderFor("angelo");
+    fireEvent.change(nameInput(), { target: { value: "  Angelo Cliente Keyler " } });
+    fireEvent.click(screen.getByText("fieldsSaveStandard"));
+    await waitFor(() => expect(h.contactUpdates).toHaveLength(1));
+    expect(h.contactUpdates[0]).toMatchObject({ name: "Angelo Cliente Keyler", name_locked: true });
+  });
+
+  it("editing only the email does not touch the name or the lock", async () => {
+    await renderFor("angelo");
+    fireEvent.change(emailInput(), { target: { value: "a@example.test" } });
+    fireEvent.click(screen.getByText("fieldsSaveStandard"));
+    await waitFor(() => expect(h.contactUpdates).toHaveLength(1));
+    expect(h.contactUpdates[0]).toMatchObject({ email: "a@example.test" });
+    expect("name" in h.contactUpdates[0]).toBe(false);
+    expect("name_locked" in h.contactUpdates[0]).toBe(false);
+  });
+
+  it("an emptied name is rejected: no update is sent and the user sees the error", async () => {
+    await renderFor("angelo");
+    fireEvent.change(nameInput(), { target: { value: "   " } });
+    fireEvent.click(screen.getByText("fieldsSaveStandard"));
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith("nameRequired"));
+    expect(h.contactUpdates).toHaveLength(0);
+    expect(nameInput().value).toBe("   ");
   });
 });
