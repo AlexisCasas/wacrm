@@ -9,6 +9,8 @@
 # The old container is deliberately NOT disconnected from the network: that severs its in-flight connections (see lab-alias-flip.sh).
 # Any failure before the old container is stopped leaves the old one serving and removes the candidate.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Remember whether the operator pinned the public alias BEFORE lib.sh applies its default.
+PUBLIC_ALIAS_PINNED="${PUBLIC_ALIAS+yes}"
 # shellcheck source=lib.sh
 . "$DIR/lib.sh"
 # shellcheck source=compose-overlays.sh
@@ -34,6 +36,17 @@ COMPOSE_PROJECT="wacrm-cand-${TS,,}"
 CAND="wacrm-app-cand-$TS"
 OLD="$LIVE_NAME"
 container_running "$OLD" || die "live container $OLD is not running: this script only does zero-downtime swaps; use the normal procedure to start from nothing"
+# Public proxy contract (read-only; also runs in DRY-RUN). The alias we publish is, by default, the exact host the
+# shared Caddy dials, so the two can never silently diverge. An explicit PUBLIC_ALIAS must match it or we stop.
+CADDY_UPSTREAM="$(bash "$DIR/guard-public-proxy.sh" --print-upstream)" ||
+  die "NO-GO: cannot determine the host:port Caddy dials for the WACRM site; refusing to guess (nothing was changed)"
+if [ "$PUBLIC_ALIAS_PINNED" != "yes" ]; then
+  PUBLIC_ALIAS="${CADDY_UPSTREAM%%:*}"
+  export PUBLIC_ALIAS
+fi
+log "public alias (Caddy upstream contract): $PUBLIC_ALIAS (Caddy dials $CADDY_UPSTREAM)"
+bash "$DIR/guard-public-proxy.sh" "$OLD" ||
+  die "NO-GO: the live WACRM route through Caddy is not healthy or does not match PUBLIC_ALIAS=$PUBLIC_ALIAS; repair it before deploying (nothing was changed)"
 docker image inspect "$IMAGE" >/dev/null 2>&1 || die "image $IMAGE is not loaded on this host"
 [ "$(docker image inspect -f '{{.Id}}' "$IMAGE")" != "$(docker inspect -f '{{.Image}}' "$OLD")" ] || die "$IMAGE is already the running image"
 docker network inspect "$EDGE_NETWORK" >/dev/null 2>&1 || die "network $EDGE_NETWORK not found"
@@ -174,6 +187,20 @@ if [ "$(ready_status "$LIVE_NAME")" != "200" ]; then
   die "CRITICAL: readiness failure and reverse name handoff failed (code=$REVERSE_RESULT); manual intervention required"
 fi
 
+# Before stopping the previous image, prove the shared Caddy can reach the new instance directly over its private
+# candidate alias (a request by the public alias can still be answered by the old image during dual-serve).
+PROXY_CONTAINER="${PROXY_CONTAINER:-dentalpin-caddy-1}"
+if ! docker exec "$PROXY_CONTAINER" wget -q -T 8 -O /dev/null "http://$CAND:${CADDY_UPSTREAM##*:}/login"; then
+  log "CRITICAL: Caddy cannot reach the candidate before the old one is stopped; reversing the name handoff"
+  REVERSE_RESULT=0
+  swap_running_live_name "$CAND" "$PREV_NAME" "$LIVE_NAME" || REVERSE_RESULT=$?
+  [ "$REVERSE_RESULT" = "0" ] ||
+    die "CRITICAL: Caddy candidate route failed and reverse handoff failed (code=$REVERSE_RESULT); both instances preserved for manual repair"
+  docker stop -t "$STOP_GRACE" "$CAND" >/dev/null 2>&1 || true
+  cleanup_candidate
+  die "candidate not reachable from Caddy; the old image remains live"
+fi
+log "CADDY_TO_CANDIDATE=PASS"
 log "7/7 SIGTERM to previous container (grace ${STOP_GRACE}s); candidate remains running under live cron name"
 docker stop -t "$STOP_GRACE" "$PREV_NAME" >/dev/null ||
   die "CRITICAL: previous container did not stop cleanly; candidate stays live; manual inspection required"
@@ -202,4 +229,8 @@ private_state_manifest "$STATE_DIR/last.env" || die "rollback manifest permissio
 if [ "$PARK_OK" != "1" ]; then
   die "cutover serving new image, but rollback is DISABLED; do not run rollback.sh or retry deployment until manual repair"
 fi
+# A healthy application that Caddy cannot reach is an outage, NOT a successful deploy. last.env is already
+# published, so the documented rollback (rollback.sh) is available if this gate fails.
+bash "$DIR/guard-public-proxy.sh" "$LIVE_NAME" ||
+  die "CRITICAL: the promoted image is not reachable through Caddy; run ops/deploy/rollback.sh --execute, do NOT retry the deploy"
 log "done. live=$LIVE_NAME image=$IMAGE. Previous container parked privately and stopped as $PREV_NAME. Verify: ops/deploy/verify-no-502.sh; rollback via ops/deploy/rollback.sh"

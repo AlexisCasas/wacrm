@@ -46,6 +46,7 @@ jobs:
             bash -n "$script"
           done
           bash ops/deploy/test-compose-overlays.sh
+          bash ops/deploy/test-guard-public-proxy.sh
 
       - name: Lint
         run: npm run lint
