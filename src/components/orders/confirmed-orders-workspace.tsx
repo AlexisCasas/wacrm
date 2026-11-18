@@ -25,6 +25,8 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { DELIVERY_STATUSES, INTEGRATION_PENDING_STATUSES, type ConfirmedOrder } from "@/lib/orders/confirmed-orders-types";
 import { formatPrice, statusInfo, type StatusTone } from "@/lib/orders/history";
+import { LogisticsPanel } from "@/components/orders/logistics/logistics-panel";
+import { BulkVouchersButton, VoucherIndicator, useLogisticsSummary } from "@/components/orders/logistics/voucher-indicator";
 
 // "Pedidos confirmados" workspace. READ-ONLY consultation of the orders already confirmed in WACRM: it never edits an order, never changes a
 // delivery status and never sends anything. What each user sees is decided by the server (GET /api/orders/confirmed); this screen only renders.
@@ -133,6 +135,8 @@ export function ConfirmedOrdersWorkspace() {
   const requestSeq = useRef(0);
   const opener = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  // PR-04: voucher / logistics indicator of the orders on screen. `null` (flag OFF, not logistics, error) = nothing is rendered.
+  const logisticsSummary = useLogisticsSummary(orders.map((o) => o.id));
 
   // Debounce the free-text search so typing does not fire one request per keystroke.
   useEffect(() => {
@@ -247,6 +251,7 @@ export function ConfirmedOrdersWorkspace() {
           </h2>
           <p className="text-sm text-muted-foreground">{t("subtitle")}</p>
         </div>
+        <BulkVouchersButton visible={logisticsSummary !== null} />
       </div>
 
       {state === "ready" && (
@@ -383,6 +388,7 @@ export function ConfirmedOrdersWorkspace() {
 
                     <div>
                       <OrderStatusBadge status={o.order_status} />
+                      <VoucherIndicator summary={logisticsSummary?.[o.id]} />
                     </div>
                     <div>
                       <IntegrationBadge status={o.delivery_status} />
@@ -567,6 +573,8 @@ function OrderDrawer({
             <dd className="font-medium text-foreground">{order.department || t("none")}</dd>
           </dl>
         </section>
+
+        <LogisticsPanel key={order.id} orderId={order.id} />
       </div>
 
       <div className="border-t border-border p-5">

@@ -113,3 +113,43 @@ export async function getOrderPanel(ctx: LogisticsCaller, orderId: string): Prom
     },
   }
 }
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+// Compact indicator for the list of confirmed orders
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+export interface OrderLogisticsSummary {
+  status: LogisticsStatus
+  /** `validated` once the order has a validated voucher; `pending_review` while there is an uploaded voucher waiting for a person; otherwise `none`. */
+  voucher: 'none' | 'pending_review' | 'validated'
+}
+
+export const MAX_SUMMARY_IDS = 50
+
+/**
+ * The logistic status + voucher indicator of up to 50 orders, in TWO queries, read with the caller's client (RLS). Orders without a row are
+ * `pending_voucher` (no backfill). Unknown ids / other accounts' orders simply get the default: nothing is revealed about them.
+ */
+export async function getLogisticsSummary(ctx: LogisticsCaller, rawIds: readonly string[]): Promise<ServiceResult<{ summary: Record<string, OrderLogisticsSummary> }>> {
+  const ids = [...new Set(rawIds)]
+  if (ids.length === 0 || ids.length > MAX_SUMMARY_IDS || ids.some((id) => !isUuid(id))) return fail(400, 'invalid_ids')
+  const denied = await denyUnlessLogisticsInDatabase(ctx)
+  if (denied) return fail(denied.status, denied.error)
+
+  const [rows, pending] = await Promise.all([
+    ctx.supabase.from('order_logistics').select('order_id, status').eq('account_id', ctx.accountId).in('order_id', ids),
+    ctx.supabase.from('order_documents').select('order_id').eq('account_id', ctx.accountId).eq('kind', 'voucher').eq('status', 'pending_review').in('order_id', ids),
+  ])
+  if (rows.error || pending.error) {
+    console.error('[logistics] summary failed:', rows.error?.code ?? pending.error?.code)
+    return fail(500, 'internal_error')
+  }
+  const status = new Map(((rows.data ?? []) as Array<{ order_id: string; status: LogisticsStatus }>).map((r) => [r.order_id, r.status]))
+  const waiting = new Set(((pending.data ?? []) as Array<{ order_id: string }>).map((r) => r.order_id))
+  const summary: Record<string, OrderLogisticsSummary> = {}
+  for (const id of ids) {
+    const s = status.get(id) ?? 'pending_voucher'
+    summary[id] = { status: s, voucher: s !== 'pending_voucher' ? 'validated' : waiting.has(id) ? 'pending_review' : 'none' }
+  }
+  return { ok: true, status: 200, body: { summary } }
+}
