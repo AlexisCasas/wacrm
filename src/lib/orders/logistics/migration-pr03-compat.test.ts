@@ -25,9 +25,12 @@ const PR04 = [
   '20261129000004_order_template_dispatch_rpcs.sql',
   '20261129000005_order_evidence_upload.sql',
 ]
+// PR-05 (Shalom tracking) migrations come after PR-04's: they are later still, so the "files after PR-03" arithmetic below must count them too.
+const PR05_PREFIX = '202611300000'
 const read = (name: string) => readFileSync(resolve(dir, name), 'utf8').replace(/\r\n/g, '\n')
 const strip = (sql: string) => sql.replace(/^\s*--.*$/gm, '')
 const all = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
+const pr05 = all.filter((f) => f.startsWith(PR05_PREFIX))
 
 /** SHA-256 of the PR-03 migration (LF-normalized) as closed at a1d76f3fb89439b692967f5781033ada058a9784. */
 const PR03_SHA256 = '931ad2b6597b8995c89c2d435fc7b35f12bbdccb6d4643571dad58fe43ffa298'
@@ -75,9 +78,9 @@ describe('PR-04 migrations are strictly later and independent of PR-03', () => {
 
 describe('the frozen PR-03 test: what its failure is and is not', () => {
   it('the frozen "last migration" assertion holds over the PR-03-era file list and fails only because PR-04 files exist after it', () => {
-    const era = all.filter((f) => !PR04.includes(f))
+    const era = all.filter((f) => !PR04.includes(f) && !pr05.includes(f))
     expect(era.indexOf(PR03)).toBe(era.length - 1) // the invariant PR-03 asserted: true without the PR-04 migrations
-    expect(all.indexOf(PR03)).toBe(all.length - 1 - PR04.length) // ...and exactly the PR-04 files are what come after it
+    expect(all.indexOf(PR03)).toBe(all.length - 1 - PR04.length - pr05.length) // ...and exactly the PR-04 (and later PR-05) files are what come after it
   })
 
   it('the other assertion of that test (sorts after the PR-02 migrations) still holds', () => {
