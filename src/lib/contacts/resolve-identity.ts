@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe'
+import { applyAutomaticName } from '@/lib/contacts/name-lock'
 import { findOrCreateContact, type ContactOutcome } from '@/lib/contacts/find-or-create'
 import type { InboundIdentity } from '@/lib/whatsapp/resolve-sender-identity'
 
@@ -157,15 +158,17 @@ async function withContact(
     console.error('[contacts] contact row not readable after identity resolution', { account_id: accountId })
     return null
   }
-  const contact = data as Record<string, unknown> & { id: string; blocked?: boolean; name?: string | null; wa_username?: string | null }
+  const contact = data as Record<string, unknown> & { id: string; blocked?: boolean; name?: string | null; name_locked?: boolean; wa_username?: string | null }
   if (!contact.blocked) {
-    const patch: Record<string, unknown> = {}
-    if (name && name !== contact.name) patch.name = name
-    if (identity.username && identity.username !== contact.wa_username) patch.wa_username = identity.username
-    if (Object.keys(patch).length) {
-      patch.updated_at = new Date().toISOString()
+    // The username is display-only and not editable by a person: it keeps syncing.
+    if (identity.username && identity.username !== contact.wa_username) {
+      const patch = { wa_username: identity.username, updated_at: new Date().toISOString() }
       await db.from('contacts').update(patch).eq('id', contact.id).eq('account_id', accountId)
       Object.assign(contact, patch)
+    }
+    // FIX 03: the name syncs only while no person has set it (atomic conditional UPDATE).
+    if (name && !contact.name_locked && name !== contact.name) {
+      if (await applyAutomaticName(db, contact.id, name, { accountId })) contact.name = name
     }
   }
   return { contact, wasCreated, via }

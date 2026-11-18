@@ -520,6 +520,7 @@
       "fieldsReload": "Recargar datos",
       "fieldsLoadError": "No se pudieron cargar los datos del contacto.",
       "fieldsSaveError": "No se pudieron guardar los cambios.",
+      "nameRequired": "El nombre no puede quedar vacío",
       "fieldsConflict": "Los datos cambiaron en otra sesión. Recarga antes de volver a guardar.",
       "fieldsSaved": "Información guardada correctamente.",
       "contactInfo": "Información del contacto",
@@ -680,7 +681,8 @@
       "dupSimilar": "Ya existe un contacto con un número muy similar.",
       "loadingTags": "Cargando etiquetas...",
       "noTagsAvailable": "No hay etiquetas disponibles. Créalas en Configuración.",
-      "phoneRequired": "El número de teléfono es obligatorio"
+      "phoneRequired": "El número de teléfono es obligatorio",
+      "nameRequired": "El nombre no puede quedar vacío"
     },
     "detailView": {
       "tabs": {
@@ -733,6 +735,7 @@
       "saveChangesBtn": "Guardar cambios",
       "saveCustomFieldsBtn": "Guardar campos personalizados",
       "toastPhoneRequired": "El número de teléfono es obligatorio",
+      "toastNameRequired": "El nombre no puede quedar vacío",
       "toastUpdateFailed": "Error al actualizar el contacto",
       "toastUpdated": "Contacto actualizado",
       "toastNotAuthenticated": "No autenticado",

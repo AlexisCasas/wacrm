@@ -26,6 +26,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Loader2, AlertTriangle } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { manualNameChange } from '@/lib/contacts/name-lock';
 
 interface ContactFormProps {
   open: boolean;
@@ -150,10 +151,17 @@ export function ContactForm({
       let contactId = contact?.id;
 
       if (isEdit && contactId) {
+        // FIX 03: a changed name is saved together with its lock; an emptied name is rejected.
+        const nameChange = manualNameChange(contact?.name, name);
+        if (!nameChange.ok) {
+          toast.error(t('nameRequired'));
+          setSaving(false);
+          return;
+        }
         const { error } = await supabase
           .from('contacts')
           .update({
-            name: name.trim() || null,
+            ...nameChange.patch,
             phone: phone.trim(),
             email: email.trim() || null,
             company: company.trim() || null,

@@ -8,6 +8,7 @@
 // array of tag names) to replace the contact's tags.
 // ============================================================
 
+import { manualNameChange } from '@/lib/contacts/name-lock';
 import { requireApiKey } from '@/lib/auth/api-context';
 import { ok, fail, toApiErrorResponse } from '@/lib/api/v1/respond';
 import {
@@ -65,6 +66,18 @@ export async function PATCH(
       } else {
         return fail('bad_request', `'${field}' must be a string or null`, 400);
       }
+    }
+
+    // FIX 03: a name set through the API is a deliberate edit — it is saved together with its lock so inbound
+    // WhatsApp messages stop overwriting it. An empty/null name is rejected (it would blank the contact);
+    // email and company keep their previous null-clears behaviour.
+    if ('name' in updates) {
+      const nameChange = manualNameChange(existing.name, updates.name as string | null);
+      if (!nameChange.ok) {
+        return fail('bad_request', "'name' must be a non-empty string", 400);
+      }
+      delete updates.name;
+      Object.assign(updates, nameChange.patch);
     }
 
     if (Object.keys(updates).length > 0) {

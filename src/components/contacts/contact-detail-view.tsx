@@ -43,6 +43,7 @@ import {
   LayoutTemplate,
 } from 'lucide-react';
 import { useTranslations } from 'next-intl';
+import { manualNameChange } from '@/lib/contacts/name-lock';
 import { useIntlLocaleTag } from '@/lib/date-locale';
 
 interface ContactDetailViewProps {
@@ -208,11 +209,18 @@ export function ContactDetailView({
       return;
     }
 
+    // FIX 03: a changed name is saved together with its lock; an emptied name is rejected.
+    const nameChange = manualNameChange(contact?.name, editName);
+    if (!nameChange.ok) {
+      toast.error(t('toastNameRequired'));
+      return;
+    }
+
     setSavingDetails(true);
     const { error } = await supabase
       .from('contacts')
       .update({
-        name: editName.trim() || null,
+        ...nameChange.patch,
         // Never rewrite the phone of a phone-less contact with an empty value.
         ...(editPhone.trim() || !contact?.phone_optional ? { phone: editPhone.trim() } : {}),
         email: editEmail.trim() || null,

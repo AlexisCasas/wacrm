@@ -21,6 +21,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 
 import { findExistingContact, isUniqueViolation } from '@/lib/contacts/dedupe';
+import { applyAutomaticName } from '@/lib/contacts/name-lock';
 import { sanitizePhoneForMeta, isValidE164 } from '@/lib/whatsapp/phone-utils';
 import { SendMessageError } from '@/lib/whatsapp/send-message';
 import { resolveAuditUserId, ContactError } from '@/lib/api/v1/contacts';
@@ -91,11 +92,9 @@ export async function resolveConversationByPhone(
   const existing = await findExistingContact(db, accountId, sanitized);
   if (existing) {
     contactId = existing.id;
-    if (name && name !== existing.name) {
-      await db
-        .from('contacts')
-        .update({ name, updated_at: new Date().toISOString() })
-        .eq('id', existing.id);
+    // FIX 03: a name set by a person is never overwritten by the API-provided name.
+    if (name && name !== existing.name && !existing.name_locked) {
+      await applyAutomaticName(db, existing.id, name);
     }
   } else {
     const { data: created, error: createErr } = await db

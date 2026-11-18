@@ -520,6 +520,7 @@
       "fieldsReload": "Reload details",
       "fieldsLoadError": "Couldn't load contact details.",
       "fieldsSaveError": "Couldn't save the changes.",
+      "nameRequired": "The name cannot be empty",
       "fieldsConflict": "These details changed elsewhere. Reload before trying again.",
       "fieldsSaved": "Contact details saved.",
       "contactInfo": "Contact info",
@@ -680,7 +681,8 @@
       "dupSimilar": "A contact with a very similar number already exists.",
       "loadingTags": "Loading tags...",
       "noTagsAvailable": "No tags available. Create tags in Settings.",
-      "phoneRequired": "Phone number is required"
+      "phoneRequired": "Phone number is required",
+      "nameRequired": "The name cannot be empty"
     },
     "detailView": {
       "tabs": {
@@ -733,6 +735,7 @@
       "saveChangesBtn": "Save Changes",
       "saveCustomFieldsBtn": "Save Custom Fields",
       "toastPhoneRequired": "Phone number is required",
+      "toastNameRequired": "The name cannot be empty",
       "toastUpdateFailed": "Failed to update contact",
       "toastUpdated": "Contact updated",
       "toastNotAuthenticated": "Not authenticated",
