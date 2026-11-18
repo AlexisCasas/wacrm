@@ -57,13 +57,19 @@ vi.mock('@/lib/supabase/client', () => {
 })
 
 const fetchMock = vi.fn()
+// FIX 04: the dialogs first ask the server for the impact (POST .../preview); the deletion itself is the other URL.
+const IMPACT = { contacts: 2, conversations: 2, messages: 5, orders: 0, contacts_with_orders: 0, blocked: 0, recent_conversations: 0, with_bsuid: 0, limits: { per_operation: 100, account_24h: 1000, agent_hour: 10, recent_days: 30 }, account_24h_used: 0, role: 'admin', can_bulk: true, can_delete_with_orders: true }
+const respondTo = (deleteResponse: unknown, impact: Record<string, unknown> = IMPACT) =>
+  fetchMock.mockImplementation((url: string) => Promise.resolve(String(url).endsWith('/preview') ? { ok: true, json: async () => impact } : deleteResponse))
+const deleteCalls = () => fetchMock.mock.calls.filter(([url]) => !String(url).endsWith('/preview'))
+const previewCalls = () => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/preview'))
 const mkRows = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `c${i + 1}`, name: `Contacto ${i + 1}`, phone: `5190000000${i}`, email: null, company: null, created_at: '2026-10-01T00:00:00Z', account_id: 'a' }))
 const last = () => h.queries[h.queries.length - 1]
 const opsOf = (q: { ops: Array<[string, ...unknown[]]> }, name: string) => q.ops.filter((o) => o[0] === name)
 
 beforeEach(() => {
   h.rows = mkRows(3); h.idRows = null; h.total = 3; h.queries = []; h.rpcs = []
-  fetchMock.mockReset(); fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, conversations_deleted: 2, messages_deleted: 5 }) })
+  fetchMock.mockReset(); respondTo({ ok: true, json: async () => ({ deleted: 2, conversations_deleted: 2, messages_deleted: 5 }) })
   vi.stubGlobal('fetch', fetchMock)
 })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
@@ -244,6 +250,8 @@ describe('Contacts page — delete', () => {
     fireEvent.click(screen.getByText('deleteSelected'))
     return await screen.findByRole('dialog')
   }
+  const typeWord = async (word = 'ELIMINAR') => fireEvent.change(await screen.findByLabelText('typeToConfirm'), { target: { value: word } })
+  const confirmButton = (label = 'deleteBulkConfirm:2') => screen.getByText(label).closest('button') as HTMLButtonElement
 
   it('the modal states the count, the chats/messages scope and that it cannot be undone', async () => {
     const dialog = await selectTwoAndOpenDialog()
@@ -254,7 +262,20 @@ describe('Contacts page — delete', () => {
     expect(within(dialog).getByText('deleteBulkConfirm:2')).toBeTruthy()
   })
 
-  it('sends ONLY the selected ids (no filters, search, tag or time) and refreshes the list', async () => {
+  it('shows the impact preview (counts) and asks for the typed word before enabling the confirm button', async () => {
+    await selectTwoAndOpenDialog()
+    expect(await screen.findByTestId('delete-impact')).toBeTruthy()
+    expect(screen.getByText('impactConversations:2')).toBeTruthy()
+    expect(screen.getByText('impactMessages:5')).toBeTruthy()
+    expect(JSON.parse(previewCalls()[0][1].body)).toEqual({ contact_ids: ['c1', 'c3'] })
+    expect(confirmButton().disabled).toBe(true)
+    await typeWord('eliminar')                       // wrong case
+    expect(confirmButton().disabled).toBe(true)
+    await typeWord('ELIMINAR')
+    await waitFor(() => expect(confirmButton().disabled).toBe(false))
+  })
+
+  it('sends ONLY the selected ids plus the typed word (no filters, search, tag or time) and refreshes the list', async () => {
     render(<ContactsPage />); await loaded()
     await pickTime('timeOlder90')
     fireEvent.change(screen.getByPlaceholderText('searchPlaceholder'), { target: { value: 'Juan' } })
@@ -262,81 +283,122 @@ describe('Contacts page — delete', () => {
     await waitFor(() => expect(opsOf(last(), 'or')).toHaveLength(1)); await settled()
     fireEvent.click(await rowBox(1)); fireEvent.click(await rowBox(3))
     fireEvent.click(screen.getByText('deleteSelected'))
-    fireEvent.click(await screen.findByText('deleteBulkConfirm:2'))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-    const [url, init] = fetchMock.mock.calls[0]
+    await typeWord()
+    await waitFor(() => expect(confirmButton().disabled).toBe(false))
+    fireEvent.click(confirmButton())
+    await waitFor(() => expect(deleteCalls()).toHaveLength(1))
+    const [url, init] = deleteCalls()[0]
     expect(url).toBe('/api/contacts/bulk-delete')
-    expect(JSON.parse(init.body)).toEqual({ contact_ids: ['c1', 'c3'] })
+    expect(JSON.parse(init.body)).toEqual({ contact_ids: ['c1', 'c3'], confirm: 'ELIMINAR' })
     await waitFor(() => expect(screen.queryByText(/^selectedCount/)).toBeNull())
   })
 
-  it('double submit is protected: the confirm button is disabled and only one request goes out', async () => {
+  it('double submit is protected: the confirm button is disabled and only one deletion request goes out', async () => {
     let release!: (v: unknown) => void
-    fetchMock.mockReturnValue(new Promise((r) => { release = r }))
+    respondTo(new Promise((r) => { release = r }))
     await selectTwoAndOpenDialog()
-    const confirm = screen.getByText('deleteBulkConfirm:2').closest('button') as HTMLButtonElement
+    await typeWord()
+    await waitFor(() => expect(confirmButton().disabled).toBe(false))
+    const confirm = confirmButton()
     fireEvent.click(confirm); fireEvent.click(confirm)
-    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(deleteCalls()).toHaveLength(1)
     expect(confirm.disabled).toBe(true)
     release({ ok: true, json: async () => ({ deleted: 2 }) })
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(deleteCalls()).toHaveLength(1))
   })
 
-  it('deletes a global selection over 100 ids sequentially in batches of at most 100', async () => {
-    h.idRows = mkRows(101); h.total = 101
-    render(<ContactsPage />); await loaded()
-    fireEvent.click(await screen.findByRole('checkbox', { name: 'selectAllAria', hidden: true }))
-    fireEvent.click(screen.getByText('deleteSelected'))
-    fireEvent.click(await screen.findByText('deleteBulkConfirm:101'))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    for (const [, init] of fetchMock.mock.calls) expect(JSON.parse(init.body).contact_ids.length).toBeLessThanOrEqual(100)
-  })
-
-  it('does not report a full success when a later batch fails and keeps the pending ids selected', async () => {
+  it('more than 100 contacts cannot be deleted in one operation: a clear message, no dialog and no request', async () => {
     const { toast } = await import('sonner')
+    vi.mocked(toast.error).mockClear()
     h.idRows = mkRows(101); h.total = 101
-    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ deleted: 100 }) }).mockResolvedValueOnce({ ok: false, status: 500, json: async () => ({ error: 'nope' }) })
     render(<ContactsPage />); await loaded()
     fireEvent.click(await screen.findByRole('checkbox', { name: 'selectAllAria', hidden: true }))
     fireEvent.click(screen.getByText('deleteSelected'))
-    fireEvent.click(await screen.findByText('deleteBulkConfirm:101'))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
-    expect(toast.success).not.toHaveBeenCalledWith('toastBulkDeleted:101')
-    expect(screen.getByText('selectedCount:1')).toBeTruthy()
-    await waitFor(() => expect(h.queries.length).toBeGreaterThan(2))
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('deleteLimitPerOperation:100'))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('a failed delete keeps the selection and shows the error', async () => {
     const { toast } = await import('sonner')
-    fetchMock.mockResolvedValue({ ok: false, status: 404, json: async () => ({ error: 'nope', deleted: 0 }) })
+    respondTo({ ok: false, status: 404, json: async () => ({ error: 'nope', deleted: 0 }) })
     await selectTwoAndOpenDialog()
-    fireEvent.click(screen.getByText('deleteBulkConfirm:2'))
+    await typeWord()
+    await waitFor(() => expect(confirmButton().disabled).toBe(false))
+    fireEvent.click(confirmButton())
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('toastBulkFailedDelete'))
   })
 
-  it('single delete (three dots menu) keeps its UX and uses the same safe endpoint with one id', async () => {
+  it.each([
+    ['RATE_LIMIT_ACCOUNT', 429, 'toastDeleteRateLimited'],
+    ['RATE_LIMIT_USER', 429, 'toastDeleteRateLimited'],
+    ['PROTECTED_CONTACTS', 409, 'toastDeleteProtected'],
+    ['BULK_REQUIRES_ADMIN', 403, 'toastDeleteForbidden'],
+    ['ORDERS_REQUIRE_ADMIN', 403, 'toastDeleteForbidden'],
+  ])('the server code %s is explained to the person, not shown as a generic failure', async (code, status, key) => {
+    const { toast } = await import('sonner')
+    vi.mocked(toast.error).mockClear()
+    respondTo({ ok: false, status, json: async () => ({ error: 'x', code, deleted: 0 }) })
+    await selectTwoAndOpenDialog()
+    await typeWord()
+    await waitFor(() => expect(confirmButton().disabled).toBe(false))
+    fireEvent.click(confirmButton())
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith(key))
+  })
+
+  it('protected contacts (orders / recent chats / blocks) require the explicit acknowledgement, which is sent to the server', async () => {
+    respondTo({ ok: true, json: async () => ({ deleted: 2 }) }, { ...IMPACT, orders: 3, contacts_with_orders: 1, blocked: 1, recent_conversations: 1 })
+    await selectTwoAndOpenDialog()
+    expect(await screen.findByText('impactOrders:3')).toBeTruthy()
+    await typeWord()
+    expect(confirmButton().disabled).toBe(true)                  // typed word is not enough
+    fireEvent.click(screen.getByText('impactAcknowledge'))
+    await waitFor(() => expect(confirmButton().disabled).toBe(false))
+    fireEvent.click(confirmButton())
+    await waitFor(() => expect(deleteCalls()).toHaveLength(1))
+    expect(JSON.parse(deleteCalls()[0][1].body)).toEqual({ contact_ids: ['c1', 'c3'], confirm: 'ELIMINAR', acknowledge_protected: true })
+  })
+
+  it('an agent cannot delete contacts with orders: a warning and no way to confirm', async () => {
+    respondTo({ ok: true, json: async () => ({ deleted: 1 }) }, { ...IMPACT, contacts: 1, orders: 1, contacts_with_orders: 1, can_bulk: false, can_delete_with_orders: false, role: 'agent' })
     render(<ContactsPage />); await loaded()
     const row = (await screen.findByText('Contacto 2')).closest('tr') as HTMLElement
     fireEvent.click(within(row).getAllByRole('button')[0])
     fireEvent.click(await screen.findByText('deleteAction'))
-    fireEvent.click(await screen.findByText('deleteBtn'))
-    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ contact_ids: ['c2'] })
+    expect(await screen.findByText('impactOrdersNeedAdmin')).toBeTruthy()
+    expect((screen.getByText('deleteBtn').closest('button') as HTMLButtonElement).disabled).toBe(true)
+    expect(deleteCalls()).toHaveLength(0)
+  })
+
+  it('single delete (three dots menu) keeps its UX and uses the same safe endpoint with one id and no typed word', async () => {
+    render(<ContactsPage />); await loaded()
+    const row = (await screen.findByText('Contacto 2')).closest('tr') as HTMLElement
+    fireEvent.click(within(row).getAllByRole('button')[0])
+    fireEvent.click(await screen.findByText('deleteAction'))
+    await waitFor(() => expect((screen.getByText('deleteBtn').closest('button') as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByText('deleteBtn'))
+    await waitFor(() => expect(deleteCalls()).toHaveLength(1))
+    expect(JSON.parse(deleteCalls()[0][1].body)).toEqual({ contact_ids: ['c2'] })
+    expect(JSON.parse(previewCalls()[0][1].body)).toEqual({ contact_ids: ['c2'] })
   })
 
   it('a clean cleanup shows the normal success; pending media cleanup is a warning (the contacts WERE deleted), never a failure', async () => {
     const { toast } = await import('sonner')
     vi.mocked(toast.success).mockClear(); vi.mocked(toast.warning).mockClear()
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, cleanup_complete: true, storage_pending: 0 }) })
+    respondTo({ ok: true, json: async () => ({ deleted: 2, cleanup_complete: true, storage_pending: 0 }) })
     await selectTwoAndOpenDialog()
-    fireEvent.click(screen.getByText('deleteBulkConfirm:2'))
+    await typeWord()
+    await waitFor(() => expect(confirmButton().disabled).toBe(false))
+    fireEvent.click(confirmButton())
     await waitFor(() => expect(toast.success).toHaveBeenCalledWith('toastBulkDeleted:2'))
     expect(toast.warning).not.toHaveBeenCalled()
 
     cleanup(); vi.mocked(toast.success).mockClear()
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ deleted: 2, cleanup_complete: false, storage_pending: 3 }) })
+    respondTo({ ok: true, json: async () => ({ deleted: 2, cleanup_complete: false, storage_pending: 3 }) })
     await selectTwoAndOpenDialog()
-    fireEvent.click(screen.getByText('deleteBulkConfirm:2'))
+    await typeWord()
+    await waitFor(() => expect(confirmButton().disabled).toBe(false))
+    fireEvent.click(confirmButton())
     await waitFor(() => expect(toast.warning).toHaveBeenCalledWith('toastMediaCleanupIncomplete'))
     expect(toast.success).not.toHaveBeenCalled()
   })

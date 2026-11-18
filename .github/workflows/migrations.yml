@@ -87,3 +87,6 @@ jobs:
 
       - name: Verify BSUID autoauth node trigger with digit-leading flow UUIDs
         run: supabase db query --local --file supabase/ci/autoauth-guc-test.sql
+
+      - name: Verify contact deletion controls (FIX 04)
+        run: supabase db query --local --file supabase/ci/verify-contact-delete-controls.sql

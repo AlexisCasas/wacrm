@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import type { Contact, Tag, ContactTag } from '@/types';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Table,
   TableBody,
@@ -64,7 +65,7 @@ import { useCan } from '@/hooks/use-can';
 import { GatedButton } from '@/components/ui/gated-button';
 import { useTranslations } from 'next-intl';
 import { useIntlLocaleTag } from '@/lib/date-locale';
-import { bulkDeleteContacts } from '@/lib/contacts/bulk-delete-api';
+import { BulkDeleteError, DELETE_CONFIRM_WORD, bulkDeleteContacts, previewContactDeletion, type DeletionImpact } from '@/lib/contacts/bulk-delete-api';
 import { startSearchTimer } from '@/lib/perf/search-timing';
 import { TIME_FILTERS, resolveTimeRange, isTimeFilterActive, type TimeFilter, type TimeRange } from '@/lib/contacts/time-filter';
 
@@ -93,6 +94,8 @@ export default function ContactsPage() {
   const supabase = createClient();
   const canEdit = useCan('send-messages');
   const canEditSettings = useCan('edit-settings');
+  // FIX 04: deleting several contacts at once is for admin / owner only (the server and the database enforce it too).
+  const canBulkDelete = useCan('manage-members');
 
   const [contactRows, setContactRows] = useState<ContactRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,6 +131,13 @@ export default function ContactsPage() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [allMatchingSelected, setAllMatchingSelected] = useState(false);
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  // FIX 04 deletion safety: impact preview, typed confirmation and explicit acknowledgement of protected contacts.
+  const [impact, setImpact] = useState<DeletionImpact | null>(null);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactFailed, setImpactFailed] = useState(false);
+  const [confirmText, setConfirmText] = useState('');
+  const [ackProtected, setAckProtected] = useState(false);
+  const [bulkIds, setBulkIds] = useState<string[]>([]);
   // Synchronous guard against a double click on a destructive button (state updates are async).
   const deletingRef = useRef(false);
 
@@ -305,6 +315,24 @@ export default function ContactsPage() {
     setDetailOpen(true);
   }
 
+  const loadImpact = useCallback(async (ids: string[]) => {
+    setImpact(null); setImpactFailed(false); setImpactLoading(true); setAckProtected(false); setConfirmText('');
+    try { setImpact(await previewContactDeletion(ids)); } catch { setImpactFailed(true); } finally { setImpactLoading(false); }
+  }, []);
+
+  // Single delete: show what would be lost before the person confirms.
+  useEffect(() => {
+    if (deleteConfirmOpen && deleteTarget) void loadImpact([deleteTarget.id]);
+  }, [deleteConfirmOpen, deleteTarget, loadImpact]);
+
+  function deleteErrorToast(error: unknown, fallback: string) {
+    const code = error instanceof BulkDeleteError ? error.code : undefined;
+    if (code === 'RATE_LIMIT_ACCOUNT' || code === 'RATE_LIMIT_USER') toast.error(t('toastDeleteRateLimited'));
+    else if (code === 'PROTECTED_CONTACTS') toast.error(t('toastDeleteProtected'));
+    else if (code === 'BULK_REQUIRES_ADMIN' || code === 'ORDERS_REQUIRE_ADMIN' || code === 'ACTOR_NOT_AUTHORIZED') toast.error(t('toastDeleteForbidden'));
+    else toast.error(fallback);
+  }
+
   function confirmDelete(contact: Contact) {
     setDeleteTarget(contact);
     setDeleteConfirmOpen(true);
@@ -317,12 +345,12 @@ export default function ContactsPage() {
 
     try {
       // Same atomic server-side path as the bulk delete, with a single id.
-      const result = await bulkDeleteContacts([deleteTarget.id]);
+      const result = await bulkDeleteContacts([deleteTarget.id], { acknowledgeProtected: ackProtected });
       if (!result.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
       else toast.success(t('toastDeleted'));
       fetchContacts();
-    } catch {
-      toast.error(t('toastFailedDelete'));
+    } catch (error) {
+      deleteErrorToast(error, t('toastFailedDelete'));
     }
 
     deletingRef.current = false;
@@ -409,38 +437,38 @@ export default function ContactsPage() {
     return ids;
   }
 
+  // Opening the bulk dialog resolves the exact ids (at most one operation: 100) and asks the server for the impact.
+  async function openBulkDelete() {
+    if (selectedCount > BULK_DELETE_BATCH_SIZE) { toast.error(t('deleteLimitPerOperation', { count: BULK_DELETE_BATCH_SIZE })); return; }
+    setBulkDeleteOpen(true);
+    setBulkIds([]);
+    try {
+      const ids = allMatchingSelected ? await resolveAllMatchingIds() : [...selected];
+      setBulkIds(ids);
+      if (ids.length > 0 && ids.length <= BULK_DELETE_BATCH_SIZE) await loadImpact(ids);
+    } catch { setImpactFailed(true); }
+  }
+
   async function handleBulkDelete() {
-    if (selectedCount === 0 || deletingRef.current) return;
+    if (bulkIds.length === 0 || deletingRef.current) return;
+    if (bulkIds.length > 1 && confirmText.trim() !== DELETE_CONFIRM_WORD) return;
     deletingRef.current = true;
     setDeleting(true);
 
     try {
-      const ids = allMatchingSelected ? await resolveAllMatchingIds() : [...selected];
-      if (ids.length === 0) return;
-      let deleted = 0;
-      let cleanupComplete = true;
-      for (let index = 0; index < ids.length; index += BULK_DELETE_BATCH_SIZE) {
-        try {
-          const result = await bulkDeleteContacts(ids.slice(index, index + BULK_DELETE_BATCH_SIZE));
-          deleted += result.deleted;
-          cleanupComplete = cleanupComplete && result.cleanup_complete;
-        } catch (error) {
-          setAllMatchingSelected(false);
-          setSelected(new Set(ids.slice(index)));
-          fetchContacts();
-          throw error;
-        }
-      }
-      if (!cleanupComplete) toast.warning(t('toastMediaCleanupIncomplete'));
-      else toast.success(t('toastBulkDeleted', { count: deleted }));
+      const result = await bulkDeleteContacts(bulkIds, { confirm: confirmText.trim(), acknowledgeProtected: ackProtected });
+      if (!result.cleanup_complete) toast.warning(t('toastMediaCleanupIncomplete'));
+      else toast.success(t('toastBulkDeleted', { count: result.deleted }));
       clearSelection();
       fetchContacts();
-    } catch {
-      toast.error(t('toastBulkFailedDelete'));
+    } catch (error) {
+      deleteErrorToast(error, t('toastBulkFailedDelete'));
     } finally {
       deletingRef.current = false;
       setDeleting(false);
       setBulkDeleteOpen(false);
+      setConfirmText('');
+      setAckProtected(false);
     }
   }
 
@@ -787,9 +815,9 @@ export default function ContactsPage() {
             <GatedButton
               variant="destructive"
               size="sm"
-              canAct={canEdit}
-              gateReason="delete contacts"
-              onClick={() => setBulkDeleteOpen(true)}
+              canAct={canEdit && canBulkDelete}
+              gateReason="delete several contacts (admin or owner)"
+              onClick={() => void openBulkDelete()}
             >
               <Trash2 className="size-4" />
               {t('deleteSelected')}
@@ -1050,6 +1078,7 @@ export default function ContactsPage() {
               {t('deleteContactDesc', { name: contactLabel(deleteTarget) || '' })}
             </DialogDescription>
           </DialogHeader>
+          <ImpactSummary impact={impact} loading={impactLoading} failed={impactFailed} t={t} ack={ackProtected} onAck={setAckProtected} />
           <DialogFooter className="bg-popover border-border">
             <Button
               variant="outline"
@@ -1061,7 +1090,7 @@ export default function ContactsPage() {
             <Button
               variant="destructive"
               onClick={handleDelete}
-              disabled={deleting}
+              disabled={deleting || impactLoading || isDeleteBlocked(impact, ackProtected, false)}
             >
               {deleting && <Loader2 className="size-4 animate-spin" />}
               {t('deleteBtn')}
@@ -1083,6 +1112,13 @@ export default function ContactsPage() {
               <strong className="font-semibold text-foreground">{t('deleteBulkIrreversible')}</strong>
             </DialogDescription>
           </DialogHeader>
+          <ImpactSummary impact={impact} loading={impactLoading} failed={impactFailed} t={t} ack={ackProtected} onAck={setAckProtected} />
+          {bulkIds.length > 1 && (
+            <div className="space-y-1.5">
+              <Label htmlFor="bulk-delete-confirm" className="text-xs text-muted-foreground">{t('typeToConfirm', { word: DELETE_CONFIRM_WORD })}</Label>
+              <Input id="bulk-delete-confirm" value={confirmText} onChange={(e) => setConfirmText(e.target.value)} autoComplete="off" className="bg-muted border-border text-foreground h-8 text-sm" />
+            </div>
+          )}
           <DialogFooter className="bg-popover border-border">
             <Button
               variant="outline"
@@ -1094,14 +1130,57 @@ export default function ContactsPage() {
             <Button
               variant="destructive"
               onClick={handleBulkDelete}
-              disabled={deleting}
+              disabled={deleting || impactLoading || bulkIds.length === 0 || (bulkIds.length > 1 && confirmText.trim() !== DELETE_CONFIRM_WORD) || isDeleteBlocked(impact, ackProtected, true)}
             >
               {deleting && <Loader2 className="size-4 animate-spin" />}
-              {t('deleteBulkConfirm', { count: selectedCount })}
+              {t('deleteBulkConfirm', { count: bulkIds.length || selectedCount })}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+
+/** True while a protected deletion still needs its acknowledgement, or an agent tries to delete contacts with orders. */
+function isDeleteBlocked(impact: DeletionImpact | null, acknowledged: boolean, bulk: boolean): boolean {
+  if (!impact) return false;
+  if (impact.contacts_with_orders > 0 && !impact.can_delete_with_orders) return true;
+  if (bulk && !impact.can_bulk) return true;
+  const protectedCount = impact.contacts_with_orders + impact.recent_conversations + impact.blocked;
+  return protectedCount > 0 && !acknowledged;
+}
+
+function ImpactSummary({ impact, loading, failed, t, ack, onAck }: {
+  impact: DeletionImpact | null; loading: boolean; failed: boolean;
+  t: (key: string, values?: Record<string, string | number>) => string;
+  ack: boolean; onAck: (value: boolean) => void;
+}) {
+  if (loading) return <p className="text-xs text-muted-foreground">{t('impactLoading')}</p>;
+  if (failed) return <p className="text-xs text-amber-600" role="status">{t('impactFailed')}</p>;
+  if (!impact) return null;
+  const protectedCount = impact.contacts_with_orders + impact.recent_conversations + impact.blocked;
+  return (
+    <div className="space-y-2 text-xs" data-testid="delete-impact">
+      <p className="font-medium text-foreground">{t('impactTitle')}</p>
+      <ul className="space-y-0.5 text-muted-foreground">
+        <li>{t('impactConversations', { count: impact.conversations })}</li>
+        <li>{t('impactMessages', { count: impact.messages })}</li>
+        {impact.orders > 0 && <li>{t('impactOrders', { count: impact.orders })}</li>}
+        {impact.blocked > 0 && <li>{t('impactBlocked', { count: impact.blocked })}</li>}
+        {impact.recent_conversations > 0 && <li>{t('impactRecent', { count: impact.recent_conversations, days: impact.limits.recent_days })}</li>}
+        {impact.with_bsuid > 0 && <li>{t('impactBsuid', { count: impact.with_bsuid })}</li>}
+      </ul>
+      {impact.contacts_with_orders > 0 && !impact.can_delete_with_orders && (
+        <p className="text-destructive" role="alert">{t('impactOrdersNeedAdmin')}</p>
+      )}
+      {protectedCount > 0 && !(impact.contacts_with_orders > 0 && !impact.can_delete_with_orders) && (
+        <label className="flex items-start gap-2 text-foreground">
+          <input type="checkbox" checked={ack} onChange={(e) => onAck(e.target.checked)} className="mt-0.5" />
+          <span>{t('impactAcknowledge')}</span>
+        </label>
+      )}
     </div>
   );
 }
