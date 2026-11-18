@@ -10,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { createWorld, QA_ENABLED, type QaActor, type QaWorld } from '@/lib/orders/logistics/test-support/qa-env'
 import { mkReadyOrder, setShipmentFlag } from '@/lib/orders/shalom/test-support/ready-order'
+import { acquireQaLock, releaseQaLock } from '@/lib/orders/shalom/test-support/qa-lock'
 
 let w: QaWorld
 let n = 0
@@ -62,12 +63,14 @@ vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 })
 
 describe.skipIf(!QA_ENABLED)('PR-05 Shalom tracking · database layer', () => {
   beforeAll(async () => {
+    await acquireQaLock()
     w = await createWorld()
     await setShipmentFlag(w, w.acc, true)
     await setShipmentFlag(w, w.accForeign, true)
   }, 120_000)
   afterAll(async () => {
     if (w) await w.dispose()
+    releaseQaLock()
   }, 90_000)
 
   // ------------------------------------------------------------------------------------------------------------------ flags / roles / RLS

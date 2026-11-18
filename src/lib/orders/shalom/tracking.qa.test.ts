@@ -14,6 +14,7 @@ import { runShalomTick, type PollDeps } from '@/lib/orders/shalom/poller'
 import { createFakeProvider, notConfiguredProvider } from '@/lib/orders/shalom/providers'
 import { acknowledgeAlert, correctShipment, getShipmentPanel, getShipmentSummary, refreshShipment, registerShipment, stopShipment } from '@/lib/orders/shalom/service'
 import { mkReadyOrder, setShipmentFlag } from '@/lib/orders/shalom/test-support/ready-order'
+import { acquireQaLock, releaseQaLock } from '@/lib/orders/shalom/test-support/qa-lock'
 
 let w: QaWorld
 let n = 0
@@ -47,6 +48,7 @@ vi.setConfig({ testTimeout: 40_000, hookTimeout: 120_000 })
 
 describe.skipIf(!QA_ENABLED)('PR-05 tracking service + poller (fake provider, injectable clock)', () => {
   beforeAll(async () => {
+    await acquireQaLock()
     w = await createWorld()
     await setShipmentFlag(w, w.acc, true)
     await setShipmentFlag(w, w.accForeign, true)
@@ -58,6 +60,7 @@ describe.skipIf(!QA_ENABLED)('PR-05 tracking service + poller (fake provider, in
   })
   afterAll(async () => {
     if (w) await w.dispose()
+    releaseQaLock()
   }, 90_000)
 
   // ------------------------------------------------------------------------------------------------------------------ the loop

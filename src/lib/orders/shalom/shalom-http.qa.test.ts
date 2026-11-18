@@ -15,6 +15,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 
 import { createWorld, QA_ENABLED, type QaActor, type QaWorld } from '@/lib/orders/logistics/test-support/qa-env'
 import { mkReadyOrder, setShipmentFlag } from '@/lib/orders/shalom/test-support/ready-order'
+import { acquireQaLock, releaseQaLock } from '@/lib/orders/shalom/test-support/qa-lock'
 
 const APP = process.env.PR05_APP_URL
 const SCENARIO_FILE = process.env.PR05_SCENARIO_FILE
@@ -59,6 +60,7 @@ vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 })
 
 describe.skipIf(!RUN)('PR-05 over HTTP: real routes, sessions and cron (fake Shalom)', () => {
   beforeAll(async () => {
+    await acquireQaLock()
     try { previousScenarios = readFileSync(SCENARIO_FILE!, 'utf8') } catch { previousScenarios = '' }
     persist()
     w = await createWorld()
@@ -74,6 +76,7 @@ describe.skipIf(!RUN)('PR-05 over HTTP: real routes, sessions and cron (fake Sha
   afterAll(async () => {
     if (previousScenarios) writeFileSync(SCENARIO_FILE!, previousScenarios)
     if (w) await w.dispose()
+    releaseQaLock()
   }, 90_000)
 
   it('who can reach the tracking: Logistics / Supervisor yes; Commercial, viewer, no area 403; another account 404; flags OFF 403', async () => {
@@ -114,7 +117,7 @@ describe.skipIf(!RUN)('PR-05 over HTTP: real routes, sessions and cron (fake Sha
 
     scenarios.byNumber[num] = 'origin'
     persist()
-    let t = await cron()
+    const t = await cron()
     expect(t).toMatchObject({ status: 200, body: { enabled: true, provider: 'fake' } })
     expect(t.body.claimed).toBeGreaterThanOrEqual(1)
     expect(await shipmentOf(order)).toMatchObject({ logistic_status: 'at_origin', tracking_code: 'QA01' })

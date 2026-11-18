@@ -9,7 +9,7 @@ const C = require('./common.cjs')
     const { error } = await C.admin.from('order_shipments').update({ next_poll_at: new Date().toISOString() }).eq('tracking_state', 'active').in('account_id', [st.acc, st.accC]).not('next_poll_at', 'is', null)
     if (error) throw error
   }
-  const secret = C.env.AUTOMATION_CRON_SECRET
+  const secret = C.L.env.AUTOMATION_CRON_SECRET
   if (!secret) throw new Error('AUTOMATION_CRON_SECRET is not set in .env.local')
   const res = await fetch(`${C.L.APP_URL}/api/orders/shalom/cron`, { headers: { 'x-cron-secret': secret } })
   const body = await res.json().catch(() => ({}))
