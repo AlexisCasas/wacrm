@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { useRouter } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { CircleCheck, Clock, FileUp, Minus } from "lucide-react";
@@ -9,69 +9,130 @@ import { Button } from "@/components/ui/button";
 
 import { api, LOGISTICS_CHANGED_EVENT, type LogisticsStatus } from "@/components/orders/logistics/api";
 
-// Compact voucher indicator of the "Pedidos confirmados" list (a check when the order has a validated voucher). It reads ONE separate endpoint for
-// the orders on screen (the PR-02 list endpoint is untouched); when the server does not allow it (flag OFF / not logistics) it shows NOTHING, so the
-// list is exactly what it was before PR-04.
+// Compact voucher indicator of the "Pedidos confirmados" list (a check when the order has a validated voucher).
+//
+// LOADING MODEL (deterministic, no artificial delay): each row reports when it actually BECOMES VISIBLE (IntersectionObserver). The ids that became visible in
+// the same tick are fetched together, in ONE request to a separate endpoint (the PR-02 list endpoint is untouched). So the indicator never competes with the
+// list's own requests: it only exists for rows the person can see, and rows below the fold cost nothing until scrolled to. Where IntersectionObserver does not
+// exist nothing is fetched and nothing is shown (the list is exactly what it was before PR-04). When the server does not allow the logistics UI (flag OFF /
+// not logistics) the first answer says so, nothing is rendered and no further request is made.
 
-interface Summary {
+export interface Summary {
   status: LogisticsStatus
   voucher: "none" | "pending_review" | "validated"
 }
-type SummaryMap = Record<string, Summary>
 
-const SUMMARY_DELAY_MS = 600;
+const CHUNK = 50;
 
-/** Summary of the given order ids; `null` while unknown / not allowed (render nothing). */
-export function useLogisticsSummary(orderIds: readonly string[]): SummaryMap | null {
-  const [summary, setSummary] = useState<SummaryMap | null>(null);
-  const [tick, setTick] = useState(0);
-  const key = orderIds.join(",");
-  const seq = useRef(0);
+// ---- tiny external store (module scope, reset when the last indicator unmounts: it never outlives the list screen) ----
+let allowed: boolean | null = null;
+let cache = new Map<string, Summary>();
+let requested = new Set<string>();
+let pending = new Set<string>();
+let scheduled = false;
+let mounted = 0;
+let generation = 0;
+const listeners = new Set<() => void>();
+const emit = () => listeners.forEach((l) => l());
 
-  useEffect(() => {
-    const onChanged = () => setTick((n) => n + 1);
-    window.addEventListener(LOGISTICS_CHANGED_EVENT, onChanged);
-    return () => window.removeEventListener(LOGISTICS_CHANGED_EVENT, onChanged);
-  }, []);
-
-  const load = useCallback(async () => {
-    if (!key) return;
-    const mine = ++seq.current;
-    // 50 ids per request (the endpoint's ceiling); the list loads 25 per page.
-    const ids = key.split(",");
-    const chunks: string[][] = [];
-    for (let i = 0; i < ids.length; i += 50) chunks.push(ids.slice(i, i + 50));
-    const merged: SummaryMap = {};
-    for (const chunk of chunks) {
-      const r = await api<{ summary?: SummaryMap }>(`/api/orders/logistics/summary?ids=${chunk.join(",")}`);
-      if (mine !== seq.current) return;
-      // Only a real summary object counts: any other answer means "not available" and the list shows nothing new.
-      if (!r.ok || !r.body.summary || typeof r.body.summary !== "object") return void setSummary(null);
-      Object.assign(merged, r.body.summary);
+async function flush() {
+  scheduled = false;
+  const ids = [...pending];
+  pending = new Set();
+  if (ids.length === 0 || allowed === false) return;
+  const mine = generation;
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const r = await api<{ summary?: Record<string, Summary> }>(`/api/orders/logistics/summary?ids=${ids.slice(i, i + CHUNK).join(",")}`);
+    if (mine !== generation) return; // the list screen was left meanwhile
+    if (r.status === 401 || r.status === 403 || r.status === 404) {
+      allowed = false;
+      emit();
+      return;
     }
-    setSummary(merged);
-  }, [key]);
-
-  // The list loads and paginates first; the indicator follows shortly after (and not at all if the list is replaced meanwhile), so it never competes
-  // with the list's own requests. A change made in the logistics panel refreshes it right away.
-  useEffect(() => {
-    if (!key) return;
-    const id = setTimeout(() => void load(), SUMMARY_DELAY_MS);
-    return () => clearTimeout(id);
-  }, [key, load]);
-  useEffect(() => {
-    if (tick === 0) return;
-    const id = setTimeout(() => void load(), 0);
-    return () => clearTimeout(id);
-  }, [tick, load]);
-
-  return summary;
+    // Only a real summary object counts: any other answer means "not available" and nothing new is rendered.
+    if (!r.ok || !r.body.summary || typeof r.body.summary !== "object") continue;
+    allowed = true;
+    for (const [id, s] of Object.entries(r.body.summary)) cache.set(id, s);
+    emit();
+  }
 }
 
-export function VoucherIndicator({ summary }: { summary: Summary | undefined }) {
+function want(id: string) {
+  if (allowed === false) return;
+  requested.add(id);
+  pending.add(id);
+  if (!scheduled) {
+    scheduled = true;
+    queueMicrotask(() => void flush());
+  }
+}
+
+function mount() {
+  mounted += 1;
+}
+function unmount() {
+  mounted -= 1;
+  if (mounted <= 0) {
+    mounted = 0;
+    generation += 1;
+    allowed = null;
+    cache = new Map();
+    requested = new Set();
+    pending = new Set();
+    scheduled = false;
+  }
+}
+
+const subscribe = (l: () => void) => {
+  listeners.add(l);
+  return () => void listeners.delete(l);
+};
+
+/** Test hook: forget everything (a fresh screen). */
+export function __resetLogisticsSummaryStore() {
+  mounted = 0;
+  unmount();
+  listeners.clear();
+}
+
+// A change made in the logistics panel refreshes what is on screen right away.
+if (typeof window !== "undefined") {
+  window.addEventListener(LOGISTICS_CHANGED_EVENT, () => {
+    if (allowed === false) return;
+    for (const id of requested) want(id);
+  });
+}
+
+export function VoucherIndicator({ orderId }: { orderId: string }) {
   const t = useTranslations("OrderLogistics");
-  if (!summary) return null;
-  return <div className="mt-1">{indicatorFor(summary, t)}</div>;
+  const anchor = useRef<HTMLSpanElement | null>(null);
+  const summary = useSyncExternalStore(subscribe, () => cache.get(orderId), () => undefined);
+
+  useEffect(() => {
+    mount();
+    return unmount;
+  }, []);
+
+  useEffect(() => {
+    const el = anchor.current;
+    if (!el || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting)) {
+        want(orderId);
+        observer.disconnect();
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [orderId]);
+
+  if (!summary) return <span ref={anchor} aria-hidden className="block h-0" />;
+  return (
+    <div className="mt-1">
+      <span ref={anchor} aria-hidden className="hidden" />
+      {indicatorFor(summary, t)}
+    </div>
+  );
 }
 
 function indicatorFor(summary: Summary, t: ReturnType<typeof useTranslations>) {
@@ -99,10 +160,11 @@ function indicatorFor(summary: Summary, t: ReturnType<typeof useTranslations>) {
   );
 }
 
-/** Entry to the bulk-voucher page. Only visible when the server allows the logistics UI at all (`visible`), so a legacy account sees nothing new. */
-export function BulkVouchersButton({ visible }: { visible: boolean }) {
+/** Entry to the bulk-voucher page. It appears only once the server has actually answered that the logistics UI is allowed (a row became visible and the answer was a summary). */
+export function BulkVouchersButton() {
   const t = useTranslations("OrderLogistics");
   const router = useRouter();
+  const visible = useSyncExternalStore(subscribe, () => allowed === true, () => false);
   if (!visible) return null;
   return (
     <Button type="button" variant="outline" size="sm" className="ml-auto h-9 gap-1.5" onClick={() => router.push("/confirmed-orders/vouchers")}>

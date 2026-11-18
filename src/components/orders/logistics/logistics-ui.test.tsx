@@ -11,7 +11,7 @@ vi.mock('next-intl', () => {
 })
 
 import { LogisticsPanel } from './logistics-panel'
-import { BulkVouchersButton, VoucherIndicator, useLogisticsSummary } from './voucher-indicator'
+import { BulkVouchersButton, VoucherIndicator, __resetLogisticsSummaryStore } from './voucher-indicator'
 import { VoucherSection } from './voucher-section'
 
 const ORDER = '11111111-1111-4111-8111-111111111111'
@@ -205,50 +205,130 @@ describe('VoucherSection · upload from the order', () => {
   })
 })
 
-describe('list indicator', () => {
-  function Probe({ ids }: { ids: string[] }) {
-    const summary = useLogisticsSummary(ids)
+describe('list indicator (lazy: a row is fetched only when it becomes visible)', () => {
+  const A = '11111111-1111-4111-8111-111111111111'
+  const B = '22222222-2222-4222-8222-222222222222'
+  const C = '33333333-3333-4333-8333-333333333333'
+
+  /** A controllable IntersectionObserver: elements stay "hidden" until the test reveals them. */
+  const observed: Array<{ el: Element; fire: () => void }> = []
+  function stubObserver() {
+    vi.stubGlobal(
+      'IntersectionObserver',
+      class {
+        private cb: (e: Array<{ isIntersecting: boolean }>) => void
+        constructor(cb: (e: Array<{ isIntersecting: boolean }>) => void) {
+          this.cb = cb
+        }
+        observe(el: Element) {
+          observed.push({ el, fire: () => this.cb([{ isIntersecting: true }]) })
+        }
+        disconnect() {}
+        unobserve() {}
+      },
+    )
+  }
+  const reveal = (...indexes: number[]) => indexes.forEach((i) => observed[i].fire())
+
+  function List({ ids }: { ids: string[] }) {
     return (
       <div>
-        <BulkVouchersButton visible={summary !== null} />
+        <BulkVouchersButton />
         {ids.map((id) => (
-          <VoucherIndicator key={id} summary={summary?.[id]} />
+          <VoucherIndicator key={id} orderId={id} />
         ))}
       </div>
     )
   }
 
-  it('shows a check for a validated voucher, "in review" and "none" — and the bulk entry — when the server allows it', async () => {
-    const A = '11111111-1111-4111-8111-111111111111'
-    const B = '22222222-2222-4222-8222-222222222222'
-    const C = '33333333-3333-4333-8333-333333333333'
-    stubFetch(() => ({ body: { summary: { [A]: { status: 'voucher_validated', voucher: 'validated' }, [B]: { status: 'pending_voucher', voucher: 'pending_review' }, [C]: { status: 'pending_voucher', voucher: 'none' } } } }))
-    render(<Probe ids={[A, B, C]} />)
-    expect(await screen.findByText('indicator.validatedShort', undefined, { timeout: 3000 })).toBeTruthy()
+  beforeEach(() => {
+    observed.length = 0
+  })
+  afterEach(() => {
+    __resetLogisticsSummaryStore()
+  })
+
+  it('nothing is requested until a row is visible; rows visible together are fetched in ONE request; the bulk entry appears with the first answer', async () => {
+    stubObserver()
+    const all: Record<string, unknown> = { [A]: { status: 'voucher_validated', voucher: 'validated' }, [B]: { status: 'pending_voucher', voucher: 'pending_review' }, [C]: { status: 'pending_voucher', voucher: 'none' } }
+    // like the real endpoint: it answers ONLY for the ids it was asked about
+    const f = stubFetch((url) => ({ body: { summary: Object.fromEntries((new URL(url, 'http://x').searchParams.get('ids') ?? '').split(',').map((id) => [id, all[id]])) } }))
+    render(<List ids={[A, B, C]} />)
+    expect(f).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: /bulkTitle/ })).toBeNull()
+    reveal(0, 1)
+    expect(await screen.findByText('indicator.validatedShort')).toBeTruthy()
+    expect(f).toHaveBeenCalledTimes(1)
+    expect(String(f.mock.calls[0][0])).toContain(`ids=${A},${B}`)
+    expect(String(f.mock.calls[0][0])).not.toContain(C)
     expect(screen.getByText('indicator.pendingShort')).toBeTruthy()
-    expect(screen.getByText('indicator.noneShort')).toBeTruthy()
+    expect(screen.queryByText('indicator.noneShort')).toBeNull() // C never became visible
     fireEvent.click(screen.getByRole('button', { name: /bulkTitle/ }))
     expect(push).toHaveBeenCalledWith('/confirmed-orders/vouchers')
+    reveal(2)
+    expect(await screen.findByText('indicator.noneShort')).toBeTruthy()
+    expect(f).toHaveBeenCalledTimes(2)
   })
 
-  it.each([403, 401, 500])('answer %i -> nothing new is rendered (no indicator, no bulk entry)', async (status) => {
+  it.each([403, 401, 404])('answer %i -> nothing new is rendered and NO further request is ever made', async (status) => {
+    stubObserver()
     const f = stubFetch(() => ({ status, body: { error: 'feature_disabled' } }))
-    const { container } = render(<Probe ids={['11111111-1111-4111-8111-111111111111']} />)
-    await waitFor(() => expect(f).toHaveBeenCalled(), { timeout: 3000 })
+    const { container } = render(<List ids={[A, B]} />)
+    reveal(0)
+    await waitFor(() => expect(f).toHaveBeenCalledTimes(1))
+    await new Promise((r) => setTimeout(r, 20))
+    reveal(1)
+    await new Promise((r) => setTimeout(r, 20))
+    expect(f).toHaveBeenCalledTimes(1)
     expect(container.textContent).toBe('')
+    expect(screen.queryByRole('button', { name: /bulkTitle/ })).toBeNull()
   })
 
-  it('a malformed answer is "not available" (never a crash, never an empty summary that would show the bulk entry)', async () => {
+  it('a malformed answer or a 500 is "not available": no indicator, no bulk entry', async () => {
+    stubObserver()
     const f = stubFetch(() => ({ body: { orders: [] } }))
-    const { container } = render(<Probe ids={['11111111-1111-4111-8111-111111111111']} />)
-    await waitFor(() => expect(f).toHaveBeenCalled(), { timeout: 3000 })
+    const { container } = render(<List ids={[A]} />)
+    reveal(0)
+    await waitFor(() => expect(f).toHaveBeenCalled())
+    await new Promise((r) => setTimeout(r, 20))
     expect(container.textContent).toBe('')
   })
 
-  it('no ids, no request', async () => {
-    const f = stubFetch(() => undefined)
-    render(<Probe ids={[]} />)
-    await new Promise((r) => setTimeout(r, 800))
+  it('without IntersectionObserver nothing is fetched and nothing is shown (the list stays exactly as before PR-04)', async () => {
+    vi.stubGlobal('IntersectionObserver', undefined)
+    const f = stubFetch(() => ({ body: { summary: {} } }))
+    const { container } = render(<List ids={[A, B]} />)
+    await new Promise((r) => setTimeout(r, 30))
     expect(f).not.toHaveBeenCalled()
+    expect(container.textContent).toBe('')
+  })
+
+  it('a change made in the panel refreshes only the rows already seen, immediately', async () => {
+    stubObserver()
+    let status: 'none' | 'validated' = 'none'
+    const f = stubFetch(() => ({ body: { summary: { [A]: { status: 'pending_voucher', voucher: status } } } }))
+    render(<List ids={[A, B]} />)
+    reveal(0)
+    expect(await screen.findByText('indicator.noneShort')).toBeTruthy()
+    status = 'validated'
+    window.dispatchEvent(new CustomEvent('wacrm:logistics-changed', { detail: { orderId: A } }))
+    expect(await screen.findByText('indicator.validatedShort')).toBeTruthy()
+    expect(f).toHaveBeenCalledTimes(2)
+    expect(String(f.mock.calls[1][0])).toContain(`ids=${A}`)
+    expect(String(f.mock.calls[1][0])).not.toContain(B)
+  })
+
+  it('leaving the screen forgets everything (a new screen asks again, a different user is never served stale data)', async () => {
+    stubObserver()
+    const f = stubFetch(() => ({ body: { summary: { [A]: { status: 'voucher_validated', voucher: 'validated' } } } }))
+    const first = render(<List ids={[A]} />)
+    reveal(0)
+    expect(await screen.findByText('indicator.validatedShort')).toBeTruthy()
+    first.unmount()
+    render(<List ids={[A]} />)
+    expect(screen.queryByText('indicator.validatedShort')).toBeNull()
+    reveal(1)
+    expect(await screen.findByText('indicator.validatedShort')).toBeTruthy()
+    expect(f).toHaveBeenCalledTimes(2)
   })
 })
