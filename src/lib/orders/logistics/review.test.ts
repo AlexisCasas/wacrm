@@ -137,7 +137,7 @@ describe('getOrderPanel', () => {
             eq: () => b,
             order: () => b,
             limit: async () => ({ data: [], error: null }),
-            maybeSingle: async () => ({ data: table === 'order_confirmations' ? (opts.order ?? null) : (opts.logistics ?? null), error: null }),
+            maybeSingle: async () => ({ data: table === 'order_confirmations' ? (opts.order ?? null) : table === 'order_logistics' ? (opts.logistics ?? null) : null, error: null }),
             then: (resolve: (v: unknown) => unknown) => resolve({ data: [], error: null }),
           }
           return b
@@ -153,7 +153,7 @@ describe('getOrderPanel', () => {
 
   it('NO row in order_logistics means pending_voucher (no backfill)', async () => {
     const r = await getOrderPanel(panelCaller({ order: orderRow }), ORDER)
-    expect(r).toMatchObject({ ok: true, body: { logistics: { status: 'pending_voucher', version: 0 }, vouchers: [], events: [], order: { id: ORDER, total: 10, is_multiproduct: false } } })
+    expect(r).toMatchObject({ ok: true, body: { logistics: { status: 'pending_voucher', version: 0 }, vouchers: [], evidence: null, events: [], order: { id: ORDER, total: 10, is_multiproduct: false } } })
   })
 
   it('shows the stored status when the row exists', async () => {

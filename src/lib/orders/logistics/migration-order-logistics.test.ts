@@ -13,6 +13,7 @@ const strip = (sql: string) => sql.replace(/^\s*--.*$/gm, '')
 const MODEL = '20261129000000_order_logistics_model.sql'
 const SECURITY = '20261129000001_order_logistics_security_rpcs.sql'
 const STORAGE = '20261129000002_order_docs_storage.sql'
+const EVIDENCE = '20261129000003_order_evidence_rpc.sql'
 const TABLES = ['order_logistics_settings', 'order_documents', 'order_template_dispatches', 'order_logistics', 'order_logistics_events']
 const RPCS = [
   'register_order_document',
@@ -29,11 +30,11 @@ describe('PR-04 migrations · ordering and additivity', () => {
     const all = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
     const base = all.indexOf('20261128000000_conversation_routing.sql')
     expect(base).toBeGreaterThanOrEqual(0)
-    expect(all.slice(base + 1, base + 4)).toEqual([MODEL, SECURITY, STORAGE])
+    expect(all.slice(base + 1, base + 5)).toEqual([MODEL, SECURITY, STORAGE, EVIDENCE])
   })
 
   it('never ALTER or DROP an existing object (only ENABLE ROW LEVEL SECURITY / OWNER on the new ones)', () => {
-    for (const name of [MODEL, SECURITY, STORAGE]) {
+    for (const name of [MODEL, SECURITY, STORAGE, EVIDENCE]) {
       const code = strip(read(name))
       expect(code, name).not.toMatch(/\bDROP\s+(TABLE|COLUMN|FUNCTION|INDEX|CONSTRAINT|TYPE|POLICY\s+IF\s+EXISTS\s+(?!order_))/i)
       for (const m of code.matchAll(/ALTER\s+TABLE\s+(?:IF EXISTS\s+)?(?:ONLY\s+)?(?:public\.)?(\w+)\s+([A-Z ]+)/gi)) {
@@ -46,7 +47,7 @@ describe('PR-04 migrations · ordering and additivity', () => {
   })
 
   it('does not activate any account, create settings rows or hardcode a template', () => {
-    for (const name of [MODEL, SECURITY, STORAGE]) {
+    for (const name of [MODEL, SECURITY, STORAGE, EVIDENCE]) {
       const code = strip(read(name))
       expect(code, name).not.toMatch(/logistics_mvp_enabled\s*=\s*(TRUE|true)/)
       expect(code, name).not.toMatch(/INSERT\s+INTO\s+(public\.)?(order_integration_settings|order_logistics_settings)/i)
@@ -148,5 +149,31 @@ describe(`${STORAGE}`, () => {
   it('creates NO policy on storage.objects (server-only access) and touches no other bucket', () => {
     expect(code).not.toMatch(/CREATE POLICY/i)
     expect(code).not.toMatch(/chat-media|flow-media|voice-notes|avatars/)
+  })
+})
+
+describe(`${EVIDENCE}`, () => {
+  const code = strip(read(EVIDENCE))
+
+  it('is one SECURITY DEFINER function, executable only by service_role, that re-validates the actor and the order', () => {
+    expect(code).toMatch(/CREATE OR REPLACE FUNCTION public\.select_order_evidence\(/)
+    expect(code).toMatch(/SECURITY DEFINER\s+SET search_path = public/)
+    expect(code).toMatch(/public\.order_logistics_actor\(p_account, p_actor\)/)
+    expect(code).toMatch(/public\.order_logistics_require_order\(p_account, p_order\)/)
+    expect(code).toMatch(/REVOKE ALL ON FUNCTION public\.select_order_evidence\([^)]*\) FROM PUBLIC, anon, authenticated;/)
+    expect(code).toMatch(/GRANT EXECUTE ON FUNCTION public\.select_order_evidence\([^)]*\) TO service_role;/)
+    expect(code).not.toMatch(/GRANT EXECUTE[^;]*(authenticated|anon|PUBLIC)/)
+  })
+
+  it('only while packing, only a message of the order conversation, and never while a dispatch is open', () => {
+    expect(code).toMatch(/'not_packing'/)
+    expect(code).toMatch(/message_not_in_conversation/)
+    expect(code).toMatch(/c\.id = v_conversation AND c\.account_id = p_account/)
+    expect(code).toMatch(/'dispatch_open'/)
+  })
+
+  it('creates nothing else: no table, policy, bucket or trigger, and it does not touch messages / chat-media', () => {
+    expect(code).not.toMatch(/CREATE TABLE|CREATE POLICY|CREATE TRIGGER|storage\.buckets|chat-media/i)
+    expect(code).not.toMatch(/(UPDATE|DELETE FROM|INSERT INTO)\s+(public\.)?(messages|conversations|conversation_routing)/i)
   })
 })

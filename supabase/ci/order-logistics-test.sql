@@ -365,4 +365,67 @@ BEGIN
     || '/' || pg_temp.cnt('order_logistics_events WHERE order_id = ' || quote_literal(pg_temp.uid('ocasc')))), 'ok/0/0/0');
 END $$;
 
+-- ================= EVIDENCE FROM THE ORDER'S CHAT (select_order_evidence) =================
+CREATE FUNCTION pg_temp.evsel(p_actor text, p_acc text, p_order text, p_msg text, p_key text, p_seed text) RETURNS jsonb LANGUAGE plpgsql AS $$
+DECLARE d uuid := gen_random_uuid();
+BEGIN
+  RETURN pg_temp.rpc(format('select public.select_order_evidence(%L,%L,%L,%L,%L,%L,%L,%L,%L,%s,%L)',
+    pg_temp.uid(p_acc), pg_temp.uid(p_actor), pg_temp.uid(p_order), pg_temp.uid(p_msg), d, p_key,
+    'account-' || pg_temp.uid(p_acc) || '/orders/' || p_order || '/evidence/' || d || '/e.jpg', 'e.jpg', 'image/jpeg', 2048, pg_temp.h(p_seed)));
+END $$;
+
+DO $$
+BEGIN
+  -- new chat media: m3 lives in c1 (order o1's conversation, NOT o2's), m2b in c2 (o2's conversation)
+  INSERT INTO ids SELECT 'm3', gen_random_uuid();
+  INSERT INTO ids SELECT 'm2b', gen_random_uuid();
+  INSERT INTO messages (id, conversation_id, sender_type, content_type, media_url) VALUES
+    (pg_temp.uid('m3'), pg_temp.uid('conv_c1'), 'customer', 'image', 'https://example.invalid/m3.jpg'),
+    (pg_temp.uid('m2b'), pg_temp.uid('conv_c2'), 'customer', 'image', 'https://example.invalid/m2b.jpg');
+
+  PERFORM pg_temp.expect('evidence RPC is service-role only',
+    (has_function_privilege('authenticated', 'public.select_order_evidence(uuid,uuid,uuid,uuid,uuid,text,text,text,text,bigint,text)', 'EXECUTE')
+     OR has_function_privilege('anon', 'public.select_order_evidence(uuid,uuid,uuid,uuid,uuid,text,text,text,text,bigint,text)', 'EXECUTE'))::text
+    || '/' || has_function_privilege('service_role', 'public.select_order_evidence(uuid,uuid,uuid,uuid,uuid,text,text,text,text,bigint,text)', 'EXECUTE')::text, 'false/true');
+
+  PERFORM pg_temp.expect('evidence: commercial / viewer / no-area / other-account actors are refused',
+    pg_temp.sm(pg_temp.evsel('comm', 'acc', 'o2', 'm2', 'ev-k-comm', 'e0')) || '/' || pg_temp.sm(pg_temp.evsel('logiv', 'acc', 'o2', 'm2', 'ev-k-viewer', 'e0'))
+    || '/' || pg_temp.sm(pg_temp.evsel('none', 'acc', 'o2', 'm2', 'ev-k-none', 'e0')) || '/' || pg_temp.sm(pg_temp.evsel('foreign', 'acc', 'o2', 'm2', 'ev-k-foreign', 'e0')),
+    'ERR:42501:forbidden/ERR:42501:forbidden/ERR:42501:forbidden/ERR:42501:forbidden');
+  PERFORM pg_temp.expect('evidence: an order of another account is indistinguishable from a non-existent one', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'of', 'mf', 'ev-k-xacc', 'e0')), 'ERR:42501:forbidden');
+  PERFORM pg_temp.expect('evidence needs a PACKING order (pending_voucher / no row is refused)', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'o3', 'm2', 'ev-k-np', 'e0')), 'no:not_packing');
+
+  PERFORM pg_temp.expect('a message of ANOTHER conversation of the same account is refused', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'o2', 'm3', 'ev-k-wc', 'e1')), 'no:message_not_in_conversation');
+  PERFORM pg_temp.expect('a message of ANOTHER ACCOUNT is refused', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'o2', 'mf', 'ev-k-wa', 'e2')), 'no:message_not_in_conversation');
+  PERFORM pg_temp.expect('a message that does not exist is refused', pg_temp.sm(pg_temp.rpc(format('select public.select_order_evidence(%L,%L,%L,%L,%L,%L,%L,%L,%L,10,%L)',
+    pg_temp.uid('acc'), pg_temp.uid('logi'), pg_temp.uid('o2'), gen_random_uuid(), gen_random_uuid(), 'ev-k-ghost', 'account-' || pg_temp.uid('acc') || '/x', 'e.jpg', 'image/jpeg', pg_temp.h('e3')))), 'no:message_not_in_conversation');
+  PERFORM pg_temp.expect('refusals wrote nothing', pg_temp.cnt('order_documents WHERE order_id = ' || quote_literal(pg_temp.uid('o2')) || ' AND kind = ''evidence'''), '0');
+
+  PERFORM pg_temp.expect('select evidence from the order chat (packing order)', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'o2', 'm2', 'ev-k-1', 'ev-seed-1')), 'ok:created=true');
+  PERFORM pg_temp.expect('snapshot row: evidence / chat_message / direct / active, tied to the message and to the order',
+    pg_temp.drow('ev-k-1', 'kind') || '/' || pg_temp.drow('ev-k-1', 'source') || '/' || pg_temp.drow('ev-k-1', 'association') || '/' || pg_temp.drow('ev-k-1', 'status')
+    || '/' || (pg_temp.drow('ev-k-1', 'source_message_id') = pg_temp.uid('m2')::text)::text || '/' || (pg_temp.drow('ev-k-1', 'order_id') = pg_temp.uid('o2')::text)::text, 'evidence/chat_message/direct/active/true/true');
+  PERFORM pg_temp.expect('the order points at its evidence', (pg_temp.lrow('o2', 'evidence_document_id') = pg_temp.docid('ev-k-1')::text)::text, 'true');
+  PERFORM pg_temp.expect('same request_key + same content = idempotent replay', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'o2', 'm2', 'ev-k-1', 'ev-seed-1')) || '/' || pg_temp.cnt('order_documents WHERE order_id = ' || quote_literal(pg_temp.uid('o2')) || ' AND kind = ''evidence'''), 'ok:created=false/1');
+  PERFORM pg_temp.expect('same request_key + DIFFERENT content is refused', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'o2', 'm2', 'ev-k-1', 'other')), 'ERR:22023:request_key_conflict');
+  PERFORM pg_temp.expect('selecting the SAME message again (new key) changes nothing', pg_temp.sm(pg_temp.evsel('sup', 'acc', 'o2', 'm2', 'ev-k-2', 'ev-seed-1b')) || '/' || pg_temp.cnt('order_documents WHERE order_id = ' || quote_literal(pg_temp.uid('o2')) || ' AND kind = ''evidence'''), 'ok:created=false/1');
+  PERFORM pg_temp.expect('a DIFFERENT message supersedes the previous evidence (kept) and repoints the order', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'o2', 'm2b', 'ev-k-3', 'ev-seed-3'))
+    || '/' || pg_temp.drow('ev-k-1', 'status') || '/' || pg_temp.drow('ev-k-3', 'status') || '/' || (pg_temp.lrow('o2', 'evidence_document_id') = pg_temp.docid('ev-k-3')::text)::text
+    || '/' || pg_temp.cnt('order_documents WHERE order_id = ' || quote_literal(pg_temp.uid('o2')) || ' AND kind = ''evidence'' AND status = ''active'''), 'ok:created=true/superseded/active/true/1');
+  PERFORM pg_temp.expect('evidence audit keeps ids only (no media url / content)', pg_temp.ev('order_id = ' || quote_literal(pg_temp.uid('o2')) || ' AND event_type = ''evidence_selected'''), 'evidence_selected,evidence_selected');
+  PERFORM pg_temp.expect('evidence audit detail carries the message id, never the media url',
+    (SELECT bool_and(detail ? 'message_id' AND detail::text NOT LIKE '%example.invalid%')::text FROM order_logistics_events WHERE event_type = 'evidence_selected' AND order_id = pg_temp.uid('o2')), 'true');
+  PERFORM pg_temp.expect('the evidence of one order can never be reused by another order (guard)', pg_temp.sm(pg_temp.rpc(format('with u as (update public.order_logistics set evidence_document_id = %L, version = version + 1 where order_id = %L returning 1) select jsonb_build_object(''ok'', true) from u', pg_temp.docid('ev-k-3'), pg_temp.uid('omulti')))), 'ERR:42501:evidence does not belong to the order');
+
+  -- an open dispatch freezes the evidence it is using
+  INSERT INTO ids SELECT 'ev3', id FROM order_documents WHERE request_key = 'ev-k-3';
+  INSERT INTO order_template_dispatches (account_id, order_id, request_key, evidence_document_id, conversation_id, template_name, template_language, actor_user_id)
+    VALUES (pg_temp.uid('acc'), pg_temp.uid('o2'), 'dsp-o2', pg_temp.uid('ev3'), pg_temp.uid('conv_c2'), 't', 'es', pg_temp.uid('logi'));
+  PERFORM pg_temp.expect('with an open dispatch the evidence can not change underneath it', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'o2', 'm2', 'ev-k-4', 'ev-seed-4')), 'no:dispatch_open');
+
+  UPDATE order_integration_settings SET logistics_mvp_enabled = FALSE WHERE account_id = pg_temp.uid('acc');
+  PERFORM pg_temp.expect('flag OFF: the evidence RPC refuses', pg_temp.sm(pg_temp.evsel('logi', 'acc', 'o2', 'm2b', 'ev-k-off', 'ev-seed-off')), 'ERR:42501:feature_disabled');
+  UPDATE order_integration_settings SET logistics_mvp_enabled = TRUE WHERE account_id = pg_temp.uid('acc');
+END $$;
+
 ROLLBACK;
