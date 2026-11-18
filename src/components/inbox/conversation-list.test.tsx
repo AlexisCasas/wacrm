@@ -241,7 +241,7 @@ describe("ConversationList — database-backed search", () => {
     expect(h.searchedRanges).toContainEqual({ source: "contact", from: 0, to: 999 });
     expect(h.searchedRanges).toContainEqual({ source: "contact", from: 1000, to: 1999 });
     expect(h.contactSearchFilters).toContain(
-      "name.ilike.%981629790%,phone.ilike.%981629790%,wa_username.ilike.%981629790%",
+      'name.ilike."%981629790%",wa_username.ilike."%981629790%",phone_normalized.in.(51981629790,981629790)',
     );
     // A unique tie-breaker prevents OFFSET from losing rows when
     // thousands of conversations share last_message_at.
@@ -270,7 +270,7 @@ describe("ConversationList — database-backed search", () => {
     // Let any (wrongly) pending extra searches show up before asserting.
     await new Promise((resolve) => setTimeout(resolve, 500));
     expect(h.contactSearchFilters).toEqual([
-      "name.ilike.%9816%,phone.ilike.%9816%,wa_username.ilike.%9816%",
+      'name.ilike."%9816%",wa_username.ilike."%9816%",phone.ilike."%9816%"',
     ]);
   });
 
