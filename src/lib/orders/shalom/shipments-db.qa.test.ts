@@ -9,7 +9,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { createWorld, QA_ENABLED, type QaActor, type QaWorld } from '@/lib/orders/logistics/test-support/qa-env'
-import { mkReadyOrder, setShipmentFlag } from '@/lib/orders/shalom/test-support/ready-order'
+import { clearCredentialsBreaker, mkReadyOrder, setShipmentFlag } from '@/lib/orders/shalom/test-support/ready-order'
 import { acquireQaLock, releaseQaLock } from '@/lib/orders/shalom/test-support/qa-lock'
 
 let w: QaWorld
@@ -70,6 +70,7 @@ describe.skipIf(!QA_ENABLED)('PR-05 Shalom tracking · database layer', () => {
   }, 120_000)
   afterAll(async () => {
     if (w) await w.dispose()
+    if (w) await clearCredentialsBreaker(w)
     releaseQaLock()
   }, 90_000)
 

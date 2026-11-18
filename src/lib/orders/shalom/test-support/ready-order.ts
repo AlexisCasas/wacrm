@@ -60,3 +60,11 @@ export async function setShipmentFlag(w: QaWorld, accountId: string, enabled: bo
   const { error } = await w.admin.from('order_shipment_settings').upsert({ account_id: accountId, shalom_tracking_enabled: enabled })
   if (error) throw error
 }
+
+/**
+ * The credentials breaker is GLOBAL by design (a 401 pauses every account), so a suite that trips it also paused whatever other shipment accounts exist in the
+ * local database (for example the accounts reserved for a manual UAT). Suites call this when they finish so they leave no pause behind.
+ */
+export async function clearCredentialsBreaker(w: QaWorld): Promise<void> {
+  await w.admin.from('order_shipment_settings').update({ credentials_paused_until: null, credentials_paused_reason: null }).not('credentials_paused_until', 'is', null)
+}

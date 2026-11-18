@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { createWorld, QA_ENABLED, type QaActor, type QaWorld } from '@/lib/orders/logistics/test-support/qa-env'
-import { mkReadyOrder, setShipmentFlag } from '@/lib/orders/shalom/test-support/ready-order'
+import { clearCredentialsBreaker, mkReadyOrder, setShipmentFlag } from '@/lib/orders/shalom/test-support/ready-order'
 import { acquireQaLock, releaseQaLock } from '@/lib/orders/shalom/test-support/qa-lock'
 
 const APP = process.env.PR05_APP_URL
@@ -76,6 +76,7 @@ describe.skipIf(!RUN)('PR-05 over HTTP: real routes, sessions and cron (fake Sha
   afterAll(async () => {
     if (previousScenarios) writeFileSync(SCENARIO_FILE!, previousScenarios)
     if (w) await w.dispose()
+    if (w) await clearCredentialsBreaker(w)
     releaseQaLock()
   }, 90_000)
 
