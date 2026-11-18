@@ -123,8 +123,9 @@ CREATE FUNCTION pg_temp.drow(p_key text, p_col text) RETURNS text LANGUAGE plpgs
 DECLARE r text; BEGIN EXECUTE format('select %I::text from public.order_documents where request_key = %L', p_col, p_key) INTO r; RETURN r; END $$;
 CREATE FUNCTION pg_temp.lrow(p_order text, p_col text) RETURNS text LANGUAGE plpgsql AS $$
 DECLARE r text; BEGIN EXECUTE format('select %I::text from public.order_logistics where order_id = %L', p_col, pg_temp.uid(p_order)) INTO r; RETURN COALESCE(r, 'none'); END $$;
+-- Scoped to the synthetic accounts of this test, so rows that already exist in the database (other QA runs) never leak into the expectations.
 CREATE FUNCTION pg_temp.ev(p_where text) RETURNS text LANGUAGE plpgsql AS $$
-DECLARE r text; BEGIN EXECUTE format('select COALESCE(string_agg(event_type || case when outcome = ''error'' then ''!'' else '''' end, '','' order by created_at, id), ''-'') from public.order_logistics_events where %s', p_where) INTO r; RETURN r; END $$;
+DECLARE r text; BEGIN EXECUTE format('select COALESCE(string_agg(event_type || case when outcome = ''error'' then ''!'' else '''' end, '','' order by created_at, id), ''-'') from public.order_logistics_events where (%s) and account_id in (%L, %L)', p_where, pg_temp.uid('acc'), pg_temp.uid('acc_f')) INTO r; RETURN r; END $$;
 CREATE FUNCTION pg_temp.review(p_actor text, p_key text, p_action text, p_data text DEFAULT NULL, p_expected int DEFAULT NULL) RETURNS jsonb LANGUAGE sql AS $$
   SELECT pg_temp.rpc(format('select public.review_order_document(%L,%L,%L,%L,%L,%L)', pg_temp.uid('acc'), pg_temp.uid(p_actor), pg_temp.docid(p_key), p_action, p_expected, p_data)) $$;
 
@@ -168,13 +169,13 @@ BEGIN
   PERFORM pg_temp.expect('logistics cannot use an order of ANOTHER account', pg_temp.sm(pg_temp.reg('logi', 'acc', 'of', 'k-xacc', 'x6')), 'ERR:42501:forbidden');
   PERFORM pg_temp.expect('non-existent order is indistinguishable from foreign', pg_temp.sm(pg_temp.rpc(format('select public.register_order_document(%L,%L,%L,%L,NULL,%L,%L,%L,%L,10,%L,false)',
     pg_temp.uid('acc'), pg_temp.uid('logi'), gen_random_uuid(), gen_random_uuid(), 'k-ghost', 'account-' || pg_temp.uid('acc') || '/x', 'v.pdf', 'application/pdf', pg_temp.h('g')))), 'ERR:42501:forbidden');
-  PERFORM pg_temp.expect('nothing was written by the refused calls', (SELECT count(*)::text FROM order_documents) || '/' || (SELECT count(*)::text FROM order_logistics_events), '0/0');
+  PERFORM pg_temp.expect('nothing was written by the refused calls', (SELECT count(*)::text FROM order_documents WHERE account_id IN (pg_temp.uid('acc'), pg_temp.uid('acc_f'))) || '/' || (SELECT count(*)::text FROM order_logistics_events WHERE account_id IN (pg_temp.uid('acc'), pg_temp.uid('acc_f'))), '0/0');
 
   -- ================= REGISTER: direct association, idempotency, duplicates =================
   PERFORM pg_temp.expect('logistics registers a voucher on a known order (direct)', pg_temp.sm(pg_temp.reg('logi', 'acc', 'o1', 'k1', 'seed-1')), 'ok:created=true');
   PERFORM pg_temp.expect('document is direct + pending_review + same account', pg_temp.drow('k1', 'association') || '/' || pg_temp.drow('k1', 'status') || '/' || (pg_temp.drow('k1', 'account_id') = pg_temp.uid('acc')::text)::text, 'direct/pending_review/true');
   PERFORM pg_temp.expect('same request_key + same content = idempotent replay', pg_temp.sm(pg_temp.reg('logi', 'acc', 'o1', 'k1', 'seed-1')), 'ok:created=false');
-  PERFORM pg_temp.expect('replay did not duplicate document or event', (SELECT count(*)::text FROM order_documents) || '/' || pg_temp.ev('true'), '1/voucher_uploaded');
+  PERFORM pg_temp.expect('replay did not duplicate document or event', (SELECT count(*)::text FROM order_documents WHERE account_id IN (pg_temp.uid('acc'), pg_temp.uid('acc_f'))) || '/' || pg_temp.ev('true'), '1/voucher_uploaded');
   PERFORM pg_temp.expect('same request_key + DIFFERENT content is refused', pg_temp.sm(pg_temp.reg('logi', 'acc', 'o1', 'k1', 'other-seed')), 'ERR:22023:request_key_conflict');
   PERFORM pg_temp.expect('same file under another key is reported as duplicate (not inserted)', pg_temp.sm(pg_temp.reg('logi', 'acc', 'o1', 'k1b', 'seed-1')), 'no:duplicate');
   PERFORM pg_temp.expect('same file in ANOTHER order is also a duplicate (account-wide hash)', pg_temp.sm(pg_temp.reg('sup', 'acc', 'o2', 'k1c', 'seed-1')), 'no:duplicate');
