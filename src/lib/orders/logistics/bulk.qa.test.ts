@@ -8,7 +8,7 @@
  */
 import { randomUUID } from 'node:crypto'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { associateDocument, processBulkDocument, searchPendingOrders } from '@/lib/orders/logistics/bulk'
 import { listDocuments, uploadVoucher } from '@/lib/orders/logistics/documents'
@@ -59,6 +59,9 @@ async function bulkUpload(name: string) {
 const process = (name: string, actor = w.logi) => processBulkDocument(w.ctxOf(actor, w.acc), w.admin, { provider }, docs[name])
 const row = async (name: string) => (await w.admin.from('order_documents').select('association, order_id, status, ocr_status').eq('id', docs[name]).single()).data as { association: string; order_id: string | null; status: string; ocr_status: string }
 const panel = (orderId: string, actor = w.logi) => getOrderPanel(w.ctxOf(actor, w.acc), orderId)
+
+// These tests make many real round trips (PostgREST + Storage + RPC) against the local stack; under the load of the whole suite the 5 s default is too tight.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 })
 
 describe.skipIf(!QA_ENABLED)('PR-04 bulk vouchers: OCR -> conservative matching -> associated | pending -> manual association', () => {
   beforeAll(async () => {

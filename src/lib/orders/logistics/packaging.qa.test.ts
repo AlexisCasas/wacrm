@@ -112,6 +112,9 @@ const eventTypes = async (order: string) => {
 }
 const setFlag = (value: boolean) => w.admin.from('order_integration_settings').update({ logistics_mvp_enabled: value }).eq('account_id', w.acc)
 
+// These tests make many real round trips (PostgREST + Storage + RPC) against the local stack; under the load of the whole suite the 5 s default is too tight.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 })
+
 describe.skipIf(!QA_ENABLED)('PR-04 packaging: evidence -> operational template -> listo para despacho (real send core, Meta mocked)', () => {
   beforeAll(async () => {
     process.env.NEXT_PUBLIC_SUPABASE_URL = URL_

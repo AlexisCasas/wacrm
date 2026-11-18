@@ -8,7 +8,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { documentSignedUrl, listDocuments, uploadVoucher } from '@/lib/orders/logistics/documents'
 import { ORDER_DOCS_BUCKET } from '@/lib/orders/logistics/constants'
@@ -71,6 +71,9 @@ const objectExists = async (path: string) => {
   const { data } = await admin.storage.from(ORDER_DOCS_BUCKET).list(folder, { limit: 100 })
   return Boolean(data?.some((o) => o.name === name))
 }
+
+// These tests make many real round trips (PostgREST + Storage + RPC) against the local stack; under the load of the whole suite the 5 s default is too tight.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 })
 
 describe.skipIf(!ENABLED)('PR-04 vouchers against the real local stack (RLS + RPC + private Storage)', () => {
   beforeAll(async () => {

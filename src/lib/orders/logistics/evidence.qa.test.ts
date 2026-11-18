@@ -8,7 +8,7 @@
  */
 import { randomBytes, randomUUID } from 'node:crypto'
 
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { uploadVoucher, documentSignedUrl } from '@/lib/orders/logistics/documents'
 import { listChatMedia, selectEvidenceFromChat } from '@/lib/orders/logistics/evidence'
@@ -72,6 +72,9 @@ async function validateVoucher(orderId: string, seed: string) {
   const v = await reviewDocument(w.ctxOf(w.logi, w.acc), w.admin, up.body.document.id, { action: 'validate', reviewedData: { dni: '12345678' } })
   if (!v.ok) throw new Error('voucher validate')
 }
+
+// These tests make many real round trips (PostgREST + Storage + RPC) against the local stack; under the load of the whole suite the 5 s default is too tight.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 })
 
 describe.skipIf(!QA_ENABLED)('PR-04 evidence from the order conversation (private snapshot)', () => {
   beforeAll(async () => {

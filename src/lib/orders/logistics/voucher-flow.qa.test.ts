@@ -5,7 +5,7 @@
  *
  *   eval "$(npx supabase status -o env | sed 's/^/export /')"; LOCAL_URL=$API_URL LOCAL_ANON=$ANON_KEY LOCAL_SERVICE=$SERVICE_ROLE_KEY npx vitest run src/lib/orders/logistics/voucher-flow.qa.test.ts
  */
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { uploadVoucher } from '@/lib/orders/logistics/documents'
 import { getOrderPanel } from '@/lib/orders/logistics/panel'
@@ -35,6 +35,9 @@ const eventTypes = async (orderId: string) => {
   return r.body.events.map((e) => e.event_type).reverse()
 }
 const DATA = { dni: '12345678', phone: '51900000001', customer_name: 'Cliente Prueba', amount: '10.00' }
+
+// These tests make many real round trips (PostgREST + Storage + RPC) against the local stack; under the load of the whole suite the 5 s default is too tight.
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 })
 
 describe.skipIf(!QA_ENABLED)('PR-04 voucher flow end to end (direct upload, OCR, review, validation)', () => {
   beforeAll(async () => {
