@@ -4,14 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 // the transaction (which also queues the Storage objects) runs first; Storage is touched only after it committed.
 const ACCOUNT_A = '11111111-1111-4111-8111-111111111111'
 const BASE = 'https://supabase.example.com'
-let callerRole = 'agent'
+let callerRole = 'admin'
 
 type QueueRow = { id: string; operation_id: string; account_id: string; bucket: string; object_path: string; media_url: string; status: string; failed_attempts: number; last_error: string | null }
 const db = vi.hoisted(() => ({
   calls: [] as string[],                                   // ordered log: rpc name / storage.remove
   rpcArgs: [] as Array<{ fn: string; args: Record<string, unknown> }>,
   /** what the (fake) transaction does when it commits */
-  txn: { error: null as { message: string } | null, result: { deleted: 2, conversations_deleted: 2, messages_deleted: 7, runs_deleted: 1, pending_automations_deleted: 0, notifications_deleted: 1, media_identified: 0, media_preserved_shared: 0, media_queued: 0 } as Record<string, unknown>, queueOnCommit: [] as string[] },
+  txn: { error: null as { message: string; details?: string } | null, result: { deleted: 2, conversations_deleted: 2, messages_deleted: 7, runs_deleted: 1, pending_automations_deleted: 0, notifications_deleted: 1, media_identified: 0, media_preserved_shared: 0, media_queued: 0 } as Record<string, unknown>, queueOnCommit: [] as string[] },
   queue: [] as unknown[],
   contactsDeleted: 0,
   store: new Map<string, number>(),                        // "bucket/path" -> bytes (fake Storage)
@@ -87,28 +87,33 @@ import { POST, MAX_BULK_DELETE } from './route'
 
 const U1 = '22222222-2222-4222-8222-222222222222'
 const U2 = '33333333-3333-4333-8333-333333333333'
-const call = (body: unknown) => POST(new Request('http://x', { method: 'POST', body: JSON.stringify(body) }))
+// Multi-contact deletions need the typed confirmation (FIX 04); the helper adds it so older cases stay about their own subject.
+const call = (body: unknown) => {
+  const b = body as { contact_ids?: unknown[]; confirm?: string }
+  const withConfirm = Array.isArray(b?.contact_ids) && b.contact_ids.length > 1 && !('confirm' in b) ? { ...b, confirm: 'ELIMINAR' } : body
+  return POST(new Request('http://x', { method: 'POST', body: JSON.stringify(withConfirm) }))
+}
 const own = (file: string) => `account-${ACCOUNT_A}/${file}`
 const put = (path: string, size = 1000) => db.store.set(`chat-media/${path}`, size)
 const bytes = () => [...db.store.values()].reduce((a, b) => a + b, 0)
 
 beforeEach(() => {
   process.env.NEXT_PUBLIC_SUPABASE_URL = BASE
-  callerRole = 'agent'
+  callerRole = 'admin'
   db.calls = []; db.rpcArgs = []; db.tablesTouched = []; db.store = new Map(); db.failRemove = false; db.queue = []; db.contactsDeleted = 0
   db.txn = { error: null, result: { deleted: 2, conversations_deleted: 2, messages_deleted: 7, runs_deleted: 1, pending_automations_deleted: 0, notifications_deleted: 1, media_identified: 0, media_preserved_shared: 0, media_queued: 0 }, queueOnCommit: [] }
 })
 
 describe('POST /api/contacts/bulk-delete — contract (unchanged)', () => {
-  it('agent deletes exactly the given ids using the SESSION account (never one from the body)', async () => {
-    const res = await POST(new Request('http://x', { method: 'POST', body: JSON.stringify({ contact_ids: [U1, U2], account_id: 'evil', filters: { tag: 'x' } }) }))
+  it('admin deletes exactly the given ids using the SESSION account (never one from the body)', async () => {
+    const res = await POST(new Request('http://x', { method: 'POST', body: JSON.stringify({ contact_ids: [U1, U2], confirm: 'ELIMINAR', account_id: 'evil', filters: { tag: 'x' } }) }))
     expect(res.status).toBe(200)
     expect(await res.json()).toMatchObject({ success: true, deleted: 2, conversations_deleted: 2, messages_deleted: 7, cleanup_complete: true, storage_deleted: 0, storage_pending: 0 })
-    expect(db.rpcArgs).toEqual([{ fn: 'bulk_delete_contacts_internal', args: { p_account_id: ACCOUNT_A, p_contact_ids: [U1, U2], p_public_base: BASE } }])
+    expect(db.rpcArgs).toEqual([{ fn: 'bulk_delete_contacts_internal', args: { p_account_id: ACCOUNT_A, p_contact_ids: [U1, U2], p_public_base: BASE, p_actor_user_id: 'user-1', p_ack_protected: false } }])
   })
 
-  it('admin can; viewer is forbidden and nothing is called', async () => {
-    callerRole = 'admin'
+  it('agent can delete ONE contact; viewer is forbidden and nothing is called', async () => {
+    callerRole = 'agent'
     expect((await call({ contact_ids: [U1] })).status).toBe(200)
     callerRole = 'viewer'
     db.calls = []
@@ -214,5 +219,68 @@ describe('DB-first: the database transaction decides, Storage follows the commit
     expect(db.rpcArgs[0].args.p_public_base).toBeNull()
     expect(db.calls).toEqual(['bulk_delete_contacts_internal'])
     expect(db.store.size).toBe(1)
+  })
+})
+
+describe('FIX 04 — who may delete, typed confirmation, protected contacts, limits (server side)', () => {
+  it('an agent can delete only one contact: several are 403 BULK_REQUIRES_ADMIN and nothing reaches the database', async () => {
+    callerRole = 'agent'
+    const res = await call({ contact_ids: [U1, U2], confirm: 'ELIMINAR' })
+    expect(res.status).toBe(403)
+    expect(await res.json()).toMatchObject({ code: 'BULK_REQUIRES_ADMIN' })
+    expect(db.calls).toHaveLength(0)
+  })
+
+  it.each([['missing', undefined], ['wrong word', 'eliminar'], ['empty', ''], ['spaces', ' ELIMINAR ']])('several contacts without the exact typed confirmation (%s) are rejected before the database', async (_l, confirm) => {
+    const res = await POST(new Request('http://x', { method: 'POST', body: JSON.stringify({ contact_ids: [U1, U2], ...(confirm === undefined ? {} : { confirm }) }) }))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ code: 'CONFIRMATION_REQUIRED' })
+    expect(db.calls).toHaveLength(0)
+  })
+
+  it('a single deletion needs no typed word and sends the verified actor to the database', async () => {
+    callerRole = 'agent'
+    expect((await call({ contact_ids: [U1] })).status).toBe(200)
+    expect(db.rpcArgs[0].args).toMatchObject({ p_actor_user_id: 'user-1', p_ack_protected: false })
+  })
+
+  it('the acknowledgement is only honoured as the boolean true', async () => {
+    await call({ contact_ids: [U1], acknowledge_protected: true })
+    await call({ contact_ids: [U1], acknowledge_protected: 'true' })
+    await call({ contact_ids: [U1], acknowledge_protected: 1 })
+    expect(db.rpcArgs.map((r) => r.args.p_ack_protected)).toEqual([true, false, false])
+  })
+
+  it.each([
+    ['PROTECTED_CONTACTS', 409, { contacts_with_orders: 1, recent_conversations: 0, blocked: 1 }],
+    ['RATE_LIMIT_ACCOUNT', 429, { limit: 1000, used: 990, requested: 50 }],
+    ['RATE_LIMIT_USER', 429, { limit: 10, used: 10, requested: 1 }],
+    ['ORDERS_REQUIRE_ADMIN', 403, undefined],
+    ['ACTOR_NOT_AUTHORIZED', 403, undefined],
+    ['BULK_REQUIRES_ADMIN', 403, undefined],
+    ['BATCH_TOO_LARGE', 400, undefined],
+  ])('the database error %s maps to HTTP %i with a stable code and counts only', async (code, status, detail) => {
+    db.txn.error = { message: code, ...(detail ? { details: JSON.stringify(detail) } : {}) }
+    const res = await call({ contact_ids: [U1] })
+    expect(res.status).toBe(status)
+    const body = await res.json()
+    expect(body).toMatchObject({ code, deleted: 0 })
+    if (detail) expect(body.detail).toEqual(detail)
+    expect(db.calls).toEqual(['bulk_delete_contacts_internal'])      // Storage untouched
+    expect(db.queue).toHaveLength(0)
+  })
+
+  it('the retired 3-argument signature failing closed (ACTOR_REQUIRED) is a generic 500, never a deletion', async () => {
+    db.txn.error = { message: 'ACTOR_REQUIRED' }
+    const res = await call({ contact_ids: [U1] })
+    expect(res.status).toBe(500)
+    expect(await res.json()).toMatchObject({ deleted: 0 })
+    expect(db.contactsDeleted).toBe(0)
+  })
+
+  it('the route never sends the old 3-argument call: p_actor_user_id is always present', async () => {
+    await call({ contact_ids: [U1, U2] })
+    await call({ contact_ids: [U1] })
+    expect(db.rpcArgs.every((r) => typeof r.args.p_actor_user_id === 'string' && 'p_ack_protected' in r.args)).toBe(true)
   })
 })
