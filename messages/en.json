@@ -285,6 +285,8 @@
       "allCompanies": "All companies",
       "clearAll": "Clear all",
       "noConversations": "No conversations found",
+      "loadError": "Couldn't load conversations",
+      "retry": "Retry",
       "noMessagesYet": "No messages yet",
       "unknown": "Unknown",
       "needsHumanAttention": "Needs human attention"

@@ -1,6 +1,7 @@
 "use client";
 
-import { contactLabel, contactSearchText } from "@/lib/contacts/display";
+import { contactLabel } from "@/lib/contacts/display";
+import { matchesInboxSearch, planInboxSearch } from "@/lib/inbox/search-query";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -17,6 +18,7 @@ import { formatDistanceToNow } from "date-fns";
 import { useTranslations } from "next-intl";
 import { useDateFnsLocale } from "@/lib/date-locale";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -90,6 +92,10 @@ export function ConversationList({
   const appliedSearch = useDebouncedValue(search, SEARCH_DEBOUNCE_MS);
   const [filter, setFilter] = useState<InboxFilter>("all");
   const [loading, setLoading] = useState(true);
+  // A failed load/search is shown (with a retry) instead of silently keeping
+  // the previous list. `retryToken` re-runs the fetch effect on demand.
+  const [loadError, setLoadError] = useState(false);
+  const [retryToken, setRetryToken] = useState(0);
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
   // matches if its contact carries any selected tag), consistent with
   // Broadcast audience filtering. Company is an exact match on the field.
@@ -168,19 +174,20 @@ export function ConversationList({
           }
         };
 
-        const pattern = `%${term}%`;
+        // The plan normalizes phones (+51, spaces, dashes, parentheses) and
+        // escapes every PostgREST/LIKE special character in the term.
+        const plan = planInboxSearch(term);
         try {
           // PostgREST cannot OR predicates from an embedded table and the
           // parent table in one expression. Keep the pre-existing criteria
           // by querying each side and de-duplicating conversations below.
           const [contactMatches, messageMatches] = await Promise.all([
             fetchAll(
-              baseQuery().or(
-                `name.ilike.${pattern},phone.ilike.${pattern},wa_username.ilike.${pattern}`,
-                { referencedTable: "contact" },
-              ),
+              baseQuery().or(plan.contactOrFilter, {
+                referencedTable: "contact",
+              }),
             ),
-            fetchAll(baseQuery().ilike("last_message_text", pattern)),
+            fetchAll(baseQuery().ilike("last_message_text", plan.likePattern)),
           ]);
           const unique = new Map<string, (typeof contactMatches)[number]>();
           for (const conversation of [...contactMatches, ...messageMatches]) {
@@ -211,11 +218,13 @@ export function ConversationList({
           hint: error.hint,
           code: error.code,
         });
+        setLoadError(true);
         setLoading(false);
         return;
       }
 
       finishTimer({ requests, rows: data?.length ?? 0 });
+      setLoadError(false);
       onConversationsLoadedRef.current(
         sortConversationsByActivity(normalizeConversations(data ?? [])),
       );
@@ -229,7 +238,7 @@ export function ConversationList({
     // `resyncToken` is included so the parent can force a refetch when
     // the realtime channel reconnects or the tab regains focus — catches
     // up on any events sent while the WS was disconnected or throttled.
-  }, [resyncToken, appliedSearch]);
+  }, [resyncToken, appliedSearch, retryToken]);
 
   // Tag definitions for the filter picker — loaded once (labels/colours
   // stay stable regardless of which conversations happen to be loaded),
@@ -289,13 +298,10 @@ export function ConversationList({
     }
 
     if (appliedSearch.trim()) {
-      const q = appliedSearch.toLowerCase();
-      result = result.filter((c) => {
-        const name = c.contact?.name?.toLowerCase() ?? "";
-        const phone = contactSearchText(c.contact);
-        const lastMsg = c.last_message_text?.toLowerCase() ?? "";
-        return name.includes(q) || phone.includes(q) || lastMsg.includes(q);
-      });
+      // Same normalization as the database query, so a phone typed as
+      // "+51 987-654-321" is not filtered out again here.
+      const plan = planInboxSearch(appliedSearch);
+      result = result.filter((c) => matchesInboxSearch(c, plan));
     }
 
     return result;
@@ -511,6 +517,24 @@ export function ConversationList({
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          </div>
+        ) : loadError ? (
+          <div
+            role="alert"
+            className="flex flex-col items-center gap-3 px-4 py-12 text-center"
+          >
+            <p className="text-sm text-destructive">{t("loadError")}</p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setLoadError(false);
+                setRetryToken((n) => n + 1);
+              }}
+            >
+              {t("retry")}
+            </Button>
           </div>
         ) : filtered.length === 0 ? (
           <div className="px-4 py-12 text-center">

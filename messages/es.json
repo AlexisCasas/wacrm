@@ -285,6 +285,8 @@
       "allCompanies": "Todas las empresas",
       "clearAll": "Limpiar todo",
       "noConversations": "No se encontraron conversaciones",
+      "loadError": "No se pudieron cargar las conversaciones",
+      "retry": "Reintentar",
       "noMessagesYet": "Aún no hay mensajes",
       "unknown": "Desconocido",
       "needsHumanAttention": "Necesita atención humana"
