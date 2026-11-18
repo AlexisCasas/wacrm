@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_ORDER_MATCH_CONTACTS,
+  orderPhoneCandidates,
+  pickOrderContactIds,
   escapeLike,
   exactPhoneCandidates,
   matchesInboxSearch,
@@ -116,5 +119,36 @@ describe("in-memory predicate (mirrors the DB)", () => {
 
   it("phone-less contact never matches a number", () => {
     expect(matchesInboxSearch(conv("X", null), planInboxSearch("987654321"))).toBe(false);
+  });
+});
+
+describe("order phone lookup (FIX 02)", () => {
+  it("only complete numbers consult orders, with the same candidates as contacts", () => {
+    expect(orderPhoneCandidates(planInboxSearch("+51 954 953 878"))).toEqual(["51954953878", "954953878"]);
+    expect(orderPhoneCandidates(planInboxSearch("954953878"))).toEqual(["51954953878", "954953878"]);
+    expect(orderPhoneCandidates(planInboxSearch("953 878"))).toEqual([]);
+    expect(orderPhoneCandidates(planInboxSearch("1234"))).toEqual([]);
+    expect(orderPhoneCandidates(planInboxSearch("maria"))).toEqual([]);
+  });
+
+  it("dedupes contacts across orders, drops nulls and keeps newest-first order", () => {
+    const r = pickOrderContactIds([{ contact_id: "a" }, { contact_id: null }, { contact_id: "b" }, { contact_id: "a" }], 1000);
+    expect(r).toEqual({ contactIds: ["a", "b"], truncated: false });
+  });
+
+  it("caps at 100 contacts and reports truncation; a full page also reports it", () => {
+    const rows = Array.from({ length: 150 }, (_, i) => ({ contact_id: `c${i}` }));
+    const r = pickOrderContactIds(rows, 1000);
+    expect(r.contactIds).toHaveLength(MAX_ORDER_MATCH_CONTACTS);
+    expect(r.truncated).toBe(true);
+    expect(pickOrderContactIds(Array.from({ length: 5 }, () => ({ contact_id: "z" })), 5).truncated).toBe(true);
+  });
+
+  it("an order-matched conversation passes the in-memory filter; others still need a real match", () => {
+    const plan = planInboxSearch("+51 954 953 878");
+    const c = { id: "k1", last_message_text: "", contact: { name: "Solo", phone: "", wa_username: "u" } } as never;
+    expect(matchesInboxSearch(c, plan)).toBe(false);
+    expect(matchesInboxSearch(c, plan, new Set(["k1"]))).toBe(true);
+    expect(matchesInboxSearch(c, plan, new Set(["other"]))).toBe(false);
   });
 });

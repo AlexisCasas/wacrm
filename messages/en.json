@@ -287,6 +287,9 @@
       "noConversations": "No conversations found",
       "loadError": "Couldn't load conversations",
       "retry": "Retry",
+      "matchedByOrder": "Matches an order",
+      "matchedByOrderHint": "The number matches an order of this customer, not the contact's own phone",
+      "orderMatchesTruncated": "There are more order matches than shown. Type the full number and check the name.",
       "noMessagesYet": "No messages yet",
       "unknown": "Unknown",
       "needsHumanAttention": "Needs human attention"

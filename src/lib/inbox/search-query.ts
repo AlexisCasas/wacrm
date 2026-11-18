@@ -75,6 +75,44 @@ export function exactPhoneCandidates(digits: string): string[] {
   return [];
 }
 
+/** Most contacts a phone-on-order lookup may expand into conversations (URL size / ambiguity guard). */
+export const MAX_ORDER_MATCH_CONTACTS = 100;
+
+/**
+ * Full phone numbers whose ORDERS should be consulted. Only a complete number
+ * qualifies (never a fragment or free text), so a short term can't fan out
+ * across many unrelated orders. Same candidates the contact search uses.
+ */
+export function orderPhoneCandidates(plan: Pick<InboxSearchPlan, "phoneExact">): string[] {
+  return plan.phoneExact;
+}
+
+export interface OrderContactPick {
+  /** Distinct contact ids, most recent order first, at most `MAX_ORDER_MATCH_CONTACTS`. */
+  contactIds: string[];
+  /** True when more matches exist than were expanded (cap or page limit hit). */
+  truncated: boolean;
+}
+
+/**
+ * Reduce order rows (newest first) to distinct contact ids. Several orders of
+ * one contact collapse to one id; null contact ids (deleted contacts) are
+ * ignored. `pageSize` is the page limit used to fetch `rows`: a full page means
+ * there may be more orders than we saw.
+ */
+export function pickOrderContactIds(
+  rows: ReadonlyArray<{ contact_id: string | null }>,
+  pageSize: number,
+): OrderContactPick {
+  const seen = new Set<string>();
+  for (const row of rows) if (row.contact_id) seen.add(row.contact_id);
+  const all = Array.from(seen);
+  return {
+    contactIds: all.slice(0, MAX_ORDER_MATCH_CONTACTS),
+    truncated: all.length > MAX_ORDER_MATCH_CONTACTS || rows.length >= pageSize,
+  };
+}
+
 export function planInboxSearch(rawTerm: string): InboxSearchPlan {
   const term = rawTerm.trim();
   const likePattern = `%${escapeLike(term)}%`;
@@ -114,10 +152,13 @@ export function planInboxSearch(rawTerm: string): InboxSearchPlan {
 
 /** In-memory twin of the database search (name, username, phone, last message). */
 export function matchesInboxSearch(
-  conversation: Pick<Conversation, "contact" | "last_message_text">,
+  conversation: Pick<Conversation, "id" | "contact" | "last_message_text">,
   plan: InboxSearchPlan,
+  /** Conversations already matched through an order phone (see FIX 02). */
+  orderMatchedIds?: ReadonlySet<string>,
 ): boolean {
   if (!plan.term) return true;
+  if (orderMatchedIds?.has(conversation.id)) return true;
   const contact = conversation.contact;
   const name = contact?.name?.toLowerCase() ?? "";
   const username = contact?.wa_username?.toLowerCase() ?? "";

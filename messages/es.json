@@ -287,6 +287,9 @@
       "noConversations": "No se encontraron conversaciones",
       "loadError": "No se pudieron cargar las conversaciones",
       "retry": "Reintentar",
+      "matchedByOrder": "Coincide por pedido",
+      "matchedByOrderHint": "El teléfono coincide con el de un pedido de este cliente, no con el del contacto",
+      "orderMatchesTruncated": "Hay más coincidencias por pedido de las que se muestran. Escribe el número completo y revisa el nombre.",
       "noMessagesYet": "Aún no hay mensajes",
       "unknown": "Desconocido",
       "needsHumanAttention": "Necesita atención humana"
