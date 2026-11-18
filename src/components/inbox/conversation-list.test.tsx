@@ -47,6 +47,8 @@ vi.mock("@/lib/supabase/client", () => ({
       let source: "normal" | "contact" | "message" = "normal";
       const builder = {
         select: () => builder,
+        in: () => builder,
+        not: () => builder,
         eq: () => builder,
         order: (column: string) => {
           if (table === "conversations") h.conversationOrderColumns.push(column);
@@ -66,6 +68,8 @@ vi.mock("@/lib/supabase/client", () => ({
           return builder;
         },
         range: (from: number, to: number) => {
+          // FIX 02: order-phone lookups (table order_confirmations) find nothing here.
+          if (table === "order_confirmations") return Promise.resolve({ data: [], error: null });
           const rows = source === "contact" ? h.contactSearchRows : h.messageSearchRows;
           if (source !== "normal") h.searchedRanges.push({ source, from, to });
           return Promise.resolve({ data: rows.slice(from, to + 1), error: null });

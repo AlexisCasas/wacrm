@@ -12,7 +12,12 @@ vi.mock("next-intl", () => ({
 
 const h = vi.hoisted(() => ({
   // rows each "branch" returns, keyed by source; error switch for failures
-  rows: { contact: [] as unknown[], message: [] as unknown[], normal: [] as unknown[] },
+  rows: { contact: [] as unknown[], message: [] as unknown[], normal: [] as unknown[], order: [] as unknown[] },
+  orders: [] as { contact_id: string | null }[],
+  failOrders: false,
+  orderPhones: [] as string[][],
+  orderContactIds: [] as string[][],
+  orderQueries: 0,
   fail: false,
   orFilters: [] as string[],
   ilikePatterns: [] as string[],
@@ -23,15 +28,25 @@ const h = vi.hoisted(() => ({
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
     from: (table: string) => {
-      let source: "normal" | "contact" | "message" = "normal";
+      let source: "normal" | "contact" | "message" | "order" = "normal";
       const b: Record<string, unknown> = {
         select: () => b,
+        in: (col: string, vals: string[]) => {
+          if (table === "order_confirmations") { h.orderQueries++; h.orderPhones.push(vals); }
+          else if (col === "contact_id") { source = "order"; h.orderContactIds.push(vals); }
+          return b;
+        },
+        not: () => b,
         eq: (c: string, v: unknown) => (table === "conversations" && h.eqCalls.push([c, v]), b),
         order: () => b,
         abortSignal: () => b,
         or: (f: string) => ((source = "contact"), h.orFilters.push(f), b),
         ilike: (_c: string, p: string) => ((source = "message"), h.ilikePatterns.push(p), b),
         range: (from: number, to: number) => {
+          if (table === "order_confirmations") {
+            if (h.failOrders) return Promise.resolve({ data: null, error: { message: "orders boom" } });
+            return Promise.resolve({ data: h.orders.slice(from, to + 1), error: null });
+          }
           h.ranges.push({ source, from, to });
           if (h.fail) return Promise.resolve({ data: null, error: { message: "boom" } });
           return Promise.resolve({ data: h.rows[source].slice(from, to + 1), error: null });
@@ -70,7 +85,8 @@ async function type(value: string) {
 }
 
 beforeEach(() => {
-  h.rows = { contact: [], message: [], normal: [] };
+  h.rows = { contact: [], message: [], normal: [], order: [] };
+  h.orders = []; h.failOrders = false; h.orderPhones = []; h.orderContactIds = []; h.orderQueries = 0;
   h.fail = false; h.orFilters = []; h.ilikePatterns = []; h.ranges = []; h.eqCalls = [];
 });
 afterEach(cleanup);
@@ -153,5 +169,97 @@ describe("Inbox search (FIX-01)", () => {
     fireEvent.click(await screen.findByText("filterClosed"));
     await waitFor(() => expect(screen.queryByText("Ana Abierta")).toBeNull());
     expect(screen.getByText("Ana Cerrada")).toBeTruthy();
+  });
+
+  describe("FIX 02: phone on the order", () => {
+    const bsuidOnly = (id: string, name: string) => ({ ...mk(id, name, ""), contact: { ...mk(id, name, "").contact, phone: "" } }) as Conversation;
+
+    it("a complete phone also consults orders and shows the BSUID-only conversation with the badge", async () => {
+      h.orders = [{ contact_id: "ct-b1" }, { contact_id: "ct-b1" }]; // two orders, one contact
+      h.rows.order = [bsuidOnly("b1", "Solo Bsuid")];
+      render(<Harness />);
+      await type("+51 954 953 878");
+      await waitFor(() => expect(screen.getByText("Solo Bsuid")).toBeTruthy());
+      expect(h.orderPhones.at(-1)).toEqual(["51954953878", "954953878"]);
+      expect(h.orderContactIds.at(-1)).toEqual(["ct-b1"]);
+      expect(screen.getByText("matchedByOrder")).toBeTruthy();
+    });
+
+    it("a conversation already found through the contact is not duplicated nor badged", async () => {
+      h.rows.contact = [mk("1", "Ana", "51987654321")];
+      h.orders = [{ contact_id: "ct-1" }];
+      h.rows.order = [mk("1", "Ana", "51987654321")];
+      render(<Harness />);
+      await type("987654321");
+      await waitFor(() => expect(screen.getByText("Ana")).toBeTruthy());
+      expect(screen.getAllByText("Ana")).toHaveLength(1);
+      expect(screen.queryByText("matchedByOrder")).toBeNull();
+    });
+
+    it("text, names and phone fragments never query orders", async () => {
+      render(<Harness />);
+      await type("maria");
+      await waitFor(() => expect(h.ranges.length).toBeGreaterThan(0));
+      await type("654 321");
+      await type("1234");
+      expect(h.orderQueries).toBe(0);
+    });
+
+    it("one phone on orders of several contacts shows every match and selects none", async () => {
+      const onSelect = vi.fn();
+      h.orders = [{ contact_id: "ct-b1" }, { contact_id: "ct-b2" }, { contact_id: "ct-b3" }];
+      h.rows.order = [bsuidOnly("b1", "Uno"), bsuidOnly("b2", "Dos"), bsuidOnly("b3", "Tres")];
+      function Wrap() {
+        const [list, setList] = useState<Conversation[]>([]);
+        return <ConversationList activeConversationId={null} onSelect={onSelect} conversations={list} onConversationsLoaded={setList} />;
+      }
+      render(<Wrap />);
+      await type("987654321");
+      await waitFor(() => expect(screen.getAllByText("matchedByOrder")).toHaveLength(3));
+      expect(onSelect).not.toHaveBeenCalled();
+    });
+
+    it("orders with a deleted contact (null) are ignored", async () => {
+      h.orders = [{ contact_id: null }];
+      render(<Harness />);
+      await type("987654321");
+      await waitFor(() => expect(h.orderQueries).toBe(1));
+      expect(h.orderContactIds).toEqual([]);
+      await waitFor(() => expect(screen.getByText("noConversations")).toBeTruthy());
+    });
+
+    it("more than 100 matching contacts: expands 100 and says there are more", async () => {
+      h.orders = Array.from({ length: 130 }, (_, i) => ({ contact_id: `ct-x${i}` }));
+      h.rows.order = Array.from({ length: 100 }, (_, i) => bsuidOnly(`x${i}`, `Cliente ${i}`));
+      render(<Harness />);
+      await type("987654321");
+      await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
+      expect(screen.getByText("orderMatchesTruncated")).toBeTruthy();
+      expect(h.orderContactIds.at(-1)).toHaveLength(100);
+    });
+
+    it("an order lookup failure is shown as an error, never as partial results", async () => {
+      h.rows.contact = [mk("1", "Ana", "51987654321")];
+      h.failOrders = true;
+      render(<Harness />);
+      await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
+      await type("987654321");
+      await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
+      expect(screen.queryByText("Ana")).toBeNull();
+      h.failOrders = false; h.orders = [{ contact_id: "ct-b1" }]; h.rows.order = [bsuidOnly("b1", "Solo Bsuid")];
+      fireEvent.click(screen.getByText("retry"));
+      await waitFor(() => expect(screen.getByText("Solo Bsuid")).toBeTruthy());
+    });
+
+    it("the order matches respect the status filter", async () => {
+      h.orders = [{ contact_id: "ct-b1" }];
+      h.rows.order = [{ ...bsuidOnly("b1", "Solo Bsuid"), status: "closed" } as Conversation];
+      render(<Harness />);
+      await type("987654321");
+      await waitFor(() => expect(screen.getByText("Solo Bsuid")).toBeTruthy());
+      fireEvent.click(screen.getByText("filterAll"));
+      fireEvent.click(await screen.findByText("filterOpen"));
+      await waitFor(() => expect(screen.queryByText("Solo Bsuid")).toBeNull());
+    });
   });
 });

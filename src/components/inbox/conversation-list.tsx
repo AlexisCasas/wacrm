@@ -1,7 +1,12 @@
 "use client";
 
 import { contactLabel } from "@/lib/contacts/display";
-import { matchesInboxSearch, planInboxSearch } from "@/lib/inbox/search-query";
+import {
+  matchesInboxSearch,
+  orderPhoneCandidates,
+  pickOrderContactIds,
+  planInboxSearch,
+} from "@/lib/inbox/search-query";
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { createClient } from "@/lib/supabase/client";
 import {
@@ -96,6 +101,11 @@ export function ConversationList({
   // the previous list. `retryToken` re-runs the fetch effect on demand.
   const [loadError, setLoadError] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
+  // FIX 02: conversations found ONLY through the phone of an order (BSUID
+  // contacts have no phone of their own), and whether more matches exist
+  // than were expanded. Both are per-search results.
+  const [orderOnlyIds, setOrderOnlyIds] = useState<ReadonlySet<string>>(new Set());
+  const [orderTruncated, setOrderTruncated] = useState(false);
   // Contact-based filters (issue #272). Tags use OR logic (a conversation
   // matches if its contact carries any selected tag), consistent with
   // Broadcast audience filtering. Company is an exact match on the field.
@@ -150,6 +160,8 @@ export function ConversationList({
       };
       let data: InboxRows | null = null;
       let error: InboxQueryError | null = null;
+      let orderOnly: ReadonlySet<string> = new Set();
+      let truncated = false;
 
       if (!term) {
         requests++;
@@ -181,18 +193,62 @@ export function ConversationList({
           // PostgREST cannot OR predicates from an embedded table and the
           // parent table in one expression. Keep the pre-existing criteria
           // by querying each side and de-duplicating conversations below.
-          const [contactMatches, messageMatches] = await Promise.all([
+          // FIX 02: a BSUID-only contact has no phone, but its orders do.
+          // Only for a COMPLETE number: order -> contact_id -> conversation
+          // (never order.conversation_id, which can be stale). RLS applies to
+          // both tables as the signed-in user; a failure here fails the whole
+          // search (no partial result is shown as definitive).
+          const ORDER_PAGE = 1_000;
+          const orderPhones = orderPhoneCandidates(plan);
+          const fetchOrderMatches = async () => {
+            if (orderPhones.length === 0) {
+              return { rows: [] as InboxRows, truncated: false };
+            }
+            requests++;
+            const { data: orders, error: orderError } = await supabase
+              .from("order_confirmations")
+              .select("contact_id")
+              .in("phone", orderPhones)
+              .not("contact_id", "is", null)
+              .order("confirmed_at", { ascending: false })
+              .abortSignal(controller.signal)
+              .range(0, ORDER_PAGE - 1);
+            if (orderError) throw orderError;
+            const picked = pickOrderContactIds(
+              (orders ?? []) as { contact_id: string | null }[],
+              ORDER_PAGE,
+            );
+            if (picked.contactIds.length === 0) {
+              return { rows: [] as InboxRows, truncated: picked.truncated };
+            }
+            return {
+              rows: await fetchAll(baseQuery().in("contact_id", picked.contactIds)),
+              truncated: picked.truncated,
+            };
+          };
+
+          const [contactMatches, messageMatches, orderMatches] = await Promise.all([
             fetchAll(
               baseQuery().or(plan.contactOrFilter, {
                 referencedTable: "contact",
               }),
             ),
             fetchAll(baseQuery().ilike("last_message_text", plan.likePattern)),
+            fetchOrderMatches(),
           ]);
           const unique = new Map<string, (typeof contactMatches)[number]>();
           for (const conversation of [...contactMatches, ...messageMatches]) {
             unique.set(conversation.id, conversation);
           }
+          const onlyByOrder = new Set<string>();
+          for (const conversation of orderMatches.rows) {
+            if (!unique.has(conversation.id)) {
+              unique.set(conversation.id, conversation);
+              onlyByOrder.add(conversation.id);
+            }
+          }
+          orderOnly = onlyByOrder;
+          truncated = orderMatches.truncated;
           data = Array.from(unique.values());
         } catch (searchError) {
           error = {
@@ -225,6 +281,8 @@ export function ConversationList({
 
       finishTimer({ requests, rows: data?.length ?? 0 });
       setLoadError(false);
+      setOrderOnlyIds(orderOnly);
+      setOrderTruncated(truncated);
       onConversationsLoadedRef.current(
         sortConversationsByActivity(normalizeConversations(data ?? [])),
       );
@@ -301,11 +359,11 @@ export function ConversationList({
       // Same normalization as the database query, so a phone typed as
       // "+51 987-654-321" is not filtered out again here.
       const plan = planInboxSearch(appliedSearch);
-      result = result.filter((c) => matchesInboxSearch(c, plan));
+      result = result.filter((c) => matchesInboxSearch(c, plan, orderOnlyIds));
     }
 
     return result;
-  }, [conversations, filter, appliedSearch, selectedTagIds, selectedCompany]);
+  }, [conversations, filter, appliedSearch, selectedTagIds, selectedCompany, orderOnlyIds]);
 
   const toggleTag = useCallback((id: string) => {
     setSelectedTagIds((prev) =>
@@ -542,10 +600,19 @@ export function ConversationList({
           </div>
         ) : (
           <div className="flex flex-col">
+            {orderTruncated && appliedSearch.trim() && (
+              <p
+                role="status"
+                className="border-b border-border bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+              >
+                {t("orderMatchesTruncated")}
+              </p>
+            )}
             {filtered.map((conv) => (
               <ConversationItem
                 key={conv.id}
                 conversation={conv}
+                matchedByOrder={orderOnlyIds.has(conv.id)}
                 isActive={conv.id === activeConversationId}
                 onSelect={handleSelect}
                 t={t}
@@ -560,6 +627,8 @@ export function ConversationList({
 
 interface ConversationItemProps {
   conversation: Conversation;
+  /** Found only through the phone of one of its orders (FIX 02). */
+  matchedByOrder?: boolean;
   isActive: boolean;
   onSelect: (conversation: Conversation) => void;
   t: ReturnType<typeof useTranslations>;
@@ -567,6 +636,7 @@ interface ConversationItemProps {
 
 function ConversationItem({
   conversation,
+  matchedByOrder = false,
   isActive,
   onSelect,
   t,
@@ -652,6 +722,14 @@ function ConversationItem({
             />
           </div>
         </div>
+        {matchedByOrder && (
+          <span
+            className="mt-1 inline-block rounded-full bg-sky-500/15 px-1.5 py-0.5 text-[9px] font-medium text-sky-700 dark:text-sky-400"
+            title={t("matchedByOrderHint")}
+          >
+            {t("matchedByOrder")}
+          </span>
+        )}
         {visibleTags.length > 0 && (
           <div className="mt-1 flex items-center gap-1">
             {visibleTags.map((tag) => (
