@@ -7,11 +7,21 @@
 # Uses $STATE_DIR/last.env (written by deploy.sh). The previous container is started, must pass readiness, takes the public alias, and only
 # then does the failed release leave it; the failed release is kept stopped (as <name>-failed-<ts>) for inspection.
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PUBLIC_ALIAS_PINNED="${PUBLIC_ALIAS+yes}"
 # shellcheck source=lib.sh
 . "$DIR/lib.sh"
 EXECUTE=0; if [ "${1:-}" = "--execute" ]; then EXECUTE=1; shift; fi
 export EXECUTE
 need docker; need flock
+# Publish the name Caddy really dials. A rollback must stay possible when Caddy is the thing that is broken, so an
+# unreadable Caddy config only warns here; the post-rollback guard below still requires a working route.
+if [ "$PUBLIC_ALIAS_PINNED" != "yes" ]; then
+  if CADDY_UPSTREAM="$(bash "$DIR/guard-public-proxy.sh" --print-upstream 2>/dev/null)"; then
+    PUBLIC_ALIAS="${CADDY_UPSTREAM%%:*}"; export PUBLIC_ALIAS
+  else
+    log "WARN cannot read the Caddy upstream name; keeping PUBLIC_ALIAS=$PUBLIC_ALIAS"
+  fi
+fi
 exec 9>"$LOCK_FILE"; flock -n 9 || die "another deploy/rollback is running"
 [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ] && [ "$(stat -c '%a' -- "$STATE_DIR")" = "700" ] ||
   die "unsafe/missing state directory; require a real directory with mode 0700"
@@ -96,4 +106,7 @@ echo "FAILED_NAME=${LIVE_NAME}-failed-$TS" >>"$STATE_DIR/.last.env.rollback-$TS"
 mv -f "$STATE_DIR/.last.env.rollback-$TS" "$STATE_DIR/last.env"
 chmod 600 -- "$STATE_DIR/last.env" || die "cannot secure post-rollback manifest"
 private_state_manifest "$STATE_DIR/last.env" || die "post-rollback manifest permissions not 0600"
+# A rollback is not complete because a container is running and healthy: the shared Caddy must serve WACRM again.
+bash "$DIR/guard-public-proxy.sh" "$LIVE_NAME" ||
+  die "CRITICAL: the rolled-back image is running but Caddy cannot serve WACRM through $PUBLIC_ALIAS; restore the edge_proxy alias now"
 log "rolled back. live=$LIVE_NAME image=$OLD_IMAGE. Failed release kept stopped as ${LIVE_NAME}-failed-$TS. Verify with verify-no-502.sh"

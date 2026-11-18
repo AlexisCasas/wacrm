@@ -188,3 +188,9 @@ jobs:
             if(x.fail!==0 || x.slow.ok!==12 || x.slow.failed!==0 || !(x.counts.a>0) || !(x.counts.b>0)) process.exit(1);
             console.log("OPS_BLUE_GREEN_LAB=PASS");
           ' "$result"
+      - name: Guard against a REAL Caddy (healthy, lost alias, mismatch, recovery)
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull caddy:2-alpine
+          bash ops/deploy/lab-guard-real-caddy.sh node:20-alpine caddy:2-alpine
