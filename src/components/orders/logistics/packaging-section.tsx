@@ -3,14 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
-import { CircleCheck, Image as ImageIcon, Loader2, PackageOpen, Send, TriangleAlert } from "lucide-react";
+import { CircleCheck, Image as ImageIcon, Loader2, PackageOpen, Send, TriangleAlert, Upload } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { api, newRequestKey, notifyLogisticsChanged, postJson, type DispatchView, type DocumentView, type LogisticsStatus } from "@/components/orders/logistics/api";
+import { ACCEPTED_FILES, api, newRequestKey, notifyLogisticsChanged, postJson, type DispatchView, type DocumentView, type LogisticsStatus } from "@/components/orders/logistics/api";
 import { useErrorText } from "@/components/orders/logistics/shared";
 
-// PACKAGING of one order: start it, pick the evidence FROM THE SAME CHAT (no download from another tool, no manual upload), send the operational
+// PACKAGING of one order: start it, UPLOAD the packaging evidence from the operator's device (primary way; the chat may have no file at all) or, when
+// the chat has reusable files, pick one FROM THE SAME CHAT (optional alternative), send the operational
 // WhatsApp template and — only when the send is CONFIRMED — the order becomes "Listo para despacho". The request key of a send is kept while the
 // operation is the same (a retry never duplicates) and renewed only for a new, deliberate send.
 
@@ -38,8 +39,12 @@ export function PackagingSection({
   const t = useTranslations("OrderLogistics");
   const errorText = useErrorText();
   const sendKey = useRef(newRequestKey());
-  const [busy, setBusy] = useState<null | "start" | "send" | "resolve">(null);
+  const [busy, setBusy] = useState<null | "start" | "send" | "resolve" | "upload">(null);
   const [picking, setPicking] = useState(false);
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  // One key per upload INTENT: a double click or a retry of the same file reuses it (the server answers the same evidence).
+  const pendingUpload = useRef<{ file: File; key: string } | null>(null);
+  const [chatCount, setChatCount] = useState(0);
   const [resolvedUrl, setResolvedUrl] = useState<{ id: string; url: string } | null>(null);
   const evidenceUrl = evidence && resolvedUrl?.id === evidence.id ? resolvedUrl.url : null;
 
@@ -60,6 +65,44 @@ export function PackagingSection({
       cancelled = true;
     };
   }, [evidence]);
+
+  // The chat alternative is offered only when the conversation has at least one reusable file (the upload works with or without it).
+  useEffect(() => {
+    if (status !== "packing") return;
+    let cancelled = false;
+    void (async () => {
+      const r = await api<{ media?: ChatMedia[] }>(`/api/orders/logistics/orders/${orderId}/chat-media`);
+      if (!cancelled) setChatCount(r.ok ? (r.body.media ?? []).filter((m) => m.available).length : 0);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [orderId, status]);
+
+  const upload = async (file: File | undefined) => {
+    if (!file || busy !== null) return;
+    if (pendingUpload.current?.file.name !== file.name || pendingUpload.current.file.size !== file.size) pendingUpload.current = { file, key: newRequestKey() };
+    const { key } = pendingUpload.current;
+    setBusy("upload");
+    const form = new FormData();
+    form.set("file", file);
+    form.set("request_key", key);
+    let res: Response | null = null;
+    try {
+      res = await fetch(`/api/orders/logistics/orders/${orderId}/evidence/upload`, { method: "POST", body: form });
+    } catch {
+      res = null;
+    }
+    setBusy(null);
+    const body = res ? ((await res.json().catch(() => ({}))) as { error?: string }) : { error: "network_error" };
+    if (res?.ok) {
+      pendingUpload.current = null;
+      toast.success(t("evidenceUploadedToast"));
+      done();
+      return;
+    }
+    toast.error(errorText(body.error));
+  };
 
   const start = async () => {
     setBusy("start");
@@ -116,10 +159,29 @@ export function PackagingSection({
             <div className="flex items-center justify-between gap-2">
               <p className="text-xs font-medium text-foreground">{t("evidenceTitle")}</p>
               {status === "packing" && !uncertain ? (
-                <Button type="button" size="sm" variant="outline" className="h-7 gap-1 text-[11px]" disabled={busy !== null} onClick={() => setPicking(true)}>
-                  <ImageIcon className="size-3" aria-hidden />
-                  {evidence ? t("changeEvidence") : t("pickEvidence")}
-                </Button>
+                <div className="flex flex-wrap justify-end gap-1.5">
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    accept={ACCEPTED_FILES}
+                    className="sr-only"
+                    aria-label={t("uploadEvidence")}
+                    onChange={(e) => {
+                      void upload(e.target.files?.[0]);
+                      e.target.value = "";
+                    }}
+                  />
+                  <Button type="button" size="sm" variant="outline" className="h-7 gap-1 text-[11px]" disabled={busy !== null} onClick={() => fileInput.current?.click()}>
+                    {busy === "upload" ? <Loader2 className="size-3 animate-spin" /> : <Upload className="size-3" aria-hidden />}
+                    {evidence ? t("replaceEvidence") : t("uploadEvidence")}
+                  </Button>
+                  {chatCount > 0 ? (
+                    <Button type="button" size="sm" variant="outline" className="h-7 gap-1 text-[11px]" disabled={busy !== null} onClick={() => setPicking(true)}>
+                      <ImageIcon className="size-3" aria-hidden />
+                      {t("pickFromChat")}
+                    </Button>
+                  ) : null}
+                </div>
               ) : null}
             </div>
             {evidence ? (

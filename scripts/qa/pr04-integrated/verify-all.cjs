@@ -77,6 +77,7 @@ async function http(label, method, url, body) {
 }
 const form = (file, fields) => { const fd = new FormData(); fd.append('file', new Blob([fs.readFileSync(path.join(FIX, file))], { type: 'application/pdf' }), file); for (const [k, v] of Object.entries(fields)) if (v) fd.append(k, v); return fd }
 const upload = (label, orderId, file = 'voucher-pedidoA.pdf', extra = {}) => http(label, 'POST', '/api/orders/logistics/documents', form(file, { request_key: `${MARK}-v-${rid()}`, order_id: orderId, allow_duplicate: 'true', ...extra }))
+const evUpload = (label, orderId, file = 'media-A-correcta.png', name = file, key = `${MARK}-evu-${rid()}`) => { const fd = new FormData(); fd.append('file', new Blob([fs.readFileSync(path.join(FIX, file))], { type: 'image/png' }), name); fd.append('request_key', key); return http(label, 'POST', `/api/orders/logistics/orders/${orderId}/evidence/upload`, fd) }
 const FIXED = { dni: '11112222', phone: '51911112222', customer_name: 'Cliente Prueba', amount: '10.00' }
 
 async function mkOrder(tag, { acc = W.acc, actor = W.users.comm, owner = W.users.owner, media = true, dni, phone } = {}) {
@@ -149,6 +150,7 @@ async function main() {
     put('iniciar embalaje', label, (await http(label, 'POST', `/api/orders/logistics/orders/${P1.order}/packaging`, { action: 'start' })).status)
     put('seleccionar evidencia (ver media del chat)', label, (await http(label, 'GET', `/api/orders/logistics/orders/${P2.order}/chat-media`)).status)
     put('crear snapshot (selección)', label, (await http(label, 'POST', `/api/orders/logistics/orders/${P2.order}/evidence`, { message_id: P2.mediaId, request_key: `${MARK}-ev-${rid()}` })).status)
+    put('subir evidencia (dispositivo)', label, (await evUpload(label, P2.order)).status)
     put('ejecutar plantilla simulada', label, (await http(label, 'POST', `/api/orders/logistics/orders/${P3.order}/packaging`, { action: 'send_template', request_key: `${MARK}-t-${rid()}` })).status)
     put('ver trazabilidad (panel)', label, (await http(label, 'GET', `/api/orders/logistics/orders/${P3.order}`)).status)
     put('acceder a documento privado (URL firmada)', label, (await http(label, 'GET', `/api/orders/logistics/documents/${d0.doc}/url`)).status)
@@ -182,6 +184,8 @@ async function main() {
     put('iniciar embalaje', r, (await http(r, 'POST', `/api/orders/logistics/orders/${A1.order}/packaging`, { action: 'start' })).status)
     put('seleccionar evidencia (ver media del chat)', r, (await http(r, 'GET', `/api/orders/logistics/orders/${A2.order}/chat-media`)).status)
     put('crear snapshot (selección)', r, (await http(r, 'POST', `/api/orders/logistics/orders/${A2.order}/evidence`, { message_id: A2.mediaId, request_key: `${MARK}-ev-${rid()}` })).status)
+    const AU = await mkOrder(`au-${r}`, { media: false }); await advance(r, AU, 'packing')
+    put('subir evidencia (dispositivo)', r, (await evUpload(r, AU.order, 'media-A2-correcta.png', 'foto embalaje.png')).status)
     setMode('success')
     put('ejecutar plantilla simulada', r, (await http(r, 'POST', `/api/orders/logistics/orders/${A3.order}/packaging`, { action: 'send_template', request_key: `${MARK}-t-${rid()}` })).status)
     put('ver trazabilidad (panel)', r, (await http(r, 'GET', `/api/orders/logistics/orders/${A3.order}`)).status)
@@ -225,6 +229,22 @@ async function main() {
   const pub = await fetch(`${L.URL_}/storage/v1/object/public/order-docs/x`)
   rec('storage', 'order-docs is not public (public URL does not serve)', !pub.ok, `status ${pub.status}`)
 
+  // ---------- 3b) evidence uploaded from the device: chat WITHOUT files -> template -> ready_for_dispatch ----------
+  const UE = await mkOrder('ue', { media: false }); await advance('logi', UE, 'packing')
+  const noEv = await http('logi', 'POST', `/api/orders/logistics/orders/${UE.order}/packaging`, { action: 'send_template', request_key: `${MARK}-t-${rid()}` })
+  const cm0 = await http('logi', 'GET', `/api/orders/logistics/orders/${UE.order}/chat-media`)
+  rec('evidence upload', 'chat without files: the chat list is empty and the template is refused until evidence exists', (cm0.body.media ?? []).length === 0 && noEv.status === 409 && noEv.body.error === 'evidence_required', `chat items ${(cm0.body.media ?? []).length}, send ${noEv.status} ${noEv.body.error}`)
+  const badExt = await evUpload('logi', UE.order, 'media-A-correcta.png', 'foto.exe')
+  const upOk = await evUpload('logi', UE.order, 'media-A-correcta.png', 'foto embalaje.PNG')
+  const evRowUE = (await admin.from('order_documents').select('source, uploaded_by, storage_bucket, storage_path, status').eq('order_id', UE.order).eq('kind', 'evidence').single()).data
+  rec('evidence upload', 'upload by logistics: 201, private order-docs object scoped to account+order, source=upload, uploader recorded; bad extension refused', badExt.status === 415 && upOk.status === 201 && evRowUE.source === 'upload' && evRowUE.uploaded_by === W.users.logi.id && evRowUE.storage_bucket === 'order-docs' && evRowUE.storage_path.startsWith(`account-${W.acc}/orders/${UE.order}/evidence/`), JSON.stringify({ badExt: badExt.status, upOk: upOk.status, ...evRowUE }))
+  const panelUE = await http('logi', 'GET', `/api/orders/logistics/orders/${UE.order}`)
+  rec('evidence upload', 'the panel shows the uploaded evidence and the trail records who/when/origin (evidence_uploaded)', panelUE.body.evidence?.id && panelUE.body.events.some((e) => e.event_type === 'evidence_uploaded' && e.actor_name), `evidence ${panelUE.body.evidence?.original_filename}`)
+  const sUE = await http('logi', 'POST', `/api/orders/logistics/orders/${UE.order}/packaging`, { action: 'send_template', request_key: `${MARK}-t-${rid()}` })
+  rec('evidence upload', 'template enabled by the uploaded evidence → sent (simulated) → ready_for_dispatch, same conversation', sUE.status === 200 && (await logiStatus(UE.order)) === 'ready_for_dispatch', `send ${sUE.status} ${JSON.stringify(sUE.body).slice(0, 100)}`)
+  const lateUp = await evUpload('logi', UE.order, 'media-A2-correcta.png', 'otra.png')
+  rec('evidence upload', 'once ready_for_dispatch the evidence is frozen (409)', lateUp.status === 409, `status ${lateUp.status}`)
+
   // ---------- 4) cross-account (account A cannot touch account X and vice versa) ----------
   const X = await mkOrder('x1', { acc: W.accX, actor: W.users.ext, owner: W.users.ext })
   const xa = await advance('ext', X, 'pending')
@@ -241,6 +261,7 @@ async function main() {
   cross.associate_foreign_voucher = (await http('logi', 'POST', `/api/orders/logistics/documents/${xbd}/associate`, { order_id: PT.order })).status
   cross.associate_to_foreign_order = (await http('logi', 'POST', `/api/orders/logistics/documents/${bulkDoc}/associate`, { order_id: X.order })).status
   cross.start_foreign = (await http('logi', 'POST', `/api/orders/logistics/orders/${X.order}/packaging`, { action: 'start' })).status
+  cross.evidence_upload_foreign_order = (await evUpload('logi', X.order)).status
   cross.evidence_foreign_order = (await http('logi', 'POST', `/api/orders/logistics/orders/${X.order}/evidence`, { message_id: X.mediaId, request_key: `${MARK}-x-${rid()}` })).status
   const own = await mkOrder('own-ev'); await advance('logi', own, 'packing')
   cross.evidence_foreign_media_on_own_order = (await http('logi', 'POST', `/api/orders/logistics/orders/${own.order}/evidence`, { message_id: X.mediaId, request_key: `${MARK}-x-${rid()}` })).status
@@ -249,7 +270,7 @@ async function main() {
   const okOwnMedia = await http('logi', 'POST', `/api/orders/logistics/orders/${own.order}/evidence`, { message_id: own.mediaId, request_key: `${MARK}-a-${rid()}` })
   const xlist = cross.list_docs.body
   rec('cross-account', 'A cannot read order / voucher / download / list of account X', [cross.read_order, cross.read_doc, cross.signed_url].every(BLOCKED) && (xlist.documents ?? xlist.items ?? []).length === 0, `order ${cross.read_order}, doc ${cross.read_doc}, url ${cross.signed_url}, list rows=${(xlist.documents ?? xlist.items ?? []).length}`)
-  rec('cross-account', 'A cannot upload / OCR / review / associate / start packaging / select evidence on account X', ['upload_to_foreign_order', 'ocr_foreign_doc', 'review_foreign_doc', 'associate_foreign_voucher', 'associate_to_foreign_order', 'start_foreign', 'evidence_foreign_order'].every((k) => BLOCKED(cross[k])), JSON.stringify(Object.fromEntries(Object.entries(cross).filter(([k]) => k !== 'list_docs'))))
+  rec('cross-account', 'A cannot upload / OCR / review / associate / start packaging / select evidence on account X', ['upload_to_foreign_order', 'ocr_foreign_doc', 'review_foreign_doc', 'associate_foreign_voucher', 'associate_to_foreign_order', 'start_foreign', 'evidence_foreign_order', 'evidence_upload_foreign_order'].every((k) => BLOCKED(cross[k])), JSON.stringify(Object.fromEntries(Object.entries(cross).filter(([k]) => k !== 'list_docs'))))
   rec('evidence', 'MEDIA A (own conversation) is selectable → private snapshot in order-docs', okOwnMedia.status === 201 || okOwnMedia.status === 200, `status ${okOwnMedia.status}`)
   rec('evidence', 'MEDIA B (other conversation, same account) is REJECTED', !ALLOWED(cross.evidence_media_of_other_conversation), `status ${cross.evidence_media_of_other_conversation}`)
   rec('evidence', 'MEDIA C (other account) is REJECTED', !ALLOWED(cross.evidence_foreign_media_on_own_order), `status ${cross.evidence_foreign_media_on_own_order}`)

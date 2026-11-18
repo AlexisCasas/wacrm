@@ -31,6 +31,7 @@ Fuera de alcance de PR-04 (no implementado): Shalom/tracking (PR-05), cobranza/p
 | 3 | `20261129000002_order_docs_storage.sql` | Bucket **privado** `order-docs`, sin policies para `anon`/`authenticated` |
 | 4 | `20261129000003_order_evidence_rpc.sql` | `select_order_evidence()` |
 | 5 | `20261129000004_order_template_dispatch_rpcs.sql` | `begin/mark_sending/finish/resolve_template_dispatch` y el helper interno de cierre |
+| 6 | `20261129000005_order_evidence_upload.sql` | evidencia de embalaje SUBIDA desde el dispositivo: relaja un CHECK de `order_documents` (evidencia con `source='upload'`), añade el evento `evidence_uploaded` y la RPC `register_order_evidence_upload()` |
 
 Todas sortean **después** de `20261128000000_conversation_routing.sql` (PR-03). Ninguna modifica migrations históricas ni objetos de PR-02/PR-03 (verificado por `migration-order-logistics.test.ts` y `migration-pr03-compat.test.ts`).
 
@@ -41,11 +42,11 @@ Todas sortean **después** de `20261128000000_conversation_routing.sql` (PR-03).
 
 **Estados visibles** (`order_logistics.status`): `pending_voucher` → `voucher_validated` → `packing` → `ready_for_dispatch`. Los estados técnicos (OCR, asociación, dispatch) **no** son estados del pedido.
 
-**RPCs** (solo `service_role`; cada una revalida actor, cuenta, flag, área y propiedad del pedido): `register_order_document`, `begin_document_ocr`, `complete_document_ocr`, `fail_document_ocr`, `associate_order_document`, `review_order_document`, `start_order_packaging`, `select_order_evidence`, `begin_template_dispatch`, `mark_template_dispatch_sending`, `finish_template_dispatch`, `resolve_template_dispatch`. Helpers internos (sin EXECUTE para nadie salvo el dueño): `order_logistics_actor`, `order_logistics_lock`, `order_logistics_require_order`, `order_logistics_log`, `order_logistics_complete_packaging`. Helper de RLS: `order_logistics_access(account)`.
+**RPCs** (solo `service_role`; cada una revalida actor, cuenta, flag, área y propiedad del pedido): `register_order_document`, `begin_document_ocr`, `complete_document_ocr`, `fail_document_ocr`, `associate_order_document`, `review_order_document`, `start_order_packaging`, `select_order_evidence`, `register_order_evidence_upload`, `begin_template_dispatch`, `mark_template_dispatch_sending`, `finish_template_dispatch`, `resolve_template_dispatch`. Helpers internos (sin EXECUTE para nadie salvo el dueño): `order_logistics_actor`, `order_logistics_lock`, `order_logistics_require_order`, `order_logistics_log`, `order_logistics_complete_packaging`. Helper de RLS: `order_logistics_access(account)`.
 
-**Bucket**: `order-docs` (privado, 10 MB, PDF/JPEG/PNG/WEBP). Rutas `account-<id>/orders/<order|unassigned>/(vouchers|evidence)/<doc>/<archivo>`. Todo acceso es del servidor con URL firmada de corta vida (120 s para ver; 600 s para el header de la plantilla).
+**Bucket**: `order-docs` (privado, 10 MB, PDF/JPEG/PNG/WEBP). Rutas `account-<id>/orders/<order|unassigned>/(vouchers|evidence)/<doc>/<archivo>`. La evidencia de embalaje se SUBE desde el dispositivo (flujo principal; no exige archivos en el chat) o, opcionalmente, se elige del chat; ambas son una fila `order_documents` kind `evidence` (origen en `source`: `upload` | `chat_message`; auditoría `evidence_uploaded` | `evidence_selected`). Todo acceso es del servidor con URL firmada de corta vida (120 s para ver; 600 s para el header de la plantilla).
 
-**APIs** (`/api/orders/logistics/…`, 13 rutas): `documents` (POST/GET), `documents/[id]` (GET), `…/[id]/url`, `…/[id]/ocr`, `…/[id]/review`, `…/[id]/process`, `…/[id]/associate`, `orders/[orderId]` (GET), `…/chat-media`, `…/evidence`, `…/packaging` (`start` | `send_template` | `resolve`), `orders/pending`, `summary`.
+**APIs** (`/api/orders/logistics/…`, 13 rutas): `documents` (POST/GET), `documents/[id]` (GET), `…/[id]/url`, `…/[id]/ocr`, `…/[id]/review`, `…/[id]/process`, `…/[id]/associate`, `orders/[orderId]` (GET), `…/chat-media`, `…/evidence` (desde el chat), `…/evidence/upload` (subida desde el dispositivo, multipart), `…/packaging` (`start` | `send_template` | `resolve`), `orders/pending`, `summary`.
 
 **UI**: panel dentro del detalle de Pedidos confirmados, indicador compacto en la lista y `/confirmed-orders/vouchers`. Único archivo existente editado (solo inserciones): `src/components/orders/confirmed-orders-workspace.tsx` (+5 líneas) y los catálogos `messages/es.json` / `messages/en.json` (+195 líneas cada uno).
 

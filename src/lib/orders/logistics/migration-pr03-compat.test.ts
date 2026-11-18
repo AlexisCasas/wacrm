@@ -23,6 +23,7 @@ const PR04 = [
   '20261129000002_order_docs_storage.sql',
   '20261129000003_order_evidence_rpc.sql',
   '20261129000004_order_template_dispatch_rpcs.sql',
+  '20261129000005_order_evidence_upload.sql',
 ]
 const read = (name: string) => readFileSync(resolve(dir, name), 'utf8').replace(/\r\n/g, '\n')
 const strip = (sql: string) => sql.replace(/^\s*--.*$/gm, '')
