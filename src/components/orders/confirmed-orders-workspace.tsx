@@ -26,7 +26,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { DELIVERY_STATUSES, INTEGRATION_PENDING_STATUSES, type ConfirmedOrder } from "@/lib/orders/confirmed-orders-types";
 import { formatPrice, statusInfo, type StatusTone } from "@/lib/orders/history";
 import { LogisticsPanel } from "@/components/orders/logistics/logistics-panel";
-import { BulkVouchersButton, VoucherIndicator } from "@/components/orders/logistics/voucher-indicator";
+import { BulkVouchersButton } from "@/components/orders/logistics/voucher-indicator";
+import { DerivedLogisticsIndicator } from "@/components/orders/shalom/shalom-indicator";
+import { ShalomSection } from "@/components/orders/shalom/shalom-section";
 
 // "Pedidos confirmados" workspace. READ-ONLY consultation of the orders already confirmed in WACRM: it never edits an order, never changes a
 // delivery status and never sends anything. What each user sees is decided by the server (GET /api/orders/confirmed); this screen only renders.
@@ -201,6 +203,21 @@ export function ConfirmedOrdersWorkspace() {
     });
     setCursor(result.body.next_cursor ?? null);
   };
+
+  // Deep link (?order=<id>), used by the PR-05 "En destino" alert notification: open that order once it is in the loaded list (more pages are
+  // loaded while it is not found; it gives up when the list ends).
+  const deepLink = useRef<string | null>(typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("order"));
+  useEffect(() => {
+    const id = deepLink.current;
+    if (!id || state !== "ready") return;
+    const found = orders.find((o) => o.id === id);
+    if (found) {
+      deepLink.current = null;
+      setSelected(found);
+    } else if (cursor && !loadingMore) void loadMore();
+    else deepLink.current = null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, state, cursor, loadingMore]);
 
   const open = (order: ConfirmedOrder, trigger: HTMLElement | null) => {
     if (!selected) opener.current = trigger;
@@ -386,7 +403,7 @@ export function ConfirmedOrdersWorkspace() {
 
                     <div>
                       <OrderStatusBadge status={o.order_status} />
-                      <VoucherIndicator orderId={o.id} />
+                      <DerivedLogisticsIndicator orderId={o.id} />
                     </div>
                     <div>
                       <IntegrationBadge status={o.delivery_status} />
@@ -573,6 +590,7 @@ function OrderDrawer({
         </section>
 
         <LogisticsPanel key={order.id} orderId={order.id} />
+        <ShalomSection key={`shalom-${order.id}`} orderId={order.id} />
       </div>
 
       <div className="border-t border-border p-5">

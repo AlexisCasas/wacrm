@@ -29,6 +29,8 @@ export interface PollDeps {
   now?: () => Date
   /** Injectable pause (tests); defaults to a real timer. */
   sleep?: (ms: number) => Promise<void>
+  /** Global kill switch: do the DB-only work (alert clock, retention) but make NO provider query and claim nothing. */
+  skipQueries?: boolean
 }
 
 export type PauseReason = 'rate_limited' | 'credentials' | null
@@ -130,6 +132,8 @@ export interface TickSummary {
   durationMs: number
 }
 
+class SkipQueries extends Error {}
+
 export const emptyTick = (enabled: boolean): TickSummary => ({ enabled, claimed: 0, applied: 0, ignored: 0, byOutcome: {}, paused: null, alertsCreated: 0, alertsNotified: 0, purgedPolls: 0, errors: 0, durationMs: 0 })
 
 /**
@@ -139,9 +143,10 @@ export const emptyTick = (enabled: boolean): TickSummary => ({ enabled, claimed:
  */
 export async function runShalomTick(admin: SupabaseClient, deps: PollDeps): Promise<TickSummary> {
   const t0 = Date.now()
-  const summary = emptyTick(true)
+  const summary = emptyTick(!deps.skipQueries)
   try {
     const now = clock(deps)
+    if (deps.skipQueries) throw new SkipQueries()
     const { data, error } = await admin.rpc('claim_shipment_polls', { p_limit: deps.cfg.batchSize, p_lease_seconds: deps.cfg.leaseSeconds, p_order: null, p_now: now.toISOString() })
     if (error) {
       summary.errors += 1
@@ -175,8 +180,10 @@ export async function runShalomTick(admin: SupabaseClient, deps: PollDeps): Prom
       }
     }
   } catch (e) {
-    summary.errors += 1
-    console.error('[shalom] tick failed:', e instanceof Error ? e.name : 'unknown')
+    if (!(e instanceof SkipQueries)) {
+      summary.errors += 1
+      console.error('[shalom] tick failed:', e instanceof Error ? e.name : 'unknown')
+    }
   }
 
   // Independent of Shalom: the clock of the alert and the retention of the technical log.
