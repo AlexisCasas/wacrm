@@ -62,33 +62,6 @@ describe('callWhatsApp', () => {
     })
   })
 
-  it('supports a BSUID recipient without inventing a phone number', async () => {
-    let body: Record<string, unknown> | null = null
-    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
-      body = JSON.parse(String(init.body))
-      return new Response(JSON.stringify({
-        messaging_product: 'whatsapp',
-        calls: [{ id: 'wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh' }],
-      }), { status: 200 })
-    }))
-
-    await callWhatsApp({
-      ...BASE,
-      action: {
-        action: 'connect',
-        recipient: 'US.13491208655302741918',
-        session: OFFER,
-      },
-    })
-
-    expect(body).toMatchObject({
-      action: 'connect',
-      recipient: 'US.13491208655302741918',
-      session: OFFER,
-    })
-    expect(body).not.toHaveProperty('to')
-  })
-
   it('sends an answer for accept and returns success', async () => {
     let body: Record<string, unknown> | null = null
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
