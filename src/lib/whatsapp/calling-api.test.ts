@@ -10,12 +10,12 @@ const BASE = {
 
 const OFFER = {
   sdp_type: 'offer' as const,
-  sdp: 'v=0\\r\\no=- 1 1 IN IP4 127.0.0.1\\r\\ns=-\\r\\nt=0 0\\r\\n',
+  sdp: 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n',
 }
 
 const ANSWER = {
   sdp_type: 'answer' as const,
-  sdp: 'v=0\\r\\no=- 2 2 IN IP4 127.0.0.1\\r\\ns=-\\r\\nt=0 0\\r\\n',
+  sdp: 'v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n',
 }
 
 afterEach(() => {
