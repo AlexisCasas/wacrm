@@ -48,6 +48,7 @@ import { PRESET_TAG_COLORS } from "@/lib/contacts/tag-colors";
 import { toast } from "sonner";
 import { ConfirmOrderButton } from "@/components/orders/confirm-order-button";
 import { OrderHistory } from "@/components/orders/order-history";
+import { ConversationFinancials } from "@/components/orders/payments/conversation-financials";
 import { DeriveToCommercial } from "./derive-to-commercial";
 
 interface ContactSidebarProps {
@@ -326,6 +327,7 @@ export function ContactSidebar({ contact, onTagsChanged, onTagCreated, onContact
               <div className="mt-3 w-full">
                 <ConfirmOrderButton contact={contact} conversationId={conversationId} />
                 <OrderHistory key={conversationId ?? "none"} conversationId={conversationId} />
+                <ConversationFinancials key={`fin-${conversationId ?? "none"}`} conversationId={conversationId} />
                 <DeriveToCommercial key={`routing-${conversationId ?? "none"}`} conversationId={conversationId} />
               </div>
             )}

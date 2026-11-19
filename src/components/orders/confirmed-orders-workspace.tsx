@@ -30,6 +30,9 @@ import { BulkVouchersButton } from "@/components/orders/logistics/voucher-indica
 import { DerivedLogisticsIndicator } from "@/components/orders/shalom/shalom-indicator";
 import { SHIPMENT_CHANGED_EVENT } from "@/components/orders/shalom/api";
 import { ShalomSection } from "@/components/orders/shalom/shalom-section";
+import { PAYMENTS_CHANGED_EVENT } from "@/components/orders/payments/api";
+import { PaymentChip } from "@/components/orders/payments/payment-indicator";
+import { PaymentsSection } from "@/components/orders/payments/payments-section";
 
 // "Pedidos confirmados" workspace. READ-ONLY consultation of the orders already confirmed in WACRM: it never edits an order, never changes a
 // delivery status and never sends anything. What each user sees is decided by the server (GET /api/orders/confirmed); this screen only renders.
@@ -139,6 +142,9 @@ export function ConfirmedOrdersWorkspace() {
   // list is untouched: the chip narrows the loaded orders and keeps loading pages until every abandoned order is found or the list ends.
   const [abandonedIds, setAbandonedIds] = useState<string[] | null>(null);
   const [abandonedOnly, setAbandonedOnly] = useState(false);
+  // PR-06 filter "Con saldo": ids from /api/orders/payments/with-balance (Logística / Supervisor with both flags only; anyone else never sees the chip).
+  const [balanceIds, setBalanceIds] = useState<string[] | null>(null);
+  const [balanceOnly, setBalanceOnly] = useState(false);
   const requestSeq = useRef(0);
   const opener = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -168,6 +174,28 @@ export function ConfirmedOrdersWorkspace() {
     return () => {
       alive = false;
       window.removeEventListener(SHIPMENT_CHANGED_EVENT, onChange);
+    };
+  }, [reloadKey]);
+
+  useEffect(() => {
+    let alive = true;
+    const loadBalance = async () => {
+      try {
+        const res = await fetch("/api/orders/payments/with-balance", { cache: "no-store" });
+        if (!alive) return;
+        if (!res.ok) return setBalanceIds(null);
+        const body = (await res.json().catch(() => null)) as { order_ids?: string[] } | null;
+        setBalanceIds(Array.isArray(body?.order_ids) ? body.order_ids : null);
+      } catch {
+        if (alive) setBalanceIds(null);
+      }
+    };
+    void loadBalance();
+    const onChange = () => void loadBalance();
+    window.addEventListener(PAYMENTS_CHANGED_EVENT, onChange);
+    return () => {
+      alive = false;
+      window.removeEventListener(PAYMENTS_CHANGED_EVENT, onChange);
     };
   }, [reloadKey]);
 
@@ -267,7 +295,15 @@ export function ConfirmedOrdersWorkspace() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selected]);
 
-  const shown = abandonedOnly && abandonedIds ? orders.filter((o) => abandonedIds.includes(o.id)) : orders;
+  const narrowed = abandonedOnly && abandonedIds ? orders.filter((o) => abandonedIds.includes(o.id)) : orders;
+  const shown = balanceOnly && balanceIds ? narrowed.filter((o) => balanceIds.includes(o.id)) : narrowed;
+  // "Con saldo": same paging rule as "En abandono"
+  useEffect(() => {
+    if (!balanceOnly || !balanceIds || state !== "ready" || !cursor || loadingMore) return;
+    const loaded = new Set(orders.map((o) => o.id));
+    if (balanceIds.some((id) => !loaded.has(id))) void loadMore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [balanceOnly, balanceIds, orders, cursor, state, loadingMore]);
   // keep paging while the chip is on and an abandoned order is still not in the loaded list
   useEffect(() => {
     if (!abandonedOnly || !abandonedIds || state !== "ready" || !cursor || loadingMore) return;
@@ -276,9 +312,10 @@ export function ConfirmedOrdersWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [abandonedOnly, abandonedIds, orders, cursor, state, loadingMore]);
 
-  const filtering = status !== ALL || search !== "" || searchInput !== "" || abandonedOnly;
+  const filtering = status !== ALL || search !== "" || searchInput !== "" || abandonedOnly || balanceOnly;
   const clearFilters = () => {
     setAbandonedOnly(false);
+    setBalanceOnly(false);
     setStatus(ALL);
     setSearchInput("");
     setSearch("");
@@ -340,6 +377,11 @@ export function ConfirmedOrdersWorkspace() {
               ))}
             </SelectContent>
           </Select>
+          {balanceIds !== null ? (
+            <Button type="button" variant={balanceOnly ? "default" : "outline"} size="sm" aria-pressed={balanceOnly} title={t("balanceFilterHint")} onClick={() => setBalanceOnly((v) => !v)} className="h-10">
+              {t("balanceFilter")} ({balanceIds.length})
+            </Button>
+          ) : null}
           {abandonedIds !== null ? (
             <Button
               type="button"
@@ -378,7 +420,7 @@ export function ConfirmedOrdersWorkspace() {
         </Card>
       )}
 
-      {state === "ready" && shown.length === 0 && !(abandonedOnly && cursor) && <Notice text={filtering ? t("emptyFiltered") : t("empty")} />}
+      {state === "ready" && shown.length === 0 && !((abandonedOnly || balanceOnly) && cursor) && <Notice text={filtering ? t("emptyFiltered") : t("empty")} />}
 
       {state === "ready" && shown.length > 0 && (
         <Card className="gap-0 overflow-hidden rounded-xl py-0">
@@ -454,6 +496,7 @@ export function ConfirmedOrdersWorkspace() {
                     <div>
                       <OrderStatusBadge status={o.order_status} />
                       <DerivedLogisticsIndicator orderId={o.id} />
+                      <PaymentChip orderId={o.id} />
                     </div>
                     <div>
                       <IntegrationBadge status={o.delivery_status} />
@@ -641,6 +684,7 @@ function OrderDrawer({
 
         <LogisticsPanel key={order.id} orderId={order.id} />
         <ShalomSection key={`shalom-${order.id}`} orderId={order.id} />
+        <PaymentsSection key={`payments-${order.id}`} orderId={order.id} />
       </div>
 
       <div className="border-t border-border p-5">

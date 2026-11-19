@@ -134,7 +134,7 @@ describe('ConfirmedOrdersWorkspace: list', () => {
   it('"Load more" asks for the next page with the cursor and never repeats an order', async () => {
     const second = order({ id: '44444444-4444-4444-8444-444444444444', customer_name: 'Cliente Dos' })
     const pages = [{ orders: [order()], next_cursor: 'CUR1' }, { orders: [order(), second], next_cursor: null }]
-    const f = vi.fn(async (url: string) => (String(url).includes('/api/orders/shalom/') ? new Response('{}', { status: 403 }) : new Response(JSON.stringify(pages.shift()))))
+    const f = vi.fn(async (url: string) => (/\/api\/orders\/(shalom|payments)\//.test(String(url)) ? new Response('{}', { status: 403 }) : new Response(JSON.stringify(pages.shift()))))
     vi.stubGlobal('fetch', f)
     render(<ConfirmedOrdersWorkspace />)
     fireEvent.click(await screen.findByRole('button', { name: 'loadMore' }))
@@ -147,7 +147,7 @@ describe('ConfirmedOrdersWorkspace: list', () => {
   it('PR-05B: the "En abandono" chip appears only when the server grants the list, narrows the loaded orders (loading more pages to find them) and clears with the filters', async () => {
     const second = order({ id: '44444444-4444-4444-8444-444444444444', customer_name: 'Cliente Dos' })
     const pages = [{ orders: [order()], next_cursor: 'CUR1' }, { orders: [second], next_cursor: null }]
-    const f = vi.fn(async (url: string) => (String(url).includes('/api/orders/shalom/abandoned') ? new Response(JSON.stringify({ order_ids: [second.id] })) : new Response(JSON.stringify(pages.shift()))))
+    const f = vi.fn(async (url: string) => (String(url).includes('/api/orders/payments/') ? new Response('{}', { status: 403 }) : String(url).includes('/api/orders/shalom/abandoned') ? new Response(JSON.stringify({ order_ids: [second.id] })) : new Response(JSON.stringify(pages.shift()))))
     vi.stubGlobal('fetch', f)
     render(<ConfirmedOrdersWorkspace />)
     const chip = await screen.findByRole('button', { name: /abandonedFilter/ })
