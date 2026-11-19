@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useLocale, useTranslations } from "next-intl";
 import { toast } from "sonner";
-import { BellRing, Check, Loader2, PackageCheck, RefreshCw, Truck, TriangleAlert } from "lucide-react";
+import { BellRing, Check, Loader2, MessageSquare, PackageCheck, RefreshCw, Truck, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -31,7 +31,7 @@ export function ShalomSection({ orderId }: { orderId: string }) {
   const locale = useLocale();
   const errorText = useErrorText();
   const [view, setView] = useState<View>({ kind: "loading" });
-  const [busy, setBusy] = useState<null | "register" | "correct" | "refresh" | "stop" | "ack">(null);
+  const [busy, setBusy] = useState<null | "register" | "correct" | "refresh" | "stop" | "ack" | "message">(null);
   const [numero, setNumero] = useState("");
   const [codigo, setCodigo] = useState("");
   const [correcting, setCorrecting] = useState(false);
@@ -132,6 +132,10 @@ export function ShalomSection({ orderId }: { orderId: string }) {
   const openAlert = panel.alerts.find((a) => a.status !== "resolved");
   const when = (iso: string | null) => (iso ? limaDateTime(iso, locale) : t("never"));
   const closed = s.tracking_state === "delivered" || s.tracking_state === "stopped";
+  // PR-05A/B: the pickup block of the CURRENT En destino episode (or the last one, once delivered). Never a Shalom status.
+  const episodeMessage = (panel.messages ?? []).find((m) => m.destination_episode === s.destination_episode) ?? null;
+  const episodeAlert = panel.alerts.find((a) => a.destination_episode === s.destination_episode) ?? null;
+  const showPickup = (s.pickup_state ?? "none") !== "none" || (s.logistic_status === "at_destination" && s.tracking_state !== "stopped");
   const eventLabel = (type: string, from: string | null, to: string | null) =>
     type === "status_changed" ? t("events.status_changed", { to: to ? t(`status.${to}`) : "-" }) : t.has(`events.${type}`) ? t(`events.${type}`) : type;
 
@@ -195,6 +199,56 @@ export function ShalomSection({ orderId }: { orderId: string }) {
       {s.last_error_kind === "exception" ? <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-200" role="status">{t("exceptionBanner")}</p> : null}
       {s.last_error_kind && s.last_error_kind !== "exception" && !closed ? (
         <p className="rounded-lg bg-muted px-3 py-2 text-xs text-muted-foreground" role="status">{t(`errorKind.${s.last_error_kind}`, { code: s.last_error_code ?? "-" })}</p>
+      ) : null}
+
+      {s.pickup_state === "abandoned" ? (
+        <div className="space-y-1 rounded-lg border border-red-500/30 bg-red-500/10 p-3" role="status">
+          <p className="flex items-center gap-1.5 text-xs font-semibold text-red-300">
+            <TriangleAlert className="size-3.5" aria-hidden />
+            {t("abandonment")} · {t("abandonmentSince", { at: when(s.pickup_abandoned_at) })}
+          </p>
+          <p className="text-[11px] text-red-200/80">{t("abandonmentNote")}</p>
+        </div>
+      ) : null}
+
+      {showPickup ? (
+        <div className="space-y-1.5 rounded-lg border border-border p-3" aria-label={t("pickupTitle")}>
+          <p className="flex items-center gap-1.5 text-xs font-semibold text-foreground">
+            <MessageSquare className="size-3.5 text-muted-foreground" aria-hidden />
+            {t("pickupTitle")}
+          </p>
+          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+            <dt className="text-muted-foreground">{t("shalomStatus")}</dt>
+            <dd className="text-foreground">{s.logistic_status ? t(`status.${s.logistic_status}`) : t("awaitingFirst")}</dd>
+            {panel.days_at_destination !== null ? (
+              <>
+                <dt className="text-muted-foreground">{t("daysAtDestination")}</dt>
+                <dd className="text-foreground">{t("daysValue", { count: panel.days_at_destination })}</dd>
+              </>
+            ) : null}
+            <dt className="text-muted-foreground">{t("pickupState")}</dt>
+            <dd className="text-foreground">{t(`pickupStates.${(s.pickup_state ?? "none")}`)}</dd>
+            <dt className="text-muted-foreground">{t("internalAlert")}</dt>
+            <dd className="text-foreground">{t(`internalAlertStates.${episodeAlert?.status ?? "none"}`)}</dd>
+            <dt className="text-muted-foreground">{t("customerMessage")}</dt>
+            <dd className="text-foreground">{t(`customerMessageStatus.${episodeMessage?.status ?? "none"}`)}</dd>
+          </dl>
+          {episodeMessage && (episodeMessage.status === "failed" || episodeMessage.status === "uncertain") ? (
+            <div className="flex flex-wrap gap-2 pt-1">
+              {episodeMessage.status === "failed" ? (
+                <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("message", base, { action: "retry_message", message_id: episodeMessage.id }, t("retriedToast"))}>
+                  {busy === "message" ? <Loader2 className="size-3 animate-spin" /> : null}
+                  {t("retryMessage")}
+                </Button>
+              ) : (
+                <>
+                  <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("message", base, { action: "resolve_message", message_id: episodeMessage.id, resolution: "confirmed_sent" }, t("resolvedToast"))}>{t("resolveSent")}</Button>
+                  <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("message", base, { action: "resolve_message", message_id: episodeMessage.id, resolution: "confirmed_not_sent" }, t("resolvedToast"))}>{t("resolveNotSent")}</Button>
+                </>
+              )}
+            </div>
+          ) : null}
+        </div>
       ) : null}
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">

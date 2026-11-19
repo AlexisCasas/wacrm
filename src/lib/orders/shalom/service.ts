@@ -106,7 +106,21 @@ export async function acknowledgeAlert(ctx: ShipmentCaller, admin: SupabaseClien
 
 /** Columns the browser may see. Never the claim token / lease. */
 export const SHIPMENT_COLUMNS =
-  'id, order_id, tracking_number, tracking_code, identifier_version, identifier_source, logistic_status, tracking_state, stop_reason, stopped_at, status_changed_at, destination_episode, destination_entered_at, destination_entered_source, last_raw, last_polled_at, last_success_at, next_poll_at, consecutive_failures, first_failure_at, last_error_kind, last_error_code, created_at, updated_at' as const
+  'id, order_id, tracking_number, tracking_code, identifier_version, identifier_source, logistic_status, tracking_state, stop_reason, stopped_at, status_changed_at, destination_episode, destination_entered_at, destination_entered_source, last_raw, last_polled_at, last_success_at, next_poll_at, consecutive_failures, first_failure_at, last_error_kind, last_error_code, pickup_state, pickup_state_at, pickup_alerted_at, pickup_abandoned_at, created_at, updated_at' as const
+
+export type PickupState = 'none' | 'waiting_pickup' | 'alerted_15d' | 'abandoned' | 'completed'
+
+/** Complete calendar days (America/Lima) between the entry into En destino and now. */
+export function daysAtDestination(enteredAt: string | null | undefined, now: Date = new Date()): number | null {
+  if (!enteredAt) return null
+  const lima = (d: Date) => {
+    const p = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Lima', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d)
+    return Date.parse(`${p}T00:00:00Z`)
+  }
+  const from = new Date(enteredAt)
+  if (Number.isNaN(from.getTime())) return null
+  return Math.max(0, Math.round((lima(now) - lima(from)) / 86_400_000))
+}
 
 export interface ShipmentView {
   id: string
@@ -131,6 +145,11 @@ export interface ShipmentView {
   first_failure_at: string | null
   last_error_kind: 'order' | 'integration' | 'credentials' | 'exception' | null
   last_error_code: string | null
+  /** PR-05B: the WACRM pickup condition (NOT a Shalom status). */
+  pickup_state: PickupState
+  pickup_state_at: string | null
+  pickup_alerted_at: string | null
+  pickup_abandoned_at: string | null
   created_at: string
   updated_at: string
 }
@@ -157,6 +176,18 @@ export interface ShipmentAlertView {
   resolved_reason: string | null
 }
 
+export interface ShipmentMessageView {
+  id: string
+  destination_episode: number
+  status: 'pending' | 'claimed' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'skipped'
+  attempt: number
+  error_code: string | null
+  next_attempt_at: string | null
+  resolution: string | null
+  created_at: string
+  finished_at: string | null
+}
+
 export interface ShipmentPollView {
   id: string
   trigger: string
@@ -175,6 +206,10 @@ export interface ShipmentPanel {
   events: ShipmentEventView[]
   alerts: ShipmentAlertView[]
   polls: ShipmentPollView[]
+  /** PR-05A: the day-15 customer message of the CURRENT episode first (newest episode first). */
+  messages: ShipmentMessageView[]
+  /** Complete calendar days En destino (null when not En destino). */
+  days_at_destination: number | null
   can_stop: boolean
 }
 
@@ -196,18 +231,20 @@ export async function getShipmentPanel(ctx: LogisticsCaller, orderId: string, ca
   if (orderError) return fail(500, 'internal_error')
   if (!order) return fail(404, 'not_found')
 
-  const [logistics, shipment, events, alerts, polls] = await Promise.all([
+  const [logistics, shipment, events, alerts, polls, messages] = await Promise.all([
     ctx.supabase.from('order_logistics').select('status').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_shipments').select(SHIPMENT_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_shipment_events').select('id, event_type, from_status, to_status, source, actor_name, detail, created_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(40),
     ctx.supabase.from('order_shipment_alerts').select('id, destination_episode, status, due_date, created_at, acknowledged_at, resolved_at, resolved_reason').eq('account_id', ctx.accountId).eq('order_id', orderId).order('destination_episode', { ascending: false }).limit(10),
     ctx.supabase.from('order_shipment_polls').select('id, trigger, started_at, outcome, http_status, latency_ms, applied, ignored_reason').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(8),
+    ctx.supabase.from('order_shipment_messages').select('id, destination_episode, status, attempt, error_code, next_attempt_at, resolution, created_at, finished_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('destination_episode', { ascending: false }).limit(5),
   ])
-  if (logistics.error || shipment.error || events.error || alerts.error || polls.error) {
+  if (logistics.error || shipment.error || events.error || alerts.error || polls.error || messages.error) {
     console.error('[shalom] panel read failed')
     return fail(500, 'internal_error')
   }
   const status = (logistics.data as { status: string } | null)?.status
+  const view = (shipment.data as ShipmentView | null) ?? null
   return {
     ok: true,
     status: 200,
@@ -217,6 +254,8 @@ export async function getShipmentPanel(ctx: LogisticsCaller, orderId: string, ca
       events: (events.data ?? []) as ShipmentEventView[],
       alerts: (alerts.data ?? []) as ShipmentAlertView[],
       polls: (polls.data ?? []) as ShipmentPollView[],
+      messages: (messages.data ?? []) as ShipmentMessageView[],
+      days_at_destination: view?.logistic_status === 'at_destination' ? daysAtDestination(view.destination_entered_at) : null,
       can_stop: canStop,
     },
   }
@@ -229,6 +268,8 @@ export interface ShipmentSummary {
   tracking_state: ShipmentView['tracking_state']
   alert_open: boolean
   needs_attention: boolean
+  pickup_state: PickupState
+  days_at_destination: number | null
 }
 
 /** One light row per order for the list (derived logistic status). Only shipments that exist are returned. */
@@ -238,14 +279,25 @@ export async function getShipmentSummary(ctx: LogisticsCaller, ids: string[]): P
   const denied = await denyUnlessShipments(ctx)
   if (denied) return denied
   const [shipments, alerts] = await Promise.all([
-    ctx.supabase.from('order_shipments').select('order_id, logistic_status, tracking_state, last_error_kind').eq('account_id', ctx.accountId).in('order_id', unique),
+    ctx.supabase.from('order_shipments').select('order_id, logistic_status, tracking_state, last_error_kind, pickup_state, destination_entered_at').eq('account_id', ctx.accountId).in('order_id', unique),
     ctx.supabase.from('order_shipment_alerts').select('order_id').eq('account_id', ctx.accountId).in('order_id', unique).neq('status', 'resolved'),
   ])
   if (shipments.error || alerts.error) return fail(500, 'internal_error')
   const open = new Set(((alerts.data ?? []) as Array<{ order_id: string }>).map((a) => a.order_id))
   const summaries: Record<string, ShipmentSummary> = {}
-  for (const s of (shipments.data ?? []) as Array<{ order_id: string; logistic_status: ShipmentSummary['logistic_status']; tracking_state: ShipmentSummary['tracking_state']; last_error_kind: string | null }>) {
-    summaries[s.order_id] = { logistic_status: s.logistic_status, tracking_state: s.tracking_state, alert_open: open.has(s.order_id), needs_attention: s.tracking_state === 'requires_attention' || s.last_error_kind === 'exception' }
+  for (const s of (shipments.data ?? []) as Array<{ order_id: string; logistic_status: ShipmentSummary['logistic_status']; tracking_state: ShipmentSummary['tracking_state']; last_error_kind: string | null; pickup_state: PickupState; destination_entered_at: string | null }>) {
+    summaries[s.order_id] = { logistic_status: s.logistic_status, tracking_state: s.tracking_state, alert_open: open.has(s.order_id), needs_attention: s.tracking_state === 'requires_attention' || s.last_error_kind === 'exception', pickup_state: s.pickup_state, days_at_destination: s.logistic_status === 'at_destination' ? daysAtDestination(s.destination_entered_at) : null }
   }
   return { ok: true, status: 200, body: { summaries } }
+}
+
+export const MAX_ABANDONED_IDS = 500
+
+/** The orders CURRENTLY "En abandono" in this account (the list filter). Read with the caller's own client (RLS). */
+export async function listAbandonedOrders(ctx: LogisticsCaller): Promise<ServiceResult<{ order_ids: string[] }>> {
+  const denied = await denyUnlessShipments(ctx)
+  if (denied) return denied
+  const { data, error } = await ctx.supabase.from('order_shipments').select('order_id').eq('account_id', ctx.accountId).eq('pickup_state', 'abandoned').order('pickup_abandoned_at', { ascending: false }).limit(MAX_ABANDONED_IDS)
+  if (error) return fail(500, 'internal_error')
+  return { ok: true, status: 200, body: { order_ids: ((data ?? []) as Array<{ order_id: string }>).map((r) => r.order_id) } }
 }

@@ -18,9 +18,9 @@ const shipment = (over: Record<string, unknown> = {}) => ({
   id: 's1', order_id: ORDER, tracking_number: '12345678', tracking_code: '7M99', identifier_version: 1, logistic_status: 'in_transit', tracking_state: 'active',
   stop_reason: null, stopped_at: null, status_changed_at: '2026-12-01T15:00:00Z', destination_episode: 0, destination_entered_at: null,
   last_polled_at: '2026-12-01T16:00:00Z', last_success_at: '2026-12-01T16:00:00Z', next_poll_at: '2026-12-01T19:00:00Z', consecutive_failures: 0,
-  last_error_kind: null, last_error_code: null, ...over,
+  last_error_kind: null, last_error_code: null, pickup_state: 'none', pickup_alerted_at: null, pickup_abandoned_at: null, ...over,
 })
-const panel = (over: Record<string, unknown> = {}) => ({ eligible: true, shipment: shipment(), events: [], alerts: [], polls: [], can_stop: false, ...over })
+const panel = (over: Record<string, unknown> = {}) => ({ eligible: true, shipment: shipment(), events: [], alerts: [], polls: [], messages: [], days_at_destination: null, can_stop: false, ...over })
 
 type Handler = (url: string, init?: RequestInit) => { status?: number; body: unknown } | undefined
 function stubFetch(handler: Handler) {

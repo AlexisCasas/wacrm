@@ -2739,7 +2739,9 @@
       "failed": "Requiere revisión",
       "dead": "Reintentos agotados",
       "unknown": "Estado desconocido"
-    }
+    },
+    "abandonedFilter": "En abandono",
+    "abandonedFilterHint": "Mostrar solo pedidos en abandono (20+ días en destino)"
   },
   "OrderLogistics": {
     "title": "Logística",
@@ -3121,7 +3123,17 @@
       "delivered": "Entregado",
       "alert_created": "Alerta de 15 días creada",
       "alert_acknowledged": "Alerta atendida",
-      "alert_resolved": "Alerta cerrada"
+      "alert_resolved": "Alerta cerrada",
+      "pickup_waiting_started": "Esperando recojo en destino",
+      "pickup_completed": "Recojo completado",
+      "pickup_abandoned": "Marcado EN ABANDONO (20 días)",
+      "pickup_abandonment_cleared": "Abandono cerrado",
+      "destination_customer_message_due": "Mensaje al cliente pendiente (día 15)",
+      "destination_customer_message_sent": "Mensaje al cliente enviado",
+      "destination_customer_message_failed": "Mensaje al cliente falló",
+      "destination_customer_message_uncertain": "Mensaje al cliente: resultado incierto",
+      "destination_customer_message_skipped": "Mensaje al cliente omitido",
+      "destination_customer_message_retry_requested": "Reintento del mensaje solicitado"
     },
     "outcome": {
       "ok": "Respuesta correcta",
@@ -3152,7 +3164,54 @@
       "tracking_disabled": "Las consultas a Shalom están desactivadas en el servidor.",
       "not_found": "Pedido no encontrado.",
       "resolved": "La alerta ya estaba cerrada.",
-      "network_error": "Error de red."
-    }
+      "network_error": "Error de red.",
+      "not_failed": "El mensaje no está fallido.",
+      "needs_resolution": "El resultado es incierto: confírmalo en lugar de reintentar.",
+      "no_longer_at_destination": "El pedido ya no está en destino.",
+      "not_uncertain": "El mensaje no está en estado incierto.",
+      "invalid_resolution": "Resolución inválida.",
+      "invalid_message_id": "Mensaje inválido."
+    },
+    "pickupTitle": "Recojo en destino",
+    "shalomStatus": "Estado Shalom",
+    "daysAtDestination": "Días en destino",
+    "daysValue": "{count, plural, one {# día} other {# días}}",
+    "pickupState": "Estado de recojo",
+    "pickupStates": {
+      "none": "Sin condición",
+      "waiting_pickup": "Esperando recojo",
+      "alerted_15d": "Alerta de 15 días",
+      "abandoned": "En abandono",
+      "completed": "Recojo completado"
+    },
+    "customerMessage": "Mensaje al cliente (día 15)",
+    "customerMessageStatus": {
+      "none": "No aplica",
+      "pending": "Pendiente de envío",
+      "claimed": "Pendiente de envío",
+      "sending": "Enviando",
+      "sent": "Enviado",
+      "failed": "Falló",
+      "uncertain": "Resultado incierto: revisa la conversación",
+      "skipped": "Omitido (el pedido ya no está en destino)"
+    },
+    "internalAlert": "Alerta interna (día 15)",
+    "internalAlertStates": {
+      "none": "Sin alerta",
+      "open": "Abierta",
+      "acknowledged": "Atendida",
+      "resolved": "Resuelta"
+    },
+    "abandonment": "En abandono",
+    "abandonmentSince": "Desde {at}",
+    "abandonmentNote": "Condición operativa de WACRM: Shalom sigue mostrando \"En destino\". Aquí solo se detecta y se etiqueta.",
+    "retryMessage": "Reintentar mensaje",
+    "retriedToast": "Mensaje en cola para reintento.",
+    "resolveSent": "Sí se entregó",
+    "resolveNotSent": "No se entregó",
+    "resolvedToast": "Resultado del mensaje registrado.",
+    "alert15Short": "Alerta 15 días",
+    "abandonedShort": "En abandono · {days} días",
+    "atDestinationShort": "En destino · {days} d"
   }
 }

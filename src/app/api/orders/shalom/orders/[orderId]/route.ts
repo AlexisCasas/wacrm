@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server'
 import { toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { fail } from '@/lib/orders/logistics/documents'
+import { retryCustomerMessage, resolveCustomerMessage } from '@/lib/orders/shalom/customer-message'
 import { isShalomGloballyEnabled, readShalomConfig } from '@/lib/orders/shalom/config'
 import { authorizeShipments, readJsonObject, respondShipment } from '@/lib/orders/shalom/http'
 import { resolveShalomProvider } from '@/lib/orders/shalom/providers'
@@ -16,6 +17,8 @@ import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
 //        register  { numero_orden, codigo }                     Logística / Supervisor. Only for an order PR-04 left ready_for_dispatch.
 //        correct   { numero_orden, codigo, expected_version? }  Logística / Supervisor. identifier_version + 1, tracking restarts, history kept.
 //        refresh   {}                                           Logística / Supervisor. Rate limited per order; ONE query now.
+//        retry_message   { message_id }                          Logística / Supervisor. PR-05A: re-queues a FAILED day-15 customer message (the sender tick sends it; never a duplicate).
+//        resolve_message { message_id, resolution }              Logística / Supervisor. PR-05A: closes an UNCERTAIN message as confirmed_sent / confirmed_not_sent (never re-sent automatically).
 //        stop      { reason? }                                  SUPERVISOR only. Keeps the history; the late-cancellation FLOW is not built here.
 // Needs logistics_mvp_enabled AND shalom_tracking_enabled. The account and the actor come from the session. Commercial / viewers / no area: 403.
 // The forced refresh is the only call that reaches the provider, and it honours the global server-side kill switch.
@@ -50,6 +53,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ ord
       case 'stop':
         if (!auth.isSupervisor) return NextResponse.json({ error: 'supervisor_required' }, { status: 403 })
         return respondShipment(await stopShipment(auth.ctx, admin, orderId, body.reason))
+      case 'retry_message':
+        return respondShipment(await retryCustomerMessage(auth.ctx, admin, body.message_id))
+      case 'resolve_message':
+        return respondShipment(await resolveCustomerMessage(auth.ctx, admin, body.message_id, body.resolution))
       case 'refresh': {
         if (!isShalomGloballyEnabled()) return respondShipment(fail(409, 'tracking_disabled'))
         return respondShipment(await refreshShipment(auth.ctx, admin, orderId, { provider: resolveShalomProvider(), cfg: readShalomConfig() }))

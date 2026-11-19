@@ -28,6 +28,7 @@ import { formatPrice, statusInfo, type StatusTone } from "@/lib/orders/history";
 import { LogisticsPanel } from "@/components/orders/logistics/logistics-panel";
 import { BulkVouchersButton } from "@/components/orders/logistics/voucher-indicator";
 import { DerivedLogisticsIndicator } from "@/components/orders/shalom/shalom-indicator";
+import { SHIPMENT_CHANGED_EVENT } from "@/components/orders/shalom/api";
 import { ShalomSection } from "@/components/orders/shalom/shalom-section";
 
 // "Pedidos confirmados" workspace. READ-ONLY consultation of the orders already confirmed in WACRM: it never edits an order, never changes a
@@ -134,6 +135,10 @@ export function ConfirmedOrdersWorkspace() {
   const [search, setSearch] = useState("");
   const [reloadKey, setReloadKey] = useState(0);
   const [selected, setSelected] = useState<ConfirmedOrder | null>(null);
+  // PR-05B filter "En abandono": the ids come from /api/orders/shalom/abandoned (Logística / Supervisor only; anyone else never sees the chip). The server
+  // list is untouched: the chip narrows the loaded orders and keeps loading pages until every abandoned order is found or the list ends.
+  const [abandonedIds, setAbandonedIds] = useState<string[] | null>(null);
+  const [abandonedOnly, setAbandonedOnly] = useState(false);
   const requestSeq = useRef(0);
   const opener = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -143,6 +148,28 @@ export function ConfirmedOrdersWorkspace() {
     const id = setTimeout(() => setSearch(searchInput.trim()), SEARCH_DEBOUNCE_MS);
     return () => clearTimeout(id);
   }, [searchInput]);
+
+  useEffect(() => {
+    let alive = true;
+    const loadAbandoned = async () => {
+      try {
+        const res = await fetch("/api/orders/shalom/abandoned", { cache: "no-store" });
+        if (!alive) return;
+        if (!res.ok) return setAbandonedIds(null);
+        const body = (await res.json().catch(() => null)) as { order_ids?: string[] } | null;
+        setAbandonedIds(Array.isArray(body?.order_ids) ? body.order_ids : null);
+      } catch {
+        if (alive) setAbandonedIds(null);
+      }
+    };
+    void loadAbandoned();
+    const onChange = () => void loadAbandoned();
+    window.addEventListener(SHIPMENT_CHANGED_EVENT, onChange);
+    return () => {
+      alive = false;
+      window.removeEventListener(SHIPMENT_CHANGED_EVENT, onChange);
+    };
+  }, [reloadKey]);
 
   const fetchPage = useCallback(
     async (after: string | null): Promise<{ kind: "ok"; body: ListResponse } | { kind: Exclude<LoadState, "loading" | "ready"> }> => {
@@ -240,8 +267,18 @@ export function ConfirmedOrdersWorkspace() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selected]);
 
-  const filtering = status !== ALL || search !== "" || searchInput !== "";
+  const shown = abandonedOnly && abandonedIds ? orders.filter((o) => abandonedIds.includes(o.id)) : orders;
+  // keep paging while the chip is on and an abandoned order is still not in the loaded list
+  useEffect(() => {
+    if (!abandonedOnly || !abandonedIds || state !== "ready" || !cursor || loadingMore) return;
+    const loaded = new Set(orders.map((o) => o.id));
+    if (abandonedIds.some((id) => !loaded.has(id))) void loadMore();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [abandonedOnly, abandonedIds, orders, cursor, state, loadingMore]);
+
+  const filtering = status !== ALL || search !== "" || searchInput !== "" || abandonedOnly;
   const clearFilters = () => {
+    setAbandonedOnly(false);
     setStatus(ALL);
     setSearchInput("");
     setSearch("");
@@ -303,6 +340,19 @@ export function ConfirmedOrdersWorkspace() {
               ))}
             </SelectContent>
           </Select>
+          {abandonedIds !== null ? (
+            <Button
+              type="button"
+              variant={abandonedOnly ? "default" : "outline"}
+              size="sm"
+              aria-pressed={abandonedOnly}
+              title={t("abandonedFilterHint")}
+              onClick={() => setAbandonedOnly((v) => !v)}
+              className="h-10"
+            >
+              {t("abandonedFilter")} ({abandonedIds.length})
+            </Button>
+          ) : null}
           <Button type="button" variant="ghost" size="sm" onClick={clearFilters} disabled={!filtering} className="text-muted-foreground">
             {t("clearFilters")}
           </Button>
@@ -328,9 +378,9 @@ export function ConfirmedOrdersWorkspace() {
         </Card>
       )}
 
-      {state === "ready" && orders.length === 0 && <Notice text={filtering ? t("emptyFiltered") : t("empty")} />}
+      {state === "ready" && shown.length === 0 && !(abandonedOnly && cursor) && <Notice text={filtering ? t("emptyFiltered") : t("empty")} />}
 
-      {state === "ready" && orders.length > 0 && (
+      {state === "ready" && shown.length > 0 && (
         <Card className="gap-0 overflow-hidden rounded-xl py-0">
           <CardContent className="overflow-x-auto p-0">
             <div className="md:min-w-[880px]">
@@ -345,7 +395,7 @@ export function ConfirmedOrdersWorkspace() {
               <span className="text-right">{t("colAction")}</span>
             </div>
             <ul className="divide-y divide-border">
-              {orders.map((o) => {
+              {shown.map((o) => {
                 const isSelected = selected?.id === o.id;
                 const when = limaParts(o.confirmed_at, locale);
                 return (
@@ -440,9 +490,9 @@ export function ConfirmedOrdersWorkspace() {
         </Card>
       )}
 
-      {state === "ready" && orders.length > 0 && (
+      {state === "ready" && shown.length > 0 && (
         <div className="flex items-center gap-3 px-1 text-xs text-muted-foreground">
-          <span>{t("showing", { count: orders.length })}</span>
+          <span>{t("showing", { count: shown.length })}</span>
           {cursor && (
             <Button variant="outline" size="sm" onClick={() => void loadMore()} disabled={loadingMore} className="h-8">
               {loadingMore ? <Loader2 className="size-4 animate-spin" /> : null}

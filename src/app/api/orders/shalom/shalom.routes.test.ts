@@ -4,8 +4,9 @@ const getCurrentAccount = vi.fn()
 const resolveAccess = vi.fn()
 const rpc = vi.fn()
 const svc = {
-  getShipmentPanel: vi.fn(), registerShipment: vi.fn(), correctShipment: vi.fn(), stopShipment: vi.fn(), refreshShipment: vi.fn(), acknowledgeAlert: vi.fn(), getShipmentSummary: vi.fn(),
+  getShipmentPanel: vi.fn(), registerShipment: vi.fn(), correctShipment: vi.fn(), stopShipment: vi.fn(), refreshShipment: vi.fn(), acknowledgeAlert: vi.fn(), getShipmentSummary: vi.fn(), listAbandonedOrders: vi.fn(),
 }
+const msg = { retryCustomerMessage: vi.fn(), resolveCustomerMessage: vi.fn() }
 const runShalomTick = vi.fn()
 const collectShalomHealth = vi.fn()
 
@@ -23,11 +24,17 @@ vi.mock('@/lib/orders/shalom/service', () => ({
   refreshShipment: (...a: unknown[]) => svc.refreshShipment(...a),
   acknowledgeAlert: (...a: unknown[]) => svc.acknowledgeAlert(...a),
   getShipmentSummary: (...a: unknown[]) => svc.getShipmentSummary(...a),
+  listAbandonedOrders: (...a: unknown[]) => svc.listAbandonedOrders(...a),
   MAX_SUMMARY_IDS: 50,
+}))
+vi.mock('@/lib/orders/shalom/customer-message', () => ({
+  retryCustomerMessage: (...a: unknown[]) => msg.retryCustomerMessage(...a),
+  resolveCustomerMessage: (...a: unknown[]) => msg.resolveCustomerMessage(...a),
 }))
 vi.mock('@/lib/orders/shalom/poller', () => ({ runShalomTick: (...a: unknown[]) => runShalomTick(...a), collectShalomHealth: (...a: unknown[]) => collectShalomHealth(...a) }))
 
 import { POST as ACK } from './alerts/[id]/ack/route'
+import { GET as ABANDONED } from './abandoned/route'
 import { GET as CRON } from './cron/route'
 import { GET as PANEL, POST as ACTION } from './orders/[orderId]/route'
 import { GET as SUMMARY } from './summary/route'
@@ -44,7 +51,7 @@ const ok = (body: unknown = {}) => ({ ok: true, status: 200, body })
 const ENV = { ...process.env }
 
 beforeEach(() => {
-  for (const f of Object.values(svc)) f.mockReset().mockResolvedValue(ok())
+  for (const f of [...Object.values(svc), ...Object.values(msg)]) f.mockReset().mockResolvedValue(ok())
   getCurrentAccount.mockResolvedValue(ctx())
   resolveAccess.mockResolvedValue({ kind: 'ok', operationalRole: 'logistics' })
   rpc.mockReset().mockResolvedValue({ data: true, error: null })
@@ -58,6 +65,9 @@ const endpoints: Array<[string, () => Promise<Response>]> = [
   ['action', () => ACTION(post({ action: 'refresh' }), params)],
   ['ack', () => ACK(post({}), { params: Promise.resolve({ id: ALERT }) })],
   ['summary', () => SUMMARY(new Request(`http://x/?ids=${ORDER}`))],
+  ['abandoned (PR-05B filter)', () => ABANDONED()],
+  ['retry_message (PR-05A)', () => ACTION(post({ action: 'retry_message', message_id: ORDER }), params)],
+  ['resolve_message (PR-05A)', () => ACTION(post({ action: 'resolve_message', message_id: ORDER, resolution: 'confirmed_sent' }), params)],
 ]
 
 describe.each(endpoints)('%s endpoint authority', (_name, call) => {
@@ -138,6 +148,31 @@ describe('order actions', () => {
     expect(await limited.json()).toEqual({ error: 'rate_limited', retry_after_seconds: 120 })
     expect((await ACTION(post({ action: 'delete_everything' }), params)).status).toBe(400)
     expect((await ACTION(new Request('http://x', { method: 'POST', body: 'nope' }), params)).status).toBe(400)
+  })
+})
+
+describe('PR-05A / PR-05B actions', () => {
+  it('retry / resolve use the SESSION account and actor; the body only carries the message and the resolution; verdicts pass through', async () => {
+    const c = ctx()
+    getCurrentAccount.mockResolvedValue(c)
+    msg.retryCustomerMessage.mockResolvedValueOnce(ok({ queued: true }))
+    const r = await ACTION(post({ action: 'retry_message', message_id: ORDER, account_id: OTHER, user_id: 'evil' }), params)
+    expect(r.status).toBe(200)
+    expect(msg.retryCustomerMessage).toHaveBeenCalledWith(expect.objectContaining({ accountId: ACCOUNT, userId: c.userId }), { admin: true }, ORDER)
+    msg.resolveCustomerMessage.mockResolvedValueOnce({ ok: false, status: 409, error: 'not_uncertain' })
+    const x = await ACTION(post({ action: 'resolve_message', message_id: ORDER, resolution: 'confirmed_not_sent' }), params)
+    expect(x.status).toBe(409)
+    expect(await x.json()).toEqual({ error: 'not_uncertain' })
+    expect(msg.resolveCustomerMessage).toHaveBeenCalledWith(expect.objectContaining({ accountId: ACCOUNT }), { admin: true }, ORDER, 'confirmed_not_sent')
+  })
+
+  it('the abandoned list is read with the session context, never cached, and returns only what the service returns', async () => {
+    svc.listAbandonedOrders.mockResolvedValueOnce(ok({ order_ids: [ORDER] }))
+    const r = await ABANDONED()
+    expect(r.status).toBe(200)
+    expect(r.headers.get('cache-control')).toBe('no-store')
+    expect(await r.json()).toEqual({ order_ids: [ORDER] })
+    expect(svc.listAbandonedOrders).toHaveBeenCalledWith(expect.objectContaining({ accountId: ACCOUNT }))
   })
 })
 

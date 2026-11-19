@@ -133,17 +133,42 @@ describe('ConfirmedOrdersWorkspace: list', () => {
 
   it('"Load more" asks for the next page with the cursor and never repeats an order', async () => {
     const second = order({ id: '44444444-4444-4444-8444-444444444444', customer_name: 'Cliente Dos' })
-    const f = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(JSON.stringify({ orders: [order()], next_cursor: 'CUR1' })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ orders: [order(), second], next_cursor: null })))
+    const pages = [{ orders: [order()], next_cursor: 'CUR1' }, { orders: [order(), second], next_cursor: null }]
+    const f = vi.fn(async (url: string) => (String(url).includes('/api/orders/shalom/') ? new Response('{}', { status: 403 }) : new Response(JSON.stringify(pages.shift()))))
     vi.stubGlobal('fetch', f)
     render(<ConfirmedOrdersWorkspace />)
     fireEvent.click(await screen.findByRole('button', { name: 'loadMore' }))
     await screen.findByText('Cliente Dos')
-    expect(String(f.mock.calls[1][0])).toContain('cursor=CUR1')
+    expect(f.mock.calls.map(([u]) => String(u)).filter((u) => u.includes('/api/orders/confirmed'))[1]).toContain('cursor=CUR1')
     expect(screen.getAllByText('Cliente Uno')).toHaveLength(1)
     await waitFor(() => expect(screen.queryByRole('button', { name: 'loadMore' })).toBeNull())
+  })
+
+  it('PR-05B: the "En abandono" chip appears only when the server grants the list, narrows the loaded orders (loading more pages to find them) and clears with the filters', async () => {
+    const second = order({ id: '44444444-4444-4444-8444-444444444444', customer_name: 'Cliente Dos' })
+    const pages = [{ orders: [order()], next_cursor: 'CUR1' }, { orders: [second], next_cursor: null }]
+    const f = vi.fn(async (url: string) => (String(url).includes('/api/orders/shalom/abandoned') ? new Response(JSON.stringify({ order_ids: [second.id] })) : new Response(JSON.stringify(pages.shift()))))
+    vi.stubGlobal('fetch', f)
+    render(<ConfirmedOrdersWorkspace />)
+    const chip = await screen.findByRole('button', { name: /abandonedFilter/ })
+    expect(chip.getAttribute('aria-pressed')).toBe('false')
+    await screen.findByText('Cliente Uno')
+    fireEvent.click(chip)
+    await screen.findByText('Cliente Dos')
+    await waitFor(() => expect(screen.queryByText('Cliente Uno')).toBeNull())
+    expect(chip.getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(screen.getByRole('button', { name: 'clearFilters' }))
+    await screen.findByText('Cliente Uno')
+    expect(chip.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('PR-05B: without access to the abandoned list (Commercial, flag OFF…) there is NO chip and the list is untouched', async () => {
+    const f = vi.fn(async (url: string) => (String(url).includes('/api/orders/shalom/abandoned') ? new Response('{}', { status: 403 }) : new Response(JSON.stringify({ orders: [order()], next_cursor: null }))))
+    vi.stubGlobal('fetch', f)
+    render(<ConfirmedOrdersWorkspace />)
+    await screen.findByText('Cliente Uno')
+    await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).includes('/abandoned'))).toBe(true))
+    expect(screen.queryByRole('button', { name: /abandonedFilter/ })).toBeNull()
   })
 
   it('"Clear filters" is disabled until a filter is used, then resets the search', async () => {

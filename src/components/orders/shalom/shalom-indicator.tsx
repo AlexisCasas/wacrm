@@ -136,6 +136,11 @@ export function DerivedLogisticsIndicator({ orderId }: { orderId: string }) {
             {summary.logistic_status ? t(`status.${summary.logistic_status}`) : t("awaitingFirst")}
           </span>
           {summary.alert_open ? <BellRing className="size-3 shrink-0 text-amber-400" aria-label={t("alertTitle")} /> : null}
+          {summary.pickup_state === "abandoned" ? (
+            <span className="font-semibold text-red-400">· {t("abandonedShort", { days: summary.days_at_destination ?? 20 })}</span>
+          ) : summary.pickup_state === "alerted_15d" ? (
+            <span className="text-amber-300">· {t("alert15Short")}</span>
+          ) : null}
           {summary.needs_attention ? <span className="text-amber-300">· {t("needsAttentionShort")}</span> : null}
         </span>
       ) : (

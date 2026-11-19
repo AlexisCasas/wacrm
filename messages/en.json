@@ -2739,7 +2739,9 @@
       "failed": "Needs review",
       "dead": "Retries exhausted",
       "unknown": "Unknown status"
-    }
+    },
+    "abandonedFilter": "Abandoned",
+    "abandonedFilterHint": "Show only abandoned orders (20+ days at destination)"
   },
   "OrderLogistics": {
     "title": "Logistics",
@@ -3121,7 +3123,17 @@
       "delivered": "Delivered",
       "alert_created": "15-day alert created",
       "alert_acknowledged": "Alert attended",
-      "alert_resolved": "Alert closed"
+      "alert_resolved": "Alert closed",
+      "pickup_waiting_started": "Waiting for pickup at destination",
+      "pickup_completed": "Pickup completed",
+      "pickup_abandoned": "Marked ABANDONED (20 days)",
+      "pickup_abandonment_cleared": "Abandonment closed",
+      "destination_customer_message_due": "Customer message due (day 15)",
+      "destination_customer_message_sent": "Customer message sent",
+      "destination_customer_message_failed": "Customer message failed",
+      "destination_customer_message_uncertain": "Customer message: outcome unknown",
+      "destination_customer_message_skipped": "Customer message skipped",
+      "destination_customer_message_retry_requested": "Message retry requested"
     },
     "outcome": {
       "ok": "Good answer",
@@ -3152,7 +3164,54 @@
       "tracking_disabled": "Shalom queries are disabled on the server.",
       "not_found": "Order not found.",
       "resolved": "The alert was already closed.",
-      "network_error": "Network error."
-    }
+      "network_error": "Network error.",
+      "not_failed": "The message is not failed.",
+      "needs_resolution": "The outcome is unknown: confirm it instead of retrying.",
+      "no_longer_at_destination": "The order is no longer at destination.",
+      "not_uncertain": "The message is not in the unknown state.",
+      "invalid_resolution": "Invalid resolution.",
+      "invalid_message_id": "Invalid message."
+    },
+    "pickupTitle": "Pickup at destination",
+    "shalomStatus": "Shalom status",
+    "daysAtDestination": "Days at destination",
+    "daysValue": "{count, plural, one {# day} other {# days}}",
+    "pickupState": "Pickup state",
+    "pickupStates": {
+      "none": "No condition",
+      "waiting_pickup": "Waiting for pickup",
+      "alerted_15d": "15-day alert",
+      "abandoned": "Abandoned",
+      "completed": "Pickup completed"
+    },
+    "customerMessage": "Customer message (day 15)",
+    "customerMessageStatus": {
+      "none": "Not applicable",
+      "pending": "Waiting to be sent",
+      "claimed": "Waiting to be sent",
+      "sending": "Sending",
+      "sent": "Sent",
+      "failed": "Failed",
+      "uncertain": "Outcome unknown: check the conversation",
+      "skipped": "Skipped (the order is no longer at destination)"
+    },
+    "internalAlert": "Internal alert (day 15)",
+    "internalAlertStates": {
+      "none": "No alert",
+      "open": "Open",
+      "acknowledged": "Attended",
+      "resolved": "Resolved"
+    },
+    "abandonment": "Abandoned",
+    "abandonmentSince": "Since {at}",
+    "abandonmentNote": "WACRM operational condition: Shalom still shows \"At destination\". It is only detected and labelled here.",
+    "retryMessage": "Retry message",
+    "retriedToast": "Message queued for retry.",
+    "resolveSent": "It was delivered",
+    "resolveNotSent": "It was not delivered",
+    "resolvedToast": "Message outcome recorded.",
+    "alert15Short": "15-day alert",
+    "abandonedShort": "Abandoned · {days} days",
+    "atDestinationShort": "At destination · {days} d"
   }
 }

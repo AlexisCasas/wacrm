@@ -1,6 +1,7 @@
 // Browser-side shapes of the PR-05 endpoints (mirror src/lib/orders/shalom/service.ts). The browser never sends an account, role or actor.
 
 export type ShipmentStatus = 'at_origin' | 'in_transit' | 'at_destination' | 'delivered'
+export type PickupState = 'none' | 'waiting_pickup' | 'alerted_15d' | 'abandoned' | 'completed'
 export type TrackingState = 'active' | 'requires_attention' | 'stopped' | 'delivered'
 
 export interface ShipmentView {
@@ -22,6 +23,9 @@ export interface ShipmentView {
   consecutive_failures: number
   last_error_kind: 'order' | 'integration' | 'credentials' | 'exception' | null
   last_error_code: string | null
+  pickup_state: PickupState
+  pickup_alerted_at: string | null
+  pickup_abandoned_at: string | null
 }
 
 export interface ShipmentEventView {
@@ -57,12 +61,26 @@ export interface ShipmentPollView {
   ignored_reason: string | null
 }
 
+export interface ShipmentMessageView {
+  id: string
+  destination_episode: number
+  status: 'pending' | 'claimed' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'skipped'
+  attempt: number
+  error_code: string | null
+  next_attempt_at: string | null
+  resolution: string | null
+  created_at: string
+  finished_at: string | null
+}
+
 export interface ShipmentPanelData {
   eligible: boolean
   shipment: ShipmentView | null
   events: ShipmentEventView[]
   alerts: ShipmentAlertView[]
   polls: ShipmentPollView[]
+  messages: ShipmentMessageView[]
+  days_at_destination: number | null
   can_stop: boolean
 }
 
@@ -71,6 +89,8 @@ export interface ShipmentSummaryData {
   tracking_state: TrackingState
   alert_open: boolean
   needs_attention: boolean
+  pickup_state: PickupState
+  days_at_destination: number | null
 }
 
 /** Broadcast "the tracking of this order changed" so the list indicator refreshes (same pattern as PR-04's logistics-changed event). */

@@ -11,6 +11,7 @@ import { runShalomTick } from '@/lib/orders/shalom/poller'
 import { createFakeProvider } from '@/lib/orders/shalom/providers'
 import { acquireQaLock, releaseQaLock } from '@/lib/orders/shalom/test-support/qa-lock'
 import { clearCredentialsBreaker, setShipmentFlag } from '@/lib/orders/shalom/test-support/ready-order'
+import { getShipmentPanel, getShipmentSummary, listAbandonedOrders } from '@/lib/orders/shalom/service'
 import { shalomOps } from '@/lib/orders/shalom/test-support/shalom-ops'
 
 let w: QaWorld
@@ -146,6 +147,29 @@ describe.skipIf(!QA_ENABLED)('PR-05B abandonment at day 20 En destino', () => {
     expect(await o.shipment(order)).toMatchObject({ pickup_state: 'abandoned', logistic_status: 'at_destination' })
     expect((await run(30, 15)).pickup.abandoned).toBe(0)
     expect(await o.count(order, 'pickup_abandoned')).toBe(1)
+  })
+
+  it('service reads (RLS): panel / summary / abandoned list carry the pickup condition for Logistics + Supervisor and NOTHING for Commercial, viewer or another account', async () => {
+    const { order } = await o.shipAt('svc', 'at_destination', { destinationAt: ARRIVAL })
+    await day15(limaDay(15))
+    await abandon(limaDay(20))
+    const caller = (a: typeof w.logi, acc: string) => ({ supabase: a.client, userId: a.id, accountId: acc }) as never
+    for (const a of [w.logi, w.sup]) {
+      const panel = await getShipmentPanel(caller(a, w.acc), order, false)
+      expect(panel).toMatchObject({ ok: true, body: { shipment: { pickup_state: 'abandoned', logistic_status: 'at_destination' }, days_at_destination: expect.any(Number) } })
+      if (panel.ok) expect(panel.body.days_at_destination).toBeGreaterThanOrEqual(0)
+      const sum = await getShipmentSummary(caller(a, w.acc), [order])
+      expect(sum).toMatchObject({ ok: true, body: { summaries: { [order]: { pickup_state: 'abandoned', logistic_status: 'at_destination' } } } })
+      const list = await listAbandonedOrders(caller(a, w.acc))
+      expect(list.ok && list.body.order_ids).toContain(order)
+    }
+    for (const a of [w.comm, w.viewer]) {
+      expect(await listAbandonedOrders(caller(a, w.acc))).toMatchObject({ ok: false, status: 404 })
+      expect(await getShipmentPanel(caller(a, w.acc), order, false)).toMatchObject({ ok: false, status: 404 })
+    }
+    expect(await listAbandonedOrders(caller(w.foreign, w.acc))).toMatchObject({ ok: false }) // another account's user asking for this account
+    const foreign = await listAbandonedOrders(caller(w.foreign, w.accForeign))
+    expect(foreign.ok && foreign.body.order_ids).not.toContain(order)
   })
 
   it('permissions: Logistics and Supervisor read the condition; Commercial, viewer and other accounts see nothing; nobody changes it from the browser or calls the evaluator', async () => {
