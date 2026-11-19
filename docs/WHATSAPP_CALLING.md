@@ -13,6 +13,8 @@ La solución será multi-tenant desde el diseño: toda sesión y todo evento se 
 
 ## 2. Configuración de Meta observada
 
+La aplicación asociada al token de Keyler es `WACRM Lorteg Temporal` (App ID `1595490382304488`). Nombre visible deseado en Meta Developers: `WACRM App Oficial`; el cambio de nombre es una tarea administrativa pendiente y no implica crear otra app ni cambiar el App ID.
+
 La captura de WhatsApp Manager para el número de Keyler muestra:
 
 | Ajuste | Estado observado | Decisión |
