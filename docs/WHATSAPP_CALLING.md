@@ -21,7 +21,8 @@ La captura de WhatsApp Manager para el número de Keyler muestra:
 | Mostrar botones de llamada | Activado | Correcto |
 | Horario de disponibilidad | Sin horario específico configurado | Meta considera el número disponible todo el tiempo |
 | Detener temporalmente llamadas entrantes | Sin configuración observada | No configurar en esta fase |
-| Permitir devolución de llamadas | Desactivado | Mantener por ahora; afecta la concesión automática de permiso de devolución, no la recepción básica de llamadas |
+| Permitir devolución de llamadas (`callback_permission_status`) | Desactivado | No impide recibir llamadas. Sí impide que una llamada entrante conceda automáticamente permiso temporal para devolver la llamada |
+| Modo de permiso (`call_permission_mode`) | `ALLOW_APPROVED_PERMISSION_ONLY` | Mantener: las llamadas iniciadas por la empresa requieren permiso aprobado del cliente |
 | SIP | Desactivado | Mantener desactivado; se usará la señalización estándar de Calling API y WebRTC |
 
 La pestaña **Calling limits** debe revisarse antes de las pruebas reales. Además, Meta exige que el portfolio de negocio tenga un límite de mensajería de al menos **2.000 destinatarios únicos en una ventana móvil de 24 horas**. Este requisito es un límite de MENSAJERÍA, no significa que se permitan 2.000 llamadas diarias. Se consulta en WhatsApp Manager → Account tools → Messaging limits o mediante el campo `whatsapp_business_manager_messaging_limit` del número/portfolio. El valor mínimo aceptable es `TIER_2K` o superior.
@@ -30,7 +31,7 @@ Los límites de llamadas son independientes: Meta limita las llamadas conectadas
 
 ### Permiso de devolución
 
-Con `callback_permission_status` desactivado, WACRM no debe asumir que una llamada entrante autoriza automáticamente una llamada saliente. Para las llamadas iniciadas por la empresa en el piloto de Perú, CALL-02 comprobará un permiso vigente del cliente y, si no existe, solicitará autorización mediante el mecanismo de Meta. Perú figura dentro de los países admitidos para llamadas iniciadas por la empresa; no está entre las exclusiones publicadas por Meta. Más adelante se podrá evaluar activar la devolución de llamadas si el negocio quiere que WhatsApp ofrezca ese permiso después de una llamada entrante.
+Con `callback_permission_status` desactivado, una llamada entrante no concede automáticamente el permiso temporal de devolución. Esto no bloquea las llamadas entrantes ni el mecanismo alternativo de solicitar permiso explícito mediante un mensaje interactivo o una plantilla. Como `call_permission_mode` está en `ALLOW_APPROVED_PERMISSION_ONLY`, WACRM debe consultar `GET /{PHONE_NUMBER_ID}/call_permissions` antes de iniciar una llamada empresarial y exigir `temporary` vigente o `permanent`; si no existe, debe solicitar autorización y esperar la respuesta del usuario. Perú está dentro de las ubicaciones admitidas para llamadas iniciadas por la empresa. Más adelante se podrá evaluar activar la devolución de llamadas si el negocio quiere que WhatsApp ofrezca ese permiso después de una llamada entrante.
 
 ## 3. Arquitectura acordada
 
@@ -46,12 +47,13 @@ Con `callback_permission_status` desactivado, WACRM no debe asumir que una llama
 ### Secuencia prevista
 
 1. Meta entrega un webhook `calls` firmado.
-2. WACRM valida la firma con el App Secret de la cuenta y conserva la entrega en el inbox durable existente.
-3. El backend resuelve `whatsapp_config` por `phone_number_id`.
-4. Se crea/actualiza la sesión de llamada y se notifica a los agentes autorizados.
-5. El navegador crea el SDP answer/offer usando WebRTC y el micrófono del agente.
-6. El backend envía la acción correspondiente a Meta: `connect`, `pre_accept`, `accept`, `reject` o `terminate`.
-7. Los webhooks posteriores actualizan el estado y finalizan los recursos WebRTC.
+2. WACRM resuelve el App Secret del tenant mediante `phone_number_id`/WABA y valida la firma antes de encolar el payload.
+3. El evento verificado se conserva en el inbox durable existente.
+4. El backend resuelve `whatsapp_config` por `phone_number_id` y crea/actualiza la sesión de llamada.
+5. Se notifica a los agentes autorizados.
+6. El navegador crea el SDP answer/offer usando WebRTC y el micrófono del agente.
+7. El backend envía la acción correspondiente a Meta: `connect`, `pre_accept`, `accept`, `reject` o `terminate`.
+8. Los webhooks posteriores actualizan el estado y finalizan los recursos WebRTC.
 
 El SDP y las credenciales son datos sensibles: no deben escribirse en logs, mensajes de error, analítica ni historial de conversación.
 
@@ -60,7 +62,7 @@ El SDP y las credenciales son datos sensibles: no deben escribirse en logs, mens
 | Incremento | Alcance | Resultado de salida |
 |---|---|---|
 | CALL-01 | Cliente de señalización Graph API, contratos y parsers de webhooks, pruebas unitarias y documentación | Base backend revisable; sin endpoint público ni activación |
-| CALL-02 | Persistencia de sesiones y permisos, integración del webhook, rutas autenticadas y controles de concurrencia | Backend funcional en entorno de pruebas |
+| CALL-02 | Persistencia de sesiones y permisos; integración del webhook; rutas autenticadas; consulta `GET /{PHONE_NUMBER_ID}/call_permissions`; solicitud de permisos por mensajes; controles de concurrencia; suscripción de `calls` solo al finalizar el QA | Backend funcional en entorno de pruebas |
 | CALL-03 | UI de llamada en Inbox, WebRTC, micrófono, estados, temporizador e historial | Llamadas entrantes/salientes de extremo a extremo en QA |
 | CALL-04 | Flags global y por cuenta, runbook, despliegue y piloto Keyler | Activación controlada solo para Keyler; luego disponibilidad gradual |
 
@@ -82,9 +84,18 @@ El SDP y las credenciales son datos sensibles: no deben escribirse en logs, mens
 - No se crea migración ni tabla.
 - No se crea endpoint de llamadas para el navegador.
 - No se agrega interfaz ni código de micrófono/WebRTC.
-- No se suscribe el WABA al campo `calls`.
+- No se suscribe todavía el campo `calls` en el panel Webhooks de la aplicación. Aunque `subscribed_apps` confirma que la app está asociada a la WABA, esto NO demuestra que el campo `calls` esté suscrito.
+- No activar el campo `calls` hasta CALL-02: el procesador actual `processWebhook` todavía no enruta eventos `field="calls"`; si se activa antes de implementar el consumidor durable, los eventos podrían quedar encolados y luego descartarse al terminar el procesamiento genérico.
 - No se cambia ninguna configuración de Meta, VPS, variables de entorno ni producción.
 - No se habilita ningún flag de llamadas.
+
+### Límites y permisos que CALL-02 debe respetar
+
+- Hasta 100 llamadas conectadas cada 24 horas por pareja número empresarial/usuario de WhatsApp.
+- Máximo 1 solicitud de permiso en 24 horas y 2 en 7 días por esa pareja.
+- Los permisos temporales duran 7 días; los permanentes no caducan, pero el usuario puede revocarlos.
+- Dos llamadas empresariales consecutivas sin respuesta provocan un aviso para reconsiderar el permiso; cuatro pueden revocarlo automáticamente.
+- No inferir permiso de una conversación abierta ni de un mensaje ordinario.
 
 ## 6. Controles de aceptación
 
