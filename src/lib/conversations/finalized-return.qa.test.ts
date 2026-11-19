@@ -7,7 +7,6 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { createWorld, QA_ENABLED, type QaWorld } from '@/lib/orders/logistics/test-support/qa-env'
 import { runFinalizedReturn } from '@/lib/conversations/finalized-return'
-import { acquireQaLock, releaseQaLock } from '@/lib/orders/shalom/test-support/qa-lock'
 import { setShipmentFlag } from '@/lib/orders/shalom/test-support/ready-order'
 import { shalomOps } from '@/lib/orders/shalom/test-support/shalom-ops'
 
@@ -47,14 +46,12 @@ describe.skipIf(!QA_ENABLED)('PR-05C · routing return after "pedido completamen
   beforeAll(async () => {
     process.env.NEXT_PUBLIC_SUPABASE_URL = process.env.LOCAL_URL
     process.env.SUPABASE_SERVICE_ROLE_KEY = process.env.LOCAL_SERVICE
-    await acquireQaLock()
     w = await createWorld()
     o = shalomOps(w)
     await setShipmentFlag(w, w.acc, true)
   }, 120_000)
   afterAll(async () => {
     if (w) await w.dispose()
-    releaseQaLock()
   }, 90_000)
 
   // ------------------------------------------------------------------------------------------------------------------------ the existing manual button
