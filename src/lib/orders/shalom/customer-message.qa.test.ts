@@ -420,7 +420,7 @@ describe.skipIf(!QA_ENABLED)('PR-05A customer message at day 15 En destino', () 
         expect(t.pickup.alerted).toBeGreaterThanOrEqual(1)
         expect(t.messages.claimed).toBe(0)
         expect(await messageOf(order)).toEqual([])
-        expect(await o.shipment(order)).toMatchObject({ pickup_state: 'alerted_15d', tracking_state: 'active' })
+        expect(await o.shipment(order)).toMatchObject({ pickup_state: 'abandoned', tracking_state: 'active', logistic_status: 'at_destination' }) // the arrival is long ago: day 20 passed too (independent of the message switch)
       } finally {
         await w.admin.from('order_shipment_settings').update({ destination_customer_message_enabled: true }).eq('account_id', w.acc)
       }

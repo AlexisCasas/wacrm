@@ -217,6 +217,16 @@ export async function runShalomTick(admin: SupabaseClient, deps: PollDeps): Prom
     console.error('[shalom] pickup day-15 evaluation failed:', e instanceof Error ? e.message : 'unknown')
   }
 
+  // ... day 20 -> "En abandono" (WACRM operational condition; independent of the WhatsApp switch, of the alert and of every external call) ...
+  try {
+    const { data, error } = await admin.rpc('evaluate_pickup_abandonment', { p_now: clock(deps).toISOString(), p_days: deps.cfg.abandonDays })
+    if (error) throw new Error(error.code ?? 'rpc')
+    summary.pickup.abandoned = ((data ?? {}) as { abandoned?: number }).abandoned ?? 0
+  } catch (e) {
+    summary.errors += 1
+    console.error('[shalom] pickup abandonment evaluation failed:', e instanceof Error ? e.message : 'unknown')
+  }
+
   // ... and the customer message itself: an external action (WhatsApp), so it also honours the global kill switch; a failure here never touches the tracking.
   if (!deps.skipQueries) {
     summary.messages = await processCustomerMessages(admin, { cfg: deps.cfg, now: deps.now, sendMessage: deps.sendMessage })
