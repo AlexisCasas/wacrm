@@ -60,7 +60,7 @@ BEGIN
   INSERT INTO public.order_payment_events (account_id, order_id, payment_id, event_type, actor_user_id, actor_name, amount, status_before, status_after, paid_before, paid_after,
     balance_before, balance_after, financial_status_before, financial_status_after, evidence_document_id, reason, detail, created_at)
   VALUES (p_account, p_order, p_payment, p_type, p_actor, COALESCE(NULLIF(btrim(p_actor_name), ''), 'system'), p_amount, p_status_before, p_status_after, p_paid_before, p_paid_after,
-    p_balance_before, p_balance_after, p_fin_before, p_fin_after, p_evidence, left(p_reason, 300), COALESCE(p_detail, '{}'::jsonb), GREATEST(p_now, clock_timestamp() - interval '1 second'))
+    p_balance_before, p_balance_after, p_fin_before, p_fin_after, p_evidence, left(p_reason, 300), COALESCE(p_detail, '{}'::jsonb), clock_timestamp())   -- the REAL time of the event (strictly ordered inside one transaction); p_now is only the business clock
   ON CONFLICT DO NOTHING;
 END;
 $$;
