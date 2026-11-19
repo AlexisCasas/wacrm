@@ -169,7 +169,7 @@ export function parseWhatsAppCallingWebhookChange(
   const value = change.value
   const metadata = isRecord(value.metadata) ? value.metadata : undefined
   const phoneNumberId = readString(metadata?.phone_number_id, 64)
-  if (!phoneNumberId || !/^\\d{5,25}$/.test(phoneNumberId)) return null
+  if (!phoneNumberId || !/^\d{5,25}$/.test(phoneNumberId)) return null
 
   const contacts = Array.isArray(value.contacts)
     ? value.contacts.flatMap((item) => {
