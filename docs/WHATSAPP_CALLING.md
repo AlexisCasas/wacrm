@@ -84,8 +84,9 @@ El SDP y las credenciales son datos sensibles: no deben escribirse en logs, mens
 - No se crea migración ni tabla.
 - No se crea endpoint de llamadas para el navegador.
 - No se agrega interfaz ni código de micrófono/WebRTC.
-- No se suscribe todavía el campo `calls` en el panel Webhooks de la aplicación. Aunque `subscribed_apps` confirma que la app está asociada a la WABA, esto NO demuestra que el campo `calls` esté suscrito.
-- No activar el campo `calls` hasta CALL-02: el procesador actual `processWebhook` todavía no enruta eventos `field="calls"`; si se activa antes de implementar el consumidor durable, los eventos podrían quedar encolados y luego descartarse al terminar el procesamiento genérico.
+- La captura de Meta Developers del 19-nov-2026 muestra `calls` SUSCRITO en la app `WACRM Lorteg Temporal` con versión de campo `v26.0`; `messages` también aparece suscrito en `v26.0`.
+- Acción operativa requerida antes de continuar: desactivar temporalmente SOLO el campo `calls` en Meta Developers y conservar `messages` activo. La suscripción `calls` ya estaba habilitada antes de que WACRM tuviera su consumidor.
+- Motivo: el webhook actual valida y encola el payload, pero `processWebhook` todavía no enruta `field="calls"`. El drenaje durable puede marcar el evento como procesado sin manejar la llamada. No volver a activar `calls` hasta que CALL-02 integre el manejador, persistencia e idempotencia y pase QA.
 - No se cambia ninguna configuración de Meta, VPS, variables de entorno ni producción.
 - No se habilita ningún flag de llamadas.
 
