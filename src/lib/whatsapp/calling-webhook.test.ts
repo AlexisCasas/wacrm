@@ -28,7 +28,7 @@ describe('parseWhatsAppCallingWebhookChange', () => {
           timestamp: '1795120000',
           direction: 'USER_INITIATED',
           from_user_id: 'PE.123456789',
-          session: { sdp_type: 'offer', sdp: 'v=0\\r\\no=- 1 1 IN IP4 127.0.0.1\\r\\n' },
+          session: { sdp_type: 'offer', sdp: 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n' },
         }],
       },
     })
