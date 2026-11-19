@@ -24,11 +24,13 @@ La captura de WhatsApp Manager para el número de Keyler muestra:
 | Permitir devolución de llamadas | Desactivado | Mantener por ahora; afecta la concesión automática de permiso de devolución, no la recepción básica de llamadas |
 | SIP | Desactivado | Mantener desactivado; se usará la señalización estándar de Calling API y WebRTC |
 
-La pestaña **Calling limits** todavía debe revisarse antes de las pruebas reales. Que el ajuste de voz aparezca activado no demuestra por sí solo que todos los límites y permisos de la cuenta estén satisfechos.
+La pestaña **Calling limits** debe revisarse antes de las pruebas reales. Además, Meta exige que el portfolio de negocio tenga un límite de mensajería de al menos **2.000 destinatarios únicos en una ventana móvil de 24 horas**. Este requisito es un límite de MENSAJERÍA, no significa que se permitan 2.000 llamadas diarias. Se consulta en WhatsApp Manager → Account tools → Messaging limits o mediante el campo `whatsapp_business_manager_messaging_limit` del número/portfolio. El valor mínimo aceptable es `TIER_2K` o superior.
+
+Los límites de llamadas son independientes: Meta limita las llamadas conectadas a 100 por cada par número de empresa/usuario de WhatsApp en 24 horas. Las solicitudes de permiso están limitadas a una por 24 horas y dos en siete días por ese mismo par.
 
 ### Permiso de devolución
 
-Con `callback_permission_status` desactivado, WACRM no debe asumir que una llamada entrante autoriza automáticamente una llamada saliente. Para las llamadas iniciadas por la empresa, CALL-02 deberá comprobar el permiso vigente del cliente y, si no existe, solicitarlo por el mecanismo de Meta. Más adelante se podrá evaluar activar la devolución de llamadas si el negocio quiere que WhatsApp ofrezca ese permiso después de una llamada entrante.
+Con `callback_permission_status` desactivado, WACRM no debe asumir que una llamada entrante autoriza automáticamente una llamada saliente. Para las llamadas iniciadas por la empresa en el piloto de Perú, CALL-02 comprobará un permiso vigente del cliente y, si no existe, solicitará autorización mediante el mecanismo de Meta. Perú figura dentro de los países admitidos para llamadas iniciadas por la empresa; no está entre las exclusiones publicadas por Meta. Más adelante se podrá evaluar activar la devolución de llamadas si el negocio quiere que WhatsApp ofrezca ese permiso después de una llamada entrante.
 
 ## 3. Arquitectura acordada
 
@@ -69,7 +71,7 @@ El SDP y las credenciales son datos sensibles: no deben escribirse en logs, mens
 - Soporte de destinatario por número E.164 (`to`).
 - `messaging_account_id` opcional para cuentas que lo tengan configurado.
 - Manejo de errores de Meta con código, subcódigo, HTTP status, Retry-After y fbtrace id; no se registra el token ni el SDP.
-- Versión de Graph API para Calling aislada en `WHATSAPP_CALLING_API_VERSION` (por defecto `v24.0`; configurable sin alterar la versión global de mensajería); no se modifica la versión global de mensajería existente en `meta-api.ts`.
+- Versión de Graph API para Calling aislada en `WHATSAPP_CALLING_API_VERSION` (por defecto `v27.0`; configurable sin alterar la versión global de mensajería); no se modifica la versión global de mensajería existente en `meta-api.ts`.
 - Parser puro para `field="calls"`, eventos, estados, contactos y atributos BSUID.
 - Parser para `messages[].interactive.call_permission_reply`, incluyendo expiración temporal y permiso permanente.
 - Pruebas unitarias para los payloads, respuestas y validaciones.
@@ -104,6 +106,9 @@ El despliegue en VPS se realizará únicamente después de revisar el PR, valida
 ## 8. Referencias
 
 - [Meta — Cloud API Calling](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/)
+- [Meta — Messaging Limits](https://developers.facebook.com/documentation/business-messaging/whatsapp/messaging-limits/)
+- [Meta — Call Settings](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/call-settings/)
+- [Meta — User Call Permissions](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/user-call-permissions/)
 - [Meta — API and Webhook Reference](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/reference/)
 - [Meta — User-initiated calls](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/user-initiated-calls/)
 - [Meta — Business-initiated calls](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/business-initiated-calls/)
