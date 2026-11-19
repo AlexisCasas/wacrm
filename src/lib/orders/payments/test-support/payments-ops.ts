@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { QaActor, QaWorld } from '@/lib/orders/logistics/test-support/qa-env'
+import { mkReadyOrder } from '@/lib/orders/shalom/test-support/ready-order'
 
 export const T0 = Date.parse('2027-02-01T15:00:00Z')
 export const at = (minutes: number) => new Date(T0 + minutes * 60_000).toISOString()
@@ -26,6 +27,16 @@ export function paymentsOps(w: QaWorld) {
     const id = await w.mkOrder(acc, `pay-${label}-${(n += 1)}`, { price: total, conversation_id: (conv as { id: string }).id, ...extra })
     return { order: id, conv: (conv as { id: string }).id }
   }
+  /** A TRACKED order that PR-04 left ready_for_dispatch (so a manual delivery / Shalom guide is possible), with its own conversation. */
+  const readyOrder = async (label: string, total = 100, acc = w.acc) => {
+    const owner = acc === w.acc ? w.owner : w.foreign
+    const { data: contact } = await w.admin.from('contacts').insert({ user_id: owner.id, account_id: acc, phone: `5190${String(1_000_000 + Math.floor(Math.random() * 8_000_000))}`, name: `QA ${label}` }).select('id').single()
+    const { data: conv } = await w.admin.from('conversations').insert({ user_id: owner.id, account_id: acc, contact_id: (contact as { id: string }).id }).select('id').single()
+    const id = await mkReadyOrder(w, acc, `pay-ready-${label}-${(n += 1)}`, { price: total, conversation_id: (conv as { id: string }).id })
+    return { order: id, conv: (conv as { id: string }).id }
+  }
+  const markDelivered = (orderId: string, minute = 0, actor: QaActor = w.logi, acc = w.acc, note: string | null = null) =>
+    w.admin.rpc('mark_order_delivered_manual', { p_account: acc, p_actor: actor.id, p_order: orderId, p_note: note, p_now: at(minute) })
   const financials = async (orderId: string) => ((await w.admin.from('order_financials').select('*').eq('order_id', orderId).maybeSingle()).data ?? null) as Row | null
   const payments = async (orderId: string) => ((await w.admin.from('order_payments').select('*').eq('order_id', orderId).order('created_at')).data ?? []) as Row[]
   const events = async (orderId: string) => ((await w.admin.from('order_payment_events').select('*').eq('order_id', orderId).order('created_at')).data ?? []) as Row[]
@@ -56,5 +67,5 @@ export function paymentsOps(w: QaWorld) {
     if ((c.data as { ok?: boolean })?.ok !== true) throw new Error(`confirm failed: ${JSON.stringify(c)}`)
     return id
   }
-  return { order, financials, payments, events, count, register, confirm, reject, voidPayment, correct, pay }
+  return { order, readyOrder, markDelivered, financials, payments, events, count, register, confirm, reject, voidPayment, correct, pay }
 }

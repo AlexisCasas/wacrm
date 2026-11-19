@@ -7,8 +7,12 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 export const DEFAULT_FINALIZED_GRACE_MINUTES = 10
 
 export interface FinalizedReturnResult {
+  /** PR-06: orders marked as completely finalized by the sweeper (Shalom delivered after the payment). */
+  finalized: number
   returned: number
   skipped: number
+  /** PR-06: finalized orders whose conversation waits for the OTHER operative orders of the chat. */
+  deferred: number
   errors: number
 }
 
@@ -19,22 +23,28 @@ export function readFinalizedGraceMinutes(env: Record<string, string | undefined
 }
 
 /** Applies every return that is due at `now`. Never throws: a failure is counted and logged (no names, phones or ids). */
-export async function runFinalizedReturn(admin: SupabaseClient, opts: { now?: Date; graceMinutes?: number } = {}): Promise<FinalizedReturnResult> {
-  const out: FinalizedReturnResult = { returned: 0, skipped: 0, errors: 0 }
+export async function runFinalizedReturn(admin: SupabaseClient, opts: { now?: Date; graceMinutes?: number; /** tests only: process one account */ accountId?: string } = {}): Promise<FinalizedReturnResult> {
+  const out: FinalizedReturnResult = { finalized: 0, returned: 0, skipped: 0, deferred: 0, errors: 0 }
   try {
+    // PR-06 first: an order delivered by Shalom AFTER its payment is only discovered here (nothing in PR-05 calls PR-06). A failure never blocks the return.
+    const swept = await admin.rpc('evaluate_order_finalizations', { p_now: (opts.now ?? new Date()).toISOString(), p_limit: 200, p_account: opts.accountId ?? null })
+    if (swept.error) console.error('[routing-return] finalization sweep failed:', swept.error.code)
+    else out.finalized = ((swept.data ?? {}) as { marked?: number }).marked ?? 0
     const { data, error } = await admin.rpc('return_finalized_conversations', {
       p_now: (opts.now ?? new Date()).toISOString(),
       p_grace_minutes: opts.graceMinutes ?? readFinalizedGraceMinutes(),
       p_limit: 100,
+      p_account: opts.accountId ?? null,
     })
     if (error) {
       out.errors += 1
       console.error('[routing-return] rpc failed:', error.code)
       return out
     }
-    const body = (data ?? {}) as { returned?: number; skipped?: number }
+    const body = (data ?? {}) as { returned?: number; skipped?: number; deferred?: number }
     out.returned = body.returned ?? 0
     out.skipped = body.skipped ?? 0
+    out.deferred = body.deferred ?? 0
   } catch (e) {
     out.errors += 1
     console.error('[routing-return] failed:', e instanceof Error ? e.name : 'unknown')

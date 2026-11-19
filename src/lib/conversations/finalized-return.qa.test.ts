@@ -21,7 +21,7 @@ const routing = async (conv: string) => ((await w.admin.from('conversation_routi
 const events = async (conv: string) => ((await w.admin.from('conversation_routing_events').select('*').eq('conversation_id', conv).order('created_at')).data ?? []) as Row[]
 const fin = async (order: string) => ((await w.admin.from('order_finalizations').select('*').eq('order_id', order).single()).data ?? {}) as Row
 const mark = (order: string, minute = 0, acc = w.acc) => w.admin.rpc('mark_order_finalized', { p_account: acc, p_order: order, p_source: 'qa_simulation', p_actor: null, p_now: iso(minute) })
-const tick = (minute: number) => runFinalizedReturn(w.admin, { now: at(minute), graceMinutes: 10 })
+const tick = (minute: number) => runFinalizedReturn(w.admin, { now: at(minute), graceMinutes: 10, accountId: w.acc })
 
 /** An order whose conversation is in the LOGISTICS stage, with a little history. */
 async function scenario(label: string) {
@@ -182,7 +182,7 @@ describe.skipIf(!QA_ENABLED)('PR-05C · routing return after "pedido completamen
       // "restart": a fresh service-role client, as a new app process would build; time moves on
       const { createClient } = await import('@supabase/supabase-js')
       const fresh = createClient(process.env.LOCAL_URL as string, process.env.LOCAL_SERVICE as string, { auth: { persistSession: false } })
-      expect(await runFinalizedReturn(fresh, { now: at(45), graceMinutes: 10 })).toMatchObject({ returned: 1 })
+      expect(await runFinalizedReturn(fresh, { now: at(45), graceMinutes: 10, accountId: w.acc })).toMatchObject({ returned: 1 })
       expect((await routing(conv))?.stage).toBe('commercial')
     })
 
