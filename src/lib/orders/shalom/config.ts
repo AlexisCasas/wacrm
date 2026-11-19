@@ -23,6 +23,13 @@ export interface ShalomConfig {
   refreshMinIntervalSeconds: number
   /** Calendar days (America/Lima) in En destino before the internal alert. */
   alertDays: number
+  /** Calendar days (America/Lima) En destino before the customer message becomes due (same moment as the internal alert by default). */
+  customerMessageDays: number
+  /** Calendar days (America/Lima) En destino before the pickup condition becomes "En abandono". */
+  abandonDays: number
+  /** Automatic sends of the customer message per episode (a person can retry beyond it) and the backoff between FAILED attempts, in minutes (the last repeats). */
+  messageMaxAttempts: number
+  messageBackoffMinutes: number[]
   /** Technical poll log retention. */
   pollRetentionDays: number
   /** How long a global credentials failure pauses every query. */
@@ -41,6 +48,10 @@ export const SHALOM_DEFAULTS: ShalomConfig = {
   attentionWindowHours: 24,
   refreshMinIntervalSeconds: 300,
   alertDays: 15,
+  customerMessageDays: 15,
+  abandonDays: 20,
+  messageMaxAttempts: 3,
+  messageBackoffMinutes: [5, 15, 60],
   pollRetentionDays: 30,
   credentialsPauseMinutes: 60,
   rateLimitPauseSeconds: { fallback: 60, min: 1, max: 900 },
@@ -64,7 +75,7 @@ export function readShalomConfig(env: Record<string, string | undefined> = proce
   } catch {
     return cfg
   }
-  for (const k of ['tickMinutes', 'batchSize', 'timeoutMs', 'leaseSeconds', 'attentionWindowHours', 'refreshMinIntervalSeconds', 'alertDays', 'pollRetentionDays', 'credentialsPauseMinutes'] as const) {
+  for (const k of ['tickMinutes', 'batchSize', 'timeoutMs', 'leaseSeconds', 'attentionWindowHours', 'refreshMinIntervalSeconds', 'alertDays', 'customerMessageDays', 'abandonDays', 'messageMaxAttempts', 'pollRetentionDays', 'credentialsPauseMinutes'] as const) {
     const v = posInt(o[k])
     if (v !== null) cfg[k] = v
   }
@@ -79,6 +90,10 @@ export function readShalomConfig(env: Record<string, string | undefined> = proce
   if (Array.isArray(o.backoffMinutes)) {
     const list = o.backoffMinutes.map(posInt)
     if (list.length > 0 && list.every((x): x is number => x !== null)) cfg.backoffMinutes = list
+  }
+  if (Array.isArray(o.messageBackoffMinutes)) {
+    const list = o.messageBackoffMinutes.map(posInt)
+    if (list.length > 0 && list.every((x): x is number => x !== null)) cfg.messageBackoffMinutes = list
   }
   const rl = o.rateLimitPauseSeconds
   if (typeof rl === 'object' && rl !== null) {
@@ -108,6 +123,13 @@ export function nextPollAfterSuccess(status: ShipmentStatus | null, now: Date, c
 export function nextPollAfterFailure(failures: number, now: Date, cfg: ShalomConfig): Date {
   const i = Math.min(Math.max(failures, 1), cfg.backoffMinutes.length) - 1
   return addMinutes(now, cfg.backoffMinutes[i])
+}
+
+/** When the next AUTOMATIC attempt of a FAILED customer message is due; null once the automatic attempts are used up (a person can still retry). */
+export function nextMessageAttempt(attempt: number, now: Date, cfg: ShalomConfig): Date | null {
+  if (attempt >= cfg.messageMaxAttempts) return null
+  const i = Math.min(Math.max(attempt, 1), cfg.messageBackoffMinutes.length) - 1
+  return addMinutes(now, cfg.messageBackoffMinutes[i])
 }
 
 /** Pause after a 429: Retry-After (seconds) when present, otherwise the fallback; always within [min, max]. */

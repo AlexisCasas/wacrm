@@ -17,7 +17,16 @@ export interface Claimed {
 
 export function shalomOps(w: QaWorld) {
   let n = 0
-  const ready = (label: string, acc = w.acc) => mkReadyOrder(w, acc, `pk-${label}-${(n += 1)}`)
+  /** A ready_for_dispatch order WITH its own conversation (contact + chat), like every real order. */
+  const ready = async (label: string, acc = w.acc) => {
+    const owner = acc === w.acc ? w.owner : w.foreign
+    const phone = `5190${String(1_000_000 + Math.floor(Math.random() * 8_000_000))}`
+    const { data: contact, error: ce } = await w.admin.from('contacts').insert({ user_id: owner.id, account_id: acc, phone, name: `QA ${label}` }).select('id').single()
+    if (ce) throw ce
+    const { data: conv, error } = await w.admin.from('conversations').insert({ user_id: owner.id, account_id: acc, contact_id: (contact as { id: string }).id }).select('id').single()
+    if (error) throw error
+    return mkReadyOrder(w, acc, `pk-${label}-${(n += 1)}`, { conversation_id: (conv as { id: string }).id })
+  }
   const register = (order: string, opts: { actor?: QaActor; acc?: string; now?: string } = {}) =>
     w.admin.rpc('register_order_shipment', { p_account: opts.acc ?? w.acc, p_actor: (opts.actor ?? w.logi).id, p_order: order, p_number: String(70_000_000 + (n += 1)), p_code: 'PK01', p_now: opts.now ?? at(0) })
   const claim = async (now: string, order: string | null = null): Promise<Claimed[]> => {

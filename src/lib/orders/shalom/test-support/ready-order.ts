@@ -41,7 +41,7 @@ export async function mkReadyOrder(w: QaWorld, accountId: string, key: string, f
   // PR-04's guards force the real state machine: claimed -> sending -> sent
   const d = await w.admin.from('order_template_dispatches').insert({
     id: dispatch, account_id: accountId, order_id: order, request_key: `${w.tag}-${key}-d`, status: 'claimed', evidence_document_id: evidence,
-    template_name: 't', template_language: 'es', actor_user_id: actor,
+    template_name: 't', template_language: 'es', actor_user_id: actor, conversation_id: (fields.conversation_id as string | undefined) ?? null,
   })
   if (d.error) throw d.error
   const d2 = await w.admin.from('order_template_dispatches').update({ status: 'sending', sending_at: now }).eq('id', dispatch)

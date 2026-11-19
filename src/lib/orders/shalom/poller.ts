@@ -4,6 +4,7 @@ import { classifyFailure, classifyResponse, errorKindOf, type Classified } from 
 import {
   attentionWindowElapsed, nextPollAfterFailure, nextPollAfterSuccess, rateLimitPauseSeconds, type ShalomConfig,
 } from '@/lib/orders/shalom/config'
+import { emptyMessageTick, processCustomerMessages, type MessageTickResult, type SendFn } from '@/lib/orders/shalom/customer-message'
 import { ShalomProviderError, type PollOutcome, type ShalomTrackingProvider, type ShipmentStatus } from '@/lib/orders/shalom/types'
 
 // PR-05 · the poller. It only ORCHESTRATES: the database owns the invariants (claim / lease / token, guide versions, late answers, never backwards, no
@@ -29,8 +30,10 @@ export interface PollDeps {
   now?: () => Date
   /** Injectable pause (tests); defaults to a real timer. */
   sleep?: (ms: number) => Promise<void>
-  /** Global kill switch: do the DB-only work (alert clock, retention) but make NO provider query and claim nothing. */
+  /** Global kill switch: do the DB-only work (alert clock, pickup evaluation, retention) but make NO provider query, claim nothing and send NO customer message. */
   skipQueries?: boolean
+  /** Injectable send core for the customer message (tests); defaults to the real one. */
+  sendMessage?: SendFn
 }
 
 export type PauseReason = 'rate_limited' | 'credentials' | null
@@ -127,6 +130,9 @@ export interface TickSummary {
   paused: PauseReason
   alertsCreated: number
   alertsNotified: number
+  /** PR-05A/B: pickup condition + customer message (counters only). */
+  pickup: { alerted: number; messagesDue: number; abandoned: number }
+  messages: MessageTickResult
   purgedPolls: number
   errors: number
   durationMs: number
@@ -134,7 +140,7 @@ export interface TickSummary {
 
 class SkipQueries extends Error {}
 
-export const emptyTick = (enabled: boolean): TickSummary => ({ enabled, claimed: 0, applied: 0, ignored: 0, byOutcome: {}, paused: null, alertsCreated: 0, alertsNotified: 0, purgedPolls: 0, errors: 0, durationMs: 0 })
+export const emptyTick = (enabled: boolean): TickSummary => ({ enabled, claimed: 0, applied: 0, ignored: 0, byOutcome: {}, paused: null, alertsCreated: 0, alertsNotified: 0, pickup: { alerted: 0, messagesDue: 0, abandoned: 0 }, messages: emptyMessageTick(), purgedPolls: 0, errors: 0, durationMs: 0 })
 
 /**
  * One cron tick: claim a batch (FOR UPDATE SKIP LOCKED) → query sequentially → apply each answer; a 429 or a credentials failure PAUSES the rest of the
@@ -198,8 +204,26 @@ export async function runShalomTick(admin: SupabaseClient, deps: PollDeps): Prom
     summary.errors += 1
     console.error('[shalom] alert evaluation failed:', e instanceof Error ? e.name : 'unknown')
   }
+
+  // PR-05A/B, also independent of Shalom and of each other: the pickup condition (day 15 -> alerted_15d and the customer message becomes due) ...
+  try {
+    const { data, error } = await admin.rpc('evaluate_pickup_day15', { p_now: clock(deps).toISOString(), p_days: deps.cfg.customerMessageDays })
+    if (error) throw new Error(error.code ?? 'rpc')
+    const out = (data ?? {}) as { alerted?: number; messages_due?: number }
+    summary.pickup.alerted = out.alerted ?? 0
+    summary.pickup.messagesDue = out.messages_due ?? 0
+  } catch (e) {
+    summary.errors += 1
+    console.error('[shalom] pickup day-15 evaluation failed:', e instanceof Error ? e.message : 'unknown')
+  }
+
+  // ... and the customer message itself: an external action (WhatsApp), so it also honours the global kill switch; a failure here never touches the tracking.
+  if (!deps.skipQueries) {
+    summary.messages = await processCustomerMessages(admin, { cfg: deps.cfg, now: deps.now, sendMessage: deps.sendMessage })
+    summary.errors += summary.messages.errors
+  }
   summary.durationMs = Date.now() - t0
-  console.info('[shalom] tick', JSON.stringify({ claimed: summary.claimed, applied: summary.applied, ignored: summary.ignored, byOutcome: summary.byOutcome, paused: summary.paused, alerts: summary.alertsCreated, errors: summary.errors, ms: summary.durationMs }))
+  console.info('[shalom] tick', JSON.stringify({ claimed: summary.claimed, applied: summary.applied, ignored: summary.ignored, byOutcome: summary.byOutcome, paused: summary.paused, alerts: summary.alertsCreated, pickup: summary.pickup, messages: summary.messages, errors: summary.errors, ms: summary.durationMs }))
   return summary
 }
 
