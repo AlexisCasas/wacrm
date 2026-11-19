@@ -26,11 +26,11 @@ const PR04 = [
   '20261129000005_order_evidence_upload.sql',
 ]
 // PR-05 (Shalom tracking) migrations come after PR-04's: they are later still, so the "files after PR-03" arithmetic below must count them too.
-const PR05_PREFIX = '202611300000'
+const PR05_FIRST = '20261130000000' // every migration from here on belongs to PR-05 (and its 05A/05B extensions)
 const read = (name: string) => readFileSync(resolve(dir, name), 'utf8').replace(/\r\n/g, '\n')
 const strip = (sql: string) => sql.replace(/^\s*--.*$/gm, '')
 const all = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
-const pr05 = all.filter((f) => f.startsWith(PR05_PREFIX))
+const pr05 = all.filter((f) => f >= PR05_FIRST)
 
 /** SHA-256 of the PR-03 migration (LF-normalized) as closed at a1d76f3fb89439b692967f5781033ada058a9784. */
 const PR03_SHA256 = '931ad2b6597b8995c89c2d435fc7b35f12bbdccb6d4643571dad58fe43ffa298'

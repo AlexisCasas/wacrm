@@ -93,7 +93,8 @@ describe.skipIf(!QA_ENABLED)('PR-05 tracking service + poller (fake provider, in
     await tick()
     expect((await pollRows(order)).length).toBe(polls) // delivered: never queried again
     const types = ((await w.admin.from('order_shipment_events').select('event_type').eq('order_id', order).order('created_at')).data ?? []).map((e) => (e as { event_type: string }).event_type)
-    expect(types).toEqual(['shipment_registered', 'status_changed', 'status_changed', 'status_changed', 'status_changed', 'delivered'])
+    // (PR-05A/B adds the pickup events next to the status ones: waiting when it reaches En destino, completed when it is delivered)
+    expect(types).toEqual(['shipment_registered', 'status_changed', 'status_changed', 'pickup_waiting_started', 'status_changed', 'pickup_completed', 'status_changed', 'delivered'])
   })
 
   it('duplicate cron ticks do not query twice; two concurrent ticks never share a shipment', async () => {
