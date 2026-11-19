@@ -50,8 +50,8 @@ describe('callWhatsApp', () => {
       `https://graph.facebook.com/${META_CALLING_API_VERSION}/740434745820831/calls`,
     )
     expect(captured[0]?.init.method).toBe('POST')
-    expect((captured?.init.headers as Record<string, string>).Authorization).toBe('Bearer test-access-token')
-    expect(JSON.parse(String(captured?.init.body))).toEqual({
+    expect((captured[0]?.init.headers as Record<string, string>).Authorization).toBe('Bearer test-access-token')
+    expect(JSON.parse(String(captured[0]?.init.body))).toEqual({
       messaging_product: 'whatsapp',
       messaging_account_id: '123456789012345',
       action: 'connect',
