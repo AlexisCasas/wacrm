@@ -31,9 +31,7 @@ export type WhatsAppCallAction =
   | ({
       action: 'connect'
       /** E.164 phone number. The leading + is removed before sending to Meta. */
-      to?: string
-      /** Business-scoped WhatsApp user ID (BSUID), when Meta supplies one. */
-      recipient?: string
+      to: string
       session: WhatsAppCallOffer
     } & CallActionMetadata)
   | ({
@@ -99,14 +97,6 @@ function normalizeCallPhoneNumber(value: string): string {
   const normalized = value.trim().replace(/^\+/, '')
   if (!/^\d{6,20}$/.test(normalized)) {
     throw new Error('WhatsApp call recipient must be an E.164 phone number.')
-  }
-  return normalized
-}
-
-function validateCallRecipientId(value: string): string {
-  const normalized = value.trim()
-  if (!/^[A-Za-z0-9._~+/-]{1,256}$/.test(normalized)) {
-    throw new Error('WhatsApp call recipient ID is invalid.')
   }
   return normalized
 }
