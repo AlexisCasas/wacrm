@@ -21,6 +21,6 @@ for ($i = 0; $i -lt 40; $i++) {
   Start-Sleep -Seconds 2
   try { if ((Invoke-WebRequest -Uri 'http://localhost:3000/login' -UseBasicParsing -TimeoutSec 3).StatusCode -eq 200) { break } } catch {}
 }
-Get-ChildItem -Recurse -Filter route.ts -Path 'C:\WACRM-LOCAL\src\app\api\orders\shalom', 'C:\WACRM-LOCAL\src\app\api\orders\logistics' | ForEach-Object { $_.LastWriteTime = Get-Date }
+Get-ChildItem -Recurse -Filter route.ts -Path 'C:\WACRM-LOCAL\src\app\api\orders\shalom', 'C:\WACRM-LOCAL\src\app\api\orders\logistics', 'C:\WACRM-LOCAL\src\app\api\conversations\routing' | ForEach-Object { $_.LastWriteTime = Get-Date }
 Start-Sleep -Seconds 3
 "App ready on http://localhost:3000  (Shalom kill switch: " + $(if ($KillSwitchOff) { 'OFF' } else { 'ON' }) + ")"

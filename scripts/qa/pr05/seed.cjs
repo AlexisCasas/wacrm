@@ -5,6 +5,8 @@
  *   node scripts/qa/pr05/seed.cjs pickup-prepare   PR-05A/B: NEW orders G/H/I (ready_for_dispatch), the day-15 customer message switch ON for QA account A and the fake template
  *                                                  `qa_pendiente_recojo`. It does NOT touch the orders / scenarios of the earlier UAT (A..F).
  *   node scripts/qa/pr05/seed.cjs message on|off   destination_customer_message_enabled of QA account A (the kill switch of the customer message only)
+ *   node scripts/qa/pr05/seed.cjs routing-prepare  PR-05C: NEW confirmed orders R1..R5 whose conversation is in LOGISTICS (own history), to test Derivar a Comercial and the
+ *                                                  automatic return 10 minutes after the simulated "pedido completamente finalizado" (see finalize.cjs)
  *   node scripts/qa/pr05/seed.cjs meta success|failed|uncertain   what the Meta SIMULATOR answers to the next template sends
  * Cleanup: `node scripts/qa/pr04-integrated/seed.cjs cleanup` removes the whole QA world (accounts cascade); the fake scenarios live in C:\WACRM-LOCAL-QA\shalom-scenarios.json. */
 const C = require('./common.cjs')
@@ -84,6 +86,30 @@ async function pickupPrepare() {
   console.table(PICKUP_ORDERS.map((o) => ({ order: o.name, 'número de orden': o.number, código: o.code, prueba: o.note })))
 }
 
+const ROUTING_ORDERS = [
+  { key: 'R1', name: 'Ruteo QA R1 · derivar a Comercial (manual)', note: 'Logística abre el chat y pulsa Derivar a Comercial; luego entrar como Comercial: mismo chat e historial' },
+  { key: 'R2', name: 'Ruteo QA R2 · retorno automático +9 / +10 min', note: 'finalize mark R2 --minutes-ago 9 → tick: sigue Logística; ~1 min después → tick: Comercial' },
+  { key: 'R3', name: 'Ruteo QA R3 · manual antes de vencer', note: 'finalize mark R3 --minutes-ago 5, Derivar a Comercial, esperar el +10, tick: sin segunda transición' },
+  { key: 'R4', name: 'Ruteo QA R4 · decisión humana posterior', note: 'finalize mark R4 --minutes-ago 5, finalize human-change R4 shared, tick tras el +10: no se pisa' },
+  { key: 'R5', name: 'Ruteo QA R5 · reinicio de la app', note: 'finalize mark R5 --minutes-ago 4, reiniciar la app (start-app.ps1), esperar el +10, tick: igualmente vuelve' },
+  { key: 'RS', name: 'Ruteo QA RS · humo automático (ya recorrido por Claude, no lo uses)', note: 'verificación de extremo a extremo; ignorar' },
+]
+
+async function routingPrepare() {
+  const st = C.state()
+  st.pr05 ??= { orders: {} }
+  for (const o of ROUTING_ORDERS) {
+    if (st.pr05.orders[o.key]) { console.log(`[${o.key}] already exists, skipped`); continue }
+    const conv = await S.mkConversation(st.acc, st.users.owner.id, o.name, `5190${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`, [['customer', 'Hola, ya pagué'], ['agent', 'Recibido, vamos a embalar'], ['customer', 'Gracias, quedo atento']])
+    const order = await S.confirmOrder(st.acc, st.users.comercial, conv, `pr05c-${o.key}-${V.rid()}`, S.single(o.name, String(60000000 + Math.floor(Math.random() * 3e7)), `5196${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`, 'Producto Ruteo', 1, 25, 'Arequipa'))
+    st.pr05.orders[o.key] = { orderId: order, conversationId: conv.conversationId, ...o }
+    C.L.writeState(st)
+    console.log(`[${o.key}] ${o.name}: confirmed, conversation in LOGISTICS`)
+  }
+  console.log('\nNEW PR-05C scenarios (conversations in Logística). Use scripts/qa/pr05/finalize.cjs:')
+  console.table(ROUTING_ORDERS.map((o) => ({ pedido: o.name, prueba: o.note })))
+}
+
 async function prepare() {
   const st = C.state()
   await setFlag(st, true)
@@ -109,11 +135,12 @@ async function prepare() {
   if (cmd === 'prepare') return prepare()
   if (cmd === 'flag') return setFlag(C.state(), arg === 'on')
   if (cmd === 'pickup-prepare') return pickupPrepare()
+  if (cmd === 'routing-prepare') return routingPrepare()
   if (cmd === 'message') return setMessage(C.state(), arg === 'on')
   if (cmd === 'meta') {
     if (!['success', 'failed', 'uncertain'].includes(arg)) throw new Error('usage: meta success|failed|uncertain')
     require('node:fs').writeFileSync(require('node:path').join(C.L.QA_DIR, 'meta-mode.txt'), arg)
     return console.log(`Meta simulator mode = ${arg}`)
   }
-  throw new Error('usage: prepare | flag on|off | pickup-prepare | message on|off | meta success|failed|uncertain')
+  throw new Error('usage: prepare | flag on|off | pickup-prepare | routing-prepare | message on|off | meta success|failed|uncertain')
 })().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1) })
