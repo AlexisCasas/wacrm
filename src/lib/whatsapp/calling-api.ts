@@ -9,7 +9,7 @@ import {
  * existing WhatsApp messaging version used by the rest of WACRM.
  * Upgrade this independently after checking Meta's version support.
  */
-export const META_CALLING_API_VERSION = 'v27.0'
+export const META_CALLING_API_VERSION = process.env.WHATSAPP_CALLING_API_VERSION ?? 'v24.0'
 
 const META_CALLING_API_BASE = `https://graph.facebook.com/${META_CALLING_API_VERSION}`
 
