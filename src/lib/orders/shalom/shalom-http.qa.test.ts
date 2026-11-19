@@ -56,7 +56,7 @@ const shipmentOf = async (order: string) => ((await w.admin.from('order_shipment
 const mkNum = () => String(50_000_000 + (n += 1))
 const base = (order: string) => `/api/orders/shalom/orders/${order}`
 
-vi.setConfig({ testTimeout: 60_000, hookTimeout: 120_000 })
+vi.setConfig({ testTimeout: 60_000, hookTimeout: 570_000 })
 
 describe.skipIf(!RUN)('PR-05 over HTTP: real routes, sessions and cron (fake Shalom)', () => {
   beforeAll(async () => {
@@ -66,7 +66,7 @@ describe.skipIf(!RUN)('PR-05 over HTTP: real routes, sessions and cron (fake Sha
     w = await createWorld()
     await setShipmentFlag(w, w.acc, true)
     await setShipmentFlag(w, w.accForeign, true)
-  }, 120_000)
+  }, 570_000) // waits for the global QA lock (up to 8 min under a loaded full run)
   // shipments left by an earlier test answer "origin" afterwards (not a stale 429 / 401), and the credentials breaker is closed
   afterEach(async () => {
     for (const k of Object.keys(scenarios.byNumber)) scenarios.byNumber[k] = 'origin'

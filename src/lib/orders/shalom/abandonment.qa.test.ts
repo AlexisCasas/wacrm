@@ -22,7 +22,7 @@ const limaDay = (n: number, minutes = 0) => new Date(LIMA0 + n * 86_400_000 + mi
 const abandon = (nowIso: string, days = 20) => w.admin.rpc('evaluate_pickup_abandonment', { p_now: nowIso, p_days: days })
 const day15 = (nowIso: string) => w.admin.rpc('evaluate_pickup_day15', { p_now: nowIso, p_days: 15 })
 
-vi.setConfig({ testTimeout: 40_000, hookTimeout: 120_000 })
+vi.setConfig({ testTimeout: 40_000, hookTimeout: 570_000 })
 
 describe.skipIf(!QA_ENABLED)('PR-05B abandonment at day 20 En destino', () => {
   beforeAll(async () => {
@@ -33,7 +33,7 @@ describe.skipIf(!QA_ENABLED)('PR-05B abandonment at day 20 En destino', () => {
     o = shalomOps(w)
     await setShipmentFlag(w, w.acc, true)
     await setShipmentFlag(w, w.accForeign, true)
-  }, 120_000)
+  }, 570_000) // waits for the global QA lock (up to 8 min under a loaded full run)
   afterAll(async () => {
     if (w) {
       await w.dispose()

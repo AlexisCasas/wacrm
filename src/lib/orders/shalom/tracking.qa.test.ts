@@ -44,7 +44,7 @@ const pollRows = async (order: string) => ((await w.admin.from('order_shipment_p
 const ts = (v: unknown) => Date.parse(String(v))
 const mine = (orders: string[]) => async () => (await w.admin.from('order_shipments').select('order_id, next_poll_at').in('order_id', orders)).data
 
-vi.setConfig({ testTimeout: 40_000, hookTimeout: 120_000 })
+vi.setConfig({ testTimeout: 40_000, hookTimeout: 570_000 })
 
 describe.skipIf(!QA_ENABLED)('PR-05 tracking service + poller (fake provider, injectable clock)', () => {
   beforeAll(async () => {
@@ -52,7 +52,7 @@ describe.skipIf(!QA_ENABLED)('PR-05 tracking service + poller (fake provider, in
     w = await createWorld()
     await setShipmentFlag(w, w.acc, true)
     await setShipmentFlag(w, w.accForeign, true)
-  }, 120_000)
+  }, 570_000) // waits for the global QA lock (up to 8 min under a loaded full run)
   // Every test starts clean: shipments left by an earlier test answer "origin" (not a stale 429 / 401 scenario) and the breaker is closed.
   afterEach(async () => {
     scenarios.clear()

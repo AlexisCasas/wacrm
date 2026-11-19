@@ -69,7 +69,7 @@ async function due(label: string) {
   return { order, msg }
 }
 
-vi.setConfig({ testTimeout: 40_000, hookTimeout: 120_000 })
+vi.setConfig({ testTimeout: 40_000, hookTimeout: 570_000 })
 
 describe.skipIf(!QA_ENABLED)('PR-05A customer message at day 15 En destino', () => {
   beforeAll(async () => {
@@ -86,7 +86,7 @@ describe.skipIf(!QA_ENABLED)('PR-05A customer message at day 15 En destino', () 
     if (cfg.error) throw cfg.error
     const tpl = await w.admin.from('message_templates').insert({ user_id: w.owner.id, account_id: w.acc, name: TEMPLATE, category: 'Utility', language: 'es', body_text: 'Hola {{1}}, tu pedido continúa pendiente de recojo en la agencia de destino.', status: 'APPROVED' })
     if (tpl.error) throw tpl.error
-  }, 120_000)
+  }, 570_000) // waits for the global QA lock (up to 8 min under a loaded full run)
   beforeEach(async () => {
     // the suite shares one account: park rows left by earlier tests so a tick only touches the message under test
     await w.admin.from('order_shipment_messages').update({ next_attempt_at: '2999-01-01T00:00:00Z' }).eq('account_id', w.acc).in('status', ['pending', 'failed'])

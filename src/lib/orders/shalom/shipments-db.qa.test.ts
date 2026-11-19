@@ -59,7 +59,7 @@ async function shipAt(label: string, status: 'at_origin' | 'in_transit' | 'at_de
   return { order, c }
 }
 
-vi.setConfig({ testTimeout: 30_000, hookTimeout: 120_000 })
+vi.setConfig({ testTimeout: 30_000, hookTimeout: 570_000 })
 
 describe.skipIf(!QA_ENABLED)('PR-05 Shalom tracking · database layer', () => {
   beforeAll(async () => {
@@ -67,7 +67,7 @@ describe.skipIf(!QA_ENABLED)('PR-05 Shalom tracking · database layer', () => {
     w = await createWorld()
     await setShipmentFlag(w, w.acc, true)
     await setShipmentFlag(w, w.accForeign, true)
-  }, 120_000)
+  }, 570_000) // waits for the global QA lock (up to 8 min under a loaded full run)
   afterAll(async () => {
     if (w) await w.dispose()
     if (w) await clearCredentialsBreaker(w)
