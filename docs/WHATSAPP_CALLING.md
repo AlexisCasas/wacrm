@@ -69,7 +69,7 @@ El SDP y las credenciales son datos sensibles: no deben escribirse en logs, mens
 - Soporte de destinatario por número E.164 y por BSUID (`recipient`).
 - `messaging_account_id` opcional para cuentas que lo tengan configurado.
 - Manejo de errores de Meta con código, subcódigo, HTTP status, Retry-After y fbtrace id; no se registra el token ni el SDP.
-- Versión de Graph API para Calling aislada en `v27.0`; no se modifica la versión global de mensajería existente en `meta-api.ts`.
+- Versión de Graph API para Calling aislada en `WHATSAPP_CALLING_API_VERSION` (por defecto `v24.0`; configurable sin alterar la versión global de mensajería); no se modifica la versión global de mensajería existente en `meta-api.ts`.
 - Parser puro para `field="calls"`, eventos, estados, contactos y atributos BSUID.
 - Parser para `messages[].interactive.call_permission_reply`, incluyendo expiración temporal y permiso permanente.
 - Pruebas unitarias para los payloads, respuestas y validaciones.
