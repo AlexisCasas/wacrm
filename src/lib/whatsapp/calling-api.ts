@@ -96,8 +96,8 @@ async function throwCallingMetaError(response: Response): Promise<never> {
 }
 
 function normalizeCallPhoneNumber(value: string): string {
-  const normalized = value.trim().replace(/^\\+/, '')
-  if (!/^\\d{6,20}$/.test(normalized)) {
+  const normalized = value.trim().replace(/^\+/, '')
+  if (!/^\d{6,20}$/.test(normalized)) {
     throw new Error('WhatsApp call recipient must be an E.164 phone number.')
   }
   return normalized
@@ -113,7 +113,7 @@ function validateCallRecipientId(value: string): string {
 
 function validateCallId(value: string): string {
   const normalized = value.trim()
-  if (!/^wacid\\.[A-Za-z0-9._~+/=-]{1,512}$/.test(normalized)) {
+  if (!/^wacid\.[A-Za-z0-9._~+/=-]{1,512}$/.test(normalized)) {
     throw new Error('WhatsApp call ID is invalid.')
   }
   return normalized
@@ -129,7 +129,7 @@ function validateSession<T extends WhatsAppCallOffer | WhatsAppCallAnswer>(
     typeof session.sdp !== 'string' ||
     session.sdp.length === 0 ||
     session.sdp.length > 65_536 ||
-    !/^v=0(?:\\r?\\n)/.test(session.sdp)
+    !/^v=0(?:\r?\n)/.test(session.sdp)
   ) {
     throw new Error(`A valid SDP ${expectedType} is required for this WhatsApp call action.`)
   }
@@ -138,7 +138,7 @@ function validateSession<T extends WhatsAppCallOffer | WhatsAppCallAnswer>(
 
 function validateCallbackData(value: string | undefined): string | undefined {
   if (value === undefined) return undefined
-  if (typeof value !== 'string' || value.length === 0 || value.length > 512 || /[\\u0000-\\u001f]/.test(value)) {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 512 || /[\u0000-\u001f]/.test(value)) {
     throw new Error('WhatsApp call callback data must contain 1-512 printable characters.')
   }
   return value
@@ -155,7 +155,7 @@ export async function callWhatsApp(
   args: WhatsAppCallActionArgs,
 ): Promise<WhatsAppCallActionResult> {
   const phoneNumberId = args.phoneNumberId.trim()
-  if (!/^\\d{5,25}$/.test(phoneNumberId)) {
+  if (!/^\d{5,25}$/.test(phoneNumberId)) {
     throw new Error('WhatsApp phone_number_id is invalid.')
   }
   if (typeof args.accessToken !== 'string' || args.accessToken.trim() === '') {
@@ -173,11 +173,7 @@ export async function callWhatsApp(
 
   switch (args.action.action) {
     case 'connect': {
-      if (!args.action.to && !args.action.recipient) {
-        throw new Error('A phone number or BSUID recipient is required to connect a WhatsApp call.')
-      }
-      if (args.action.to) payload.to = normalizeCallPhoneNumber(args.action.to)
-      if (args.action.recipient) payload.recipient = validateCallRecipientId(args.action.recipient)
+      payload.to = normalizeCallPhoneNumber(args.action.to)
       payload.session = validateSession(args.action.session, 'offer')
       break
     }
