@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { callWhatsApp, META_CALLING_API_VERSION } from './calling-api'
-import { MetaApiError } from './meta-api'
 
 const BASE = {
   phoneNumberId: '740434745820831',
@@ -24,9 +23,9 @@ afterEach(() => {
 
 describe('callWhatsApp', () => {
   it('sends a business-initiated connect offer and returns Meta call ID', async () => {
-    let captured: { url: string; init: RequestInit } | null = null
+    const captured: Array<{ url: string; init: RequestInit }> = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
-      captured = { url, init }
+      captured.push({ url, init })
       return new Response(JSON.stringify({
         messaging_product: 'whatsapp',
         calls: [{ id: 'wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh' }],
@@ -47,10 +46,10 @@ describe('callWhatsApp', () => {
       action: 'connect',
       callId: 'wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh',
     })
-    expect(captured?.url).toBe(
+    expect(captured[0]?.url).toBe(
       `https://graph.facebook.com/${META_CALLING_API_VERSION}/740434745820831/calls`,
     )
-    expect(captured?.init.method).toBe('POST')
+    expect(captured[0]?.init.method).toBe('POST')
     expect((captured?.init.headers as Record<string, string>).Authorization).toBe('Bearer test-access-token')
     expect(JSON.parse(String(captured?.init.body))).toEqual({
       messaging_product: 'whatsapp',
@@ -121,8 +120,9 @@ describe('callWhatsApp', () => {
 
     await expect(callWhatsApp({
       ...BASE,
-      action: { action: 'connect', session: OFFER },
-    })).rejects.toThrow(/phone number or BSUID/)
+      phoneNumberId: 'invalid',
+      action: { action: 'reject', callId: 'wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh' },
+    })).rejects.toThrow(/phone_number_id/)
 
     await expect(callWhatsApp({
       ...BASE,
