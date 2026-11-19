@@ -57,4 +57,4 @@ async function prepare() {
   if (cmd === 'prepare') return prepare()
   if (cmd === 'flag') return setFlag(C.state(), arg === 'on')
   throw new Error('usage: prepare | flag on|off')
-})().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1) })
+})().catch((e) => { console.error(e.message); process.exitCode = 1 })

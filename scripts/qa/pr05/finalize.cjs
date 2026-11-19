@@ -62,4 +62,4 @@ async function tick() {
     return console.log(`[${o.key}] routing set to ${extra} by the QA supervisor (version ${cur.version} -> ${cur.version + 1}); a later cron must NOT overwrite it`)
   }
   throw new Error('usage: mark|clear|human-change|tick|status ...')
-})().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1) })
+})().catch((e) => { console.error(e.message); process.exitCode = 1 })

@@ -49,4 +49,4 @@ const confirm = (payment, supervisor, reason) => rpc('confirm_order_payment', { 
     return console.log(res.status, JSON.stringify(await res.json().catch(() => ({}))))
   }
   throw new Error('usage: register|confirm|void|pay|deliver|shift|tick ...')
-})().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1) })
+})().catch((e) => { console.error(e.message); process.exitCode = 1 })

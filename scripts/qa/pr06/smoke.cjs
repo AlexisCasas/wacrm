@@ -61,4 +61,4 @@ const key = () => `smoke-${crypto.randomUUID()}`
   check('Comercial now sees the READ-ONLY summary (paid, balance 0) and it has no payment data', view.status === 200 && view.body.orders?.[0]?.financial_status === 'paid' && !JSON.stringify(view.body).match(/payment_id|evidence|operation/), JSON.stringify(view.body).slice(0, 140))
   const { data: ev } = await C.admin.from('conversation_routing_events').select('reason, actor_name').eq('conversation_id', ps.conversationId).order('created_at')
   check('audit: order_finalized_grace_elapsed by system', ev.some((e) => e.reason === 'order_finalized_grace_elapsed' && e.actor_name === 'system'))
-})().then(() => process.exit(process.exitCode ?? 0)).catch((e) => { console.error(e.message); process.exit(1) })
+})().catch((e) => { console.error(e.message); process.exitCode = 1 })

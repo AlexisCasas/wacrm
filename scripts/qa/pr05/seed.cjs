@@ -143,4 +143,4 @@ async function prepare() {
     return console.log(`Meta simulator mode = ${arg}`)
   }
   throw new Error('usage: prepare | flag on|off | pickup-prepare | routing-prepare | message on|off | meta success|failed|uncertain')
-})().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1) })
+})().catch((e) => { console.error(e.message); process.exitCode = 1 })
