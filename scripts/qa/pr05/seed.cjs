@@ -2,6 +2,10 @@
  * are REALLY ready_for_dispatch (they go through the real PR-04 HTTP flow: voucher -> OCR -> validation -> packaging -> evidence -> simulated template).
  *   node scripts/qa/pr05/seed.cjs prepare     (needs: local Supabase, the app on :3000 with the Meta simulator, the QA world of pr04-integrated)
  *   node scripts/qa/pr05/seed.cjs flag on|off  (shalom_tracking_enabled of the QA accounts A and C)
+ *   node scripts/qa/pr05/seed.cjs pickup-prepare   PR-05A/B: NEW orders G/H/I (ready_for_dispatch), the day-15 customer message switch ON for QA account A and the fake template
+ *                                                  `qa_pendiente_recojo`. It does NOT touch the orders / scenarios of the earlier UAT (A..F).
+ *   node scripts/qa/pr05/seed.cjs message on|off   destination_customer_message_enabled of QA account A (the kill switch of the customer message only)
+ *   node scripts/qa/pr05/seed.cjs meta success|failed|uncertain   what the Meta SIMULATOR answers to the next template sends
  * Cleanup: `node scripts/qa/pr04-integrated/seed.cjs cleanup` removes the whole QA world (accounts cascade); the fake scenarios live in C:\WACRM-LOCAL-QA\shalom-scenarios.json. */
 const C = require('./common.cjs')
 const S = require('../pr04-integrated/seed.cjs')
@@ -22,6 +26,62 @@ async function setFlag(st, on) {
     if (error) throw error
   }
   console.log(`shalom_tracking_enabled = ${on} for the QA accounts A and C`)
+}
+
+const PICKUP_ORDERS = [
+  { key: 'G', name: 'Envío QA G · recojo: día 14 → 15 → 19 → 20 → 21 → Entregado', number: '40000011', code: 'QAG1', note: 'registrar, sim set destination 40000011, run-cron, advance G 14 --absolute / 15 / 19 / 20 / 21, luego sim set delivered' },
+  { key: 'H', name: 'Envío QA H · mensaje día 15 FALLA', number: '40000012', code: 'QAH2', note: 'seed meta failed, advance H 15 --absolute, run-cron: mensaje Falló, tracking sigue; seed meta success y Reintentar mensaje' },
+  { key: 'I', name: 'Envío QA I · mensaje día 15 INCIERTO', number: '40000013', code: 'QAI3', note: 'seed meta uncertain, advance I 15 --absolute, run-cron: Incierto, nunca se reenvía solo; confirmar en el panel' },
+  { key: 'S', name: 'Envío QA S · humo automático (ya recorrido por Claude, no lo uses)', number: '40000019', code: 'QAS9', note: 'verificación de extremo a extremo del envío real contra el simulador; ignorar' },
+]
+const FAKE_TEMPLATE = 'qa_pendiente_recojo'
+
+async function setMessage(st, on) {
+  const { error } = await C.admin.from('order_shipment_settings').upsert({
+    account_id: st.acc, shalom_tracking_enabled: true, destination_customer_message_enabled: on,
+    customer_message_template_name: FAKE_TEMPLATE, customer_message_template_language: 'es', customer_message_template_params: ['customer_name'],
+  })
+  if (error) throw error
+  console.log(`destination_customer_message_enabled = ${on} (QA account A; template ${FAKE_TEMPLATE}/es, variable: customer_name)`)
+}
+
+async function ensureFakeTemplate(st) {
+  const { data } = await C.admin.from('message_templates').select('id, status').eq('account_id', st.acc).eq('name', FAKE_TEMPLATE).eq('language', 'es').maybeSingle()
+  if (data) {
+    if (data.status !== 'APPROVED') await C.admin.from('message_templates').update({ status: 'APPROVED' }).eq('id', data.id)
+    return
+  }
+  const { error } = await C.admin.from('message_templates').insert({
+    user_id: st.users.owner.id, account_id: st.acc, name: FAKE_TEMPLATE, category: 'Utility', language: 'es', status: 'APPROVED',
+    body_text: 'Hola {{1}}, tu pedido continúa pendiente de recojo en la agencia de destino. Si no es recogido dentro del plazo indicado, se procederá con la devolución del producto a la agencia de origen.',
+  })
+  if (error) throw error
+  console.log(`fake template ${FAKE_TEMPLATE} created (QA only: the REAL Meta template is pending, see the PR-05A/B guide)`)
+}
+
+async function makeReady(st, o) {
+  const conv = await S.mkConversation(st.acc, st.users.owner.id, o.name, `5190${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`, [['customer', 'Hola, ya pagué'], ['agent', 'Recibido, vamos a embalar']])
+  const mediaId = await S.addMedia(conv.conversationId, st.acc, require('node:path').join(st.fixtures, 'media-A-correcta.png'), `pr05-${o.key}`)
+  const order = await S.confirmOrder(st.acc, st.users.comercial, conv, `pr05-${o.key}-${V.rid()}`, S.single(o.name, String(60000000 + Math.floor(Math.random() * 3e7)), `5196${String(Math.floor(Math.random() * 1e7)).padStart(7, '0')}`, 'Producto Envío', 1, 25, 'Arequipa'))
+  console.log(`[${o.key}] ${o.name}: PR-04 chain…`)
+  require('node:fs').writeFileSync(require('node:path').join(C.L.QA_DIR, 'meta-mode.txt'), 'success') // the PR-04 template of the chain must succeed whatever mode was left
+  const out = await V.chain('logistica', { order, conv: conv.conversationId, mediaId }, 'success', () => {})
+  if (out.validate !== 200 || !String(out['template(success)']).startsWith('2')) throw new Error(`PR-04 chain failed for ${o.key}: ${JSON.stringify(out)}`)
+  return { orderId: order, conversationId: conv.conversationId, ...o }
+}
+
+async function pickupPrepare() {
+  const st = C.state()
+  await ensureFakeTemplate(st)
+  await setMessage(st, true)
+  st.pr05 ??= { orders: {} }
+  for (const o of PICKUP_ORDERS) {
+    if (st.pr05.orders[o.key]) { console.log(`[${o.key}] already exists, skipped`); continue }
+    st.pr05.orders[o.key] = await makeReady(st, o)
+    C.L.writeState(st)
+  }
+  console.log('\nNEW PR-05A/B orders ready for dispatch (type these guides in Pedidos Confirmados → Tracking Shalom):')
+  console.table(PICKUP_ORDERS.map((o) => ({ order: o.name, 'número de orden': o.number, código: o.code, prueba: o.note })))
 }
 
 async function prepare() {
@@ -48,5 +108,12 @@ async function prepare() {
   const [cmd, arg] = process.argv.slice(2)
   if (cmd === 'prepare') return prepare()
   if (cmd === 'flag') return setFlag(C.state(), arg === 'on')
-  throw new Error('usage: prepare | flag on|off')
+  if (cmd === 'pickup-prepare') return pickupPrepare()
+  if (cmd === 'message') return setMessage(C.state(), arg === 'on')
+  if (cmd === 'meta') {
+    if (!['success', 'failed', 'uncertain'].includes(arg)) throw new Error('usage: meta success|failed|uncertain')
+    require('node:fs').writeFileSync(require('node:path').join(C.L.QA_DIR, 'meta-mode.txt'), arg)
+    return console.log(`Meta simulator mode = ${arg}`)
+  }
+  throw new Error('usage: prepare | flag on|off | pickup-prepare | message on|off | meta success|failed|uncertain')
 })().then(() => process.exit(0)).catch((e) => { console.error(e.message); process.exit(1) })

@@ -29,7 +29,7 @@ function state() {
 }
 
 async function shipments(accountId) {
-  const { data } = await admin.from('order_shipments').select('order_id, tracking_number, tracking_code, identifier_version, logistic_status, tracking_state, next_poll_at, last_polled_at, last_error_kind, last_error_code, consecutive_failures, destination_episode, destination_entered_at').eq('account_id', accountId).order('created_at')
+  const { data } = await admin.from('order_shipments').select('order_id, tracking_number, tracking_code, identifier_version, logistic_status, tracking_state, next_poll_at, last_polled_at, last_error_kind, last_error_code, consecutive_failures, destination_episode, destination_entered_at, pickup_state, pickup_abandoned_at').eq('account_id', accountId).order('created_at')
   return data ?? []
 }
 

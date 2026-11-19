@@ -12,7 +12,7 @@ Estado: **implementado localmente**, sin push, sin deploy, sin ninguna llamada a
 
 `ready_for_dispatch` (PR-04) → **registrar guía** (`numero_orden` + `codigo`, manual, Logística o Supervisor) → **En origen** → **En tránsito** → **En destino** → **Entregado**.
 WACRM consulta al proveedor, normaliza la respuesta (RAW Shalom → normalizado → estado WACRM), actualiza el MISMO pedido, muestra el tracking en Pedidos Confirmados, deja historial y detiene las consultas al llegar a Entregado.
-Si el pedido permanece **15 días calendario (America/Lima)** En destino se genera **una** alerta interna por episodio; el seguimiento continúa hasta Entregado. **No** se envía nada al cliente (extensión futura posible). Entregado logístico ≠ Pagado (PR-06).
+Si el pedido permanece **15 días calendario (America/Lima)** En destino se genera **una** alerta interna por episodio; el seguimiento continúa hasta Entregado. PR-05A/B (ver `SHALOM-TRACKING-PR05AB.md`) añade, aparte, un mensaje al cliente en ese día 15 (switch por cuenta, default OFF) y la condición "En abandono" al día 20. Entregado logístico ≠ Pagado (PR-06).
 
 PR-05 es **aditivo**: no modifica `order_logistics.status` ni ninguna migración / RPC / test de PR-01 a PR-04. El estado derivado de la lista (PR-05 si existe shipment, si no el de PR-04) se hace *envolviendo* el indicador de PR-04, sin editarlo.
 
