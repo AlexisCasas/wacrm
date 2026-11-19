@@ -66,7 +66,7 @@ El SDP y las credenciales son datos sensibles: no deben escribirse en logs, mens
 
 - Cliente tipado para `POST /{PHONE_NUMBER_ID}/calls`.
 - Acciones: `connect`, `pre_accept`, `accept`, `reject` y `terminate`.
-- Soporte de destinatario por número E.164 y por BSUID (`recipient`).
+- Soporte de destinatario por número E.164 (`to`).
 - `messaging_account_id` opcional para cuentas que lo tengan configurado.
 - Manejo de errores de Meta con código, subcódigo, HTTP status, Retry-After y fbtrace id; no se registra el token ni el SDP.
 - Versión de Graph API para Calling aislada en `WHATSAPP_CALLING_API_VERSION` (por defecto `v24.0`; configurable sin alterar la versión global de mensajería); no se modifica la versión global de mensajería existente en `meta-api.ts`.
