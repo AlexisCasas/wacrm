@@ -222,7 +222,8 @@ BEGIN
       p_contact_phone, p_contact_user_id, p_direction, v_next_state, p_event,
       p_status, p_event_at, COALESCE(p_start_time, CASE WHEN v_next_state = 'accepted' THEN p_event_at END),
       COALESCE(p_end_time, CASE WHEN v_terminal THEN p_event_at END),
-      p_duration_seconds, p_sdp_type, p_sdp_ciphertext, p_sdp_expires_at
+      p_duration_seconds, p_sdp_type, CASE WHEN v_terminal THEN NULL ELSE p_sdp_ciphertext END,
+      CASE WHEN v_terminal THEN NULL ELSE p_sdp_expires_at END
     )
     RETURNING id INTO v_id;
     RETURN v_id;
