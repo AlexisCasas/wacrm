@@ -140,6 +140,24 @@ BEGIN
     ) THEN
       RAISE EXCEPTION 'CALL03A_ACCEPT_METADATA_NOT_PERSISTED';
     END IF;
+
+    -- Once accepted, an expired claim must not allow a second agent to
+    -- take over the connected call. Attribution remains with Agent A.
+    UPDATE public.whatsapp_call_sessions
+    SET claim_expires_at=now()-interval '1 second'
+    WHERE phone_number_id='740434745820831' AND call_id=v_call_accept;
+    IF public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_accept,v_user_c) IS DISTINCT FROM false THEN
+      RAISE EXCEPTION 'CALL03A_ACCEPTED_CALL_RECLAIMED_BY_SECOND_AGENT';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM public.whatsapp_call_sessions
+      WHERE phone_number_id='740434745820831' AND call_id=v_call_accept
+        AND accepted_by_user_id=v_user_a
+        AND claimed_by_user_id=v_user_a
+    ) THEN
+      RAISE EXCEPTION 'CALL03A_ACCEPTED_AGENT_ATTRIBUTION_CHANGED';
+    END IF;
+
     IF public.whatsapp_call_session_agent_action(
       v_account_a,'740434745820831',v_call_accept,v_user_a,'ended',v_conversation_a
     ) IS DISTINCT FROM true THEN
