@@ -27,6 +27,7 @@ DECLARE
   v_call_closed text := 'wacid.qa-call0321-closed';
   v_call_expired text := 'wacid.qa-call0321-expired';
   v_call_fresh text := 'wacid.qa-call0321-fresh';
+  v_call_accepted text := 'wacid.qa-call0321-accepted';
   v_duplicate_result boolean;
   v_pruned integer;
 BEGIN
@@ -249,6 +250,23 @@ BEGIN
       now()+interval '5 minutes',NULL,NULL,NULL
     );
 
+    -- An agent-accepted call may still await Meta's ACCEPTED status webhook.
+    -- Expiry cleanup must not mark it terminal or make it claimable by agent B.
+    PERFORM public.whatsapp_call_event_apply(
+      v_account_a,v_phone_number_id,v_call_accepted,repeat('4',64),
+      'connect',1795120110,'USER_INITIATED','51980942247','51980942247',
+      NULL,NULL,'CALL0321 accepted','offered','encrypted:accepted-offer','offer',
+      now()-interval '1 second',NULL,NULL,NULL
+    );
+    IF public.whatsapp_call_claim(v_account_a,v_phone_number_id,v_call_accepted,v_user_a) IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'CALL0321_ACCEPTED_FIXTURE_CLAIM_FAILED';
+    END IF;
+    IF public.whatsapp_call_session_agent_action(
+      v_account_a,v_phone_number_id,v_call_accepted,v_user_a,'accepted',v_conversation_phone
+    ) IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'CALL0321_ACCEPTED_FIXTURE_ATTRIBUTION_FAILED';
+    END IF;
+
     v_pruned := public.whatsapp_call_sdp_prune(100);
     IF v_pruned < 1 THEN
       RAISE EXCEPTION 'CALL0321_EXPIRED_OFFER_NOT_PRUNED';
@@ -271,6 +289,18 @@ BEGIN
         AND state='offered' AND session_sdp_encrypted IS NOT NULL
     ) THEN
       RAISE EXCEPTION 'CALL0321_FRESH_OFFER_WAS_EXPIRED';
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM public.whatsapp_call_sessions
+      WHERE phone_number_id=v_phone_number_id AND call_id=v_call_accepted
+        AND state='offered' AND accepted_by_user_id=v_user_a
+        AND session_sdp_encrypted IS NULL
+    ) THEN
+      RAISE EXCEPTION 'CALL0321_ACCEPTED_CALL_WAS_PREMATURELY_TERMINATED';
+    END IF;
+    IF public.whatsapp_call_claim(v_account_a,v_phone_number_id,v_call_accepted,v_user_b) IS DISTINCT FROM false THEN
+      RAISE EXCEPTION 'CALL0321_ACCEPTED_CALL_RECLAIMED';
     END IF;
 
     RAISE EXCEPTION '__CALL0321_QA_ROLLBACK__';
