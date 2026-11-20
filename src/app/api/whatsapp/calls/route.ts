@@ -283,7 +283,7 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    const { accountId, userId } = await requireRole('agent')
+    const { accountId, userId, role } = await requireRole('agent')
     await pruneExpiredSdp()
     const limit = checkRateLimit(`calling:${userId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
@@ -700,6 +700,10 @@ export async function POST(request: Request) {
 
     if (action === 'check_permission') {
       return NextResponse.json({ permission })
+    }
+
+    if (!isWhatsAppCallingPilotAllowed(config.phone_number_id)) {
+      return NextResponse.json({ error: 'WhatsApp Calling is disabled for this number' }, { status: 403 })
     }
 
     if (!permission.canRequestPermission) {
