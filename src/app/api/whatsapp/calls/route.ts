@@ -151,6 +151,13 @@ type SignalCallRow = {
   state: string
 }
 
+function validSdp(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 65_536
+    && /^v=0(?:\\r?\\n)/.test(value)
+}
+
 async function loadSignalCall(accountId: string, callId: string): Promise<SignalCallRow | null> {
   const { data, error } = await supabaseAdmin()
     .from('whatsapp_call_sessions')
@@ -348,7 +355,7 @@ export async function POST(request: Request) {
       const session = body.session && typeof body.session === 'object'
         ? body.session as Record<string, unknown>
         : null
-      const offer = typeof session?.sdp === 'string' ? session.sdp : ''
+      const offer = session?.sdp_type === 'offer' && validSdp(session.sdp) ? session.sdp : ''
       if (!UUID_PATTERN.test(contactId) || !UUID_PATTERN.test(conversationId)
         || !UUID_PATTERN.test(requestId) || !offer) {
         return NextResponse.json({ error: 'Valid contact_id, conversation_id, request_id and SDP offer are required' }, { status: 400 })
@@ -457,8 +464,8 @@ export async function POST(request: Request) {
         }
         return NextResponse.json({ success: true, call_id: result.callId, session_persisted: true }, { status: 201 })
       } catch (error) {
-        const status = typeof error === 'object' && error !== null && 'status' in error
-          ? Number((error as { status?: unknown }).status)
+        const status = typeof error === 'object' && error !== null && 'httpStatus' in error
+          ? Number((error as { httpStatus?: unknown }).httpStatus)
           : 0
         const attemptState = status >= 400 && status < 500 ? 'failed' : 'unknown'
         await supabaseAdmin().rpc('whatsapp_call_outbound_attempt_fail', {
@@ -499,9 +506,13 @@ export async function POST(request: Request) {
         const incomingSession = body.session && typeof body.session === 'object'
           ? body.session as Record<string, unknown>
           : null
-        const incomingAnswer = typeof incomingSession?.sdp === 'string' ? incomingSession.sdp : ''
+        const incomingAnswer = incomingSession?.sdp_type === 'answer' && validSdp(incomingSession.sdp) ? incomingSession.sdp : ''
         if (call.direction !== 'USER_INITIATED' || !incomingAnswer) {
           return NextResponse.json({ error: 'An inbound call and SDP answer are required' }, { status: 400 })
+        }
+        if (!['offered','ringing'].includes(call.state)
+          || call.accepted_by_user_id || call.rejected_by_user_id || call.ended_by_user_id) {
+          return NextResponse.json({ error: 'This incoming call is no longer awaiting acceptance' }, { status: 409 })
         }
         const claimOwned = call.claimed_by_user_id === userId
           && typeof call.claim_expires_at === 'string'
@@ -551,6 +562,16 @@ export async function POST(request: Request) {
         if (call.direction !== 'USER_INITIATED') {
           return NextResponse.json({ error: 'Only incoming calls can be accepted' }, { status: 400 })
         }
+        if (['terminated','failed','rejected'].includes(call.state)
+          || call.rejected_by_user_id || call.ended_by_user_id) {
+          return NextResponse.json({ error: 'This incoming call is already terminal' }, { status: 409 })
+        }
+        if (call.accepted_by_user_id) {
+          if (call.accepted_by_user_id !== userId) {
+            return NextResponse.json({ error: 'This call was accepted by another agent' }, { status: 409 })
+          }
+          return NextResponse.json({ success: true, action: 'accept', already_accepted: true }, { status: 200 })
+        }
         const claimOwned = call.claimed_by_user_id === userId
           && typeof call.claim_expires_at === 'string'
           && Date.parse(call.claim_expires_at) > Date.now()
@@ -565,6 +586,21 @@ export async function POST(request: Request) {
         let answer: string
         try { answer = decrypt(call.agent_sdp_encrypted) } catch {
           return NextResponse.json({ error: 'Stored call answer is unavailable' }, { status: 503 })
+        }
+        if (call.state === 'connected') {
+          const { error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+            p_account_id: accountId,
+            p_phone_number_id: call.phone_number_id,
+            p_call_id: callId,
+            p_actor_user_id: userId,
+            p_action: 'accepted',
+            p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
+          })
+          if (auditError) {
+            console.error('[calling/api] accepted agent attribution failed', { code: auditError.code ?? 'unknown' })
+            return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: false }, { status: 202 })
+          }
+          return NextResponse.json({ success: true, action: 'accept', already_accepted: true, agent_attribution_recorded: true }, { status: 200 })
         }
         await callWhatsApp({
           phoneNumberId: config.phone_number_id,
