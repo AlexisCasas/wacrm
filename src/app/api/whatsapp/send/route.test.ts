@@ -123,6 +123,8 @@ function makeSupabaseMock() {
       })),
     },
     from: vi.fn((table: string) => builder(table)),
+    // handoff gate (conversation_operational_access): legacy / allowed
+    rpc: vi.fn(async () => ({ data: true, error: null })),
   }
 }
 

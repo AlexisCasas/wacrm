@@ -14,6 +14,8 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Vendored minified opus-recorder encoder worker (served statically).
     "public/opus/**",
+    // Standalone CommonJS Node tooling for LOCAL QA (not part of the app bundle): seeds, simulators, helpers.
+    "scripts/qa/**",
   ]),
 ]);
 
