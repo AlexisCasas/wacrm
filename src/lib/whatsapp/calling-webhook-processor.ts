@@ -80,7 +80,13 @@ export async function processCallingWebhookChange(db: SupabaseClient, change: un
   const config = data as ConfigRow
   const value = (change as {value?:{contacts?:Array<{profile?:{name?:string}}>} }).value
   const contactName = value?.contacts?.[0]?.profile?.name
-  for (const event of parsed.calls) await persistEvent(db,config,event,contactName)
+  for (const event of parsed.calls) {
+    // Recording/transcript events are intentionally outside CALL-02; do not
+    // misclassify a future Meta event as a new connect operation.
+    if (event.event === 'connect' || event.event === 'terminate') {
+      await persistEvent(db,config,event,contactName)
+    }
+  }
   for (const status of parsed.statuses) if (status.type === 'call') await persistStatus(db,config,status)
   return true
 }
@@ -88,7 +94,9 @@ export async function processCallPermissionReply(db: SupabaseClient, config: Con
   const reply = parseWhatsAppCallPermissionReply(message)
   if (!reply) return false
   const phone = typeof reply.from === 'string' ? reply.from.replace(/\D/g,'').slice(0,20) : ''
-  const bsuid = typeof reply.from_user_id === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(reply.from_user_id) ? reply.from_user_id : ''
+  const directBsuid = typeof reply.from_user_id === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(reply.from_user_id) ? reply.from_user_id : ''
+  const parentBsuid = typeof reply.from_parent_user_id === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(reply.from_parent_user_id) ? reply.from_parent_user_id : ''
+  const bsuid = directBsuid || parentBsuid
   const key = bsuid || phone
   if (!key) throw new Error('call_permission_reply_missing_identity')
   const permanent = reply.response === 'accept' && reply.is_permanent === true
