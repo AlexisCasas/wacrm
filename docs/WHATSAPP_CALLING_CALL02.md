@@ -67,6 +67,7 @@ Las cuatro tablas tienen RLS y privilegios restringidos al rol `service_role`; n
 ### 2.4 Reserva de llamada por agente
 
 - `whatsapp_call_claim` realiza una actualización atómica; solo un agente puede obtener la reserva vigente.
+- `whatsapp_call_sdp_prune` elimina SDP cifrado expirado en lotes acotados; la limpieza es oportunista al usar la API y no hay cron dedicado en CALL-02.
 - La reserva dura 90 segundos. Repetir la acción desde el mismo agente renueva el lease.
 - `whatsapp_call_release` permite liberar la reserva propia; owner/admin pueden liberar una reserva de la cuenta.
 - Las funciones verifican que el actor sea miembro de la cuenta con rol owner/admin/agent.
@@ -109,6 +110,7 @@ No se exponen todavía acciones `connect`, `accept`, `pre_accept`, `reject` o `t
 - [x] Helpers Meta de consulta y solicitud de permiso.
 - [x] Procesador durable integrado.
 - [x] Rutas autenticadas de consulta, reserva y permisos añadidas.
+- [x] Limpieza acotada de SDP expirado integrada en la API.
 - [ ] CI completo sobre el HEAD actual: lint, typecheck, tests y build.
 - [ ] Replay de la migración actual, incluyendo lease y tabla de auditoría.
 - [ ] Revisión formal de seguridad de rutas y reservas.
