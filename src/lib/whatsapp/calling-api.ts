@@ -31,7 +31,9 @@ export type WhatsAppCallAction =
   | ({
       action: 'connect'
       /** E.164 phone number. The leading + is removed before sending to Meta. */
-      to: string
+      to?: string
+      /** Business-scoped user ID or parent BSUID; Meta accepts this instead of or with `to`. */
+      recipient?: string
       session: WhatsAppCallOffer
     } & CallActionMetadata)
   | ({
@@ -101,6 +103,14 @@ function normalizeCallPhoneNumber(value: string): string {
   return normalized
 }
 
+function normalizeCallRecipient(value: string): string {
+  const normalized = value.trim()
+  if (!normalized || normalized.length > 256 || !/^[A-Za-z0-9._~-]+$/.test(normalized)) {
+    throw new Error('WhatsApp call recipient must be a valid BSUID or parent BSUID.')
+  }
+  return normalized
+}
+
 function validateCallId(value: string): string {
   const normalized = value.trim()
   if (!/^wacid\.[A-Za-z0-9._~+/=-]{1,512}$/.test(normalized)) {
@@ -163,7 +173,11 @@ export async function callWhatsApp(
 
   switch (args.action.action) {
     case 'connect': {
-      payload.to = normalizeCallPhoneNumber(args.action.to)
+      if (args.action.to) payload.to = normalizeCallPhoneNumber(args.action.to)
+      if (args.action.recipient) payload.recipient = normalizeCallRecipient(args.action.recipient)
+      if (!payload.to && !payload.recipient) {
+        throw new Error('A WhatsApp call recipient phone number or BSUID is required.')
+      }
       payload.session = validateSession(args.action.session, 'offer')
       break
     }
