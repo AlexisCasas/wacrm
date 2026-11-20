@@ -23,10 +23,6 @@ function unixSecondsToIso(value: string | undefined): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString()
 }
 
-function asNullableString(value: string | undefined): string | null {
-  return value && value.length > 0 ? value : null
-}
-
 async function findExistingCallContact(
   db: SupabaseClient,
   accountId: string,
@@ -197,6 +193,7 @@ export async function processWhatsAppCallingWebhookChange(
       p_start_time: unixSecondsToIso(call.start_time),
       p_end_time: unixSecondsToIso(call.end_time),
       p_duration_seconds: Number.isInteger(call.duration) ? call.duration : null,
+      p_sdp_type: call.session?.sdp_type ?? null,
       p_sdp_ciphertext: call.session?.sdpCiphertext ?? null,
       p_sdp_expires_at: call.session?.sdpCiphertext
         ? new Date(Date.now() + 90_000).toISOString()
@@ -244,6 +241,7 @@ export async function processWhatsAppCallingWebhookChange(
       p_start_time: null,
       p_end_time: null,
       p_duration_seconds: null,
+      p_sdp_type: null,
       p_sdp_ciphertext: null,
       p_sdp_expires_at: null,
     })
