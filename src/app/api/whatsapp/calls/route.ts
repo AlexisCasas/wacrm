@@ -6,8 +6,8 @@ import { assertWhatsAppCallingEnabled } from '@/lib/whatsapp/calling-config'
 
 export async function GET() {
   try {
-    const { accountId, userId } = await requireRole('agent')
-    await assertWhatsAppCallingEnabled((await requireRole('agent')).supabase, accountId)
+    const { supabase, accountId, userId } = await requireRole('agent')
+    await assertWhatsAppCallingEnabled(supabase, accountId)
     const limit = checkRateLimit('calls:list:' + userId, RATE_LIMITS.react)
     if (!limit.success) return rateLimitResponse(limit)
 
