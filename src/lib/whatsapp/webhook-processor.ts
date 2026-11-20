@@ -72,9 +72,15 @@ interface WhatsAppMessage {
    * to advance the per-contact run.
    */
   interactive?: {
-    type: 'button_reply' | 'list_reply'
+    type: 'button_reply' | 'list_reply' | 'call_permission_reply'
     button_reply?: { id: string; title: string }
     list_reply?: { id: string; title: string; description?: string }
+    call_permission_reply?: {
+      response: 'accept' | 'reject'
+      is_permanent?: boolean
+      expiration_timestamp?: string
+      response_source?: string
+    }
   }
   /**
    * Set when the customer taps a QUICK_REPLY button on a *template*
