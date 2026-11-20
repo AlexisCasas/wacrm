@@ -119,7 +119,14 @@ describe("CallingPanel", () => {
 
   it("does not request microphone access while the Inbox thread is merely open", async () => {
     const getUserMedia = vi.mocked(navigator.mediaDevices.getUserMedia);
-    global.fetch = vi.fn().mockResolvedValue(jsonResponse({ calls: [] }));
+    global.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return jsonResponse({
+          permission: { status: "permanent", canStartCall: true, canRequestPermission: false },
+        });
+      }
+      return jsonResponse({ calls: [] });
+    });
 
     render(<CallingPanel conversation={conversation} contact={contact} />);
 
@@ -420,7 +427,8 @@ describe("CallingPanel", () => {
         contact={{ ...contact, phone: "" } as Contact}
       />,
     );
-    const button = await screen.findByRole("button", { name: "startCall" });
-    expect(button).toHaveProperty("disabled", true);
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "startCall" })).toBeNull();
+    });
   });
 });
