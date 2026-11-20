@@ -358,7 +358,21 @@
       "callFailed": "No se pudo iniciar la llamada.",
       "incomingOfferMissing": "La oferta de la llamada entrante no está disponible. Intenta nuevamente.",
       "rejectFailed": "No se pudo rechazar la llamada entrante.",
-      "endCallFailed": "No se pudo finalizar la llamada."
+      "endCallFailed": "No se pudo finalizar la llamada.",
+      "agent": "Agente",
+      "callAcceptanceNotRecorded": "No se pudo confirmar el registro del agente que aceptó la llamada.",
+      "conversationChanged": "La conversación cambió durante la llamada. Inténtalo de nuevo.",
+      "history": "Historial",
+      "incoming": "Entrante",
+      "outgoing": "Saliente",
+      "permissionActive": "Permiso de llamada activo",
+      "permissionCheckFailed": "No se pudo verificar el permiso de llamada.",
+      "permissionNeeded": "Se necesita permiso para llamar.",
+      "permissionRequestFailed": "No se pudo solicitar el permiso de llamada.",
+      "permissionRequestSent": "Solicitud de permiso enviada",
+      "permissionRequestUnavailable": "No se puede solicitar el permiso de llamada en este momento.",
+      "requestPermission": "Solicitar permiso",
+      "sendingPermissionRequest": "Enviando solicitud..."
     },
     "flowStartPicker": {
       "title": "Iniciar Flow",
