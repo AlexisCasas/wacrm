@@ -26,6 +26,8 @@ export interface VoucherOcrOutput {
   provider: string
   model?: string
   fields: Record<string, OcrFieldResult>
+  /** Token usage when the provider reports it (pilot cost only; never persisted). */
+  usage?: { inputTokens: number; outputTokens: number }
 }
 
 export interface VoucherOcrProvider {

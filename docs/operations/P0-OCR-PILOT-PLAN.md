@@ -77,3 +77,14 @@ Se guarda **solo** como `ORDER_OCR_API_KEY` en el entorno del servidor (nunca en
 3. Imágenes > 5 MB no se envían (`ocr_unreadable` → manual).
 4. `pilot-metrics.ts` (+ tests) y `pilot-run.test.ts` (runner manual, omitido por defecto).
 Tests: 36 en `ocr/`, sin red y con credenciales ficticias.
+
+## 9. Proveedor Gemini (añadido; local, inerte)
+
+- Archivo: `ocr/gemini-provider.ts`. Activación: `ORDER_OCR_PROVIDER=gemini` + `ORDER_OCR_API_KEY` + `ORDER_OCR_MODEL` (opcional `ORDER_OCR_BASE_URL`). `vision_llm` (Anthropic) sigue funcionando igual; sin las tres variables, `not_configured` (manual).
+- API nativa: `POST {base}/v1beta/models/{model}:generateContent` (base por defecto `https://generativelanguage.googleapis.com`), autenticación por cabecera `x-goog-api-key` (la key nunca va en la URL ni en el cuerpo).
+- Request: `contents[0].parts` = archivo en `inline_data` (PDF/JPEG/PNG/WebP) + prompt fijo; `generationConfig`: `responseMimeType=application/json`, `responseSchema` con los 7 campos **requeridos** + `doubtful_fields`, `maxOutputTokens` 1024.
+- Validación estricta: JSON inválido, campo faltante, tipos incorrectos, confianza fuera de 0..1 o respuesta truncada (`MAX_TOKENS`) => `ocr_invalid_response`; bloqueo/seguridad => `ocr_unreadable`; 429 => `ocr_rate_limited`; 400/401/403/404/5xx/red => `ocr_provider_error`; abort => `ocr_timeout`; archivo > 8 MB => no se envía (`ocr_unreadable`). Todos pasan a revisión manual; nunca se valida solo.
+- El límite de 5 MB por imagen es de Anthropic y **no aplica** a Gemini (el límite de WACRM, 8 MB, sí: ~10.7 MB en base64, dentro del máximo de la solicitud en línea).
+- Modelo: nunca hardcodeado. **No se asume que ningún modelo esté habilitado**: antes del piloto, listar los modelos disponibles con la key (`GET {base}/v1beta/models`, cabecera `x-goog-api-key`, sin mostrar la key) y elegir dos modelos Flash con soporte de imágenes/PDF y salida JSON estructurada.
+- Piloto A/B: `ORDER_OCR_PILOT_MODELS="<flash A>,<flash B>"` ejecuta la misma muestra con ambos y compara exactitud, falsos positivos, % limpios, latencia y costo (con `ORDER_OCR_PILOT_PRICE_IN/OUT` en USD por millón de tokens; el provider reporta los tokens usados).
+- Privacidad: se envía solo el archivo + el prompt fijo; no se registra contenido; los términos de uso de datos de la API de Gemini (plan de pago vs gratuito) deben revisarse antes de usar vouchers reales: **usar la API de pago/facturación activa**, no el nivel gratuito (en el que los datos pueden usarse para mejorar productos).
