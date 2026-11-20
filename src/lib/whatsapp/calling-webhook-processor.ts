@@ -120,5 +120,23 @@ export async function processCallPermissionReply(db: SupabaseClient, config: Con
     console.error('[calling] permission reply persistence failed',{code:error.code ?? 'unknown'})
     throw new Error('call_permission_persistence_failed')
   }
+  if (reply.context_message_id) {
+    const { error: requestUpdateError } = await db
+      .from('whatsapp_call_permission_requests')
+      .update({
+        response: reply.response,
+        response_source: reply.response_source === 'automatic' || reply.response_source === 'user_action'
+          ? reply.response_source : null,
+        response_message_id: reply.message_id ?? null,
+        responded_at: new Date().toISOString(),
+      })
+      .eq('account_id', config.account_id)
+      .eq('phone_number_id', config.phone_number_id)
+      .eq('message_id', reply.context_message_id)
+    if (requestUpdateError) {
+      console.error('[calling] permission request audit update failed', { code: requestUpdateError.code ?? 'unknown' })
+      throw new Error('call_permission_request_audit_failed')
+    }
+  }
   return true
 }
