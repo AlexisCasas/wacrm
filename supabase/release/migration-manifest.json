@@ -372,6 +372,19 @@
       ],
       "status": "pending",
       "note": "post-release patch (feat/meta-destination-arrival-message): immediate customer notice when a shipment first reaches En destino (new ledger kind destination_arrival_customer + trigger + arrival template settings). Inert unless destination_customer_message_enabled and an arrival template are configured."
+    },
+    {
+      "new_version": "20261205000002",
+      "new_file": "20261205000002_balance_templates_and_payment_instructions.sql",
+      "sha256": "7a707da4bfb2ea6501333e3bfa5d4ed687f08148b7df484200dca40088de8e07",
+      "depends_on": [
+        "20261204000003",
+        "20261204000009",
+        "20261204000018",
+        "20261205000001"
+      ],
+      "status": "pending",
+      "note": "P0 parity patch (feat/p0-parity-balance-voucher) unit 1: opt-in balance variants of the packaging / arrival templates (packaging_balance_template_*, arrival_balance_template_*) and the per-account customer_payment_instructions. Additive, nullable columns only; nothing loaded, nothing activated."
     }
   ]
 }

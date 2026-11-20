@@ -8,6 +8,7 @@ import { ORDER_DOCS_BUCKET, REQUEST_KEY_PATTERN } from '@/lib/orders/logistics/c
 import { fail, mapRpcError, type ServiceResult } from '@/lib/orders/logistics/documents'
 import { isUuid } from '@/lib/orders/logistics/files'
 import { buildTemplateBodyParams } from '@/lib/orders/logistics/template-params'
+import { formatSoles, readPaymentInstructions, resolveOrderBalance, type OrderBalance } from '@/lib/orders/payments/balance'
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body'
 import { extractVariableIndices } from '@/lib/whatsapp/template-validators'
 import { SendMessageError, sendMessageToConversation, type SendMessageParams, type SendMessageResult } from '@/lib/whatsapp/send-message'
@@ -97,12 +98,26 @@ export async function sendPackagingTemplate(
   // ---- 1. configuration (nothing is claimed while the template is not configured / not usable) ----
   const { data: settings, error: settingsError } = await admin
     .from('order_logistics_settings')
-    .select('packaging_template_name, packaging_template_language, packaging_template_params')
+    .select('packaging_template_name, packaging_template_language, packaging_template_params, packaging_balance_template_name, packaging_balance_template_language, packaging_balance_template_params')
     .eq('account_id', ctx.accountId)
     .maybeSingle()
   if (settingsError) return fail(500, 'internal_error')
-  const cfg = settings as { packaging_template_name: string | null; packaging_template_language: string | null; packaging_template_params: unknown[] | null } | null
-  if (!cfg?.packaging_template_name || !cfg.packaging_template_language) return fail(409, 'template_not_configured')
+  const base = settings as {
+    packaging_template_name: string | null; packaging_template_language: string | null; packaging_template_params: unknown[] | null
+    packaging_balance_template_name: string | null; packaging_balance_template_language: string | null; packaging_balance_template_params: unknown[] | null
+  } | null
+  if (!base?.packaging_template_name || !base.packaging_template_language) return fail(409, 'template_not_configured')
+
+  // Which VARIANT: the existing template is the one for a fully paid order. When the account ALSO configured a balance variant, the PR-06 financial row decides
+  // (pending > 0 -> balance variant, pending = 0 -> the base one). An order with no financial row (NOT TRACKED) has no balance: it is refused, never treated as
+  // zero. With no balance variant configured nothing of this applies and the behaviour is exactly the previous one.
+  let cfg = { packaging_template_name: base.packaging_template_name, packaging_template_language: base.packaging_template_language, packaging_template_params: base.packaging_template_params }
+  let balance: OrderBalance | null = null
+  if (base.packaging_balance_template_name && base.packaging_balance_template_language) {
+    balance = await resolveOrderBalance(admin, ctx.accountId, orderId)
+    if (!balance.available) return fail(409, balance.reason === 'lookup_failed' ? 'internal_error' : 'pending_balance_unavailable', { balance_reason: balance.reason })
+    if (balance.pending > 0) cfg = { packaging_template_name: base.packaging_balance_template_name, packaging_template_language: base.packaging_balance_template_language, packaging_template_params: base.packaging_balance_template_params }
+  }
 
   const resolved = await resolveTemplateRow(admin, ctx.accountId, cfg.packaging_template_name, cfg.packaging_template_language)
   if (resolved.malformed) return fail(409, 'template_malformed')
@@ -114,6 +129,9 @@ export async function sendPackagingTemplate(
 
   const bodyVariables = extractVariableIndices(template.body_text)
   const fields = cfg.packaging_template_params ?? []
+  // A template that shows the balance / the payment instructions needs them from the PR-06 row / the account configuration, nothing else.
+  if (balance === null && fields.includes('pending_balance')) balance = await resolveOrderBalance(admin, ctx.accountId, orderId)
+  const paymentInstructions = fields.includes('payment_instructions') ? await readPaymentInstructions(admin, ctx.accountId) : null
   if (bodyVariables.length !== fields.length) return fail(409, 'template_params_mismatch')
 
   // ---- 2. the order (PR-02 read model + the DNI, which only ever goes into the template) ----
@@ -124,7 +142,8 @@ export async function sendPackagingTemplate(
   if (itemsError) return fail(500, 'internal_error')
   const order = toOrder(orderRow as unknown as Parameters<typeof toOrder>[0], (itemRows ?? []) as unknown as Parameters<typeof toOrder>[1])
   const built = buildTemplateBodyParams(
-    { customer_name: order.customer_name, product_summary: order.product_summary, quantity: order.quantity, total: order.total, destination: order.destination, seller_name: order.seller_name, dni: (orderRow as { dni: string | null }).dni },
+    { customer_name: order.customer_name, product_summary: order.product_summary, quantity: order.quantity, total: order.total, destination: order.destination, seller_name: order.seller_name, dni: (orderRow as { dni: string | null }).dni,
+      pending_balance: balance && balance.available ? formatSoles(balance.pending) : null, payment_instructions: paymentInstructions },
     fields,
   )
   if (!built.ok) return fail(409, built.error)
