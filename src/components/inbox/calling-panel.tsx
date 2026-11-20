@@ -289,9 +289,16 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   }, [conversation?.id, uiState]);
 
   useEffect(() => {
-    conversationIdRef.current = conversation?.id ?? null;
+    const nextConversationId = conversation?.id ?? null;
+    const previousConversationId = conversationIdRef.current;
+    conversationIdRef.current = nextConversationId;
     setIncomingCall(null);
-  }, [conversation?.id]);
+    const active = activeCallRef.current;
+    if (previousConversationId && previousConversationId !== nextConversationId && active) {
+      void postCallAction("terminate", { call_id: active.call_id });
+      resetCall();
+    }
+  }, [conversation?.id, resetCall]);
 
   useEffect(() => {
     mountedRef.current = true;
