@@ -15,7 +15,7 @@ const mk = (impl: (url: string, init: RequestInit) => Promise<Response>) => {
 const GOOD = JSON.stringify({ fields: { customer_name: { value: 'Ana Perez', confidence: 0.97 }, dni: { value: '12345678', confidence: 0.9 }, phone: { value: '900000001', confidence: 0.8 }, amount: { value: 150.5, confidence: 0.92 }, shalom_number: { value: '104453167', confidence: 0.95 }, shalom_code: { value: 'N3WC', confidence: 0.9 }, destination: { value: 'Piura', confidence: 0.6 }, bogus: { value: 'x', confidence: 1 } }, doubtful: ['phone'] })
 
 describe('vision OCR provider (no network)', () => {
-  it('request: POST with the key in a header, the PDF as a document block, temperature 0; the key never reaches the body', async () => {
+  it('request: POST with the key in a header and the PDF as a document block; the key never reaches the body', async () => {
     const { f, provider } = mk(async () => reply(GOOD))
     await provider.extract({ bytes: PDF, mimeType: 'application/pdf' })
     const [url, init] = f.mock.calls[0]
@@ -24,8 +24,15 @@ describe('vision OCR provider (no network)', () => {
     expect((init.headers as Record<string, string>)['x-api-key']).toBe(FAKE_KEY)
     const body = JSON.parse(String(init.body))
     expect(String(init.body)).not.toContain(FAKE_KEY)
-    expect(body.temperature).toBe(0)
+    expect(body.temperature).toBeUndefined()
+    expect(body.messages[0].content[1].text).not.toMatch(/sender_/)
     expect(body.messages[0].content[0]).toMatchObject({ type: 'document', source: { media_type: 'application/pdf' } })
+  })
+
+  it('an image over the provider limit is not sent at all: unreadable -> manual review', async () => {
+    const { f, provider } = mk(async () => reply(GOOD))
+    await expect(provider.extract({ bytes: new Uint8Array(5 * 1024 * 1024 + 1), mimeType: 'image/jpeg' })).rejects.toMatchObject({ code: 'ocr_unreadable' })
+    expect(f).not.toHaveBeenCalled()
   })
 
   it('images go as image blocks', async () => {

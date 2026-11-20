@@ -12,6 +12,8 @@ export const VISION_PROVIDER_NAME = 'vision_llm'
 const DEFAULT_BASE_URL = 'https://api.anthropic.com'
 const API_VERSION = '2023-06-01'
 const MAX_TOKENS = 1024
+/** Per-image limit of the provider API (a PDF has a larger one): a bigger image is not sent, the voucher goes to MANUAL review instead of failing remotely. */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024
 /** A field the model flags as doubtful can never look confident (parity with InkaClick's `campos_dudosos`). */
 export const DOUBTFUL_CONFIDENCE_CAP = 0.5
 
@@ -24,18 +26,15 @@ export const VOUCHER_FIELDS = [
   'shalom_number', // numero de orden
   'shalom_code', // codigo
   'destination', // agencia / ciudad de destino
-  'sender_name',
-  'sender_dni',
-  'sender_phone',
-  'issued_at',
-  'currency',
 ] as const
+// DATA MINIMIZATION: only what WACRM uses (comparison with the order, matching, guide registration). The SENDER (remitente: the business itself), the issue date and
+// the currency are deliberately NOT requested, so they are neither extracted nor stored. The file itself still contains them: see the privacy notes in the docs.
 
 export const VOUCHER_PROMPT = [
   'You read ONE Shalom Empresarial shipping voucher (a printed receipt, possibly a phone photo or a PDF). Extract ONLY what is printed; never guess or complete.',
   `Return ONLY a JSON object, no prose: {"fields": {<name>: {"value": string|null, "confidence": number 0..1}}, "doubtful": [<name>...]}.`,
   `Allowed names: ${VOUCHER_FIELDS.join(', ')}.`,
-  'customer_name, dni, phone are the RECIPIENT (destinatario); sender_* are the SENDER (remitente). amount is the total to pay, digits with dot decimals, no currency symbol.',
+  'customer_name, dni, phone are the RECIPIENT (destinatario); ignore the sender (remitente) entirely. amount is the total to pay, digits with dot decimals, no currency symbol.',
   'shalom_number is the order number and shalom_code the short alphanumeric code. Use null when a field is absent or unreadable. List in "doubtful" every field you are not sure you read exactly.',
 ].join('\n')
 
@@ -76,6 +75,7 @@ export function createVisionOcrProvider(config: VisionProviderConfig): VoucherOc
   return {
     name: VISION_PROVIDER_NAME,
     async extract(input: VoucherOcrInput): Promise<VoucherOcrOutput> {
+      if (input.mimeType !== 'application/pdf' && input.bytes.length > MAX_IMAGE_BYTES) throw new VoucherOcrError('ocr_unreadable')
       const data = toBase64(input.bytes)
       const block =
         input.mimeType === 'application/pdf'
@@ -87,7 +87,7 @@ export function createVisionOcrProvider(config: VisionProviderConfig): VoucherOc
           method: 'POST',
           signal: input.signal,
           headers: { 'content-type': 'application/json', 'x-api-key': config.apiKey, 'anthropic-version': API_VERSION },
-          body: JSON.stringify({ model: config.model, max_tokens: MAX_TOKENS, temperature: 0, messages: [{ role: 'user', content: [block, { type: 'text', text: VOUCHER_PROMPT }] }] }),
+          body: JSON.stringify({ model: config.model, max_tokens: MAX_TOKENS, messages: [{ role: 'user', content: [block, { type: 'text', text: VOUCHER_PROMPT }] }] }),
         })
       } catch (error) {
         if (input.signal?.aborted || (error instanceof Error && error.name === 'AbortError')) throw new VoucherOcrError('ocr_timeout')
