@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>WACRM QA — Peer WebRTC</title>
+  <style>
+    :root { color-scheme: dark; font: 16px system-ui, sans-serif; background: #101114; color: #f3f4f6; }
+    body { max-width: 760px; margin: 32px auto; padding: 0 18px; }
+    h1 { font-size: 1.35rem; }
+    p { color: #aab0bd; line-height: 1.5; }
+    .card { border: 1px solid #333741; border-radius: 12px; padding: 18px; margin: 16px 0; background: #191b20; }
+    button { border: 0; border-radius: 8px; padding: 11px 15px; margin: 5px 5px 5px 0; background: #7541e8; color: white; font-weight: 650; cursor: pointer; }
+    button.secondary { background: #343844; }
+    button.danger { background: #a72e3b; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    #status { white-space: pre-wrap; font: 13px ui-monospace, monospace; color: #b8f3cf; background: #101a16; border-radius: 8px; padding: 12px; min-height: 64px; }
+    audio { width: 100%; margin-top: 12px; }
+    small { color: #8e96a5; }
+  </style>
+</head>
+<body>
+  <h1>WACRM QA — Peer WebRTC sintético</h1>
+  <p>Esta página crea el segundo extremo WebRTC dentro del navegador. Solo comunica con el mock local de QA; no utiliza Meta ni envía mensajes reales.</p>
+  <div class="card">
+    <strong>Preparación</strong>
+    <p>Usa auriculares. Al preparar el peer, el navegador solicitará permiso de micrófono. Mantén esta pestaña abierta mientras pruebas el Inbox en otra pestaña.</p>
+    <button id="prepare">Preparar peer remoto</button>
+    <button id="incoming" class="secondary" disabled>Simular llamada entrante</button>
+    <button id="disconnect" class="danger" disabled>Desconectar peer</button>
+    <audio id="remoteAudio" autoplay playsinline controls></audio>
+  </div>
+  <div class="card">
+    <strong>Estado</strong>
+    <div id="status">Peer no preparado.</div>
+    <small>Dirección del simulador: http://127.0.0.1:38090/peer</small>
+  </div>
+<script>
+(() => {
+  const token = '__QA_CONTROL_TOKEN__';
+  const status = document.getElementById('status');
+  const prepareButton = document.getElementById('prepare');
+  const incomingButton = document.getElementById('incoming');
+  const disconnectButton = document.getElementById('disconnect');
+  const remoteAudio = document.getElementById('remoteAudio');
+  let localStream = null;
+  let peer = null;
+  let activeCallId = null;
+  let handled = new Set();
+  let pollTimer = null;
+  let remoteDescriptionSet = false;
+  let connectedNotified = false;
+
+  function say(message) {
+    status.textContent = new Date().toLocaleTimeString() + ' — ' + message;
+  }
+
+  async function api(path, options = {}) {
+    const response = await fetch(path, {
+      ...options,
+      headers: {
+        'x-qa-mock-token': token,
+        ...(options.body ? { 'content-type': 'application/json' } : {}),
+        ...(options.headers || {}),
+      },
+      cache: 'no-store',
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || ('HTTP ' + response.status));
+    return data;
+  }
+
+  async function prepareMedia() {
+    if (localStream) return localStream;
+    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+      throw new Error('El navegador no permite micrófono en este origen.');
+    }
+    localStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false,
+    });
+    say('Micrófono del peer preparado.');
+    prepareButton.disabled = true;
+    incomingButton.disabled = false;
+    disconnectButton.disabled = false;
+    return localStream;
+  }
+
+  function waitIce(pc) {
+    if (pc.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error('Timeout esperando ICE gathering.'));
+      }, 12000);
+      const changed = () => {
+        if (pc.iceGatheringState === 'complete') {
+          cleanup();
+          resolve();
+        }
+      };
+      const cleanup = () => {
+        clearTimeout(timer);
+        pc.removeEventListener('icegatheringstatechange', changed);
+      };
+      pc.addEventListener('icegatheringstatechange', changed);
+    });
+  }
+
+  function createPeer(callId, direction) {
+    if (peer) peer.close();
+    peer = new RTCPeerConnection({ iceServers: [] });
+    activeCallId = callId;
+    remoteDescriptionSet = false;
+    connectedNotified = false;
+    localStream.getAudioTracks().forEach(track => peer.addTrack(track, localStream));
+    peer.ontrack = event => {
+      remoteAudio.srcObject = event.streams[0] || new MediaStream([event.track]);
+      remoteAudio.play().catch(() => say('Haz clic en reproducir para escuchar el audio remoto.'));
+    };
+    peer.onconnectionstatechange = () => {
+      say('Llamada ' + callId + ': WebRTC ' + peer.connectionState + '.');
+      if (peer.connectionState === 'connected' && direction === 'BUSINESS_INITIATED' && !connectedNotified) {
+        connectedNotified = true;
+        void api('/qa/calls/' + encodeURIComponent(callId) + '/peer-connected', { method: 'POST', body: '{}' })
+          .catch(error => say('No se pudo registrar peer-connected: ' + error.message));
+      }
+    };
+    return peer;
+  }
+
+  async function acceptOutboundOffer(call) {
+    if (handled.has(call.id) || !call.offer || !localStream || peer) return;
+    handled.add(call.id);
+    const pc = createPeer(call.id, 'BUSINESS_INITIATED');
+    try {
+      await pc.setRemoteDescription({ type: 'offer', sdp: call.offer });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await waitIce(pc);
+      await api('/qa/calls/' + encodeURIComponent(call.id) + '/answer', {
+        method: 'POST',
+        body: JSON.stringify({ answer: pc.localDescription.sdp }),
+      });
+      say('Oferta saliente ' + call.id + ' respondida. Esperando conexión ICE.');
+    } catch (error) {
+      say('Falló la respuesta a la oferta saliente: ' + error.message);
+      pc.close();
+      peer = null;
+      activeCallId = null;
+    }
+  }
+
+  async function watchIncomingAnswer(callId) {
+    const deadline = Date.now() + 90000;
+    while (Date.now() < deadline && activeCallId === callId && peer) {
+      const data = await api('/qa/calls/' + encodeURIComponent(callId));
+      const answer = data.call?.agentAnswer;
+      if (answer && !remoteDescriptionSet) {
+        await peer.setRemoteDescription({ type: 'answer', sdp: answer });
+        remoteDescriptionSet = true;
+        say('Respuesta del agente recibida para ' + callId + '. Negociando ICE.');
+      }
+      if (['rejected', 'terminated', 'webhook-failed'].includes(data.call?.state)) {
+        say('Llamada entrante ' + data.call.state + '.');
+        return;
+      }
+      await new Promise(resolve => setTimeout(resolve, 600));
+    }
+    if (Date.now() >= deadline) say('Tiempo agotado esperando la respuesta del agente.');
+  }
+
+  async function simulateIncoming() {
+    await prepareMedia();
+    if (peer) throw new Error('Ya hay una llamada de prueba activa.');
+    const pc = createPeer('pending-' + Date.now(), 'USER_INITIATED');
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitIce(pc);
+      const result = await api('/qa/incoming', {
+        method: 'POST',
+        body: JSON.stringify({ offer: pc.localDescription.sdp }),
+      });
+      activeCallId = result.call_id;
+      handled.add(result.call_id);
+      say('Llamada entrante sintética ' + result.call_id + ' enviada al Inbox. Esperando que el agente acepte.');
+      await watchIncomingAnswer(result.call_id);
+    } catch (error) {
+      say('No se pudo crear la llamada entrante: ' + error.message);
+      pc.close();
+      peer = null;
+      activeCallId = null;
+    }
+  }
+
+  async function poll() {
+    if (!localStream || peer) return;
+    try {
+      const data = await api('/qa/calls');
+      const pending = data.calls.find(call =>
+        call.direction === 'BUSINESS_INITIATED'
+        && call.state === 'waiting-peer'
+        && call.offer
+        && !handled.has(call.id)
+      );
+      if (pending) await acceptOutboundOffer(pending);
+    } catch (error) {
+      say('Error consultando el mock: ' + error.message);
+    }
+  }
+
+  async function disconnect() {
+    const callId = activeCallId;
+    if (peer) peer.close();
+    peer = null;
+    activeCallId = null;
+    remoteDescriptionSet = false;
+    connectedNotified = false;
+    remoteAudio.srcObject = null;
+    if (callId && !callId.startsWith('pending-')) {
+      await api('/qa/calls/' + encodeURIComponent(callId) + '/peer-disconnect', {
+        method: 'POST',
+        body: '{}',
+      }).catch(() => {});
+    }
+    say('Peer desconectado. El agente debe detectar la pérdida de ICE y finalizar la llamada.');
+  }
+
+  prepareButton.addEventListener('click', async () => {
+    try {
+      await prepareMedia();
+      say('Peer listo. Abre el Inbox en otra pestaña; las llamadas salientes se atenderán automáticamente.');
+      if (!pollTimer) pollTimer = setInterval(() => void poll(), 700);
+    } catch (error) {
+      say('No se pudo preparar el micrófono: ' + error.message);
+    }
+  });
+
+  incomingButton.addEventListener('click', () => {
+    void simulateIncoming().catch(error => say(error.message));
+  });
+  disconnectButton.addEventListener('click', () => {
+    void disconnect();
+  });
+
+  window.addEventListener('beforeunload', () => {
+    if (pollTimer) clearInterval(pollTimer);
+    if (peer) peer.close();
+    localStream?.getTracks().forEach(track => track.stop());
+  });
+})();
+</script>
+</body>
+</html>
