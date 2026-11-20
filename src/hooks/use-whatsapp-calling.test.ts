@@ -53,7 +53,7 @@ beforeEach(() => {
   h.readLocalSdp.mockReset().mockImplementation((_pc, type) =>
     type === "offer" ? "v=0\\r\\nOFFER" : "v=0\\r\\nANSWER",
   );
-  h.stopStream.mockReset();
+  h.stopStream.mockReset().mockImplementation((stream: { getTracks: () => Array<{ stop: () => void }> } | null) => stream?.getTracks().forEach((track) => track.stop()));
   h.closePeer.mockReset().mockImplementation((pc: { close: () => void } | null) => pc?.close());
   h.track.enabled = true;
   h.track.readyState = "live";
@@ -136,7 +136,7 @@ describe("useWhatsAppCalling", () => {
 
   it("blocks outbound media when Meta permission is not current", async () => {
     h.fetch.mockImplementation(async (_url: string, init?: RequestInit) => {
-      if (!init) return jsonResponse({ calls: [] });
+      if (!init?.method || init.method === 'GET') return jsonResponse({ calls: [] });
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       if (body.action === "check_permission") {
         return jsonResponse({
@@ -161,7 +161,7 @@ describe("useWhatsAppCalling", () => {
 
   it("claims and answers an incoming call with one SDP answer for pre_accept and accept", async () => {
     h.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
-      if (!init && url.includes("call_id=")) {
+      if ((!init?.method || init.method === 'GET') && url.includes("call_id=")) {
         return jsonResponse({
           call: { call_id: "wacid.qa-incoming", state: "ringing" },
           session: { sdp_type: "offer", sdp: "v=0\\r\\nREMOTE-OFFER" },
@@ -204,7 +204,8 @@ describe("useWhatsAppCalling", () => {
     expect(postBodies.map((body) => body.action)).toEqual(expect.arrayContaining(["claim", "pre_accept", "accept"]));
     const preAccept = postBodies.find((body) => body.action === "pre_accept");
     const accept = postBodies.find((body) => body.action === "accept");
-    expect(preAccept?.session).toEqual(accept?.session);
+    expect(preAccept?.session).toEqual({ sdp_type: "answer", sdp: "v=0\\r\\nANSWER" });
+    expect(accept?.session).toBeUndefined();
     expect(h.pc?.setRemoteDescription).toHaveBeenCalledWith({
       type: "offer",
       sdp: "v=0\\r\\nREMOTE-OFFER",
