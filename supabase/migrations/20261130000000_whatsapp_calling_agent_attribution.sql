@@ -330,6 +330,15 @@ BEGIN
 
   UPDATE public.whatsapp_call_sessions
   SET conversation_id=COALESCE(conversation_id,p_conversation_id),
+      claimed_by_user_id=CASE
+        WHEN p_action IN ('rejected','ended') THEN NULL
+        ELSE claimed_by_user_id END,
+      claimed_at=CASE
+        WHEN p_action IN ('rejected','ended') THEN NULL
+        ELSE claimed_at END,
+      claim_expires_at=CASE
+        WHEN p_action IN ('rejected','ended') THEN NULL
+        ELSE claim_expires_at END,
       initiated_by_user_id=CASE
         WHEN p_action='initiated' THEN COALESCE(initiated_by_user_id,p_actor_user_id)
         ELSE initiated_by_user_id END,
