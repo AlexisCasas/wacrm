@@ -44,6 +44,8 @@ export function CallHistory({
       if (!response.ok) return;
       const payload = await response.json().catch(() => ({}));
       setCalls(Array.isArray(payload.calls) ? payload.calls as CallingCallRecord[] : []);
+    } catch {
+      // Keep the last successful history snapshot during a transient outage.
     } finally {
       setLoading(false);
     }
