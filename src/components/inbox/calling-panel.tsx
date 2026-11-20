@@ -439,7 +439,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       const message = error instanceof Error ? error.message : t("rejectFailed");
       setErrorMessage(message);
       toast.error(message);
-      setUiState("incoming");
+      setUiState("idle");
     }
   }, [conversation?.id, incomingCall, t]);
 
@@ -467,7 +467,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     setMuted(nextMuted);
   }, [muted]);
 
-  const hasCallingIdentity = Boolean(contact?.id && (contact.phone || contact.phone_optional));
+  const hasCallingIdentity = Boolean(contact?.id && contact.phone);
   const busy = !["idle", "incoming", "connected", "failed"].includes(uiState);
 
   return (
