@@ -707,10 +707,10 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   const busy = !["idle", "incoming", "connected", "failed"].includes(uiState);
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-w-0 flex-wrap items-center gap-2">
       <audio ref={audioRef} autoPlay playsInline muted className="hidden" />
       {isPilotContact && incomingCall && uiState === "idle" ? (
-        <div className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5">
+        <div role="alert" className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5">
           <PhoneIncoming className="h-4 w-4 text-emerald-500" />
           <span className="max-w-32 truncate text-xs font-medium">
             {incomingCall.customer_name || contact?.name || t("incomingCall")}
