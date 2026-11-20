@@ -307,6 +307,9 @@ export async function getWhatsAppCallPermission(args: {
   if (expirationTime !== undefined && (!Number.isInteger(expirationTime) || expirationTime <= 0)) {
     throw new Error('Meta WhatsApp call-permission API returned an invalid expiration time.')
   }
+  if (status === 'temporary' && expirationTime === undefined) {
+    throw new Error('Meta WhatsApp temporary call permission is missing its expiration time.')
+  }
 
   const actions = Array.isArray(data.actions)
     ? data.actions.flatMap((item) => {
