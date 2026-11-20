@@ -51,6 +51,7 @@
   let pollTimer = null;
   let remoteDescriptionSet = false;
   let connectedNotified = false;
+  let activeWatchTimer = null;
 
   function say(message) {
     status.textContent = new Date().toLocaleTimeString() + ' — ' + message;
@@ -108,26 +109,57 @@
     });
   }
 
+  function cleanupPeer() {
+    if (activeWatchTimer) clearInterval(activeWatchTimer);
+    activeWatchTimer = null;
+    if (peer) peer.close();
+    peer = null;
+    localStream?.getTracks().forEach(track => track.stop());
+    localStream = null;
+    activeCallId = null;
+    remoteDescriptionSet = false;
+    connectedNotified = false;
+    remoteAudio.srcObject = null;
+    prepareButton.disabled = false;
+    incomingButton.disabled = true;
+    disconnectButton.disabled = true;
+  }
+
   function createPeer(callId, direction) {
     if (peer) peer.close();
-    peer = new RTCPeerConnection({ iceServers: [] });
+    const currentPeer = new RTCPeerConnection({ iceServers: [] });
+    peer = currentPeer;
     activeCallId = callId;
     remoteDescriptionSet = false;
     connectedNotified = false;
-    localStream.getAudioTracks().forEach(track => peer.addTrack(track, localStream));
-    peer.ontrack = event => {
+    localStream.getAudioTracks().forEach(track => currentPeer.addTrack(track, localStream));
+    currentPeer.ontrack = event => {
       remoteAudio.srcObject = event.streams[0] || new MediaStream([event.track]);
       remoteAudio.play().catch(() => say('Haz clic en reproducir para escuchar el audio remoto.'));
     };
-    peer.onconnectionstatechange = () => {
-      say('Llamada ' + callId + ': WebRTC ' + peer.connectionState + '.');
-      if (peer.connectionState === 'connected' && direction === 'BUSINESS_INITIATED' && !connectedNotified) {
+    currentPeer.onconnectionstatechange = () => {
+      say('Llamada ' + callId + ': WebRTC ' + currentPeer.connectionState + '.');
+      if (currentPeer.connectionState === 'connected' && direction === 'BUSINESS_INITIATED' && !connectedNotified) {
         connectedNotified = true;
         void api('/qa/calls/' + encodeURIComponent(callId) + '/peer-connected', { method: 'POST', body: '{}' })
           .catch(error => say('No se pudo registrar peer-connected: ' + error.message));
       }
     };
-    return peer;
+    if (direction === 'BUSINESS_INITIATED') {
+      activeWatchTimer = setInterval(async () => {
+        if (activeCallId !== callId) return;
+        try {
+          const data = await api('/qa/calls/' + encodeURIComponent(callId));
+          if (['rejected', 'terminated', 'webhook-failed'].includes(data.call?.state)) {
+            say('La llamada terminó (' + data.call.state + '). Micrófono liberado.');
+            cleanupPeer();
+          }
+        } catch (error) {
+          say('No se pudo consultar el estado del peer: ' + error.message);
+        }
+      }, 1000);
+    }
+    return currentPeer;
   }
 
   async function acceptOutboundOffer(call) {
@@ -163,7 +195,8 @@
         say('Respuesta del agente recibida para ' + callId + '. Negociando ICE.');
       }
       if (['rejected', 'terminated', 'webhook-failed'].includes(data.call?.state)) {
-        say('Llamada entrante ' + data.call.state + '.');
+        say('Llamada entrante ' + data.call.state + '. Micrófono liberado.');
+        cleanupPeer();
         return;
       }
       await new Promise(resolve => setTimeout(resolve, 600));
@@ -213,19 +246,14 @@
 
   async function disconnect() {
     const callId = activeCallId;
-    if (peer) peer.close();
-    peer = null;
-    activeCallId = null;
-    remoteDescriptionSet = false;
-    connectedNotified = false;
-    remoteAudio.srcObject = null;
     if (callId && !callId.startsWith('pending-')) {
       await api('/qa/calls/' + encodeURIComponent(callId) + '/peer-disconnect', {
         method: 'POST',
         body: '{}',
       }).catch(() => {});
     }
-    say('Peer desconectado. El agente debe detectar la pérdida de ICE y finalizar la llamada.');
+    cleanupPeer();
+    say('Peer desconectado y micrófono liberado. El agente debe detectar la pérdida de ICE y finalizar la llamada.');
   }
 
   prepareButton.addEventListener('click', async () => {
