@@ -359,15 +359,30 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     setIncomingCall(null);
     const active = activeCallRef.current;
     if (previousConversationId && previousConversationId !== nextConversationId) {
-      if (active) {
-        void postCallAction("terminate", { call_id: active.call_id });
-        resetCall();
-      } else if (operationRef.current) {
+      if (active && !operationRef.current) {
+        operationRef.current = true;
+        setUiState("ending");
+        void postCallAction("terminate", { call_id: active.call_id })
+          .then(() => {
+            if (activeCallRef.current?.call_id === active.call_id) resetCall();
+          })
+          .catch((error) => {
+            if (activeCallRef.current?.call_id !== active.call_id) return;
+            // Preserve retry controls on the new thread, but never leave the
+            // previous conversation's microphone or remote audio attached.
+            stopMedia();
+            setUiState("failed");
+            setErrorMessage(error instanceof Error ? error.message : t("endCallFailed"));
+          })
+          .finally(() => {
+            operationRef.current = false;
+          });
+      } else if (!active && operationRef.current) {
         stopMedia();
         setUiState("idle");
       }
     }
-  }, [conversation?.id, resetCall, stopMedia]);
+  }, [conversation?.id, resetCall, stopMedia, t]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -434,10 +449,6 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       });
       const callId = typeof result.call_id === "string" ? result.call_id : "";
       if (!callId) throw new Error(t("callIdMissing"));
-      if (conversationIdRef.current !== operationConversationId) {
-        await postCallAction("terminate", { call_id: callId });
-        throw new Error(t("conversationChanged"));
-      }
       const call: CallSummary = {
         call_id: callId,
         conversation_id: conversation.id,
@@ -447,12 +458,14 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         customer_phone: contact.phone ?? null,
       };
       setCall(call);
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       const answer = await waitForRemoteAnswer(callId);
       if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
       await waitForPeerConnected(peer);
       if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       await enableAudio();
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       setUiState("connected");
       setCall({ ...call, state: "connected" });
     } catch (error) {
@@ -536,10 +549,12 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         call_id: incoming.call_id,
         conversation_id: conversation?.id,
       });
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       if (accepted.agent_attribution_recorded !== true && accepted.already_accepted !== true) {
         throw new Error(t("callAcceptanceNotRecorded"));
       }
       await enableAudio();
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       const acceptedCall = { ...incoming, state: "connected" };
       setCall(acceptedCall);
       setIncomingCall(null);
@@ -684,6 +699,10 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     setMuted(nextMuted);
   }, [muted]);
 
+  const isPilotActiveCall = Boolean(
+    activeCall?.customer_phone
+    && activeCall.customer_phone.replace(/[^0-9]/g, "") === "51980942247",
+  );
   const hasCallingIdentity = Boolean(contact?.id && contact.phone && isPilotContact && permission?.canStartCall);
   const busy = !["idle", "incoming", "connected", "failed"].includes(uiState);
 
@@ -712,7 +731,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           </button>
         </div>
       ) : null}
-      {isPilotContact && ["connected", "failed"].includes(uiState) && activeCall ? (
+      {(isPilotContact || isPilotActiveCall) && ["connected", "failed"].includes(uiState) && activeCall ? (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
           <span className={cn("text-xs font-medium", uiState === "connected" ? "text-emerald-500" : "text-red-500")}>
             {uiState === "connected" ? formatDuration(elapsedSeconds) : t("endCallFailed")}
