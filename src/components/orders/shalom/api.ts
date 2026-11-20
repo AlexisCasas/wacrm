@@ -61,9 +61,13 @@ export interface ShipmentPollView {
   ignored_reason: string | null
 }
 
+export type ShipmentMessageKind = 'destination_15d_customer' | 'destination_arrival_customer'
+
 export interface ShipmentMessageView {
   id: string
   destination_episode: number
+  /** Which customer notice this ledger row is: the immediate arrival one or the day-15 reminder. */
+  kind?: ShipmentMessageKind
   status: 'pending' | 'claimed' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'skipped'
   attempt: number
   error_code: string | null

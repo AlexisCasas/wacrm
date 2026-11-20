@@ -77,6 +77,29 @@ describe('pickup block inside Tracking Shalom', () => {
     expect(screen.getAllByText('status.at_destination').length).toBeGreaterThan(0)
   })
 
+  it('the immediate ARRIVAL notice has its own row, next to (not instead of) the day-15 one; a row without kind is the day-15 message', async () => {
+    stubFetch(() => ({ body: panel({ messages: [message({ id: 'arrival-1', kind: 'destination_arrival_customer', status: 'sent' }), message({ id: 'day15-1', kind: 'destination_15d_customer', status: 'pending' })] }) }))
+    render(<ShalomSection orderId={ORDER} />)
+    expect(await screen.findByText('arrivalMessage')).toBeTruthy()
+    expect(screen.getByText('customerMessageStatus.sent')).toBeTruthy()
+    expect(screen.getByText('customerMessageStatus.pending')).toBeTruthy()
+  })
+
+  it('no arrival row is shown when the arrival notice does not exist (flag OFF / not configured): the panel is exactly the day-15 one', async () => {
+    stubFetch(() => ({ body: panel({ messages: [message({ kind: 'destination_15d_customer', status: 'sent' })] }) }))
+    render(<ShalomSection orderId={ORDER} />)
+    expect(await screen.findByText('customerMessageStatus.sent')).toBeTruthy()
+    expect(screen.queryByText('arrivalMessage')).toBeNull()
+  })
+
+  it('a FAILED arrival notice offers ITS OWN controlled retry (its message id), independent of the day-15 message', async () => {
+    const f = stubFetch((_u, init) => (init?.method === 'POST' ? { body: { queued: true } } : { body: panel({ messages: [message({ id: 'arrival-9', kind: 'destination_arrival_customer', status: 'failed', attempt: 2 }), message({ id: 'day15-9', kind: 'destination_15d_customer', status: 'sent' })] }) }))
+    render(<ShalomSection orderId={ORDER} />)
+    expect(await screen.findByText('customerMessageStatus.failed')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'retryMessage' }))
+    await waitFor(() => expect(posted(f)).toEqual([{ action: 'retry_message', message_id: 'arrival-9' }]))
+  })
+
   it('an UNCERTAIN message is NOT retried: the person confirms whether it was delivered', async () => {
     const f = stubFetch((_u, init) => (init?.method === 'POST' ? { body: { status: 'sent' } } : { body: panel({ shipment: shipment({ pickup_state: 'alerted_15d' }), messages: [message({ status: 'uncertain' })] }) }))
     render(<ShalomSection orderId={ORDER} />)

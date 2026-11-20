@@ -3218,6 +3218,7 @@
       "abandoned": "En abandono",
       "completed": "Recojo completado"
     },
+    "arrivalMessage": "Aviso de llegada al cliente",
     "customerMessage": "Mensaje al cliente (día 15)",
     "customerMessageStatus": {
       "none": "No aplica",

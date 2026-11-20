@@ -361,6 +361,17 @@
       ],
       "status": "pending",
       "note": "post-release patch (fix/team-operational-role-ui): removes the logistics_mvp_enabled gate from set_member_operational_role so areas can be assigned before activation. Not part of the frozen 22-migration release."
+    },
+    {
+      "new_version": "20261205000001",
+      "new_file": "20261205000001_shipment_arrival_message.sql",
+      "sha256": "e2410eda011f40f3afb8b1e126d007255427d0f83c637f36b2016ceaa31b5d24",
+      "depends_on": [
+        "20261204000014",
+        "20261204000015"
+      ],
+      "status": "pending",
+      "note": "post-release patch (feat/meta-destination-arrival-message): immediate customer notice when a shipment first reaches En destino (new ledger kind destination_arrival_customer + trigger + arrival template settings). Inert unless destination_customer_message_enabled and an arrival template are configured."
     }
   ]
 }

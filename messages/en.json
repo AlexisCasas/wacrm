@@ -3218,6 +3218,7 @@
       "abandoned": "Abandoned",
       "completed": "Pickup completed"
     },
+    "arrivalMessage": "Customer arrival notice",
     "customerMessage": "Customer message (day 15)",
     "customerMessageStatus": {
       "none": "Not applicable",

@@ -133,7 +133,11 @@ export function ShalomSection({ orderId }: { orderId: string }) {
   const when = (iso: string | null) => (iso ? limaDateTime(iso, locale) : t("never"));
   const closed = s.tracking_state === "delivered" || s.tracking_state === "stopped";
   // PR-05A/B: the pickup block of the CURRENT En destino episode (or the last one, once delivered). Never a Shalom status.
-  const episodeMessage = (panel.messages ?? []).find((m) => m.destination_episode === s.destination_episode) ?? null;
+  // Two customer notices can exist per episode (a row without `kind` is a day-15 row of an older panel payload).
+  const episodeMessages = (panel.messages ?? []).filter((m) => m.destination_episode === s.destination_episode);
+  const arrivalMessage = episodeMessages.find((m) => m.kind === "destination_arrival_customer") ?? null;
+  const episodeMessage = episodeMessages.find((m) => m.kind !== "destination_arrival_customer") ?? null;
+  const actionableMessages = [arrivalMessage, episodeMessage].filter((m): m is NonNullable<typeof m> => m !== null && (m.status === "failed" || m.status === "uncertain"));
   const episodeAlert = panel.alerts.find((a) => a.destination_episode === s.destination_episode) ?? null;
   const showPickup = (s.pickup_state ?? "none") !== "none" || (s.logistic_status === "at_destination" && s.tracking_state !== "stopped");
   const eventLabel = (type: string, from: string | null, to: string | null) =>
@@ -230,24 +234,31 @@ export function ShalomSection({ orderId }: { orderId: string }) {
             <dd className="text-foreground">{t(`pickupStates.${(s.pickup_state ?? "none")}`)}</dd>
             <dt className="text-muted-foreground">{t("internalAlert")}</dt>
             <dd className="text-foreground">{t(`internalAlertStates.${episodeAlert?.status ?? "none"}`)}</dd>
+            {arrivalMessage ? (
+              <>
+                <dt className="text-muted-foreground">{t("arrivalMessage")}</dt>
+                <dd className="text-foreground">{t(`customerMessageStatus.${arrivalMessage.status}`)}</dd>
+              </>
+            ) : null}
             <dt className="text-muted-foreground">{t("customerMessage")}</dt>
             <dd className="text-foreground">{t(`customerMessageStatus.${episodeMessage?.status ?? "none"}`)}</dd>
           </dl>
-          {episodeMessage && (episodeMessage.status === "failed" || episodeMessage.status === "uncertain") ? (
-            <div className="flex flex-wrap gap-2 pt-1">
-              {episodeMessage.status === "failed" ? (
-                <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("message", base, { action: "retry_message", message_id: episodeMessage.id }, t("retriedToast"))}>
+          {actionableMessages.map((message) => (
+            <div key={message.id} className="flex flex-wrap items-center gap-2 pt-1">
+              {message.kind === "destination_arrival_customer" ? <span className="text-[11px] text-muted-foreground">{t("arrivalMessage")}</span> : null}
+              {message.status === "failed" ? (
+                <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("message", base, { action: "retry_message", message_id: message.id }, t("retriedToast"))}>
                   {busy === "message" ? <Loader2 className="size-3 animate-spin" /> : null}
                   {t("retryMessage")}
                 </Button>
               ) : (
                 <>
-                  <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("message", base, { action: "resolve_message", message_id: episodeMessage.id, resolution: "confirmed_sent" }, t("resolvedToast"))}>{t("resolveSent")}</Button>
-                  <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("message", base, { action: "resolve_message", message_id: episodeMessage.id, resolution: "confirmed_not_sent" }, t("resolvedToast"))}>{t("resolveNotSent")}</Button>
+                  <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("message", base, { action: "resolve_message", message_id: message.id, resolution: "confirmed_sent" }, t("resolvedToast"))}>{t("resolveSent")}</Button>
+                  <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("message", base, { action: "resolve_message", message_id: message.id, resolution: "confirmed_not_sent" }, t("resolvedToast"))}>{t("resolveNotSent")}</Button>
                 </>
               )}
             </div>
-          ) : null}
+          ))}
         </div>
       ) : null}
 
