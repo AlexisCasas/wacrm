@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Run CI for stacked feature PRs as well as PRs targeting main.
+  # Restricting pull_request to main silently skipped validation when a
+  # dependent increment targeted another feature branch.
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 
