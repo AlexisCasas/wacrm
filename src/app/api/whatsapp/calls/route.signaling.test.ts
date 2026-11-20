@@ -227,7 +227,7 @@ describe('WhatsApp Calling signaling API', () => {
       contact_id: h.contactId,
       conversation_id: h.conversationId,
       request_id: h.requestId,
-      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
     }))
     expect(response.status).toBe(403)
     expect(h.pilotAllowed).toHaveBeenCalledWith(h.phoneNumberId, '51980942247')
@@ -321,7 +321,7 @@ describe('WhatsApp Calling signaling API', () => {
       contact_id: h.contactId,
       conversation_id: h.conversationId,
       request_id: h.requestId,
-      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
     }))
     expect(response.status).toBe(409)
     expect(h.callWhatsApp).not.toHaveBeenCalled()
@@ -334,7 +334,7 @@ describe('WhatsApp Calling signaling API', () => {
       contact_id: h.contactId,
       conversation_id: h.conversationId,
       request_id: h.requestId,
-      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
     }))
     expect(response.status).toBe(502)
     expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
@@ -351,7 +351,7 @@ describe('WhatsApp Calling signaling API', () => {
       contact_id: h.contactId,
       conversation_id: h.conversationId,
       request_id: h.requestId,
-      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
     }))
     expect(response.status).toBe(202)
     expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
