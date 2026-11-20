@@ -13,6 +13,9 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_call_sessions (
   customer_bsuid text,
   customer_parent_bsuid text,
   customer_name text,
+  claimed_by_user_id uuid,
+  claimed_at timestamptz,
+  claim_expires_at timestamptz,
   state text NOT NULL DEFAULT 'offered'
     CHECK (state IN ('offered','ringing','connecting','connected','terminated','failed','rejected')),
   session_sdp_encrypted text,
@@ -34,6 +37,8 @@ CREATE INDEX IF NOT EXISTS whatsapp_call_sessions_customer_recent_idx
 CREATE INDEX IF NOT EXISTS whatsapp_call_sessions_active_idx
   ON public.whatsapp_call_sessions(account_id, state, created_at DESC)
   WHERE state IN ('offered','ringing','connecting','connected');
+CREATE INDEX IF NOT EXISTS whatsapp_call_sessions_claim_idx
+  ON public.whatsapp_call_sessions(account_id, claimed_by_user_id, claim_expires_at);
 
 CREATE TABLE IF NOT EXISTS public.whatsapp_call_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -190,6 +195,21 @@ BEGIN
       THEN COALESCE(EXCLUDED.duration_seconds,whatsapp_call_sessions.duration_seconds)
       ELSE whatsapp_call_sessions.duration_seconds
     END,
+    claimed_by_user_id=CASE
+      WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
+        AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
+      ELSE whatsapp_call_sessions.claimed_by_user_id
+    END,
+    claimed_at=CASE
+      WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
+        AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
+      ELSE whatsapp_call_sessions.claimed_at
+    END,
+    claim_expires_at=CASE
+      WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
+        AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
+      ELSE whatsapp_call_sessions.claim_expires_at
+    END,
     last_meta_event=CASE
       WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
       THEN EXCLUDED.last_meta_event
@@ -204,6 +224,64 @@ BEGIN
   IF NOT FOUND THEN RAISE EXCEPTION 'call_tenant_conflict' USING ERRCODE='42501'; END IF;
   RETURN true;
 END $$;
+
+CREATE OR REPLACE FUNCTION public.whatsapp_call_claim(
+  p_account_id uuid,
+  p_phone_number_id text,
+  p_call_id text,
+  p_actor_user_id uuid
+) RETURNS boolean
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=public AS $
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE account_id=p_account_id AND user_id=p_actor_user_id
+      AND account_role IN ('owner','admin','agent')
+  ) THEN
+    RAISE EXCEPTION 'call_claim_actor_forbidden' USING ERRCODE='42501';
+  END IF;
+
+  UPDATE public.whatsapp_call_sessions
+  SET claimed_by_user_id=p_actor_user_id,
+      claimed_at=now(),
+      claim_expires_at=now()+interval '90 seconds',
+      updated_at=now()
+  WHERE account_id=p_account_id
+    AND phone_number_id=p_phone_number_id
+    AND call_id=p_call_id
+    AND state IN ('offered','ringing')
+    AND (
+      claimed_by_user_id IS NULL
+      OR claim_expires_at <= now()
+      OR claimed_by_user_id=p_actor_user_id
+    );
+  RETURN FOUND;
+END $;
+
+CREATE OR REPLACE FUNCTION public.whatsapp_call_release(
+  p_account_id uuid,
+  p_phone_number_id text,
+  p_call_id text,
+  p_actor_user_id uuid
+) RETURNS boolean
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=public AS $
+DECLARE
+  v_role public.account_role_enum;
+BEGIN
+  SELECT account_role INTO v_role FROM public.profiles
+  WHERE account_id=p_account_id AND user_id=p_actor_user_id;
+  IF v_role IS NULL OR v_role NOT IN ('owner','admin','agent') THEN
+    RAISE EXCEPTION 'call_release_actor_forbidden' USING ERRCODE='42501';
+  END IF;
+
+  UPDATE public.whatsapp_call_sessions
+  SET claimed_by_user_id=NULL, claimed_at=NULL, claim_expires_at=NULL, updated_at=now()
+  WHERE account_id=p_account_id
+    AND phone_number_id=p_phone_number_id
+    AND call_id=p_call_id
+    AND (claimed_by_user_id=p_actor_user_id OR v_role IN ('owner','admin'));
+  RETURN FOUND;
+END $;
 
 CREATE OR REPLACE FUNCTION public.whatsapp_call_permission_upsert(
   p_account_id uuid,
@@ -261,12 +339,12 @@ END $$;
 
 REVOKE ALL ON FUNCTION public.whatsapp_call_event_apply(
   uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,text,timestamptz,timestamptz,timestamptz,integer
-), public.whatsapp_call_permission_upsert(
+), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
   uuid,text,text,text,text,text,text,text,timestamptz,text,text
 ) FROM PUBLIC,anon,authenticated;
 
 GRANT EXECUTE ON FUNCTION public.whatsapp_call_event_apply(
   uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,text,timestamptz,timestamptz,timestamptz,integer
-), public.whatsapp_call_permission_upsert(
+), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
   uuid,text,text,text,text,text,text,text,timestamptz,text,text
 ) TO service_role;
