@@ -270,6 +270,7 @@ export async function GET(request: Request) {
       const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED'
         && call.initiated_by_user_id === userId
       const callIsActive = !['terminated','failed','rejected'].includes(call.state)
+      const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id)
       return {
         ...call,
         claim_owned_by_me: ownsClaim,
@@ -684,7 +685,7 @@ export async function POST(request: Request) {
           p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
         })
         if (auditError || auditRecorded !== true) {
-          console.error('[calling/api] accepted agent attribution failed', { code: auditError.code ?? 'unknown' })
+          console.error('[calling/api] accepted agent attribution failed', { code: auditError?.code ?? (auditRecorded === false ? 'not_recorded' : 'unknown') })
           return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: false }, { status: 202 })
         }
         return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: true }, { status: 200 })
@@ -799,7 +800,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'WhatsApp credentials are unavailable' }, { status: 503 })
     }
 
-    if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone)) {
+    if (!isWhatsAppCallingPilotAllowed(config.phone_number_id)) {
       return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
     }
 
