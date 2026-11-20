@@ -308,6 +308,7 @@ export async function sendWhatsAppCallPermissionRequest(args: {
   accessToken: string
   userWaId?: string
   recipient?: string
+  messagingAccountId?: string | null
   bodyText?: string
 }): Promise<{ messageId: string }> {
   if (!/^\d{5,25}$/.test(args.phoneNumberId.trim())) throw new Error('WhatsApp phone_number_id is invalid.')
@@ -319,6 +320,7 @@ export async function sendWhatsAppCallPermissionRequest(args: {
   const payload: Record<string, unknown> = {
     messaging_product: 'whatsapp',
     recipient_type: 'individual',
+    ...messagingAccountField(args.messagingAccountId),
     ...(args.userWaId ? { to: normalizeCallPhoneNumber(args.userWaId) } : {}),
     ...(args.recipient ? { recipient: normalizePermissionTarget(args.recipient, 'recipient') } : {}),
     type: 'interactive',
