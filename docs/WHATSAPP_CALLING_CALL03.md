@@ -1,6 +1,6 @@
 # CALL-03 — Inbox UI, WebRTC y ciclo de vida de llamadas
 
-**Estado:** planificación técnica y rama de trabajo creada; implementación y QA pendientes.  
+**Estado:** CALL-03A implementado en la rama; CI y revisión técnica pendientes.  
 **Dependencia:** CALL-02 (#136), cuyo gate técnico CI #252 + Migrations #147 está en PASS sobre `f4e26fe1cca3122d664e6ef0fbfd14ef0346b039`. CALL-01 (#134) y CALL-02 siguen sin merge; esta rama se apila sobre el HEAD CALL-02 y su PR debe apuntar inicialmente a `feat/whatsapp-calling-call02-20261119`.  
 **Piloto futuro:** solo Keyler Ortega, teléfono `+51 980 942 247`, Phone Number ID `740434745820831`.
 
@@ -25,10 +25,13 @@
 ## 3. Secuencia de implementación
 
 ### CALL-03A — Contrato backend y metadatos
-- Migración aditiva para `conversation_id`, `initiated_by_user_id`, `accepted_by_user_id`, `ended_by_user_id` y correlación opaca de intento saliente.
-- RPCs atómicos para asociar intento, atribuir agentes, renovar lease y finalizar/liberar de forma idempotente.
-- Validar pertenencia de conversación/contacto/cuenta y resolver destinatario solo desde datos del servidor.
-- API autenticada para `connect`, `pre_accept`, `accept`, `reject`, `terminate`, claim/release/heartbeat y consulta de permisos.
+- [x] Migración aditiva con `contact_id`, `conversation_id`, agentes iniciador/aceptante/rechazante/finalizador y `biz_opaque_callback_data`.
+- [x] Trigger de integridad: la conversación y el contacto deben pertenecer al tenant de la llamada y la identidad telefónica/BSUID debe coincidir.
+- [x] RPC atómico de atribución de agente y enlace a conversación; aceptación exige claim vigente, rechazo no puede robar una llamada reclamada por otro agente y finalización exige ownership o owner/admin.
+- [x] RPC de renovación de lease de 90 segundos; un lease vencido no puede resucitarse.
+- [x] API autenticada: `POST renew_claim` y `POST agent_action`; GET de lista/detalle expone IDs de conversación y agentes, nunca SDP cifrado ni datos opacos.
+- [x] QA SQL de permisos/grants, atribución, rechazo, iniciador saliente, renovación/expiración de lease, aislamiento tenant y mismatch de contacto.
+- [ ] Señalización Meta `connect`, `pre_accept`, `accept`, `reject`, `terminate` y correlación de intentos: siguiente subincremento CALL-03B.
 - Antes de `connect`: consultar permisos y cuotas autoritativas de Meta; bloquear salvo permiso temporal vigente o permanente y `start_call` permitido.
 - SDP nunca en logs, analítica, errores públicos ni mensajes. Tokens nunca llegan al cliente.
 
@@ -87,3 +90,20 @@ El desarrollo se realizará en la rama y se validará con GitHub Actions. El con
 ## 7. Criterio de cierre
 
 CALL-03 no se considera terminado por tener botones visibles. Debe existir un ciclo completo de señalización y WebRTC probado en navegador, audio bidireccional, limpieza de recursos, recuperación de desconexión, atribución de agente, historial persistente y gates de seguridad aprobados. CALL-03 termina en preview/QA; activación real pertenece a CALL-04.
+
+
+## 8. Avance implementado — CALL-03A
+
+**Archivos añadidos**
+- `supabase/migrations/20261130000000_whatsapp_calling_agent_attribution.sql`
+- `scripts/qa/whatsapp-calling/verify-call03.sql`
+- `src/app/api/whatsapp/calls/route.test.ts`
+
+**Archivos ampliados**
+- `src/app/api/whatsapp/calls/route.ts`: atribución de agente, enlace opcional a conversación y renovación de lease.
+- `.github/workflows/migrations.yml`: ejecuta la nueva verificación CALL-03A tras el replay limpio.
+- Este documento.
+
+**No realizado:** ninguna migración en Supabase Cloud, despliegue Vercel/VPS, cambio en Meta, activación del webhook `calls`, solicitud de micrófono ni llamada real.
+
+**Gate actual:** pendiente de CI completo, replay de migraciones y revisión de cualquier fallo antes de continuar a CALL-03B.
