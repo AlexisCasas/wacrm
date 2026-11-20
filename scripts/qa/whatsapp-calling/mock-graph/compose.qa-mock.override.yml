@@ -5,7 +5,7 @@ services:
     ports:
       - "127.0.0.1:38090:38090"
     environment:
-      META_APP_SECRET: \${MOCK_META_APP_SECRET:?Set a new QA-only webhook secret in the stack .env}
+      META_APP_SECRET: ${MOCK_META_APP_SECRET:?Set a new QA-only webhook secret in the stack .env}
       MOCK_GRAPH_ENABLED: "true"
     extra_hosts:
       - "graph.facebook.com:127.0.0.1"
@@ -18,8 +18,8 @@ services:
     environment:
       MOCK_ENVIRONMENT: qa
       MOCK_GRAPH_ENABLED: "true"
-      MOCK_META_APP_SECRET: \${MOCK_META_APP_SECRET:?Set a new QA-only webhook secret in the stack .env}
-      MOCK_CONTROL_TOKEN: \${MOCK_CONTROL_TOKEN:?Set a new local QA control token in the stack .env}
+      MOCK_META_APP_SECRET: ${MOCK_META_APP_SECRET:?Set a new QA-only webhook secret in the stack .env}
+      MOCK_CONTROL_TOKEN: ${MOCK_CONTROL_TOKEN:?Set a new local QA control token in the stack .env}
       MOCK_PHONE_NUMBER_ID: "740434745820831"
       MOCK_CUSTOMER_PHONE: "51980942247"
       MOCK_WABA_ID: "QA-SYNTHETIC-WABA"
