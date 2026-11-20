@@ -191,7 +191,7 @@ async function pruneExpiredSdp(): Promise<void> {
 /**
  * GET /api/whatsapp/calls
  * Lists this account's recent calls. A call_id query returns one call;
- * decrypted SDP is returned only to the agent holding the active claim.
+ * decrypted SDP is returned only to the active claimant or outbound initiator.
  */
 export async function GET(request: Request) {
   try {
@@ -220,8 +220,9 @@ export async function GET(request: Request) {
       const ownsClaim = call.claimed_by_user_id === userId
         && typeof call.claim_expires_at === 'string'
         && Date.parse(call.claim_expires_at) > now
+      const callIsActive = !['terminated','failed','rejected'].includes(call.state)
       const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED' && call.initiated_by_user_id === userId
-      const canReadSession = ownsClaim || ownsOutboundCall
+      const canReadSession = callIsActive && (ownsClaim || ownsOutboundCall)
       const sdpIsFresh = typeof call.session_sdp_expires_at === 'string'
         && Date.parse(call.session_sdp_expires_at) > now
       let session: { sdp_type: 'offer' | 'answer'; sdp: string } | null = null
@@ -261,22 +262,33 @@ export async function GET(request: Request) {
     }
 
     const now = Date.now()
-    const calls = (data ?? []).map((call) => ({
-      ...call,
-      claim_owned_by_me: call.claimed_by_user_id === userId
+    const calls = (data ?? []).map((call) => {
+      const ownsClaim = call.claimed_by_user_id === userId
         && typeof call.claim_expires_at === 'string'
-        && Date.parse(call.claim_expires_at) > now,
-      claim_available: !call.rejected_by_user_id && !call.ended_by_user_id && (
-        !call.claimed_by_user_id
-        || (typeof call.claim_expires_at === 'string' && Date.parse(call.claim_expires_at) <= now)
-        || call.claimed_by_user_id === userId
-      ),
-      session_available: Boolean(
-        call.session_sdp_type
-        && call.session_sdp_expires_at
-        && Date.parse(call.session_sdp_expires_at) > now
-      ),
-    }))
+        && Date.parse(call.claim_expires_at) > now
+      const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED'
+        && call.initiated_by_user_id === userId
+      const callIsActive = !['terminated','failed','rejected'].includes(call.state)
+      return {
+        ...call,
+        claim_owned_by_me: ownsClaim,
+        initiated_by_me: ownsOutboundCall,
+        claim_available: call.direction === 'USER_INITIATED'
+          && ['offered','ringing','connected'].includes(call.state)
+          && !call.rejected_by_user_id && !call.ended_by_user_id
+          && (
+            !call.claimed_by_user_id
+            || (typeof call.claim_expires_at === 'string' && Date.parse(call.claim_expires_at) <= now)
+            || call.claimed_by_user_id === userId
+          ),
+        session_available: Boolean(
+          callIsActive && (ownsClaim || ownsOutboundCall)
+          && call.session_sdp_type
+          && call.session_sdp_expires_at
+          && Date.parse(call.session_sdp_expires_at) > now
+        ),
+      }
+    })
     return NextResponse.json({ calls })
   } catch (error) {
     return toErrorResponse(error)
@@ -375,23 +387,6 @@ export async function POST(request: Request) {
       const accessToken = await loadAccessToken(config)
       if (!accessToken) return NextResponse.json({ error: 'WhatsApp credentials are unavailable' }, { status: 503 })
 
-      const permission = await getWhatsAppCallPermission({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
-        ...targetArgs,
-      })
-      const permissionIsCurrent = permission.status === 'permanent'
-        || (permission.status === 'temporary'
-          && typeof permission.expirationTime === 'number'
-          && permission.expirationTime * 1000 > Date.now())
-      if (!permission.canStartCall || !permissionIsCurrent) {
-        return NextResponse.json({
-          error: 'A current approved WhatsApp call permission is required before connecting',
-          code: 'call_permission_required',
-          permission,
-        }, { status: 409 })
-      }
-
       const encryptedOffer = encrypt(offer)
       const offerExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
       const db = supabaseAdmin()
@@ -426,9 +421,59 @@ export async function POST(request: Request) {
         if (attempt.state === 'submitted' && typeof attempt.call_id === 'string') {
           return NextResponse.json({ success: true, call_id: attempt.call_id, duplicate: true }, { status: 200 })
         }
+        if (attempt.state === 'failed') {
+          return NextResponse.json({
+            error: 'This request was already rejected or blocked. Use a new request_id only after reviewing the failure.',
+            code: 'call_attempt_failed',
+          }, { status: 409 })
+        }
         return NextResponse.json({
           error: 'This outbound call request is already pending or has an uncertain result. Do not submit it again with the same request_id.',
           code: attempt.state === 'unknown' ? 'call_attempt_unknown' : 'call_attempt_pending',
+        }, { status: 409 })
+      }
+
+      let permission
+      try {
+        permission = await getWhatsAppCallPermission({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          ...targetArgs,
+        })
+      } catch (error) {
+        console.error('[calling/api] outbound permission lookup failed', {
+          status: typeof error === 'object' && error !== null && 'httpStatus' in error
+            ? Number((error as { httpStatus?: unknown }).httpStatus) || 'unknown'
+            : 'unknown',
+        })
+        await supabaseAdmin().rpc('whatsapp_call_outbound_attempt_fail', {
+          p_account_id: accountId,
+          p_phone_number_id: config.phone_number_id,
+          p_request_id: requestId,
+          p_actor_user_id: userId,
+          p_state: 'failed',
+          p_failure_code: 'permission_lookup_failed',
+        })
+        return NextResponse.json({ error: 'Could not verify current Meta call permission' }, { status: 503 })
+      }
+
+      const permissionIsCurrent = permission.status === 'permanent'
+        || (permission.status === 'temporary'
+          && typeof permission.expirationTime === 'number'
+          && permission.expirationTime * 1000 > Date.now())
+      if (!permission.canStartCall || !permissionIsCurrent) {
+        await supabaseAdmin().rpc('whatsapp_call_outbound_attempt_fail', {
+          p_account_id: accountId,
+          p_phone_number_id: config.phone_number_id,
+          p_request_id: requestId,
+          p_actor_user_id: userId,
+          p_state: 'failed',
+          p_failure_code: 'call_permission_not_current',
+        })
+        return NextResponse.json({
+          error: 'A current approved WhatsApp call permission is required before connecting',
+          code: 'call_permission_required',
+          permission,
         }, { status: 409 })
       }
 
