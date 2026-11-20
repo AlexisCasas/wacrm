@@ -10,7 +10,7 @@ export async function POST(request: Request) {
   try {
     const { supabase, accountId, userId } = await requireRole('agent')
     await assertWhatsAppCallingEnabled(supabase, accountId)
-    const limit = checkRateLimit('calls:claim:' + userId, RATE_LIMITS.react)
+    const limit = checkRateLimit('calls:claim:' + userId, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
     let body: { session_id?: unknown }
