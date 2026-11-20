@@ -39,7 +39,8 @@ describe('assertWhatsAppCallingEnabled', () => {
       eq: vi.fn().mockReturnThis(),
       maybeSingle: vi.fn().mockResolvedValue({ data: { calling_enabled: true }, error: null }),
     }
-    const supabase = { from: vi.fn().mockReturnValue(query) } as never
+    const from = vi.fn().mockReturnValue(query)
+    const supabase = { from } as unknown as SupabaseClient
 
     await expect(assertWhatsAppCallingEnabled(supabase, 'account-1')).resolves.toBeUndefined()
     expect(from).toHaveBeenCalledWith('whatsapp_config')
