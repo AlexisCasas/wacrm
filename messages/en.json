@@ -358,7 +358,21 @@
       "callFailed": "The call could not be started.",
       "incomingOfferMissing": "The incoming call offer is not available. Try again.",
       "rejectFailed": "The incoming call could not be declined.",
-      "endCallFailed": "The call could not be ended."
+      "endCallFailed": "The call could not be ended.",
+      "agent": "Agent",
+      "callAcceptanceNotRecorded": "The agent who accepted the call could not be recorded.",
+      "conversationChanged": "The conversation changed during the call. Please try again.",
+      "history": "History",
+      "incoming": "Incoming",
+      "outgoing": "Outgoing",
+      "permissionActive": "Call permission active",
+      "permissionCheckFailed": "Could not verify call permission.",
+      "permissionNeeded": "Call permission is required.",
+      "permissionRequestFailed": "Could not request call permission.",
+      "permissionRequestSent": "Permission request sent",
+      "permissionRequestUnavailable": "Call permission cannot be requested right now.",
+      "requestPermission": "Request permission",
+      "sendingPermissionRequest": "Sending request..."
     },
     "flowStartPicker": {
       "title": "Start Flow",
