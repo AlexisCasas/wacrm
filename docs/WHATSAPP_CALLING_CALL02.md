@@ -34,3 +34,18 @@ No activa Meta calls, no inicia llamadas, no solicita permisos, no ofrece endpoi
 ## QA requerido
 
 Migracion aislada; SQL QA para RLS/grants/deduplicacion/aislamiento/orden temporal/permisos; unit tests; lint, typecheck, test y build. La suscripcion calls solo se reactivara despues de QA integral y autorizacion del operador.
+
+
+## Integración aplicada en esta rama
+
+- `processWebhook` deriva `field=calls` al procesador Calling y evita tratar sus `statuses` como estados de mensajes.
+- En `field=messages`, las respuestas `interactive.call_permission_reply` se procesan además del mensaje ordinario, usando el `phone_number_id` resuelto por WACRM.
+- Las tablas `whatsapp_call_sessions`, `whatsapp_call_events` y `whatsapp_call_permissions` usan RLS y grants exclusivos de `service_role`.
+- `whatsapp_call_event_apply` aplica evento + sesión en una transacción, con clave idempotente y protección de tenant.
+- El SDP se cifra con el mecanismo GCM existente antes de persistir y se elimina al terminar la llamada; el registro de eventos no almacena SDP ni payloads.
+- Se agregan helpers para consultar `/{PHONE_NUMBER_ID}/call_permissions` y enviar solicitudes interactivas de permiso. La consulta devuelve tanto el permiso como `can_perform_action` y cuotas para `start_call` / `send_call_permission_request`.
+- Se incluye `scripts/qa/whatsapp-calling/verify.sql` para ejecutar en una base aislada con transacción y rollback.
+
+## Fuera de este PR
+
+No se crean todavía rutas HTTP autenticadas para que el navegador consulte llamadas o solicite permisos; se implementarán junto a la interfaz Inbox en la siguiente subfase. Los helpers Calling solo se invocan desde servidor. No hay acceso a tokens ni SDP desde el navegador.
