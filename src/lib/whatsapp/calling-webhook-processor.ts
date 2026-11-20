@@ -65,10 +65,12 @@ async function persistStatus(db: SupabaseClient, config: ConfigRow, status: What
   const timestamp = seconds(status.timestamp)
   if (timestamp === null) throw new Error('invalid_call_status_timestamp')
   const state = status.status === 'ACCEPTED' ? 'connected' : status.status === 'RINGING' ? 'ringing' : null
-  const rawRecipient = typeof status.recipient_id === 'string' ? status.recipient_id : ''
-  const recipientDigits = rawRecipient.replace(/\D/g, '').slice(0, 20)
-  const recipientPhone = /^\d{6,20}$/.test(recipientDigits) ? recipientDigits : null
-  const recipientBsuid = !recipientPhone && /^[A-Za-z0-9._~-]{1,256}$/.test(rawRecipient) ? rawRecipient : null
+  const rawRecipient = typeof status.recipient_id === 'string' ? status.recipient_id.trim() : ''
+  // Do not turn digit-containing BSUIDs into phone numbers. A phone recipient
+  // must consist entirely of digits (optionally prefixed with one plus sign).
+  const recipientIsPhone = /^\+?\d{6,20}$/.test(rawRecipient)
+  const recipientPhone = recipientIsPhone ? rawRecipient.replace(/\D/g, '') : null
+  const recipientBsuid = !recipientIsPhone && /^[A-Za-z0-9._~-]{1,256}$/.test(rawRecipient) ? rawRecipient : null
   const recipientKey = recipientBsuid ?? recipientPhone
   const { error } = await db.rpc('whatsapp_call_event_apply', {
     p_account_id: config.account_id,p_phone_number_id: config.phone_number_id,p_call_id: status.id,
