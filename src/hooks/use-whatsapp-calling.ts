@@ -35,6 +35,8 @@ export interface CallingCallRecord {
   initiated_by_me?: boolean;
 }
 
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [];
+
 export interface ActiveCallingSession {
   callId: string;
   conversationId: string;
@@ -99,7 +101,7 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "WhatsApp Calling failed";
 }
 
-export function useWhatsAppCalling() {
+export function useWhatsAppCalling(iceServers: RTCIceServer[] = DEFAULT_ICE_SERVERS) {
   const [calls, setCalls] = useState<CallingCallRecord[]>([]);
   const [activeCall, setActiveCall] = useState<ActiveCallingSession | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
@@ -136,7 +138,7 @@ export function useWhatsAppCalling() {
   );
 
   const makePeerConnection = useCallback(() => {
-    const pc = createAudioPeerConnection([], {
+    const pc = createAudioPeerConnection(iceServers, {
       onRemoteStream: (stream) => setRemoteStream(stream),
       onConnectionState: (connectionState) => {
         setActiveCall((current) => {
