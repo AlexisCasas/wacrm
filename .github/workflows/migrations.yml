@@ -99,6 +99,9 @@ jobs:
       - name: Verify CALL-03 agent attribution, conversation linkage and lease renewal
         run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03.sql
 
+      - name: Verify CALL-03B outbound signaling idempotency and callback recovery
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03b.sql
+
       - name: Verify durable webhook inbox leases, deduplication and RLS
         run: supabase db query --local --file supabase/ci/webhook-inbox-test.sql
 

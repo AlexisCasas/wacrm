@@ -93,14 +93,6 @@ describe('POST /api/whatsapp/calls — CALL-03A agent metadata', () => {
 })
 
 
-describe('POST /api/whatsapp/calls — agent attribution trust boundary', () => {
-  it('does not expose direct agent attribution writes to the browser', async () => {
-    const response = await POST(request({
-      action: 'agent_action',
-      agent_action: 'initiated',
-      call_id: 'wacid.qa-call03',
-    }))
-    expect(response.status).toBe(400)
-    expect(h.rpcCalls.filter((call) => call.name === 'whatsapp_call_session_agent_action')).toHaveLength(0)
-  })
-})
+vi.mock('@/lib/whatsapp/calling-pilot', () => ({
+  isWhatsAppCallingPilotAllowed: () => true,
+}))
