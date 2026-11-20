@@ -76,6 +76,18 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
     console.error('[calling] call event persistence failed', { code: error.code ?? 'unknown' })
     throw new Error('call_event_persistence_failed')
   }
+  if (event.biz_opaque_callback_data) {
+    const { error: callbackError } = await db.rpc('whatsapp_call_session_callback_data_apply', {
+      p_account_id: config.account_id,
+      p_phone_number_id: config.phone_number_id,
+      p_call_id: event.id,
+      p_callback_data: event.biz_opaque_callback_data,
+    })
+    if (callbackError) {
+      console.error('[calling] call callback data persistence failed', { code: callbackError.code ?? 'unknown' })
+      throw new Error('call_callback_data_persistence_failed')
+    }
+  }
 }
 async function persistStatus(db: SupabaseClient, config: ConfigRow, status: WhatsAppCallingStatus) {
   const timestamp = seconds(status.timestamp)
@@ -107,6 +119,18 @@ async function persistStatus(db: SupabaseClient, config: ConfigRow, status: What
   if (error) {
     console.error('[calling] call status persistence failed', { code: error.code ?? 'unknown' })
     throw new Error('call_status_persistence_failed')
+  }
+  if (status.biz_opaque_callback_data) {
+    const { error: callbackError } = await db.rpc('whatsapp_call_session_callback_data_apply', {
+      p_account_id: config.account_id,
+      p_phone_number_id: config.phone_number_id,
+      p_call_id: status.id,
+      p_callback_data: status.biz_opaque_callback_data,
+    })
+    if (callbackError) {
+      console.error('[calling] call status callback data persistence failed', { code: callbackError.code ?? 'unknown' })
+      throw new Error('call_callback_data_persistence_failed')
+    }
   }
 }
 export async function processCallingWebhookChange(db: SupabaseClient, change: unknown): Promise<boolean> {
