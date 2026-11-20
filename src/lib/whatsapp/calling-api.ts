@@ -261,7 +261,7 @@ export async function getWhatsAppCallPermission(args: {
   userWaId?: string
   recipient?: string
 }): Promise<WhatsAppCallPermission> {
-  if (!/^\\d{5,25}$/.test(args.phoneNumberId.trim())) throw new Error('WhatsApp phone_number_id is invalid.')
+  if (!/^\d{5,25}$/.test(args.phoneNumberId.trim())) throw new Error('WhatsApp phone_number_id is invalid.')
   if (!args.userWaId && !args.recipient) throw new Error('A WhatsApp user phone or BSUID is required.')
   const params = new URLSearchParams()
   if (args.userWaId) params.set('user_wa_id', normalizeCallPhoneNumber(args.userWaId))
@@ -308,7 +308,7 @@ export async function sendWhatsAppCallPermissionRequest(args: {
   recipient?: string
   bodyText?: string
 }): Promise<{ messageId: string }> {
-  if (!/^\\d{5,25}$/.test(args.phoneNumberId.trim())) throw new Error('WhatsApp phone_number_id is invalid.')
+  if (!/^\d{5,25}$/.test(args.phoneNumberId.trim())) throw new Error('WhatsApp phone_number_id is invalid.')
   if (!args.userWaId && !args.recipient) throw new Error('A WhatsApp user phone or BSUID is required.')
   const bodyText = args.bodyText?.trim()
   if (bodyText && bodyText.length > 1024) throw new Error('Call permission request body exceeds 1024 characters.')
