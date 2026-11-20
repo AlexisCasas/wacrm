@@ -4,8 +4,10 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { CallingPanel } from "./calling-panel";
 import type { Contact, Conversation } from "@/types";
 
+const translate = vi.hoisted(() => (key: string) => key);
+
 vi.mock("next-intl", () => ({
-  useTranslations: () => (key: string) => key,
+  useTranslations: () => translate,
 }));
 
 vi.mock("sonner", () => ({
@@ -130,7 +132,7 @@ describe("CallingPanel", () => {
 
     render(<CallingPanel conversation={conversation} contact={contact} />);
 
-    expect(await screen.findByRole("button", { name: "startCall" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "call" })).toBeTruthy();
     expect(getUserMedia).not.toHaveBeenCalled();
   });
 
@@ -179,7 +181,7 @@ describe("CallingPanel", () => {
     const postedActions = vi.mocked(global.fetch).mock.calls
       .filter(([, init]) => init?.method === "POST")
       .map(([, init]) => JSON.parse(String(init?.body)).action);
-    expect(postedActions).toEqual(["claim", "pre_accept", "accept"]);
+    expect(postedActions).toEqual(["check_permission", "claim", "pre_accept", "accept"]);
   });
 
   it("keeps audio disabled and terminates if acceptance attribution is not confirmed", async () => {
@@ -259,7 +261,7 @@ describe("CallingPanel", () => {
     });
 
     render(<CallingPanel conversation={conversation} contact={contact} />);
-    const button = await screen.findByRole("button", { name: "startCall" });
+    const button = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
 
@@ -316,7 +318,7 @@ describe("CallingPanel", () => {
     });
 
     render(<CallingPanel conversation={conversation} contact={contact} />);
-    const button = await screen.findByRole("button", { name: "startCall" });
+    const button = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
 
@@ -411,7 +413,7 @@ describe("CallingPanel", () => {
     });
 
     render(<CallingPanel conversation={conversation} contact={contact} />);
-    const button = await screen.findByRole("button", { name: "startCall" });
+    const button = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
     await screen.findByText("00:00");
@@ -452,7 +454,7 @@ describe("CallingPanel", () => {
     });
 
     const view = render(<CallingPanel conversation={conversation} contact={contact} />);
-    const button = await screen.findByRole("button", { name: "startCall" });
+    const button = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
     await screen.findByText("00:00");
@@ -478,7 +480,7 @@ describe("CallingPanel", () => {
       />,
     );
     await waitFor(() => {
-      expect(screen.queryByRole("button", { name: "startCall" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "call" })).toBeNull();
     });
   });
 });
