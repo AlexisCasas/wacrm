@@ -166,3 +166,10 @@ La última ejecución completa observada tuvo Lint y Typecheck en PASS; la suite
 5. CALL-04: despliegue controlado y piloto exclusivo de Keyler.
 
 **No se han realizado cambios en VPS, producción, Supabase Cloud ni en la configuración Meta desde la desactivación temporal de `calls`.**
+
+
+## 10. Hallazgo de revisión SQL — CALL-02
+
+En la revisión del 19/nov se encontró que la primera versión de la migración CALL-02 estaba truncada y contenía bloques duplicados, por lo que no era válida para PostgreSQL. Se reconstruyó completa en el commit `0847bd69320843bb823c466734ba944269b53c6a`, incluyendo las tablas de sesiones, eventos, permisos y solicitudes, junto con los RPCs de idempotencia, limpieza de SDP y reserva/liberación por agente.
+
+La corrección está pendiente de validación automatizada mediante Migrations #111 y CI #214. No aplicar a Supabase Cloud ni producción, no fusionar y no reactivar el webhook `calls` hasta que ambos checks y la revisión formal estén cerrados.
