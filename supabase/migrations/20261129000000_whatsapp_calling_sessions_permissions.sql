@@ -366,13 +366,13 @@ END $$;
 
 REVOKE ALL ON FUNCTION public.whatsapp_call_event_apply(
   uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,text,timestamptz,timestamptz,timestamptz,integer
-), public.whatsapp_call_sdp_prune(integer), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
+), public.whatsapp_call_sdp_prune(integer), public.whatsapp_call_sdp_prune(integer), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
   uuid,text,text,text,text,text,text,text,timestamptz,text,text
 ) FROM PUBLIC,anon,authenticated;
 
 GRANT EXECUTE ON FUNCTION public.whatsapp_call_event_apply(
   uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,text,timestamptz,timestamptz,timestamptz,integer
-), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
+), public.whatsapp_call_sdp_prune(integer), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
   uuid,text,text,text,text,text,text,text,timestamptz,text,text
 ) TO service_role;
 ),
@@ -652,12 +652,12 @@ END $$;
 
 REVOKE ALL ON FUNCTION public.whatsapp_call_event_apply(
   uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,text,timestamptz,timestamptz,timestamptz,integer
-), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
+), public.whatsapp_call_sdp_prune(integer), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
   uuid,text,text,text,text,text,text,text,timestamptz,text,text
 ) FROM PUBLIC,anon,authenticated;
 
 GRANT EXECUTE ON FUNCTION public.whatsapp_call_event_apply(
   uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,text,timestamptz,timestamptz,timestamptz,integer
-), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
+), public.whatsapp_call_sdp_prune(integer), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
   uuid,text,text,text,text,text,text,text,timestamptz,text,text
 ) TO service_role;
