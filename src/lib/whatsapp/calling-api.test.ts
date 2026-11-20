@@ -186,3 +186,76 @@ describe('callWhatsApp', () => {
     })).rejects.toThrow(/did not confirm/)
   })
 })
+
+
+describe('callWhatsApp BSUID recipients', () => {
+  it('starts a business-initiated call using a BSUID without a phone number', async () => {
+    let body: Record<string, unknown> | null = null
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body))
+      return new Response(JSON.stringify({ calls: [{ id: 'wacid.bsuid-only' }] }), { status: 200 })
+    }))
+
+    const result = await callWhatsApp({
+      ...BASE,
+      action: {
+        action: 'connect',
+        recipient: 'US.13491208655302741918',
+        session: OFFER,
+      },
+    })
+
+    expect(result).toEqual({ action: 'connect', callId: 'wacid.bsuid-only' })
+    expect(body).toMatchObject({
+      action: 'connect',
+      recipient: 'US.13491208655302741918',
+      session: OFFER,
+    })
+    expect(body).not.toHaveProperty('to')
+  })
+
+  it('sends phone and BSUID together when both are available', async () => {
+    let body: Record<string, unknown> | null = null
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body))
+      return new Response(JSON.stringify({ calls: [{ id: 'wacid.phone-and-bsuid' }] }), { status: 200 })
+    }))
+
+    await callWhatsApp({
+      ...BASE,
+      action: {
+        action: 'connect',
+        to: '+51980942247',
+        recipient: 'US.13491208655302741918',
+        session: OFFER,
+      },
+    })
+
+    expect(body).toMatchObject({
+      to: '51980942247',
+      recipient: 'US.13491208655302741918',
+    })
+  })
+
+  it('rejects a malformed BSUID before contacting Meta', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(callWhatsApp({
+      ...BASE,
+      action: { action: 'connect', recipient: 'not a BSUID', session: OFFER },
+    })).rejects.toThrow(/valid BSUID/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('requires either a phone number or BSUID for a business-initiated call', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(callWhatsApp({
+      ...BASE,
+      action: { action: 'connect', session: OFFER },
+    })).rejects.toThrow(/phone number or BSUID/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
