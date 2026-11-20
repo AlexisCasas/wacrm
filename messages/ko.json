@@ -208,6 +208,7 @@
       "permissionMissing": "유효한 통화 권한이 없습니다.",
       "microphoneNotice": "통화를 시작할 때만 브라우저에서 마이크 접근을 요청합니다.",
       "startCall": "통화 시작",
+      "callStartFailed": "통화를 시작하지 못했습니다. 권한과 연결 상태를 확인하세요."
       "requestPermission": "권한 요청",
       "permissionRequestSent": "권한 요청을 보냈습니다. 연락처의 응답을 기다리세요.",
       "permissionRequestFailed": "권한 요청을 보내지 못했습니다.",
