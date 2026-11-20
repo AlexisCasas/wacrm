@@ -68,7 +68,7 @@ beforeEach(() => {
   });
 
   h.fetch.mockReset().mockImplementation(async (url: string, init?: RequestInit) => {
-    if (!init) {
+    if (!init?.method || init.method === 'GET') {
       if (url === "/api/whatsapp/calls") return jsonResponse({ calls: [] });
       if (url.includes("call_id=")) {
         return jsonResponse({
@@ -167,7 +167,7 @@ describe("useWhatsAppCalling", () => {
           session: { sdp_type: "offer", sdp: "v=0\\r\\nREMOTE-OFFER" },
         });
       }
-      if (!init) return jsonResponse({ calls: [] });
+      if (!init?.method || init.method === 'GET') return jsonResponse({ calls: [] });
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       return jsonResponse({ success: true, ...(body.action === "connect" ? { call_id: "wacid.qa-call" } : {}) });
     });
