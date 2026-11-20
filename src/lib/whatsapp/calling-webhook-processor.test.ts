@@ -78,6 +78,12 @@ describe('CALL-02 Calling webhook persistence', () => {
       timestamp: '1795120009',
       direction: 'USER_INITIATED',
     }
+    const missingDirection = {
+      id: 'wacid.missing-direction',
+      event: 'connect',
+      timestamp: '1795120009',
+      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+    }
     const wrongIncomingSdp = {
       id: 'wacid.wrong-incoming-sdp',
       event: 'connect',
@@ -93,7 +99,7 @@ describe('CALL-02 Calling webhook persistence', () => {
       session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
     }
 
-    for (const call of [missingSdp, wrongIncomingSdp, wrongOutgoingSdp]) {
+    for (const call of [missingSdp, missingDirection, wrongIncomingSdp, wrongOutgoingSdp]) {
       await expect(processCallingWebhookChange(db, {
         field: 'calls',
         value: {
