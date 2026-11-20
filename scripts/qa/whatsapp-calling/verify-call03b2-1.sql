@@ -29,6 +29,8 @@ DECLARE
   v_call_expired text := 'wacid.qa-call0321-expired';
   v_call_fresh text := 'wacid.qa-call0321-fresh';
   v_call_accepted text := 'wacid.qa-call0321-accepted';
+  v_call_missing_sdp_stale text := 'wacid.qa-call0321-missing-sdp-stale';
+  v_call_missing_sdp_fresh text := 'wacid.qa-call0321-missing-sdp-fresh';
   v_duplicate_result boolean;
   v_pruned integer;
 BEGIN
@@ -273,6 +275,24 @@ BEGIN
       now()+interval '5 minutes',NULL,NULL,NULL
     );
 
+    -- Historical offer with no SDP and no expiry timestamp is stale after five minutes.
+    PERFORM public.whatsapp_call_event_apply(
+      v_account_a,v_phone_number_id,v_call_missing_sdp_stale,repeat('5',64),
+      'connect',1795120111,'USER_INITIATED','51980942247','51980942247',
+      NULL,NULL,'CALL0321 stale no SDP','offered',NULL,NULL,NULL,NULL,NULL,NULL
+    );
+    UPDATE public.whatsapp_call_sessions
+    SET created_at=now()-interval '6 minutes',
+        updated_at=now()-interval '6 minutes'
+    WHERE phone_number_id=v_phone_number_id AND call_id=v_call_missing_sdp_stale;
+
+    -- A recent offer with missing SDP is not aged out prematurely.
+    PERFORM public.whatsapp_call_event_apply(
+      v_account_a,v_phone_number_id,v_call_missing_sdp_fresh,repeat('6',64),
+      'connect',1795120112,'USER_INITIATED','51980942247','51980942247',
+      NULL,NULL,'CALL0321 fresh no SDP','offered',NULL,NULL,NULL,NULL,NULL,NULL
+    );
+
     -- An agent-accepted call may still await Meta's ACCEPTED status webhook.
     -- Expiry cleanup must not mark it terminal or make it claimable by agent B.
     PERFORM public.whatsapp_call_event_apply(
@@ -316,6 +336,24 @@ BEGIN
         AND state='offered' AND session_sdp_encrypted IS NOT NULL
     ) THEN
       RAISE EXCEPTION 'CALL0321_FRESH_OFFER_WAS_EXPIRED';
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM public.whatsapp_call_sessions
+      WHERE phone_number_id=v_phone_number_id AND call_id=v_call_missing_sdp_stale
+        AND state='terminated' AND ended_at IS NOT NULL
+        AND session_sdp_encrypted IS NULL
+        AND claimed_by_user_id IS NULL AND claim_expires_at IS NULL
+    ) THEN
+      RAISE EXCEPTION 'CALL0321_STALE_NO_SDP_OFFER_NOT_TERMINATED';
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM public.whatsapp_call_sessions
+      WHERE phone_number_id=v_phone_number_id AND call_id=v_call_missing_sdp_fresh
+        AND state='offered' AND ended_at IS NULL
+        AND session_sdp_encrypted IS NULL
+    ) THEN
+      RAISE EXCEPTION 'CALL0321_FRESH_NO_SDP_OFFER_PREMATURELY_TERMINATED';
     END IF;
 
     IF NOT EXISTS (
