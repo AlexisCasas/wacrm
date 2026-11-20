@@ -155,7 +155,7 @@ function validSdp(value: unknown): value is string {
   return typeof value === 'string'
     && value.length > 0
     && value.length <= 65_536
-    && /^v=0(?:\\r?\\n)/.test(value)
+    && /^v=0(?:\r?\n)/.test(value)
 }
 
 async function loadSignalCall(accountId: string, callId: string): Promise<SignalCallRow | null> {
