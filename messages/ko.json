@@ -387,7 +387,8 @@
       "historyDate": "날짜",
       "historyDuration": "통화 시간",
       "unknownAgent": "상담원 정보 없음"
-    },
+    }
+  },
   "Contacts": {
     "page": {
       "title": "연락처",
