@@ -215,6 +215,10 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     localStreamRef.current = null;
     remoteStreamRef.current?.getTracks().forEach((track) => track.stop());
     remoteStreamRef.current = null;
+    if (disconnectTimerRef.current !== null) {
+      window.clearTimeout(disconnectTimerRef.current);
+      disconnectTimerRef.current = null;
+    }
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.srcObject = null;
@@ -569,6 +573,45 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     }
   }, [contact?.id, isPilotContact, permission?.canRequestPermission, permissionRequesting, refreshPermission, t]);
 
+  useEffect(() => {
+    if (uiState !== "connected") return;
+    const peer = peerRef.current;
+    if (!peer) return;
+
+    const onConnectionStateChange = () => {
+      if (peer.connectionState === "connected") {
+        if (disconnectTimerRef.current !== null) {
+          window.clearTimeout(disconnectTimerRef.current);
+          disconnectTimerRef.current = null;
+        }
+        return;
+      }
+      if (peer.connectionState === "disconnected") {
+        if (disconnectTimerRef.current === null) {
+          disconnectTimerRef.current = window.setTimeout(() => {
+            disconnectTimerRef.current = null;
+            if (peerRef.current === peer && peer.connectionState === "disconnected") {
+              void endCall();
+            }
+          }, 8_000);
+        }
+        return;
+      }
+      if (peer.connectionState === "failed" || peer.connectionState === "closed") {
+        void endCall();
+      }
+    };
+
+    peer.addEventListener("connectionstatechange", onConnectionStateChange);
+    return () => {
+      peer.removeEventListener("connectionstatechange", onConnectionStateChange);
+      if (disconnectTimerRef.current !== null) {
+        window.clearTimeout(disconnectTimerRef.current);
+        disconnectTimerRef.current = null;
+      }
+    };
+  }, [endCall, uiState]);
+
   const toggleMute = useCallback(() => {
     const tracks = localStreamRef.current?.getAudioTracks() ?? [];
     if (tracks.length === 0) return;
@@ -642,6 +685,42 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           <span className="hidden sm:inline">{busy ? t("connecting") : t("call")}</span>
         </button>
       )}
+      {uiState === "idle" && isPilotContact && permission?.status === "no_permission" ? (
+        <div className="flex items-center gap-1">
+          <span className="hidden text-[11px] text-amber-600 sm:inline">{t("permissionNeeded")}</span>
+          {permission.canRequestPermission ? (
+            <button
+              type="button"
+              onClick={() => void requestPermission()}
+              disabled={permissionLoading || permissionRequesting}
+              className="rounded-md border border-border px-2 py-1 text-[11px] font-medium hover:bg-muted disabled:opacity-50"
+            >
+              {permissionRequesting ? t("sendingPermissionRequest") : permissionRequestSent ? t("permissionRequestSent") : t("requestPermission")}
+            </button>
+          ) : (
+            <span className="text-[11px] text-muted-foreground">{t("permissionRequestUnavailable")}</span>
+          )}
+        </div>
+      ) : null}
+      {uiState === "idle" && isPilotContact && permission?.canStartCall ? (
+        <span className="hidden text-[11px] text-emerald-600 sm:inline">{t("permissionActive")}</span>
+      ) : null}
+      {permissionError && uiState === "idle" && isPilotContact ? (
+        <span role="status" className="max-w-40 truncate text-[11px] text-red-500">{permissionError}</span>
+      ) : null}
+      {recentCalls.length > 0 && uiState === "idle" ? (
+        <details className="max-w-52 text-xs">
+          <summary className="cursor-pointer text-muted-foreground">{t("history")} ({recentCalls.length})</summary>
+          <ul className="mt-1 max-h-36 space-y-1 overflow-y-auto rounded-md border border-border bg-card p-2">
+            {recentCalls.slice(0, 8).map((call) => (
+              <li key={call.call_id} className="flex items-center justify-between gap-2">
+                <span className="truncate">{call.direction === "USER_INITIATED" ? t("incoming") : t("outgoing")}</span>
+                <span className="shrink-0 text-muted-foreground">{t(call.state)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
       {errorMessage && uiState === "idle" ? (
         <span role="status" className="max-w-40 truncate text-[11px] text-red-500">{errorMessage}</span>
       ) : null}
