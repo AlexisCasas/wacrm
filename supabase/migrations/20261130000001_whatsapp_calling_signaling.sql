@@ -718,7 +718,7 @@ REVOKE ALL ON FUNCTION public.whatsapp_call_outbound_attempt_begin(
   public.whatsapp_call_session_callback_data_apply(uuid,text,text,text)
 FROM PUBLIC,anon,authenticated;
 GRANT EXECUTE ON FUNCTION public.whatsapp_call_outbound_attempt_begin(
-  uuid,text,uuid,uuid,uuid,uuid,text,text,text,text,text
+  uuid,text,uuid,uuid,uuid,uuid,text,text,text,text,text,text,timestamptz
 ), public.whatsapp_call_outbound_attempt_complete(uuid,text,uuid,uuid,text,text,timestamptz),
   public.whatsapp_call_outbound_attempt_fail(uuid,text,uuid,uuid,text,text),
   public.whatsapp_call_session_agent_sdp_store(uuid,text,text,uuid,text,timestamptz),
