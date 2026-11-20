@@ -513,6 +513,58 @@ describe("CallingPanel", () => {
     expect(mediaTrack.stop).toHaveBeenCalled();
   });
 
+  it("keeps the active call visible when termination fails and allows a retry", async () => {
+    let terminateAttempts = 0;
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        if (body.action === "check_permission") {
+          return jsonResponse({
+            permission: { status: "permanent", canStartCall: true, canRequestPermission: false },
+          });
+        }
+        if (body.action === "connect") return jsonResponse({ call_id: "wacid.qa-terminate-retry" });
+        if (body.action === "terminate") {
+          terminateAttempts += 1;
+          if (terminateAttempts === 1) {
+            return new Response(JSON.stringify({ error: "Temporary termination failure" }), { status: 503 });
+          }
+          return jsonResponse({ success: true });
+        }
+        return jsonResponse({ success: true });
+      }
+      if (url.includes("?call_id=")) {
+        return jsonResponse({
+          call: {
+            call_id: "wacid.qa-terminate-retry",
+            conversation_id: conversation.id,
+            direction: "BUSINESS_INITIATED",
+            state: "connected",
+          },
+          session: { sdp_type: "answer", sdp: "v=0\\\\r\\\\n" },
+        });
+      }
+      return jsonResponse({ calls: [] });
+    });
+
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+    const callButton = await screen.findByRole("button", { name: "call" });
+    await waitFor(() => expect(callButton).toHaveProperty("disabled", false));
+    fireEvent.click(callButton);
+    await screen.findByText("00:00");
+
+    fireEvent.click(screen.getByRole("button", { name: "endCall" }));
+    expect(await screen.findByText("Temporary termination failure")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "endCall" })).toBeTruthy();
+    expect(mediaTrack.stop).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "endCall" }));
+    await waitFor(() => expect(mediaTrack.stop).toHaveBeenCalled());
+    expect(terminateAttempts).toBe(2);
+    expect(screen.queryByText("Temporary termination failure")).toBeNull();
+  });
+
   it("does not offer outgoing calls for contacts without a phone identity", async () => {
     global.fetch = vi.fn().mockResolvedValue(jsonResponse({ calls: [] }));
     render(
