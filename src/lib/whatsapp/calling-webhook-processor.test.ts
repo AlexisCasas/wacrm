@@ -26,6 +26,7 @@ afterEach(() => vi.clearAllMocks())
 describe('CALL-02 Calling webhook persistence', () => {
   it('stores user-initiated connect with encrypted ephemeral SDP and tenant resolved by phone_number_id', async () => {
     rpc.mockResolvedValue({ data: true, error: null })
+    const before = Date.now()
     const sdp = 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\ns=-\r\nt=0 0\r\n'
     await processCallingWebhookChange(db, {
       field: 'calls',
@@ -59,6 +60,9 @@ describe('CALL-02 Calling webhook persistence', () => {
       p_session_sdp_encrypted: 'encrypted:' + sdp,
       p_session_sdp_type: 'offer',
     })
+    const inboundExpiry = Date.parse(rpc.mock.calls[0][1].p_session_sdp_expires_at)
+    expect(inboundExpiry).toBeGreaterThanOrEqual(before + 60_000)
+    expect(inboundExpiry).toBeLessThanOrEqual(Date.now() + 60_000)
   })
 
 
