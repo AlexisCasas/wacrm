@@ -277,6 +277,7 @@ export async function GET(request: Request) {
         initiated_by_me: ownsOutboundCall,
         claim_available: pilotAllowed && call.direction === 'USER_INITIATED'
           && ['offered','ringing','connected'].includes(call.state)
+          && !call.accepted_by_user_id
           && !call.rejected_by_user_id && !call.ended_by_user_id
           && (
             !call.claimed_by_user_id
