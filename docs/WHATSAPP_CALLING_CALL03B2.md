@@ -194,7 +194,7 @@ La comprobación explícita de audio en ambos sentidos y las pruebas de concurre
 1. Concurrencia de dos agentes A/B intentando aceptar la misma llamada.
 2. Cambio de conversación mientras una llamada entrante está pendiente.
 3. Desconexión ICE persistente y recuperación transitoria dentro de ocho segundos.
-4. Historial y atribución por agente. La UI actual muestra dirección/estado; todavía falta validar la presentación de agente, fecha y duración para cumplir el criterio completo.
+4. Historial y atribución por agente. La punta actual de PR #142 añade presentación de agente, fecha y duración con nombres resueltos dentro de la misma cuenta; CI y QA manual T4 pendientes.
 
 El runbook y los criterios de aceptación están en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`.
 
