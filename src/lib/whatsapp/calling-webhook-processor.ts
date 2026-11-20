@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { encrypt } from './encryption'
-import { parseWhatsAppCallPermissionReply, parseWhatsAppCallingWebhookChange, type WhatsAppCallingEvent } from './calling-webhook'
+import { parseWhatsAppCallPermissionReply, parseWhatsAppCallingWebhookChange, type WhatsAppCallingEvent, type WhatsAppCallingStatus } from './calling-webhook'
 
 type ConfigRow = { account_id: string; user_id: string; phone_number_id: string }
 
@@ -61,7 +61,7 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
     throw new Error('call_event_persistence_failed')
   }
 }
-async function persistStatus(db: SupabaseClient, config: ConfigRow, status: {id:string;status:string;timestamp:string;type?:string}) {
+async function persistStatus(db: SupabaseClient, config: ConfigRow, status: WhatsAppCallingStatus) {
   const timestamp = seconds(status.timestamp)
   if (timestamp === null) throw new Error('invalid_call_status_timestamp')
   const state = status.status === 'ACCEPTED' ? 'connected' : status.status === 'RINGING' ? 'ringing' : null
@@ -73,7 +73,7 @@ async function persistStatus(db: SupabaseClient, config: ConfigRow, status: {id:
   const { error } = await db.rpc('whatsapp_call_event_apply', {
     p_account_id: config.account_id,p_phone_number_id: config.phone_number_id,p_call_id: status.id,
     p_event_key: hash([status.id,'status',status.status,status.timestamp]),p_event_name:'status',
-    p_meta_timestamp:timestamp,p_direction:null,p_customer_key:null,p_customer_phone:null,p_customer_bsuid:null,
+    p_meta_timestamp:timestamp,p_direction:null,p_customer_key:recipientKey,p_customer_phone:recipientPhone,p_customer_bsuid:recipientBsuid,
     p_customer_parent_bsuid:null,p_customer_name:null,p_state:state,p_session_sdp_encrypted:null,p_session_sdp_type:null,p_session_sdp_expires_at:null,
     p_started_at:null,p_ended_at:null,p_duration_seconds:null,
   })
