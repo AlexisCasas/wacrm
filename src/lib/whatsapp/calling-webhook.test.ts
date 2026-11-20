@@ -22,8 +22,8 @@ describe('parseWhatsAppCallingWebhookChange', () => {
         }],
         calls: [{
           id: 'wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh',
-          from: '51911111111',
-          to: '51980942247',
+          from: '51980942247',
+          to: '51911111111',
           event: 'connect',
           timestamp: '1795120000',
           direction: 'USER_INITIATED',
