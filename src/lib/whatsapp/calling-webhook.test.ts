@@ -71,6 +71,8 @@ describe('parseWhatsAppCallingWebhookChange', () => {
           status: 'ACCEPTED',
           timestamp: '1795120005',
           recipient_id: '51911111111',
+          recipient_user_id: 'PE.123456789',
+          recipient_parent_user_id: 'PE.987654321',
           type: 'call',
         }],
       },
@@ -84,6 +86,8 @@ describe('parseWhatsAppCallingWebhookChange', () => {
     expect(parsed?.statuses[0]).toMatchObject({
       status: 'ACCEPTED',
       recipient_id: '51911111111',
+      recipient_user_id: 'PE.123456789',
+      recipient_parent_user_id: 'PE.987654321',
       type: 'call',
     })
   })
