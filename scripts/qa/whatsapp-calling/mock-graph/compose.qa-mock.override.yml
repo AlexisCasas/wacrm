@@ -1,0 +1,34 @@
+# QA-only overlay. Apply only with /opt/apps/call03b2-qa-stack/docker-compose.yml.
+# It extends the existing isolated stack; it does not define or recreate the database.
+services:
+  app:
+    ports:
+      - "127.0.0.1:38090:38090"
+    environment:
+      META_APP_SECRET: \${MOCK_META_APP_SECRET:?Set a new QA-only webhook secret in the stack .env}
+      MOCK_GRAPH_ENABLED: "true"
+    extra_hosts:
+      - "graph.facebook.com:127.0.0.1"
+
+  mock-graph:
+    build:
+      context: /opt/apps/wacrm-call03b2-qa/scripts/qa/whatsapp-calling/mock-graph
+      dockerfile: Dockerfile
+    network_mode: "service:app"
+    environment:
+      MOCK_ENVIRONMENT: qa
+      MOCK_GRAPH_ENABLED: "true"
+      MOCK_META_APP_SECRET: \${MOCK_META_APP_SECRET:?Set a new QA-only webhook secret in the stack .env}
+      MOCK_CONTROL_TOKEN: \${MOCK_CONTROL_TOKEN:?Set a new local QA control token in the stack .env}
+      MOCK_PHONE_NUMBER_ID: "740434745820831"
+      MOCK_CUSTOMER_PHONE: "51980942247"
+      MOCK_WABA_ID: "QA-SYNTHETIC-WABA"
+      MOCK_DISPLAY_PHONE: "+51 980 000 000"
+      MOCK_TLS_CERT_FILE: /certs/mock-graph.crt
+      MOCK_TLS_KEY_FILE: /certs/mock-graph.key
+      MOCK_GRAPH_PORT: "443"
+      MOCK_PEER_PORT: "38090"
+      WACRM_WEBHOOK_URL: "http://127.0.0.1:3000/api/whatsapp/webhook"
+    volumes:
+      - ./mock-graph:/certs:ro
+    restart: unless-stopped
