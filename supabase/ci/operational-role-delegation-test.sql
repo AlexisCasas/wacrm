@@ -137,11 +137,20 @@ BEGIN
   PERFORM pg_temp.expect('  foreign intact', pg_temp.op('foreign'), NULL);
   PERFORM pg_temp.expect('unknown target -> 22023', left(pg_temp.attempt('owner','ghost','commercial'), 5), '22023');
 
-  -- ---------------- feature flag OFF ----------------
+  -- ---------------- feature flag OFF (20261205000000: areas can be assigned BEFORE activation) ----------------
   UPDATE order_integration_settings SET logistics_mvp_enabled = FALSE WHERE account_id = pg_temp.uid('acc_a');
-  PERFORM pg_temp.expect('flag OFF: owner REJECTED', pg_temp.attempt('owner','target','commercial'), '42501:operational_roles_disabled');
-  PERFORM pg_temp.expect('flag OFF: supervisor REJECTED', pg_temp.attempt('sup','target','commercial'), '42501:operational_roles_disabled');
-  PERFORM pg_temp.expect('  target intact', pg_temp.op('target'), NULL);
+  PERFORM pg_temp.expect('flag OFF: owner assigns commercial OK', pg_temp.attempt('owner','target','commercial'), 'OK');
+  PERFORM pg_temp.expect('  target is commercial', pg_temp.op('target'), 'commercial');
+  PERFORM pg_temp.expect('flag OFF: owner assigns logistics OK', pg_temp.attempt('owner','target','logistics'), 'OK');
+  PERFORM pg_temp.expect('flag OFF: owner assigns supervisor OK', pg_temp.attempt('owner','target','supervisor'), 'OK');
+  PERFORM pg_temp.expect('flag OFF: admin clears to NULL OK', pg_temp.attempt('admin','target',NULL), 'OK');
+  PERFORM pg_temp.expect('  target cleared', pg_temp.op('target'), NULL);
+  PERFORM pg_temp.expect('flag OFF: agent (commercial) REJECTED', left(pg_temp.attempt('agent','target','commercial'), 5), '42501');
+  PERFORM pg_temp.expect('flag OFF: viewer REJECTED', left(pg_temp.attempt('viewer','target','commercial'), 5), '42501');
+  PERFORM pg_temp.expect('flag OFF: cross-account REJECTED', left(pg_temp.attempt('owner','foreign','commercial'), 5), '42501');
+  PERFORM pg_temp.expect('  target intact after rejections', pg_temp.op('target'), NULL);
+  PERFORM pg_temp.expect('  logistics_mvp_enabled is STILL false', (SELECT logistics_mvp_enabled::text FROM order_integration_settings WHERE account_id = pg_temp.uid('acc_a')), 'false');
+  PERFORM pg_temp.expect('  owner account_role unchanged', (SELECT account_role::text FROM profiles WHERE user_id = pg_temp.uid('owner')), 'owner');
   UPDATE order_integration_settings SET logistics_mvp_enabled = TRUE WHERE account_id = pg_temp.uid('acc_a');
 
   -- ---------------- only operational_role changes; direct browser writes still blocked ----------------

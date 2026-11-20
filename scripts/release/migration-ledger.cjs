@@ -51,7 +51,14 @@ function verify() {
     if (!f) problems.push(`production migration ${b.version} is not in the tree`)
     else if (b.sha256 && sha(path.join(MIG, f)) !== b.sha256) problems.push(`production migration ${f} differs from the version production applied`)
   }
-  const known = new Set([...m.production_baseline.map((p) => p.version), ...m.release_migrations.map((r) => r.new_version)])
+  const patches = m.patch_migrations || []
+  for (const r of patches) {
+    const p = path.join(MIG, r.new_file)
+    if (!fs.existsSync(p)) problems.push(`missing patch ${r.new_file}`)
+    else if (sha(p) !== r.sha256) problems.push(`checksum differs: ${r.new_file}`)
+    if (r.new_version <= m.release_migrations.at(-1).new_version) problems.push(`patch ${r.new_file} is not after the release block`)
+  }
+  const known = new Set([...m.production_baseline.map((p) => p.version), ...m.release_migrations.map((r) => r.new_version), ...patches.map((r) => r.new_version)])
   const unknownAfterBaseline = files.filter((f) => versionOf(f) > m.historical_main_max && !known.has(versionOf(f)))
   if (unknownAfterBaseline.length) problems.push(`migrations not described by the manifest: ${unknownAfterBaseline.join(', ')}`)
   if (problems.length) fail(`VERIFY FAILED\n - ${problems.join('\n - ')}`, 2)

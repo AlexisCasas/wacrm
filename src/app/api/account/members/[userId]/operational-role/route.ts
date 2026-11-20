@@ -5,7 +5,7 @@
 // touches account_role. This route only authenticates, validates the payload (UUID + enum | null) and forwards to the SECURITY DEFINER RPC
 // `set_member_operational_role` (migrations 20261121000000 + 20261126000000), which is the single authority: owner/admin may assign any area;
 // an operational supervisor (who is not owner/admin) may assign commercial/logistics/NULL to non-supervisors only; everyone else is rejected;
-// same account and logistics_mvp_enabled are always enforced there. No account_id / role is ever read from the browser.
+// same account is always enforced there (the logistics_mvp_enabled gate was removed by 20261205000000 so areas can be assigned BEFORE activation). No account_id / role is ever read from the browser.
 // ============================================================
 
 import { NextResponse } from "next/server";

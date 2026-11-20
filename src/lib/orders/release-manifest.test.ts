@@ -35,7 +35,9 @@ describe('release migration block', () => {
     expect(news).toHaveLength(22)
     const maxExternal = [...manifest.production_baseline.map((p) => p.version), ...manifest.reserved_external.map((r) => r.version)].sort().at(-1)!
     for (const v of news) expect(v > maxExternal).toBe(true)
-    expect(files.slice(files.indexOf(manifest.release_migrations[0].new_file))).toEqual(manifest.release_migrations.map((m) => m.new_file)) // nothing else after the block, nothing in between
+    // nothing in between; the only files after the block are the declared post-release patches
+    const patches = ((manifest as { patch_migrations?: { new_file: string }[] }).patch_migrations ?? []).map((p) => p.new_file)
+    expect(files.slice(files.indexOf(manifest.release_migrations[0].new_file))).toEqual([...manifest.release_migrations.map((m) => m.new_file), ...patches])
   })
 
   it('the production migrations (applied by hand, recorded in .applied) are in the tree and unchanged', () => {

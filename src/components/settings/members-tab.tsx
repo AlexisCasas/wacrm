@@ -137,8 +137,6 @@ export function MembersTab() {
   const { getPresence, getRow, now } = usePresence();
 
   const [members, setMembers] = useState<Member[]>([]);
-  // PR-01 logistics: false (the default, and what the API says for every account without logistics_mvp_enabled) renders the tab exactly as before.
-  const [operationalRolesEnabled, setOperationalRolesEnabled] = useState(false);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -167,6 +165,8 @@ export function MembersTab() {
         const payload = await res.json().catch(() => ({}));
         setMembers((prev) => prev.map((m) => (m.user_id === member.user_id ? { ...m, operational_role: previous } : m)));
         toast.error(payload.error || 'Failed to update operational area');
+      } else {
+        toast.success(t('operationalAreaUpdated'));
       }
     } catch (err) {
       console.error('[MembersTab] operational role error:', err);
@@ -191,9 +191,8 @@ export function MembersTab() {
         toast.error(payload.error || 'Failed to load members');
         return;
       }
-      const mdata = (await mres.json()) as { members: Member[]; operational_roles_enabled?: boolean };
+      const mdata = (await mres.json()) as { members: Member[] };
       setMembers(mdata.members);
-      setOperationalRolesEnabled(mdata.operational_roles_enabled === true);
 
       if (ires) {
         if (!ires.ok) {
@@ -455,7 +454,7 @@ export function MembersTab() {
                     {/* Role display / editor. Inline Select is admin+
                         only AND not allowed on the owner row (owner
                         changes go through transfer, which lands later). */}
-                    {operationalRolesEnabled ? (
+                    {(
                       assignable.length > 0 ? (
                         <Select
                           value={member.operational_role ?? OPERATIONAL_NONE}
@@ -484,7 +483,7 @@ export function MembersTab() {
                           {t('operationalArea')}: {t(`operational.${member.operational_role ?? 'none'}`)}
                         </span>
                       )
-                    ) : null}
+                    )}
                     {canManageMembers && !isOwnerRow && !isSelf ? (
                       <Select
                         value={member.role}

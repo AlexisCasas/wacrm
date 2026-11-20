@@ -350,5 +350,17 @@
       ],
       "status": "pending (not applied in production)"
     }
+  ],
+  "patch_migrations": [
+    {
+      "new_version": "20261205000000",
+      "new_file": "20261205000000_operational_role_assign_without_flag.sql",
+      "sha256": "39701160a569934a1a7e90da95b51b8546813098d12b9150e83b7f6a49c86a5e",
+      "depends_on": [
+        "20261204000000"
+      ],
+      "status": "pending",
+      "note": "post-release patch (fix/team-operational-role-ui): removes the logistics_mvp_enabled gate from set_member_operational_role so areas can be assigned before activation. Not part of the frozen 22-migration release."
+    }
   ]
 }

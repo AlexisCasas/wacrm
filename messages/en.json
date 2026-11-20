@@ -1978,6 +1978,7 @@
       "title": "Team members",
       "description": "People with access to this account. Roles control what each teammate can do.",
       "inviteMember": "Invite member",
+      "operationalAreaUpdated": "Operational area updated",
       "operationalArea": "Operational area",
       "operational": {
         "none": "Unassigned",
