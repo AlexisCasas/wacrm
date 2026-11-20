@@ -244,6 +244,20 @@ describe('WhatsApp call permissions', () => {
     })
   })
 
+  it('rejects ambiguous permission targets before contacting Meta', async () => {
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const target = {
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      userWaId: '51911111111',
+      recipient: 'PE.123456789',
+    }
+    await expect(getWhatsAppCallPermission(target)).rejects.toThrow(/exactly one/)
+    await expect(sendWhatsAppCallPermissionRequest(target)).rejects.toThrow(/exactly one/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('fails closed when Meta does not provide a recognized permission state', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ permission: { status: 'unknown' } }), { status: 200 })))
     await expect(getWhatsAppCallPermission({
