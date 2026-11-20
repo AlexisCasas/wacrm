@@ -1,3 +1,4 @@
+import { isValidBsuid } from './bsuid'
 import {
   MetaApiError,
   messagingAccountField,
@@ -373,7 +374,7 @@ export function hasActiveWhatsAppCallPermission(
 
 function validateCallPermissionRecipient(value: string): string {
   const normalized = value.trim()
-  if (!/^[A-Za-z0-9._~+/-]{1,256}$/.test(normalized)) {
+  if (!isValidBsuid(normalized)) {
     throw new Error('WhatsApp call-permission recipient ID is invalid.')
   }
   return normalized
