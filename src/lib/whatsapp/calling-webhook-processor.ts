@@ -17,22 +17,32 @@ function iso(value: string | undefined): string | null {
 function hash(parts: string[]): string {
   return createHash('sha256').update(parts.join('|')).digest('hex')
 }
-function customerIdentity(call: WhatsAppCallingEvent) {
+type CallingContact = {
+  wa_id?: string
+  user_id?: string
+  parent_user_id?: string
+  profile?: { name?: string }
+}
+
+function customerIdentity(call: WhatsAppCallingEvent, contact?: CallingContact) {
   const userInitiated = call.direction === 'USER_INITIATED'
   const businessInitiated = call.direction === 'BUSINESS_INITIATED'
   if (!userInitiated && !businessInitiated) {
     return { key: '', phone: null, bsuid: null, parentBsuid: null }
   }
-  const rawPhone = userInitiated ? call.from : call.to
-  const rawBsuid = userInitiated ? call.from_user_id : call.to_user_id
-  const rawParentBsuid = userInitiated ? call.from_parent_user_id : call.to_parent_user_id
-  const digits = typeof rawPhone === 'string' ? rawPhone.replace(/\D/g, '').slice(0, 20) : ''
-  const phone = /^\d{6,20}$/.test(digits) ? digits : ''
+  // Meta uses "to" for the WhatsApp user's phone in both directions.
+  // BSUID source depends on direction: from_user_id for UIC, to_user_id for BIC.
+  const rawPhone = call.to ?? contact?.wa_id
+  const rawBsuid = (userInitiated ? call.from_user_id : call.to_user_id) ?? contact?.user_id
+  const rawParentBsuid = (userInitiated ? call.from_parent_user_id : call.to_parent_user_id) ?? contact?.parent_user_id
+  const phoneValue = typeof rawPhone === 'string' ? rawPhone.trim() : ''
+  const phoneIsValid = /^\\+?\\d{6,20}$/.test(phoneValue)
+  const phone = phoneIsValid ? phoneValue.replace(/\\D/g, '') : ''
   const bsuid = typeof rawBsuid === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(rawBsuid) ? rawBsuid : ''
   const parentBsuid = typeof rawParentBsuid === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(rawParentBsuid) ? rawParentBsuid : ''
   return { key: bsuid || parentBsuid || phone, phone: phone || null, bsuid: bsuid || null, parentBsuid: parentBsuid || null }
 }
-async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsAppCallingEvent, name?: string) {
+async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsAppCallingEvent, contact?: CallingContact) {
   if (event.event === 'connect') {
     if (!event.direction) throw new Error('call_connect_missing_direction')
     const expectedSdpType = event.direction === 'USER_INITIATED' ? 'offer' : 'answer'
@@ -40,7 +50,7 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
   }
   const timestamp = seconds(event.timestamp)
   if (timestamp === null) throw new Error('invalid_call_event_timestamp')
-  const identity = customerIdentity(event)
+  const identity = customerIdentity(event, contact)
   if (event.event === 'connect' && !identity.key) throw new Error('call_event_missing_customer_identity')
   const terminal = event.event === 'terminate'
   const terminalStatus = event.status?.toUpperCase()
@@ -55,7 +65,7 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
     p_event_name: terminal ? 'terminate' : 'connect', p_meta_timestamp: timestamp,
     p_direction: event.direction ?? null, p_customer_key: identity.key || null,
     p_customer_phone: identity.phone, p_customer_bsuid: identity.bsuid,
-    p_customer_parent_bsuid: identity.parentBsuid, p_customer_name: name?.slice(0,256) ?? null,
+    p_customer_parent_bsuid: identity.parentBsuid, p_customer_name: contact?.profile?.name?.slice(0,256) ?? null,
     p_state: state, p_session_sdp_encrypted: encryptedSdp,
     p_session_sdp_type: sdp ? event.session?.sdp_type ?? null : null,
     p_session_sdp_expires_at: sdp ? new Date(Date.now()+5*60*1000).toISOString() : null,
@@ -78,17 +88,20 @@ async function persistStatus(db: SupabaseClient, config: ConfigRow, status: What
   // Unknown future status values must not create a phantom 'offered' session.
   if (!state) return
   const rawRecipient = typeof status.recipient_id === 'string' ? status.recipient_id.trim() : ''
-  // Do not turn digit-containing BSUIDs into phone numbers. A phone recipient
-  // must consist entirely of digits (optionally prefixed with one plus sign).
-  const recipientIsPhone = /^\+?\d{6,20}$/.test(rawRecipient)
-  const recipientPhone = recipientIsPhone ? rawRecipient.replace(/\D/g, '') : null
-  const recipientBsuid = !recipientIsPhone && /^[A-Za-z0-9._~-]{1,256}$/.test(rawRecipient) ? rawRecipient : null
-  const recipientKey = recipientBsuid ?? recipientPhone
+  const recipientIsPhone = /^\\+?\\d{6,20}$/.test(rawRecipient)
+  const recipientPhone = recipientIsPhone ? rawRecipient.replace(/\\D/g, '') : null
+  const recipientBsuid = typeof status.recipient_user_id === 'string'
+    && /^[A-Za-z0-9._~-]{1,256}$/.test(status.recipient_user_id)
+    ? status.recipient_user_id : null
+  const recipientParentBsuid = typeof status.recipient_parent_user_id === 'string'
+    && /^[A-Za-z0-9._~-]{1,256}$/.test(status.recipient_parent_user_id)
+    ? status.recipient_parent_user_id : null
+  const recipientKey = recipientBsuid ?? recipientParentBsuid ?? recipientPhone
   const { error } = await db.rpc('whatsapp_call_event_apply', {
     p_account_id: config.account_id,p_phone_number_id: config.phone_number_id,p_call_id: status.id,
     p_event_key: hash([status.id,'status',status.status,status.timestamp]),p_event_name:'status',
     p_meta_timestamp:timestamp,p_direction:null,p_customer_key:recipientKey,p_customer_phone:recipientPhone,p_customer_bsuid:recipientBsuid,
-    p_customer_parent_bsuid:null,p_customer_name:null,p_state:state,p_session_sdp_encrypted:null,p_session_sdp_type:null,p_session_sdp_expires_at:null,
+    p_customer_parent_bsuid:recipientParentBsuid,p_customer_name:null,p_state:state,p_session_sdp_encrypted:null,p_session_sdp_type:null,p_session_sdp_expires_at:null,
     p_started_at:null,p_ended_at:null,p_duration_seconds:null,
   })
   if (error) {
@@ -106,13 +119,13 @@ export async function processCallingWebhookChange(db: SupabaseClient, change: un
     throw new Error('calling_config_unavailable')
   }
   const config = data as ConfigRow
-  const value = (change as {value?:{contacts?:Array<{profile?:{name?:string}}>} }).value
-  const contactName = value?.contacts?.[0]?.profile?.name
+  const value = (change as {value?:{contacts?:CallingContact[]} }).value
+  const contact = value?.contacts?.[0]
   for (const event of parsed.calls) {
     // Recording/transcript events are intentionally outside CALL-02; do not
     // misclassify a future Meta event as a new connect operation.
     if (event.event === 'connect' || event.event === 'terminate') {
-      await persistEvent(db,config,event,contactName)
+      await persistEvent(db,config,event,contact)
     }
   }
   for (const status of parsed.statuses) if (status.type === 'call') await persistStatus(db,config,status)
