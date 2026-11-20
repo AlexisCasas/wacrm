@@ -64,7 +64,7 @@ describe('CALL-02 Calling webhook persistence', () => {
       field: 'calls',
       value: {
         metadata: { phone_number_id: config.phone_number_id },
-        calls: [{ id: 'wacid.call-no-direction', event: 'connect', timestamp: '1795120000', to: '51980942247' }],
+        calls: [{ id: 'wacid.call-no-identity', event: 'connect', timestamp: '1795120000', direction: 'USER_INITIATED', to: '51980942247', session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' } }],
       },
     })).rejects.toThrow('call_event_missing_customer_identity')
     expect(rpc).not.toHaveBeenCalled()
