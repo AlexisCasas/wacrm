@@ -214,3 +214,129 @@ export async function callWhatsApp(
 
   return { action: args.action.action, success: true }
 }
+
+export interface WhatsAppCallPermission {
+  status: 'no_permission' | 'temporary' | 'permanent'
+  expirationTime?: number
+  canStartCall: boolean
+  canRequestPermission: boolean
+  actions: Array<{
+    actionName: string
+    canPerformAction: boolean
+    limits: Array<{
+      timePeriod: string
+      maxAllowed: number
+      currentUsage: number
+      limitExpirationTime?: number
+    }>
+  }>
+}
+
+interface MetaCallPermissionResponse {
+  permission?: { status?: string; expiration_time?: number }
+  actions?: Array<{
+    action_name?: string
+    can_perform_action?: boolean
+    limits?: Array<{
+      time_period?: string
+      max_allowed?: number
+      current_usage?: number
+      limit_expiration_time?: number
+    }>
+  }>
+}
+
+function normalizePermissionTarget(value: string, label: string): string {
+  const normalized = value.trim()
+  if (!normalized || normalized.length > 256 || !/^[A-Za-z0-9._~+/-]+$/.test(normalized)) {
+    throw new Error(`WhatsApp call permission ${label} is invalid.`)
+  }
+  return normalized
+}
+
+/** Read Meta's authoritative permission and current action quotas for one customer. */
+export async function getWhatsAppCallPermission(args: {
+  phoneNumberId: string
+  accessToken: string
+  userWaId?: string
+  recipient?: string
+}): Promise<WhatsAppCallPermission> {
+  if (!/^\\d{5,25}$/.test(args.phoneNumberId.trim())) throw new Error('WhatsApp phone_number_id is invalid.')
+  if (!args.userWaId && !args.recipient) throw new Error('A WhatsApp user phone or BSUID is required.')
+  const params = new URLSearchParams()
+  if (args.userWaId) params.set('user_wa_id', normalizeCallPhoneNumber(args.userWaId))
+  if (args.recipient) params.set('recipient', normalizePermissionTarget(args.recipient, 'recipient'))
+  const response = await fetch(`${META_CALLING_API_BASE}/${args.phoneNumberId}/call_permissions?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${args.accessToken}` },
+  })
+  if (!response.ok) await throwCallingMetaError(response)
+  const data = await response.json() as MetaCallPermissionResponse
+  const rawStatus = data.permission?.status
+  if (rawStatus !== 'no_permission' && rawStatus !== 'temporary' && rawStatus !== 'permanent') {
+    throw new Error('Meta returned an unknown WhatsApp call permission status.')
+  }
+  const actions = (data.actions ?? []).flatMap((item) => {
+    if (typeof item.action_name !== 'string' || typeof item.can_perform_action !== 'boolean') return []
+    return [{
+      actionName: item.action_name,
+      canPerformAction: item.can_perform_action,
+      limits: (item.limits ?? []).flatMap((limit) => {
+        if (typeof limit.time_period !== 'string' || typeof limit.max_allowed !== 'number' || typeof limit.current_usage !== 'number') return []
+        return [{
+          timePeriod: limit.time_period,
+          maxAllowed: limit.max_allowed,
+          currentUsage: limit.current_usage,
+          ...(typeof limit.limit_expiration_time === 'number' ? { limitExpirationTime: limit.limit_expiration_time } : {}),
+        }]
+      }),
+    }]
+  })
+  return {
+    status: rawStatus,
+    ...(typeof data.permission?.expiration_time === 'number' ? { expirationTime: data.permission.expiration_time } : {}),
+    canStartCall: actions.find((item) => item.actionName === 'start_call')?.canPerformAction ?? false,
+    canRequestPermission: actions.find((item) => item.actionName === 'send_call_permission_request')?.canPerformAction ?? false,
+    actions,
+  }
+}
+
+/** Send the Meta free-form interactive call-permission request (requires an open customer-service window). */
+export async function sendWhatsAppCallPermissionRequest(args: {
+  phoneNumberId: string
+  accessToken: string
+  userWaId?: string
+  recipient?: string
+  bodyText?: string
+}): Promise<{ messageId: string }> {
+  if (!/^\\d{5,25}$/.test(args.phoneNumberId.trim())) throw new Error('WhatsApp phone_number_id is invalid.')
+  if (!args.userWaId && !args.recipient) throw new Error('A WhatsApp user phone or BSUID is required.')
+  const bodyText = args.bodyText?.trim()
+  if (bodyText && bodyText.length > 1024) throw new Error('Call permission request body exceeds 1024 characters.')
+  const payload: Record<string, unknown> = {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    ...(args.userWaId ? { to: normalizeCallPhoneNumber(args.userWaId) } : {}),
+    ...(args.recipient ? { recipient: normalizePermissionTarget(args.recipient, 'recipient') } : {}),
+    type: 'interactive',
+    interactive: {
+      type: 'call_permission_request',
+      action: { name: 'call_permission_request' },
+      ...(bodyText ? { body: { text: bodyText } } : {}),
+    },
+  }
+  const response = await fetch(`${META_CALLING_API_BASE}/${args.phoneNumberId}/messages`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${args.accessToken}`,
+    },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) await throwCallingMetaError(response)
+  const data = await response.json() as { messages?: Array<{ id?: string }> }
+  const messageId = data.messages?.[0]?.id
+  if (typeof messageId !== 'string' || !messageId.startsWith('wamid.')) {
+    throw new Error('Meta did not return a message ID for the call permission request.')
+  }
+  return { messageId }
+}
