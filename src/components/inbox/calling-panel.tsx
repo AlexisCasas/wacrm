@@ -95,11 +95,19 @@ function waitForIceGathering(pc: RTCPeerConnection): Promise<void> {
         resolve();
       }
     };
+    const onConnectionChange = () => {
+      if (pc.connectionState === "closed" || pc.connectionState === "failed") {
+        cleanup();
+        reject(new Error("WebRTC peer connection was closed before ICE gathering completed."));
+      }
+    };
     const cleanup = () => {
       window.clearTimeout(timer);
       pc.removeEventListener("icegatheringstatechange", onChange);
+      pc.removeEventListener("connectionstatechange", onConnectionChange);
     };
     pc.addEventListener("icegatheringstatechange", onChange);
+    pc.addEventListener("connectionstatechange", onConnectionChange);
   });
 }
 
@@ -348,11 +356,16 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     conversationIdRef.current = nextConversationId;
     setIncomingCall(null);
     const active = activeCallRef.current;
-    if (previousConversationId && previousConversationId !== nextConversationId && active) {
-      void postCallAction("terminate", { call_id: active.call_id });
-      resetCall();
+    if (previousConversationId && previousConversationId !== nextConversationId) {
+      if (active) {
+        void postCallAction("terminate", { call_id: active.call_id });
+        resetCall();
+      } else if (operationRef.current) {
+        stopMedia();
+        setUiState("idle");
+      }
     }
-  }, [conversation?.id, resetCall]);
+  }, [conversation?.id, resetCall, stopMedia]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -405,6 +418,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       const offer = await peer.createOffer();
       await peer.setLocalDescription(offer);
       await waitForIceGathering(peer);
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       const localSdp = peer.localDescription?.sdp;
       if (!localSdp) throw new Error(t("localOfferMissing"));
 
@@ -492,6 +506,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       const answer = await peer.createAnswer();
       await peer.setLocalDescription(answer);
       await waitForIceGathering(peer);
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       const localSdp = peer.localDescription?.sdp;
       if (!localSdp) throw new Error(t("localAnswerMissing"));
 
@@ -587,7 +602,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     if (!peer) return;
 
     const onConnectionStateChange = () => {
-      if (tearingDownRef.current) return;
+      if (tearingDownRef.current || peerRef.current !== peer) return;
       if (peer.connectionState === "connected") {
         if (disconnectTimerRef.current !== null) {
           window.clearTimeout(disconnectTimerRef.current);
