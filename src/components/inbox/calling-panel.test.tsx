@@ -391,6 +391,47 @@ describe("CallingPanel", () => {
     expect(actions).not.toContain("accept");
   });
 
+  it("keeps the call alive when a transient WebRTC disconnect recovers", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        if (body.action === "check_permission") {
+          return jsonResponse({
+            permission: { status: "permanent", canStartCall: true, canRequestPermission: false },
+          });
+        }
+        if (body.action === "connect") return jsonResponse({ call_id: "wacid.qa-recovered" });
+        return jsonResponse({ success: true });
+      }
+      if (url.includes("?call_id=")) {
+        return jsonResponse({
+          call: { call_id: "wacid.qa-recovered", conversation_id: conversation.id, state: "connected" },
+          session: { sdp_type: "answer", sdp: "v=0\\r\\n" },
+        });
+      }
+      return jsonResponse({ calls: [] });
+    });
+
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+    fireEvent.click(await screen.findByRole("button", { name: "call" }));
+    await screen.findByText("00:00");
+
+    const peer = FakePeerConnection.instances[0];
+    peer.connectionState = "disconnected";
+    peer.dispatchEvent(new Event("connectionstatechange"));
+    peer.connectionState = "connected";
+    peer.dispatchEvent(new Event("connectionstatechange"));
+
+    await waitFor(() => {
+      const actions = vi.mocked(global.fetch).mock.calls
+        .filter(([, init]) => init?.method === "POST")
+        .map(([, init]) => JSON.parse(String(init?.body)).action);
+      expect(actions).not.toContain("terminate");
+    });
+    expect(screen.getByText("00:00")).toBeTruthy();
+  });
+
   it("terminates an active call after WebRTC enters failed state", async () => {
     global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
