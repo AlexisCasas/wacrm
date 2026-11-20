@@ -46,8 +46,10 @@ La acción `terminate` debe enviarse explícitamente incluso cuando WebRTC/RTCP 
 
 - Añadir almacenamiento cifrado separado para el SDP local del agente (`agent_sdp_encrypted`, tipo y expiración). El SDP remoto recibido de Meta permanece en el campo CALL-02 existente.
 - Para UIC, guardar el SDP answer cifrado después de `pre_accept`; `accept` reutiliza el valor almacenado, nunca un SDP distinto enviado por el cliente.
-- Para BIC, crear una solicitud saliente durable con idempotency key por cuenta antes de llamar a Meta. Una repetición de la misma clave devuelve el resultado existente o conflicto pendiente; nunca reenvía automáticamente un `connect` ambiguo.
-- Al recibir `call_id`, crear/actualizar la sesión y guardar conversación, contacto, agente iniciador, callback data y SDP offer cifrado. El upsert debe tolerar que el webhook cree la sesión antes que la respuesta HTTP.
+- Para BIC, reservar el intento y el SDP offer cifrado (TTL de cinco minutos) en base de datos antes de llamar a Meta. La misma `request_id` devuelve el intento existente; no vuelve a enviar un `connect`.
+- Al recibir `call_id`, crear/actualizar la sesión y guardar conversación, contacto, agente iniciador, callback data y SDP offer cifrado. El upsert tolera que el webhook cree la sesión antes que la respuesta HTTP.
+- Meta no devuelve `biz_opaque_callback_data` en el webhook inicial `connect`; los estados/finalización posteriores pueden devolverlo. Ese callback reconcilia un intento `pending/unknown` con su `call_id` y vincula los metadatos y SDP reservados.
+- Si la respuesta HTTP se pierde y aún no llega un estado con callback data, el intento queda `unknown` y se bloquea el reenvío automático. La revisión de historial/reconciliación manual es necesaria; no se asume que un timeout significa que Meta no creó la llamada.
 - Añadir un RPC para incorporar `biz_opaque_callback_data` de los webhooks posteriores sin modificar la firma histórica de `whatsapp_call_event_apply`.
 - GET detalle entrega SDP remoto solo al agente con claim vigente (UIC) o al agente iniciador autenticado (BIC), siempre con TTL válido.
 - Las acciones Meta se ejecutan solo en servidor; token y SDP nunca aparecen en logs ni errores públicos.
@@ -66,6 +68,7 @@ La acción `terminate` debe enviarse explícitamente incluso cuando WebRTC/RTCP 
 - Flag/allowlist ausente, apagado o número no autorizado: 403/409 y cero llamadas a Meta.
 - Permiso ausente, vencido o cuota agotada: bloqueo de `connect`.
 - Outbound request idempotente: doble envío no produce dos llamadas.
+- Respuesta HTTP perdida: estado `unknown`, sin reenvío automático; callback de status/terminate reconcilia `call_id` y metadatos.
 - Webhook que llega antes de la respuesta HTTP: upsert converge en una sola sesión.
 - UIC: `pre_accept` y `accept` envían exactamente el mismo answer almacenado.
 - SDP remoto/local cifrado, TTL vencido, no exposición en listados ni logs.
