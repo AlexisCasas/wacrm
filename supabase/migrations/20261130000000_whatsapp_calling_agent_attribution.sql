@@ -209,7 +209,7 @@ BEGIN
 
   RETURN FOUND;
 END;
-$;
+$$;
 
 -- Record the human actor and optional Inbox conversation for a call.
 -- Meta remains authoritative for call state; this RPC records agent intent
