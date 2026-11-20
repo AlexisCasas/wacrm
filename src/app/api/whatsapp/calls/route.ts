@@ -279,6 +279,8 @@ export async function GET(request: Request) {
           && ['offered','ringing','connected'].includes(call.state)
           && !call.accepted_by_user_id
           && !call.rejected_by_user_id && !call.ended_by_user_id
+          && typeof call.session_sdp_expires_at === 'string'
+          && Date.parse(call.session_sdp_expires_at) > now
           && (
             !call.claimed_by_user_id
             || (typeof call.claim_expires_at === 'string' && Date.parse(call.claim_expires_at) <= now)
