@@ -91,3 +91,8 @@ describe('POST /api/whatsapp/calls — CALL-03A agent metadata', () => {
 
 
 })
+
+
+vi.mock('@/lib/whatsapp/calling-pilot', () => ({
+  isWhatsAppCallingPilotAllowed: () => true,
+}))
