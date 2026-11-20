@@ -756,12 +756,12 @@ describe("CallingPanel", () => {
 
     render(<CallingPanel conversation={conversation} contact={contact} />)
 
-    fireEvent.click(await screen.findByText(/History \(1\)/))
+    fireEvent.click(await screen.findByText(/history \(1\)/i))
 
-    expect(await screen.findByText("Started by: QA Agent A")).toBeTruthy()
-    expect(screen.getByText("Ended by: QA Agent A")).toBeTruthy()
-    expect(screen.getByText(/Date: .*2026/)).toBeTruthy()
-    expect(screen.getByText("Duration: 01:05")).toBeTruthy()
+    expect(await screen.findByText("initiatedBy: QA Agent A")).toBeTruthy()
+    expect(screen.getByText("endedBy: QA Agent A")).toBeTruthy()
+    expect(screen.getByText(/historyDate: .*2026/)).toBeTruthy()
+    expect(screen.getByText("historyDuration: 01:05")).toBeTruthy()
     expect(screen.getByText(/QA History Contact/)).toBeTruthy()
   })
 
