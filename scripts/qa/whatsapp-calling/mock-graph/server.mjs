@@ -93,7 +93,7 @@ async function readJson(req) {
   return value
 }
 
-function createCallStore() {
+export function createCallStore() {
   const calls = new Map()
   return {
     create({ direction, offer, callbackData = null }) {
@@ -122,7 +122,7 @@ function createCallStore() {
   }
 }
 
-function assertQaEnvironment(env) {
+export function assertQaEnvironment(env) {
   if (env.MOCK_ENVIRONMENT !== 'qa' || env.MOCK_GRAPH_ENABLED !== 'true') {
     throw new Error('mock_graph_requires_explicit_qa_enablement')
   }
