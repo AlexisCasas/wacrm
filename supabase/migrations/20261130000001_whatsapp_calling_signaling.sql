@@ -130,10 +130,16 @@ BEGIN
   IF p_customer_phone IS NOT NULL AND p_customer_phone !~ '^[0-9]{6,20}$' THEN
     RAISE EXCEPTION 'invalid_call_outbound_phone' USING ERRCODE='22023';
   END IF;
-  IF p_customer_bsuid IS NOT NULL AND p_customer_bsuid !~ '^[A-Za-z0-9._~-]{1,256}$' THEN
+  IF p_customer_bsuid IS NOT NULL AND (
+    length(p_customer_bsuid) NOT BETWEEN 1 AND 256
+    OR p_customer_bsuid !~ '^[A-Za-z0-9._~-]+$'
+  ) THEN
     RAISE EXCEPTION 'invalid_call_outbound_bsuid' USING ERRCODE='22023';
   END IF;
-  IF p_customer_parent_bsuid IS NOT NULL AND p_customer_parent_bsuid !~ '^[A-Za-z0-9._~-]{1,256}$' THEN
+  IF p_customer_parent_bsuid IS NOT NULL AND (
+    length(p_customer_parent_bsuid) NOT BETWEEN 1 AND 256
+    OR p_customer_parent_bsuid !~ '^[A-Za-z0-9._~-]+$'
+  ) THEN
     RAISE EXCEPTION 'invalid_call_outbound_parent_bsuid' USING ERRCODE='22023';
   END IF;
   IF p_customer_key IS DISTINCT FROM COALESCE(p_customer_bsuid,p_customer_parent_bsuid,p_customer_phone) THEN
@@ -224,7 +230,8 @@ AS $complete$
 DECLARE
   v_attempt public.whatsapp_call_outbound_attempts%ROWTYPE;
 BEGIN
-  IF p_call_id IS NULL OR p_call_id !~ '^wacid\.[A-Za-z0-9._~+/=-]{1,512}$'
+  IF p_call_id IS NULL OR length(p_call_id) NOT BETWEEN 7 AND 518
+    OR p_call_id !~ '^wacid\.[A-Za-z0-9._~+/=-]+$'
     OR p_agent_sdp_encrypted IS NULL
     OR p_agent_sdp_expires_at IS NULL
     OR p_agent_sdp_expires_at <= now()
