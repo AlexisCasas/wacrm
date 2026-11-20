@@ -185,7 +185,7 @@ DECLARE
   v_role public.account_role_enum;
   v_call public.whatsapp_call_sessions%ROWTYPE;
 BEGIN
-  IF p_action NOT IN ('initiated','accepted','rejected','ended') THEN
+  IF p_action IS NULL OR p_action NOT IN ('initiated','accepted','rejected','ended') THEN
     RAISE EXCEPTION 'invalid_call_agent_action' USING ERRCODE='22023';
   END IF;
 
@@ -230,9 +230,10 @@ BEGIN
       END IF;
       IF v_call.state IN ('terminated','failed','rejected') THEN RETURN false; END IF;
       IF v_call.accepted_by_user_id IS DISTINCT FROM p_actor_user_id
-        AND NOT (
+        AND NOT COALESCE(
           v_call.claimed_by_user_id=p_actor_user_id
-          AND v_call.claim_expires_at > now()
+          AND v_call.claim_expires_at > now(),
+          false
         ) THEN
         RETURN false;
       END IF;
@@ -262,9 +263,9 @@ BEGIN
         AND (
           v_call.state IN ('terminated','failed','rejected')
           OR NOT (
-            v_call.initiated_by_user_id=p_actor_user_id
-            OR v_call.accepted_by_user_id=p_actor_user_id
-            OR v_call.claimed_by_user_id=p_actor_user_id
+            COALESCE(v_call.initiated_by_user_id=p_actor_user_id,false)
+            OR COALESCE(v_call.accepted_by_user_id=p_actor_user_id,false)
+            OR COALESCE(v_call.claimed_by_user_id=p_actor_user_id,false)
             OR v_role IN ('owner','admin')
           )
         ) THEN
