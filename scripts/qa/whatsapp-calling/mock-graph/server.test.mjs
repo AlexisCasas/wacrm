@@ -64,6 +64,10 @@ test('QA safety guard rejects non-QA and non-loopback webhook targets', () => {
     ...env,
     WACRM_WEBHOOK_URL: 'https://crm.globaltechup.com/api/whatsapp/webhook',
   }), /must_target_local_qa_app/)
+  assert.throws(() => assertQaEnvironment({
+    ...env,
+    MOCK_CONTROL_TOKEN: "unsafe'control-token-".padEnd(40, 'x'),
+  }), /url_safe_local_control_token/)
 })
 
 test('signWebhookPayload returns Meta-compatible sha256 HMAC header', () => {
@@ -225,3 +229,96 @@ test('peer control requires token and signs synthetic incoming call webhooks', a
     signWebhookPayload(delivered.init.body, env.MOCK_META_APP_SECRET),
   )
 })
+
+test('Graph mock rejects and terminates only synthetic calls with signed call events', async () => {
+  const calls = createCallStore()
+  const delivered = []
+  const handler = createGraphHandler({
+    env,
+    calls,
+    fetchImpl: async (url, init) => {
+      delivered.push({ url, init, body: JSON.parse(init.body) })
+      return { ok: true, status: 200 }
+    },
+    log: () => {},
+  })
+
+  const rejectedCall = calls.create({ direction: 'USER_INITIATED', offer })
+  const rejected = await invoke(handler, {
+    method: 'POST',
+    url: '/v27.0/740434745820831/calls',
+    body: { action: 'reject', call_id: rejectedCall.id },
+  })
+  assert.equal(rejected.statusCode, 200)
+  assert.equal(rejectedCall.state, 'rejected')
+  assert.equal(delivered[0].body.entry[0].changes[0].value.calls[0].status, 'REJECTED')
+  assert.equal(
+    delivered[0].init.headers['x-hub-signature-256'],
+    signWebhookPayload(delivered[0].init.body, env.MOCK_META_APP_SECRET),
+  )
+
+  const terminatedCall = calls.create({ direction: 'BUSINESS_INITIATED', offer })
+  const terminated = await invoke(handler, {
+    method: 'POST',
+    url: '/v27.0/740434745820831/calls',
+    body: { action: 'terminate', call_id: terminatedCall.id },
+  })
+  assert.equal(terminated.statusCode, 200)
+  assert.equal(terminatedCall.state, 'terminated')
+  assert.equal(delivered[1].body.entry[0].changes[0].value.calls[0].status, 'COMPLETED')
+  assert.equal(
+    delivered[1].init.headers['x-hub-signature-256'],
+    signWebhookPayload(delivered[1].init.body, env.MOCK_META_APP_SECRET),
+  )
+})
+
+test('peer answers an outbound offer and emits signed answer and accepted webhooks', async () => {
+  const calls = createCallStore()
+  const call = calls.create({ direction: 'BUSINESS_INITIATED', offer })
+  const delivered = []
+  const handler = createPeerHandler({
+    env,
+    calls,
+    peerHtml: '<html>peer</html>',
+    fetchImpl: async (url, init) => {
+      delivered.push({ url, init, body: JSON.parse(init.body) })
+      return { ok: true, status: 200 }
+    },
+    log: () => {},
+  })
+  const headers = { 'x-qa-mock-token': env.MOCK_CONTROL_TOKEN }
+
+  const submitted = await invoke(handler, {
+    method: 'POST',
+    url: '/qa/calls/' + encodeURIComponent(call.id) + '/answer',
+    headers,
+    body: { answer },
+  })
+  assert.equal(submitted.statusCode, 200)
+  assert.equal(call.remoteAnswer, answer)
+  assert.equal(delivered[0].body.entry[0].changes[0].value.calls[0].session.sdp_type, 'answer')
+  assert.equal(
+    delivered[0].init.headers['x-hub-signature-256'],
+    signWebhookPayload(delivered[0].init.body, env.MOCK_META_APP_SECRET),
+  )
+
+  const connected = await invoke(handler, {
+    method: 'POST',
+    url: '/qa/calls/' + encodeURIComponent(call.id) + '/peer-connected',
+    headers,
+    body: {},
+  })
+  assert.equal(connected.statusCode, 200)
+  assert.equal(call.state, 'connected')
+  assert.equal(delivered[1].body.entry[0].changes[0].value.statuses[0].status, 'ACCEPTED')
+
+  const disconnected = await invoke(handler, {
+    method: 'POST',
+    url: '/qa/calls/' + encodeURIComponent(call.id) + '/peer-disconnect',
+    headers,
+    body: {},
+  })
+  assert.equal(disconnected.statusCode, 200)
+  assert.equal(call.state, 'peer-disconnected')
+})
+
