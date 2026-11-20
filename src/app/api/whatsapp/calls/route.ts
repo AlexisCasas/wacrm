@@ -28,6 +28,7 @@ export async function GET() {
         'ended_at',
         'duration_seconds',
         'claimed_by_user_id',
+        'claim_token',
         'claim_expires_at',
         'session_sdp_expires_at',
         'created_at',
@@ -42,12 +43,14 @@ export async function GET() {
       return NextResponse.json({ error: 'Could not load active calls' }, { status: 500 })
     }
 
-    const sessions = (data ?? []).map((row) => ({
-      ...row,
-      claimed_by_me: row.claimed_by_user_id === userId && Boolean(row.claim_expires_at && new Date(row.claim_expires_at).getTime() > Date.now()),
-      claim_available: !row.claim_token || !row.claim_expires_at || new Date(row.claim_expires_at).getTime() <= Date.now(),
-      claimed_by_user_id: undefined,
-    }))
+    const sessions = (data ?? []).map((row) => {
+      const { claim_token, claimed_by_user_id, claim_expires_at, ...publicRow } = row
+      return {
+        ...publicRow,
+        claimed_by_me: claimed_by_user_id === userId && Boolean(claim_expires_at && new Date(claim_expires_at).getTime() > Date.now()),
+        claim_available: !claim_token || !claim_expires_at || new Date(claim_expires_at).getTime() <= Date.now(),
+      }
+    })
 
     return NextResponse.json({ sessions })
   } catch (error) {
