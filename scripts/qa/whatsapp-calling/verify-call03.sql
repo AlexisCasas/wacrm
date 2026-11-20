@@ -244,7 +244,8 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_cross_tenant,repeat('d',64),
       'connect',1795120003,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     PERFORM public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_cross_tenant,v_user_a);
     BEGIN
@@ -267,7 +268,8 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_wrong_identity,repeat('e',64),
       'connect',1795120004,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     PERFORM public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_wrong_identity,v_user_a);
     BEGIN
