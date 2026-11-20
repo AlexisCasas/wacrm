@@ -25,6 +25,7 @@ on:
     paths:
       - 'supabase/**'
       - '.github/workflows/migrations.yml'
+      - 'scripts/qa/whatsapp-calling/**'
   push:
     branches: [main]
     paths:
@@ -62,6 +63,13 @@ jobs:
           fi
           echo "MIGRATION_VERSION_UNIQUENESS=PASS"
 
+      - name: Ensure PostgreSQL client is available
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-client
+          fi
+
       - name: Start Postgres
         run: supabase db start
 
@@ -81,6 +89,12 @@ jobs:
       # just the absence of an error.
       - name: Verify the resulting schema
         run: supabase db query --local --file supabase/ci/verify-schema.sql
+
+      - name: Verify WhatsApp Calling sessions, permissions, deduplication and tenant isolation
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify.sql
+
+      - name: Verify concurrent WhatsApp Calling agent claims and lease release
+        run: bash scripts/qa/whatsapp-calling/verify-concurrency.sh
 
       - name: Verify durable webhook inbox leases, deduplication and RLS
         run: supabase db query --local --file supabase/ci/webhook-inbox-test.sql
