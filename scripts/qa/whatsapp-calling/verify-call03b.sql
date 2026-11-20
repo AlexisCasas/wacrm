@@ -8,11 +8,16 @@ DECLARE
   v_contact uuid := gen_random_uuid();
   v_conversation uuid := gen_random_uuid();
   v_request_id uuid := 'b3000000-0000-4000-8000-000000000002';
+  v_request_id_2 uuid := 'b3000000-0000-4000-8000-000000000003';
   v_call_id text := 'wacid.qa-call03b-reconciled';
+  v_call_id_2 text := 'wacid.qa-call03b-upsert';
   v_phone_number_id text := '740434745820831';
   v_offer_encrypted text := 'encrypted:CALL03B synthetic offer';
+  v_offer_encrypted_2 text := 'encrypted:CALL03B synthetic offer 2';
   v_expiry timestamptz := now()+interval '5 minutes';
+  v_expiry_2 timestamptz := now()+interval '5 minutes';
   v_begin jsonb;
+  v_begin_2 jsonb;
   v_duplicate jsonb;
   v_signature text := 'public.whatsapp_call_outbound_attempt_begin(uuid,text,uuid,uuid,uuid,uuid,text,text,text,text,text,text,timestamptz)';
   v_bad_phone_rejected boolean := false;
@@ -142,6 +147,57 @@ BEGIN
       v_offer_encrypted,v_expiry
     ) IS DISTINCT FROM true THEN
       RAISE EXCEPTION 'CALL03B_LATE_HTTP_COMPLETION_NOT_IDEMPOTENT';
+    END IF;
+
+    -- Exercise the HTTP-response-first path: the webhook creates the
+    -- session and stores Meta's remote SDP answer before the connect response
+    -- arrives. The completion RPC must upsert local metadata without
+    -- overwriting that remote answer.
+    v_begin_2 := public.whatsapp_call_outbound_attempt_begin(
+      v_account,v_phone_number_id,v_request_id_2,v_user,
+      v_contact,v_conversation,'51980942247','51980942247',NULL,NULL,
+      'CALL03B synthetic contact',v_offer_encrypted_2,v_expiry_2
+    );
+    IF v_begin_2->>'created' IS DISTINCT FROM 'true' THEN
+      RAISE EXCEPTION 'CALL03B_SECOND_ATTEMPT_BEGIN_FAILED';
+    END IF;
+
+    PERFORM public.whatsapp_call_event_apply(
+      v_account,v_phone_number_id,v_call_id_2,repeat('c',64),
+      'connect',1795120001,'BUSINESS_INITIATED',
+      '51980942247','51980942247',NULL,NULL,
+      'CALL03B synthetic contact','connecting',
+      'encrypted:remote answer','answer',v_expiry_2,NULL,NULL,NULL
+    );
+
+    IF public.whatsapp_call_outbound_attempt_complete(
+      v_account,v_phone_number_id,v_request_id_2,v_user,v_call_id_2,
+      v_offer_encrypted_2,v_expiry_2
+    ) IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'CALL03B_WEBHOOK_FIRST_COMPLETION_FAILED';
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM public.whatsapp_call_sessions
+      WHERE account_id=v_account AND phone_number_id=v_phone_number_id
+        AND call_id=v_call_id_2
+        AND contact_id=v_contact AND conversation_id=v_conversation
+        AND initiated_by_user_id=v_user
+        AND session_sdp_encrypted='encrypted:remote answer'
+        AND session_sdp_type='answer'
+        AND agent_sdp_encrypted=v_offer_encrypted_2
+        AND agent_sdp_type='offer'
+    ) THEN
+      RAISE EXCEPTION 'CALL03B_WEBHOOK_FIRST_UPSERT_DID_NOT_PRESERVE_SDP';
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM public.whatsapp_call_outbound_attempts
+      WHERE account_id=v_account AND request_id=v_request_id_2
+        AND state='submitted' AND call_id=v_call_id_2
+        AND agent_sdp_encrypted IS NULL AND agent_sdp_expires_at IS NULL
+    ) THEN
+      RAISE EXCEPTION 'CALL03B_COMPLETED_ATTEMPT_DID_NOT_CLEAR_RESERVED_SDP';
     END IF;
 
     BEGIN
