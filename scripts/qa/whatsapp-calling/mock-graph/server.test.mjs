@@ -44,10 +44,15 @@ async function invoke(handler, { method = 'GET', url = '/', body, headers = {} }
     },
   }
   await handler(req, res)
+  const contentType = String(responseHeaders['content-type'] ?? responseHeaders['Content-Type'] ?? '')
+  let parsedBody = null
+  if (responseBody && contentType.includes('application/json')) {
+    try { parsedBody = JSON.parse(responseBody) } catch { parsedBody = null }
+  }
   return {
     statusCode,
     headers: responseHeaders,
-    body: responseBody ? JSON.parse(responseBody) : null,
+    body: parsedBody,
     text: responseBody,
   }
 }
@@ -202,7 +207,8 @@ test('peer control requires token and signs synthetic incoming call webhooks', a
 
   const page = await invoke(handler, { method: 'GET', url: '/peer' })
   assert.equal(page.statusCode, 200)
-  assert.match(page.text, new RegExp(env.MOCK_CONTROL_TOKEN))
+  assert.match(String(page.headers['content-type']), /^text\/html/)
+  assert.ok(page.text.includes(env.MOCK_CONTROL_TOKEN))
 
   const incoming = await invoke(handler, {
     method: 'POST',
