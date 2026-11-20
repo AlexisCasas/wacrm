@@ -27,6 +27,10 @@ BEGIN
       WHERE n.nspname='public' AND c.relname='whatsapp_call_permissions' AND c.relrowsecurity
     ) THEN RAISE EXCEPTION 'CALL02_PERMISSIONS_RLS_MISSING'; END IF;
     IF NOT EXISTS (
+      SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname='public' AND c.relname='whatsapp_call_permission_requests' AND c.relrowsecurity
+    ) THEN RAISE EXCEPTION 'CALL02_PERMISSION_REQUESTS_RLS_MISSING'; END IF;
+    IF NOT EXISTS (
       SELECT 1 FROM information_schema.columns
       WHERE table_schema='public' AND table_name='whatsapp_call_sessions' AND column_name='claim_expires_at'
     ) THEN RAISE EXCEPTION 'CALL02_CLAIM_LEASE_COLUMN_MISSING'; END IF;
@@ -37,6 +41,9 @@ BEGIN
       OR has_table_privilege('authenticated','public.whatsapp_call_events','SELECT')
       OR has_table_privilege('anon','public.whatsapp_call_permissions','SELECT')
       OR has_table_privilege('authenticated','public.whatsapp_call_permissions','SELECT')
+      OR has_table_privilege('anon','public.whatsapp_call_permission_requests','SELECT')
+      OR has_table_privilege('authenticated','public.whatsapp_call_permission_requests','SELECT')
+      OR NOT has_table_privilege('service_role','public.whatsapp_call_permission_requests','INSERT')
     THEN RAISE EXCEPTION 'CALL02_API_ROLE_TABLE_ACCESS_OPEN'; END IF;
 
     IF NOT has_function_privilege('service_role', v_signature, 'EXECUTE')
