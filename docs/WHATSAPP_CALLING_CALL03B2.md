@@ -94,3 +94,43 @@ No se activa el webhook `calls`, no se realizan llamadas reales, no se solicitan
 Fuera de alcance: habilitar Meta `calls`, cambiar variables/secretos, desplegar Vercel/VPS, ejecutar llamadas reales, añadir TURN externo, grabación de llamadas, videollamadas o persistencia de audio.
 
 **Criterio de cierre:** el Inbox puede completar los flujos en navegador simulado/mock, y todos los recursos de medios se liberan en cualquier salida. El piloto real requiere CALL-04 y autorización explícita.
+
+
+## 10. Estado de cierre técnico — 20/nov/2026
+
+**Implementación y QA automatizado:** PASS en el código CALL-03B2.  
+**QA visual de navegador:** PENDIENTE por falta de un proyecto Vercel enlazado al repositorio WACRM. No se creó proyecto ni deployment.
+
+### HEAD y ejecuciones
+
+- HEAD de código validado: `8282198ea7230e22ea7c80fcc8c13647e97b76d6`.
+- CI #371 / run `44767589551`: PASS — Lint, Typecheck, Tests y Build.
+- Migrations #235 / run `44767589301`: PASS — replay limpio, esquema, aislamiento multi-tenant, concurrencia, atribución, CALL-03B, RLS y webhook durable.
+- `src/components/inbox/calling-panel.test.tsx`: 17 pruebas de regresión.
+
+### Correcciones incorporadas durante la revisión
+
+- Si `terminate` falla, la llamada no desaparece de la interfaz: se conserva el identificador y se permite reintentar.
+- Si la configuración saliente falla después de crear la sesión y Meta no confirma la terminación, se detienen los medios locales pero se conserva el control de finalización.
+- Si falla la terminación durante un cambio de conversación, se liberan los medios y se mantienen los controles de reintento.
+- Se cubren desmontaje, cambio de conversación, desconexión ICE recuperable/fallida, rechazo, permiso de micrófono denegado, claim ocupado y falta de atribución.
+- El cliente usa la capacidad `send-messages`, alineada con el guard `requireRole('agent')` del endpoint, para ocultar Calling a usuarios de solo lectura.
+- El encabezado del Inbox permite envolver controles en pantallas estrechas y anuncia la llamada entrante con `role="alert"`.
+
+### Alcance y restricciones
+
+- La llamada entrante se detecta únicamente mientras está abierta la conversación correspondiente. El Call Dock global de la implementación alternativa no fue seleccionado para este incremento.
+- El PR alternativo #139 fue cerrado como supersedido, sin merge. El PR seleccionado es #140.
+- No se solicita micrófono al cargar el Inbox; los tests no usan micrófono real ni invocan Graph API.
+- Meta `calls` continúa desactivado y `messages` activo.
+- No se modificaron VPS, Supabase Cloud, secretos, allowlists ni producción.
+- No se desplegó en Vercel ni se creó un proyecto para obtener preview.
+
+### Pendientes para el cierre formal
+
+1. Conectar el proyecto WACRM existente en Vercel o autorizar un proyecto exclusivo de preview.
+2. Ejecutar QA visual del Inbox en escritorio y móvil con una cuenta/entorno de QA seguro.
+3. Integrar los PR apilados en orden: #134 → #136 → #137 → #138 → #140.
+4. Mantener CALL-04 separado: habilitación de flags/webhook y pruebas reales requieren autorización operativa explícita.
+
+**Estado:** CALL-03B2 automatizado PASS; cierre formal bloqueado únicamente por QA visual y la integración ordenada de dependencias.
