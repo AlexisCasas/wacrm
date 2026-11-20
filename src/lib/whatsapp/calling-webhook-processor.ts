@@ -195,7 +195,7 @@ export async function processWhatsAppCallingWebhookChange(
       p_start_time: unixSecondsToIso(call.start_time),
       p_end_time: unixSecondsToIso(call.end_time),
       p_duration_seconds: Number.isInteger(call.duration) ? call.duration : null,
-      p_sdp_type: call.session?.sdp_type ?? null,
+      p_sdp_type: call.session?.sdpCiphertext ? call.session.sdp_type : null,
       p_sdp_ciphertext: call.session?.sdpCiphertext ?? null,
       p_sdp_expires_at: call.session?.sdpCiphertext
         ? new Date(Date.now() + 90_000).toISOString()
