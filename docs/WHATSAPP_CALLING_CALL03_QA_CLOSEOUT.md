@@ -86,93 +86,154 @@ Estos resultados prueban los recorridos sintéticos. La comprobación explícita
 - Hash de definición anterior: `85d93854`; hash de definición nueva: `4fe4235d` (MD5 reportado por la sesión operativa).
 - Backup previo disponible bajo `/opt/backups/call03b2-qa/`, con permisos 600 y validación `pg_restore --list`.
 
-## 7. Cuatro pruebas finales de CALL-03
+## 7. Ejecución final T1–T4 — 20/nov/2026
 
-Las pruebas unitarias/SQL relacionadas ya pasan en CI, pero falta cerrar su ejecución integrada en navegador QA y adjuntar evidencia. No marcar como PASS hasta completar cada escenario.
+**Resultado general:** las cuatro pruebas funcionales se ejecutaron en la VPS QA. T1, T2, T3B y T4 pasan con las salvedades registradas abajo. T3A pasa como simulación de estado WebRTC, no como interrupción real de red. Esto cierra la ronda de QA sintética; no equivale a autorización ni validación de llamadas reales de Meta.
 
-### T1 — Concurrencia real entre agentes A/B
+| Prueba | Automatizada | Navegador | BD | Resultado |
+|---|---|---|---|---|
+| T1 Concurrencia A/C | Solo prueba SQL de claim (`verify-concurrency.sh`) | PASS | PASS | **PASS**, con solicitud de micrófono previa al claim del agente perdedor |
+| T2 Cambio de conversación | Solo pruebas unitarias (CI) | PASS | PASS | **PASS** |
+| T3A Recuperación ICE | Solo pruebas unitarias (CI) | Simulada, no es interrupción real de red | PASS | **PASS simulado** |
+| T3B Desconexión persistente | Sin automatización específica | PASS | PASS | **PASS** |
+| T4 Historial y atribución | Solo pruebas unitarias (CI) | PASS | PASS | **PASS**, con datos de duración y nombres de QA incompletos |
 
-**Objetivo:** una misma llamada entrante no puede ser reclamada ni aceptada por dos agentes.
+### T1 — Concurrencia A/C
 
-1. Abrir dos sesiones de navegador independientes con los dos usuarios QA de la misma cuenta.
-2. Abrir la misma conversación piloto en ambas sesiones.
-3. Preparar el peer sintético y generar una sola llamada entrante.
-4. Intentar aceptar desde ambos agentes casi simultáneamente.
-5. Verificar que exactamente un agente gana el claim; el otro recibe conflicto/no puede ejecutar `pre_accept` ni `accept`.
-6. Verificar una sola sesión, un único `accepted_by_user_id`, sin doble señalización ni doble audio.
-7. Finalizar la llamada y comprobar que el ownership y el historial son consistentes.
+- A y C abrieron la misma conversación y aceptaron casi simultáneamente una única llamada entrante.
+- A obtuvo `claim 200`, `pre_accept 200` y `accept 200`.
+- C obtuvo `claim 409`, no estableció audio y liberó su pista de micrófono.
+- La BD conservó una sola sesión; `accepted_by_user_id` y `ended_by_user_id` corresponden a A; no quedaron claims ni SDP.
+- **Hallazgo de privacidad/UX:** C recibió el prompt de micrófono antes de que el servidor rechazara su claim. No hubo audio para C y la pista fue liberada, pero la solicitud de permiso era evitable. Ver sección 8.
 
-**Evidencia:** capturas de ambas sesiones, respuestas HTTP sanitizadas, `call_id`, `claimed_by_user_id`, `accepted_by_user_id` y conteo de eventos.
+### T2 — Cambio de conversación
 
-### T2 — Cambio de conversación durante una llamada entrante pendiente
+- Llamada sintética `…18cc86`.
+- Al cambiar al hilo alternativo, la alerta desapareció y no se envió ningún POST a la API.
+- Al volver al hilo piloto 10 segundos después, la llamada reapareció y pudo aceptarse y finalizarse.
+- `conversation_id` permaneció asociado al hilo piloto.
+- Tras comprobar que cero llamadas referenciaban el contacto alternativo, se eliminaron el contacto y su conversación sintéticos.
 
-**Objetivo:** la llamada solo se presenta y acepta desde la conversación a la que fue asociada.
+### T3 — ICE y desconexión
 
-1. Abrir la conversación piloto y generar una llamada entrante.
-2. Antes de aceptar, cambiar a otra conversación.
-3. Verificar que desaparece la alerta y no se ejecutan claim/pre_accept/accept en la conversación equivocada.
-4. Volver a la conversación piloto antes de vencer el TTL de 60 segundos.
-5. Verificar que la llamada vuelve a mostrarse y puede aceptarse desde el hilo correcto.
-6. Confirmar que `conversation_id` no cambia y que la llamada no se asocia al hilo alternativo.
+**T3A — recuperación simulada (`…471255`)**
 
-**Evidencia:** capturas de ambas conversaciones, acciones de API y `conversation_id` antes/después.
+- Se simuló `connectionState=disconnected` durante aproximadamente cuatro segundos y luego se restauró.
+- No se envió `terminate`; la llamada siguió activa y el estado final fue `connected`.
+- Es una simulación de la API WebRTC, no una pérdida real de paquetes, interfaz de red o conectividad.
 
-### T3 — Desconexión inesperada, recuperación ICE y liberación
+**T3B — desconexión persistente (`…bd3a12`, `…e253f1`, `…a6d735`)**
 
-**Objetivo:** una interrupción transitoria no termina prematuramente la llamada; una pérdida persistente sí termina y libera medios.
+- El botón `Desconectar peer` llevó a `disconnected` aproximadamente a los ocho segundos.
+- WACRM envió `terminate` y recibió HTTP 200 aproximadamente a los 16 segundos.
+- Cinco segundos después, la `PeerConnection` estaba cerrada y las pistas estaban terminadas.
+- La BD registró `ended_by_user_id` del agente activo y no quedaron claims.
+- Se observó un estado transitorio `disconnected/live` si se consultaba antes de que respondiera `terminate`; la liberación local y el cierre final se confirmaron después de la respuesta.
 
-1. Establecer una llamada aceptada y confirmar audio en ambos sentidos.
-2. Provocar una interrupción transitoria de conectividad menor a ocho segundos y restaurarla; verificar que el estado vuelve a `connected` y no se envía `terminate`.
-3. En una segunda llamada, desconectar definitivamente el peer o dejar ICE en `failed`/`disconnected` más de ocho segundos.
-4. Verificar que WACRM envía `terminate`, detiene tracks y limpia PeerConnection, audio y timers.
-5. Confirmar que el peer muestra terminación y que no queda una sesión activa/reclamación huérfana.
+### T4 — Historial y atribución
 
-**Nota:** el botón actual `Desconectar peer` cierra la PeerConnection; sirve para la ruta de pérdida persistente. La recuperación transitoria ya tiene prueba unitaria en `calling-panel.test.tsx`; el QA manual debe usar una interrupción recuperable sin cerrar definitivamente el peer.
+- Se contrastaron llamadas entrantes aceptadas, entrantes rechazadas y salientes, incluyendo tres llamadas realizadas por el agente sintético C.
+- La UI coincidió con la BD para dirección, estado y atribución: iniciador, aceptante, rechazante y finalizador se resolvieron desde perfiles de la misma cuenta.
+- Se verificaron 41 eventos con 41 claves distintas y cero sesiones duplicadas.
+- La UI muestra `Duración: —` en las sesiones donde `duration_seconds` es `NULL`.
 
-**Evidencia:** estados ICE/connectionState, marcas de tiempo, acción terminal, estado final en DB y confirmación de tracks liberados.
+## 8. Hallazgos y acciones antes de llamadas reales
 
-### T4 — Historial y atribución por agente
+### H1 — El claim debe preceder a la solicitud de micrófono
 
-**Objetivo:** los eventos visibles y persistidos reflejan quién inició, aceptó, rechazó y finalizó cada llamada.
+**Severidad:** precondición obligatoria antes del piloto real.
 
-1. Completar una llamada entrante aceptada y terminada.
-2. Completar otra entrante rechazada por un agente.
-3. Completar una llamada saliente y terminarla.
-4. Comparar historial del Inbox con las filas `whatsapp_call_sessions`.
-5. Verificar `initiated_by_user_id`, `accepted_by_user_id`, `rejected_by_user_id`, `ended_by_user_id`, `conversation_id`, `direction`, `state`, `duration_seconds`, `created_at`, `started_at` y `ended_at`.
-6. Confirmar que los agentes A/B no heredan atribuciones del otro y que los eventos duplicados no duplican sesiones.
+La implementación actual de `CallingPanel.acceptIncoming` solicita `getUserMedia()` antes de ejecutar `POST action=claim`. Por eso el agente perdedor de T1 recibe un prompt de micrófono aunque el servidor después le responda 409.
 
-**Corrección de UI incorporada en la punta actual de PR #142 (pendiente de CI/QA):** el GET de historial resuelve nombres de agentes desde `profiles` filtrando por el mismo `account_id`; la UI muestra iniciador, aceptante, rechazante/finalizador, fecha y duración. Se añadieron pruebas de API para aislamiento de nombres por cuenta y prueba de componente para la presentación del historial. T4 debe confirmar esta información en el navegador y contrastarla con PostgreSQL QA.
+**Corrección propuesta (no aplicada en este cierre):**
 
-## 8. Criterio de cierre de CALL-03
+1. Al hacer clic en Aceptar, reclamar la llamada primero.
+2. Si el claim devuelve 409, no pedir acceso al micrófono ni crear `MediaStream`/`RTCPeerConnection`.
+3. Solo después de ganar el claim solicitar micrófono.
+4. Si el usuario deniega/cancela, liberar el claim y detener cualquier pista creada.
+5. Tras resolver el prompt, renovar/revalidar el lease y volver a comprobar que la oferta SDP sigue vigente antes de `pre_accept`; la oferta entrante expira a los 60 segundos y el lease actual es de 90 segundos.
+6. Añadir prueba que demuestre `getUserMedia` no se invoca cuando claim responde 409 y prueba que la denegación de micrófono libera el claim.
 
-CALL-03 solo se cierra cuando:
+### H2 — Duración y timestamps de Meta
 
-- T1–T4 tienen evidencia QA manual PASS.
-- Audio bidireccional confirmado en llamada entrante y saliente.
-- Historial y atribución cumplen el contrato funcional (incluida la brecha de UI identificada).
-- CI, Migrations y replay limpio siguen PASS para los commits finales.
-- Se revisa el orden de integración de PRs apilados.
-- El simulador QA queda fuera de los artefactos de producción.
-- Meta `calls` permanece desactivado hasta la autorización específica de CALL-04.
+**Severidad:** corregir el simulador y validar el payload antes del piloto; no requiere asumir una migración de esquema.
 
-## 9. Entrada a CALL-04 — todavía no iniciar implementación
+La documentación oficial de Meta especifica que `start_time`, `end_time` y `duration` solo aparecen en el webhook `terminate` cuando la otra parte atendió la llamada. Una llamada `COMPLETED` no atendida puede carecer legítimamente de los tres campos. `duration` está en segundos.
 
-El diseño de CALL-04 comenzará después del cierre de T1–T4. Sus dependencias iniciales son:
+Revisión del código:
 
-1. CALL-01/02/03 integrados en orden y con historial de PRs limpio.
-2. Validación documental del contrato Meta vigente: permisos, webhooks, estados, SDP, límites y requisitos de llamada.
-3. App Meta/WhatsApp y número empresarial correctamente habilitados para Calling; permisos/consentimiento verificados.
-4. Secretos reales gestionados solo en servidor y separados del mock QA.
-5. Webhook `calls` configurado con firma verificada, suscripción correcta, idempotencia y durable inbox.
-6. Observabilidad y reconciliación de estados, errores, llamadas huérfanas, expiraciones y eventos fuera de orden.
-7. Allowlist de piloto de servidor para Keyler, límites de concurrencia y kill switch.
-8. Pruebas de seguridad multi-tenant, rate limiting, claims, roles, privacidad de SDP y no exposición de tokens.
-9. Plan de rollback, ventana de activación y criterio de salida del piloto antes de ampliar a otros agentes.
+- `calling-webhook.ts` ya parsea `start_time`, `end_time` y `duration`.
+- `calling-webhook-processor.ts` ya los transforma en `p_started_at`, `p_ended_at` y `p_duration_seconds` para `whatsapp_call_event_apply`.
+- La migración CALL-03B2.1 ya persiste esos parámetros de forma aditiva con `COALESCE`.
+- La prueba del processor verifica `duration`, pero todavía no cubre conjuntamente `start_time` y `end_time`.
+- En el HEAD de PR #141 (`62974616`), `server.mjs` sí añade `end_time` en el evento `terminate`, pero no añade `start_time` ni `duration`; además lo añade incluso para llamadas no atendidas. Esto no coincide exactamente con el informe de navegador, que indica que no se emitieron los tres campos. Hay que contrastar el payload sanitizado capturado con el código exacto de la imagen desplegada.
 
-CALL-04 no habilita automáticamente llamadas reales: la activación del webhook y de los flags requiere autorización operativa explícita y un gate de preflight separado.
+**Corrección propuesta (no aplicada):**
 
-## 10. Estado actual
+1. El mock debe emitir `start_time`, `end_time` y `duration` solo cuando `acceptedAt` exista.
+2. Para llamadas no atendidas/rechazadas debe omitir los tres campos.
+3. Añadir pruebas de parser, processor y mock para ambas ramas.
+4. Reproducir un `terminate` sintético y verificar la persistencia SQL y la UI.
+5. En Meta real, no inventar duración ni timestamps si Meta los omite; mantener `NULL` y distinguir llamada no atendida de telemetría pendiente/incompleta.
 
-**CALL-03B2.1 desplegado y validado en QA.** Las pruebas iniciales entrantes/salientes reportadas por el usuario son satisfactorias. La mejora de historial/atribución está implementada en la punta actual de PR #142, pendiente de CI y despliegue QA. **CALL-03 sigue abierto** por T1–T4 manuales. CALL-04 está pendiente de diseño tras el cierre.
+**No hace falta una nueva migración** salvo que el replay o la inspección del esquema real contradigan el contrato existente.
+
+### H3 — Nombres de A/B en los perfiles QA
+
+Los perfiles de A y B no tienen `full_name`; por eso la UI muestra `Agente no disponible`. C sí tiene nombre y se muestra correctamente. Es un dato incompleto de los perfiles QA, no un fallo del aislamiento multi-tenant ni de la consulta. No se modificaron perfiles existentes.
+
+### H4 — T3A no es una prueba real de pérdida de red
+
+T3A se conserva como PASS simulado. Antes de ampliar el piloto a más agentes/clientes debe ejecutarse una prueba controlada de interrupción de red en un entorno QA, sin manipular la red de producción. T3B sí verificó desconexión persistente y liberación.
+
+## 9. Despliegue QA, limpieza y aislamiento
+
+Según el informe de ejecución de Claude Code:
+
+- Worktree `/opt/apps/wacrm-call03b2-1-qa` actualizado por fast-forward a `8c4d37b90e4d2def7f7a60154ace07d36c19f4f7`, árbol limpio.
+- Imagen de app: `wacrm-app:call03b2-history-8c4d37b` (ID `d9ff178d1bcb`).
+- Mock: `wacrm-call03b2-mock-graph:62974616`.
+- Se recrearon `app`, `mock-graph` y `localproxy` con `--no-deps`.
+- Backup del Compose: `docker-compose.yml.bak-pre-8c4d37b`.
+- `db`, `auth`, `rest` y `gw` permanecieron intactos; no hubo migraciones ni cambios de esquema.
+- A y B pertenecían a cuentas distintas. No se modificaron sus perfiles. Se creó un agente sintético C dentro de la cuenta A para T1; sus credenciales quedaron únicamente en `.env` con permisos 600 y su cuenta automática fue eliminada.
+- `graph.facebook.com` continuó resolviendo a `127.0.0.1`; el mock fue el único receptor de Graph Calling.
+- Webhook real `calls` desactivado; no hubo llamadas ni mensajes reales.
+- Al cierre: cero llamadas activas, cero claims huérfanos, cero SDP pendientes y cero intentos salientes con SDP. Las llamadas de prueba quedaron `terminated` o `rejected`; se conservó un contacto y una conversación QA.
+- Se reportaron dos errores de `pricing analytics` contra el mock; no se reportaron otros errores de Calling.
+- Producción permaneció sin cambios: `wacrm-app-1`, imagen `shalom-provider-38ecdc51`, healthy, cero reinicios y `/login` HTTP 200.
+- No se fusionaron PRs ni se modificó `main`.
+
+**Evidencia QA en VPS:** `/opt/backups/call03b2-qa/evidence/call03-closeout/` contiene 23 capturas sanitizadas, `RESULTS.md`, `sessions-final-sanitized.txt` y scripts de prueba. Hay tres capturas de ejecuciones T3B repetidas.
+
+## 10. Estado de cierre y dependencias de integración
+
+**CALL-03 QA sintético: completado con hallazgos de hardening previos a llamadas reales.** T1, T2, T3B y T4 pasaron en navegador/BD; T3A es PASS simulado. No se habilitó Meta ni se tocó producción.
+
+### PRs y orden de integración
+
+| Orden | PR | Incremento | Estado | Gates del HEAD revisado |
+|---:|---|---|---|---|
+| 1 | [#134](https://github.com/AlexisCasas/wacrm/pull/134) | CALL-01 | Open, no draft | CI #241 PASS |
+| 2 | [#136](https://github.com/AlexisCasas/wacrm/pull/136) | CALL-02 | Open, Draft | CI #252 PASS; Migrations #147 PASS |
+| 3 | [#137](https://github.com/AlexisCasas/wacrm/pull/137) | CALL-03A | Open, Draft | CI #294 PASS; Migrations #186 PASS |
+| 4 | [#138](https://github.com/AlexisCasas/wacrm/pull/138) | CALL-03B1 | Open, Draft | CI #326 PASS; Migrations #218 PASS |
+| 5 | [#140](https://github.com/AlexisCasas/wacrm/pull/140) | CALL-03B2 | Open, Draft | CI #373 PASS; Migrations #237 PASS |
+| 6 | [#142](https://github.com/AlexisCasas/wacrm/pull/142) | CALL-03B2.1 + historial | Open, Draft | CI #419 PASS; Migrations #283 PASS |
+
+- PR #141 es el simulador Graph/peer, exclusivo de QA; **no se integra al artefacto de producción**.
+- PR #139 fue cerrado sin merge por estar supersedido por #140.
+- CALL-01 y CALL-02 aún no están fusionados a `main`. Por tanto, CALL-04 no puede pasar a activación hasta revisar y fusionar el stack en el orden anterior y repetir los gates sobre la rama integrada.
+
+### Gates de salida antes del primer piloto real
+
+1. Corregir H1: claim antes del micrófono y prueba de regresión de claim perdido.
+2. Corregir H2: mock `terminate` fiel a Meta y prueba de timestamps/duración en llamadas atendidas y no atendidas.
+3. Completar revisión de T3A como prueba real de red en QA antes de ampliar el piloto.
+4. Revisar los perfiles del agente piloto para que tengan nombre visible; no cambiar perfiles de otros usuarios.
+5. Integrar PRs #134 → #136 → #137 → #138 → #140 → #142 en orden; excluir #141.
+6. Repetir CI, Migrations, replay limpio y QA de humo sobre el stack integrado.
+7. Mantener el webhook real `calls` y el flag de Calling desactivados hasta una autorización específica de CALL-04.
+
+El diseño de CALL-04 se encuentra en `docs/WHATSAPP_CALLING_CALL04_DESIGN.md`. El diseño no autoriza activar settings de Meta, suscribir el webhook real ni iniciar llamadas reales.
 
