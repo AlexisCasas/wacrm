@@ -56,6 +56,8 @@ export interface WhatsAppCallingStatus {
   status: string
   timestamp: string
   recipient_id?: string
+  recipient_user_id?: string
+  recipient_parent_user_id?: string
   type?: string
   biz_opaque_callback_data?: string
 }
