@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { callingSupabaseAdmin } from '@/lib/whatsapp/calling-admin'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { assertWhatsAppCallingEnabled } from '@/lib/whatsapp/calling-config'
 
@@ -25,7 +25,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'session_id must be a UUID' }, { status: 400 })
     }
 
-    const { data: session, error: sessionError } = await supabaseAdmin()
+    const { data: session, error: sessionError } = await callingSupabaseAdmin()
       .from('whatsapp_call_sessions')
       .select('id, state, direction, contact_id')
       .eq('id', sessionId)
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Call is not available to answer' }, { status: 409 })
     }
     if (session.contact_id) {
-      const { data: contact, error: contactError } = await supabaseAdmin()
+      const { data: contact, error: contactError } = await callingSupabaseAdmin()
         .from('contacts')
         .select('blocked')
         .eq('id', session.contact_id)
@@ -56,7 +56,7 @@ export async function POST(request: Request) {
       }
     }
 
-    const { data, error } = await supabaseAdmin().rpc('claim_whatsapp_call_session', {
+    const { data, error } = await callingSupabaseAdmin().rpc('claim_whatsapp_call_session', {
       p_account_id: accountId,
       p_session_id: sessionId,
       p_user_id: userId,
