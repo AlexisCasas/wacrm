@@ -335,7 +335,7 @@ BEGIN
     FOR UPDATE SKIP LOCKED
   )
   UPDATE public.whatsapp_call_sessions s
-  SET state='failed',
+  SET state='terminated',
       ended_at=COALESCE(s.ended_at,now()),
       claimed_by_user_id=NULL,
       claimed_at=NULL,
