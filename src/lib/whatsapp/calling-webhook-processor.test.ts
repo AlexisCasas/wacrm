@@ -70,6 +70,41 @@ describe('CALL-02 Calling webhook persistence', () => {
     expect(rpc).not.toHaveBeenCalled()
   })
 
+
+  it('fails closed when a connect event has no direction or the wrong SDP role', async () => {
+    const missingSdp = {
+      id: 'wacid.missing-sdp',
+      event: 'connect',
+      timestamp: '1795120009',
+      direction: 'USER_INITIATED',
+    }
+    const wrongIncomingSdp = {
+      id: 'wacid.wrong-incoming-sdp',
+      event: 'connect',
+      timestamp: '1795120010',
+      direction: 'USER_INITIATED',
+      session: { sdp_type: 'answer', sdp: 'v=0\\r\\n' },
+    }
+    const wrongOutgoingSdp = {
+      id: 'wacid.wrong-outgoing-sdp',
+      event: 'connect',
+      timestamp: '1795120011',
+      direction: 'BUSINESS_INITIATED',
+      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+    }
+
+    for (const call of [missingSdp, wrongIncomingSdp, wrongOutgoingSdp]) {
+      await expect(processCallingWebhookChange(db, {
+        field: 'calls',
+        value: {
+          metadata: { phone_number_id: config.phone_number_id },
+          calls: [call],
+        },
+      })).rejects.toThrow(/call_connect_/)
+    }
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
   it('persists terminate and ignores non-Calling status objects', async () => {
     rpc.mockResolvedValue({ data: true, error: null })
     await processCallingWebhookChange(db, {
