@@ -73,11 +73,11 @@ export function stopCallingMediaStream(stream: MediaStream | null | undefined): 
 
 /** Remove event handlers before closing so stale callbacks cannot update React state. */
 export function closeCallingPeerConnection(pc: RTCPeerConnection | null | undefined): void {
-  if (!pc || pc.signalingState === 'closed') return
+  if (!pc) return
   pc.ontrack = null
   pc.oniceconnectionstatechange = null
   pc.onconnectionstatechange = null
-  pc.close()
+  if (pc.signalingState !== 'closed') pc.close()
 }
 
 export function readLocalSdp(
