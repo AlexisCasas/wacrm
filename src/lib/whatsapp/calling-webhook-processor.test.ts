@@ -172,6 +172,47 @@ describe('CALL-02 Calling webhook persistence', () => {
     })
   })
 
+
+  it('persists a rejected business-initiated call status as terminal', async () => {
+    rpc.mockResolvedValue({ data: true, error: null })
+    await processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        statuses: [{
+          id: 'wacid.status-rejected',
+          status: 'REJECTED',
+          timestamp: '1795120007',
+          recipient_id: '51911111111',
+          type: 'call',
+        }],
+      },
+    })
+    expect(rpc).toHaveBeenCalledTimes(1)
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_event_name: 'status',
+      p_state: 'rejected',
+      p_customer_key: '51911111111',
+    })
+  })
+
+  it('ignores unknown future Calling status values instead of creating an offered session', async () => {
+    await processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        statuses: [{
+          id: 'wacid.status-unknown',
+          status: 'FUTURE_STATUS',
+          timestamp: '1795120008',
+          recipient_id: '51911111111',
+          type: 'call',
+        }],
+      },
+    })
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
   it('persists an explicit temporary permission with its seven-day expiry', async () => {
     rpc.mockResolvedValue({ data: true, error: null })
     const reply = {
