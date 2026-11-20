@@ -6,6 +6,7 @@ import {
   buildCallWebhook,
   createCallStore,
   createCallEvent,
+  terminateTiming,
   createGraphHandler,
   createPeerHandler,
   isControlTokenValid,
@@ -335,3 +336,45 @@ test('peer answers an outbound offer and emits signed answer and accepted webhoo
   assert.equal(call.state, 'peer-disconnected')
 })
 
+
+test('terminate reports start_time and duration only for connected calls', async () => {
+  assert.deepEqual(terminateTiming({ acceptedAt: null }, 1795120060), { end_time: '1795120060' })
+  assert.deepEqual(
+    terminateTiming({ acceptedAt: new Date(1795120000 * 1000).toISOString() }, 1795120060),
+    { start_time: '1795120000', end_time: '1795120060', duration: 60 },
+  )
+  // A clock skew must never produce a negative duration.
+  assert.deepEqual(
+    terminateTiming({ acceptedAt: new Date(1795120100 * 1000).toISOString() }, 1795120060),
+    { end_time: '1795120060' },
+  )
+
+  const calls = createCallStore()
+  const delivered = []
+  const handler = createGraphHandler({
+    env,
+    calls,
+    fetchImpl: async (url, init) => {
+      delivered.push(JSON.parse(init.body))
+      return { ok: true, status: 200 }
+    },
+    log: () => {},
+  })
+  const connected = calls.create({ direction: 'USER_INITIATED', offer })
+  connected.acceptedAt = new Date(Date.now() - 5000).toISOString()
+  const unanswered = calls.create({ direction: 'USER_INITIATED', offer })
+  for (const call of [connected, unanswered]) {
+    const response = await invoke(handler, {
+      method: 'POST',
+      url: '/v27.0/740434745820831/calls',
+      body: { action: 'terminate', call_id: call.id },
+    })
+    assert.equal(response.statusCode, 200)
+  }
+  const [withStart, withoutStart] = delivered.map((body) => body.entry[0].changes[0].value.calls[0])
+  assert.match(withStart.start_time, /^\d+$/)
+  assert.ok(withStart.duration >= 4 && withStart.duration <= 6)
+  assert.equal(Number(withStart.end_time) - Number(withStart.start_time), withStart.duration)
+  assert.equal(withoutStart.start_time, undefined)
+  assert.equal(withoutStart.duration, undefined)
+})
