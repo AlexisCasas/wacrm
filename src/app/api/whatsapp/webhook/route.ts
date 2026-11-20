@@ -5,6 +5,7 @@ import { verifyMetaWebhookSignature } from '@/lib/whatsapp/webhook-signature'
 import { resolveWebhookSignatureSecrets } from '@/lib/whatsapp/webhook-tenant-secret'
 import { enqueueVerifiedWebhook, drainWebhookInbox } from '@/lib/whatsapp/webhook-inbox'
 import { processWebhook, type MetaWebhookPayload } from '@/lib/whatsapp/webhook-processor'
+import { protectWhatsAppCallingWebhookSdp } from '@/lib/whatsapp/calling-webhook'
 
 export const maxDuration = 60
 
@@ -174,7 +175,11 @@ export async function POST(request: Request) {
   // returning 200 and losing the message in an unobserved after() failure.
   let eventId: string
   try {
-    eventId = await enqueueVerifiedWebhook(supabaseAdmin(), rawBody, body)
+    // Calling SDP contains transient ICE/network metadata. Encrypt it before
+    // the payload enters the durable inbox; the original raw body is used
+    // only for the verified delivery digest and is never persisted.
+    const durableBody = protectWhatsAppCallingWebhookSdp(body, encrypt)
+    eventId = await enqueueVerifiedWebhook(supabaseAdmin(), rawBody, durableBody)
   } catch {
     return NextResponse.json(
       { error: 'Webhook temporarily unavailable' },
