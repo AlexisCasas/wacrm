@@ -215,7 +215,7 @@ describe('WhatsApp call permissions', () => {
     })
   })
 
-  it('sends the free-form permission request with Meta's interactive payload', async () => {
+  it("sends the free-form permission request with Meta's interactive payload", async () => {
     const captured: Array<{ url: string; init: RequestInit }> = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
       captured.push({ url, init })
