@@ -8,7 +8,7 @@ afterEach(() => {
 })
 
 describe('assertWhatsAppCallingEnabled', () => {
-  it('fails closed when the global environment switch is absent or false', async () => {
+  it('fails closed when the global environment switch is absent or false (default-off)', async () => {
     vi.stubEnv('WHATSAPP_CALLING_ENABLED', '')
     const from = vi.fn()
     const supabase = { from } as unknown as SupabaseClient
