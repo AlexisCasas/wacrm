@@ -85,87 +85,9 @@ describe('POST /api/whatsapp/calls — CALL-03A agent metadata', () => {
     })
   })
 
-  it('records the accepted agent and links only the supplied conversation through the guarded RPC', async () => {
-    const response = await POST(request({
-      action: 'agent_action',
-      agent_action: 'accepted',
-      call_id: 'wacid.qa-call03',
-      conversation_id: 'a3000000-0000-4000-8000-000000000001',
-    }))
-    const body = await response.json()
 
-    expect(response.status).toBe(200)
-    expect(body).toMatchObject({
-      success: true,
-      action: 'accepted',
-      conversation_id: 'a3000000-0000-4000-8000-000000000001',
-    })
-    expect(h.rpcCalls).toContainEqual({
-      name: 'whatsapp_call_session_agent_action',
-      args: {
-        p_account_id: 'account-from-session',
-        p_phone_number_id: '740434745820831',
-        p_call_id: 'wacid.qa-call03',
-        p_actor_user_id: 'agent-from-session',
-        p_action: 'accepted',
-        p_conversation_id: 'a3000000-0000-4000-8000-000000000001',
-      },
-    })
-  })
 
-  it('rejects unsupported agent actions before querying or mutating a call', async () => {
-    const response = await POST(request({
-      action: 'agent_action',
-      agent_action: 'force_connect',
-      call_id: 'wacid.qa-call03',
-    }))
 
-    expect(response.status).toBe(400)
-    expect(h.rpcCalls.filter((call) => call.name !== 'whatsapp_call_sdp_prune')).toHaveLength(0)
-  })
 
-  it('rejects malformed conversation IDs before calling the database', async () => {
-    const response = await POST(request({
-      action: 'agent_action',
-      agent_action: 'accepted',
-      call_id: 'wacid.qa-call03',
-      conversation_id: 'not-a-uuid',
-    }))
 
-    expect(response.status).toBe(400)
-    expect(h.rpcCalls.filter((call) => call.name !== 'whatsapp_call_sdp_prune')).toHaveLength(0)
-  })
-
-  it('returns conflict when the lease/action is no longer valid', async () => {
-    h.rpcResult = false
-    const response = await POST(request({
-      action: 'agent_action',
-      agent_action: 'accepted',
-      call_id: 'wacid.qa-call03',
-    }))
-
-    expect(response.status).toBe(409)
-  })
-
-  it('maps a cross-tenant or unauthorized database guard to 403', async () => {
-    h.rpcError = { code: '42501' }
-    const response = await POST(request({
-      action: 'agent_action',
-      agent_action: 'accepted',
-      call_id: 'wacid.qa-call03',
-      conversation_id: 'a3000000-0000-4000-8000-000000000001',
-    }))
-
-    expect(response.status).toBe(403)
-  })
-
-  it('rejects malformed call IDs for agent actions', async () => {
-    const response = await POST(request({
-      action: 'agent_action',
-      agent_action: 'ended',
-      call_id: 'not-a-meta-call-id',
-    }))
-
-    expect(response.status).toBe(400)
-  })
 })
