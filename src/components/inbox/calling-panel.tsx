@@ -481,6 +481,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     setUiState("requesting-media");
     setErrorMessage(null);
     let claimed = false;
+    let preAcceptAttempted = false;
     try {
       const stream = await requestMicrophone();
       if (conversationIdRef.current !== operationConversationId) {
@@ -513,6 +514,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       if (!localSdp) throw new Error(t("localAnswerMissing"));
 
       setUiState("connecting");
+      preAcceptAttempted = true;
       await postCallAction("pre_accept", {
         call_id: incoming.call_id,
         session: { sdp_type: "answer", sdp: localSdp },
@@ -521,10 +523,13 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       await waitForPeerConnected(peer);
       if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
-      await postCallAction("accept", {
+      const accepted = await postCallAction("accept", {
         call_id: incoming.call_id,
         conversation_id: conversation?.id,
       });
+      if (accepted.agent_attribution_recorded !== true && accepted.already_accepted !== true) {
+        throw new Error(t("callAcceptanceNotRecorded"));
+      }
       await enableAudio();
       const acceptedCall = { ...incoming, state: "connected" };
       setCall(acceptedCall);
@@ -533,7 +538,15 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     } catch (error) {
       const message = error instanceof Error ? error.message : t("callFailed");
       toast.error(message);
-      if (claimed) await releaseClaim(incoming.call_id);
+      if (preAcceptAttempted) {
+        try {
+          await postCallAction("terminate", { call_id: incoming.call_id });
+        } catch {
+          // The Meta call may already be terminal; the webhook remains authoritative.
+        }
+      } else if (claimed) {
+        await releaseClaim(incoming.call_id);
+      }
       resetCall();
       setErrorMessage(message);
     } finally {
