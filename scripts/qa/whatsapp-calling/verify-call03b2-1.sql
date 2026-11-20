@@ -297,12 +297,14 @@ BEGIN
       NULL,NULL,'CALL0321 fresh no SDP','offered',NULL,NULL,NULL,NULL,NULL,NULL
     );
 
-    -- An agent-accepted call may still await Meta's ACCEPTED status webhook.
-    -- Expiry cleanup must not mark it terminal or make it claimable by agent B.
+    -- An incomplete offer without SDP/expiry metadata is never claimable,
+    -- even during its five-minute grace period before stale cleanup.
     IF public.whatsapp_call_claim(v_account_a,v_phone_number_id,v_call_missing_sdp_fresh,v_user_a) IS DISTINCT FROM false THEN
       RAISE EXCEPTION 'CALL0321_FRESH_NO_SDP_WAS_CLAIMABLE';
     END IF;
 
+    -- An agent-accepted call may still await Meta's ACCEPTED status webhook.
+    -- Expiry cleanup must not mark it terminal or make it claimable by agent B.
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,v_phone_number_id,v_call_accepted,repeat('4',64),
       'connect',1795120110,'USER_INITIATED','51980942247','51980942247',
