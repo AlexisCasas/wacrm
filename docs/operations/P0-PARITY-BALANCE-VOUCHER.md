@@ -55,7 +55,7 @@ No hay datos bancarios en código ni en migraciones; no se cargó ningún valor 
 ## 6. Comportamiento `not_tracked` / pedidos históricos
 
 Los pedidos históricos (1012+) no tienen fila financiera. Regla: **nunca se asume saldo 0, no se envía nada automático, se trata como caso con estrategia de transición**.
-Opciones documentadas (**no elegidas ni ejecutadas**; decisión del negocio):
+**DECISIÓN APROBADA: estrategia A** (ver `P0-PARITY-META-TEMPLATES-OCR-COEXISTENCE.md`). Opciones evaluadas:
 
 - **A.** Seguir operando temporalmente esos pedidos en InkaClick hasta que se cierren.
 - **B.** Registrar el saldo manualmente en WACRM al momento del cutover (pago/saldo por pedido).

@@ -1,3 +1,4 @@
+import { createVisionOcrProvider, VISION_PROVIDER_NAME } from '@/lib/orders/logistics/ocr/vision-provider'
 import { VoucherOcrError, type VoucherOcrInput, type VoucherOcrOutput, type VoucherOcrProvider } from '@/lib/orders/logistics/ocr/types'
 
 // Provider registry. NO real provider exists yet and none is chosen: this file only offers the two local ones.
@@ -47,5 +48,13 @@ export function createFakeProvider(script: FakeProviderScript = {}): VoucherOcrP
  */
 export function resolveOcrProvider(env: Record<string, string | undefined> = process.env): VoucherOcrProvider {
   if (env.ORDER_OCR_PROVIDER === 'fake' && env.NODE_ENV !== 'production') return createFakeProvider()
+  // The real provider needs the three variables; a missing one resolves not_configured (never throws), so a half-set environment cannot call out.
+  if (env.ORDER_OCR_PROVIDER === VISION_PROVIDER_NAME && env.ORDER_OCR_API_KEY && env.ORDER_OCR_MODEL) {
+    return createVisionOcrProvider({ apiKey: env.ORDER_OCR_API_KEY, model: env.ORDER_OCR_MODEL, baseUrl: env.ORDER_OCR_BASE_URL || undefined })
+  }
+  // The real provider needs all three variables; a missing one resolves not_configured (never throws), so a half-set environment cannot call out.
+  if (env.ORDER_OCR_PROVIDER === VISION_PROVIDER_NAME && env.ORDER_OCR_API_KEY && env.ORDER_OCR_MODEL) {
+    return createVisionOcrProvider({ apiKey: env.ORDER_OCR_API_KEY, model: env.ORDER_OCR_MODEL, baseUrl: env.ORDER_OCR_BASE_URL || undefined })
+  }
   return notConfiguredProvider
 }
