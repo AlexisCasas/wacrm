@@ -151,6 +151,44 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('WhatsApp Calling signaling API', () => {
+  it('fails closed for an expired inbound offer even when the prune RPC fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.listCalls = [{
+      id: 'session-expired-offer',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-expired-offer',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'offered',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: null,
+      ended_at: null,
+      duration_seconds: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_type: 'offer',
+      session_sdp_expires_at: new Date(Date.now() - 1_000).toISOString(),
+    }]
+    h.rpc.mockResolvedValueOnce({ data: null, error: { message: 'prune unavailable' } })
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.calls).toHaveLength(1)
+    expect(data.calls[0].claim_available).toBe(false)
+  })
+
   it('does not advertise an already accepted inbound call as claimable while awaiting Meta status', async () => {
     h.listCalls = [{
       id: 'session-accepted-pending-meta',
