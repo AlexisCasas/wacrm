@@ -61,6 +61,8 @@ export function CallHistory({
         if (!response.ok || cancelled) return;
         const payload = await response.json().catch(() => ({}));
         if (!cancelled) setCalls(Array.isArray(payload.calls) ? payload.calls as CallingCallRecord[] : []);
+      } catch {
+        // Keep the last successful history snapshot during a transient outage.
       } finally {
         if (!cancelled) setLoading(false);
       }
