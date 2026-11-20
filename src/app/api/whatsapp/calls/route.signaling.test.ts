@@ -218,6 +218,23 @@ describe('WhatsApp Calling signaling API', () => {
     expect(h.callWhatsApp).not.toHaveBeenCalled()
   })
 
+
+
+  it('fails closed for a contact outside the Keyler Calling pilot allowlist', async () => {
+    h.pilotAllowed.mockReturnValue(false)
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+    }))
+    expect(response.status).toBe(403)
+    expect(h.pilotAllowed).toHaveBeenCalledWith(h.phoneNumberId, '51980942247')
+    expect(h.rpc).not.toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.anything())
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
   it('starts one outbound call and persists the returned call_id and encrypted offer', async () => {
     const response = await POST(makeRequest({
       action: 'connect',
@@ -228,7 +245,7 @@ describe('WhatsApp Calling signaling API', () => {
     }))
     const data = await response.json()
     expect(response.status).toBe(201)
-    expect(h.pilotAllowed).toHaveBeenCalledWith(h.phoneNumberId)
+    expect(h.pilotAllowed).toHaveBeenCalledWith(h.phoneNumberId, '51980942247')
     expect(data).toMatchObject({
       success: true,
       call_id: 'wacid.qa-outbound',
@@ -351,6 +368,7 @@ describe('WhatsApp Calling signaling API', () => {
       direction: 'USER_INITIATED',
       contact_id: h.contactId,
       conversation_id: h.conversationId,
+      customer_phone: '51980942247',
       claimed_by_user_id: h.userId,
       claim_expires_at: new Date(Date.now() + 60000).toISOString(),
       initiated_by_user_id: null,
