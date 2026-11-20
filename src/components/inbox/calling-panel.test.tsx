@@ -5,6 +5,11 @@ import { CallingPanel } from "./calling-panel";
 import type { Contact, Conversation } from "@/types";
 
 const translate = vi.hoisted(() => (key: string) => key);
+const callingCapability = vi.hoisted(() => ({ allowed: true }));
+
+vi.mock("@/hooks/use-can", () => ({
+  useCan: () => callingCapability.allowed,
+}));
 
 vi.mock("next-intl", () => ({
   useTranslations: () => translate,
@@ -87,6 +92,7 @@ describe("CallingPanel", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    callingCapability.allowed = true;
     FakePeerConnection.instances = [];
     mediaTrack.enabled = false;
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
@@ -118,6 +124,21 @@ describe("CallingPanel", () => {
       configurable: true,
       value: originalSecureContext,
     });
+  });
+
+  it("does not expose calling controls or poll calls to read-only viewers", async () => {
+    callingCapability.allowed = false;
+    const fetchMock = vi.fn();
+    global.fetch = fetchMock;
+
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: "call" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "requestPermission" })).toBeNull();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
   });
 
   it("does not request microphone access while the Inbox thread is merely open", async () => {
