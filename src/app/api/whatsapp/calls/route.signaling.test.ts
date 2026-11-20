@@ -248,3 +248,16 @@ describe('WhatsApp Calling signaling API', () => {
     }))
   })
 })
+
+
+describe('WhatsApp Calling API trust boundary', () => {
+  it('does not expose raw agent attribution writes to the browser', async () => {
+    const response = await POST(makeRequest({
+      action: 'agent_action',
+      call_id: 'wacid.qa-inbound',
+      agent_action: 'ended',
+    }))
+    expect(response.status).toBe(400)
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+})
