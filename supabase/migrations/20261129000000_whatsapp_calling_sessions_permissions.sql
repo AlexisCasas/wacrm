@@ -230,6 +230,28 @@ BEGIN
   RETURN true;
 END $$;
 
+CREATE OR REPLACE FUNCTION public.whatsapp_call_sdp_prune(p_limit integer DEFAULT 100)
+RETURNS integer
+LANGUAGE plpgsql SECURITY INVOKER SET search_path=public AS $
+DECLARE
+  v_count integer;
+BEGIN
+  WITH expired AS (
+    SELECT id FROM public.whatsapp_call_sessions
+    WHERE session_sdp_encrypted IS NOT NULL
+      AND session_sdp_expires_at IS NOT NULL
+      AND session_sdp_expires_at <= now()
+    ORDER BY session_sdp_expires_at
+    LIMIT LEAST(1000,GREATEST(1,COALESCE(p_limit,100)))
+    FOR UPDATE SKIP LOCKED
+  )
+  UPDATE public.whatsapp_call_sessions s
+  SET session_sdp_encrypted=NULL,session_sdp_type=NULL,session_sdp_expires_at=NULL,updated_at=now()
+  FROM expired WHERE s.id=expired.id;
+  GET DIAGNOSTICS v_count=ROW_COUNT;
+  RETURN v_count;
+END $;
+
 CREATE OR REPLACE FUNCTION public.whatsapp_call_claim(
   p_account_id uuid,
   p_phone_number_id text,
@@ -344,7 +366,7 @@ END $$;
 
 REVOKE ALL ON FUNCTION public.whatsapp_call_event_apply(
   uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,text,timestamptz,timestamptz,timestamptz,integer
-), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
+), public.whatsapp_call_sdp_prune(integer), public.whatsapp_call_claim(uuid,text,text,uuid), public.whatsapp_call_release(uuid,text,text,uuid), public.whatsapp_call_permission_upsert(
   uuid,text,text,text,text,text,text,text,timestamptz,text,text
 ) FROM PUBLIC,anon,authenticated;
 
