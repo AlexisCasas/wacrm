@@ -99,11 +99,23 @@ async function loadCallTarget(
     console.error('[calling/api] contact BSUID lookup failed', { code: identityError.code ?? 'unknown' })
     throw new Error('calling_contact_identity_lookup_failed')
   }
+  const { data: parentRows, error: parentError } = await db
+    .from('contact_identities')
+    .select('value')
+    .eq('account_id', accountId)
+    .eq('contact_id', contactId)
+    .eq('kind', 'parent_bsuid')
+    .limit(1)
+  if (parentError) {
+    console.error('[calling/api] contact parent BSUID lookup failed', { code: parentError.code ?? 'unknown' })
+    throw new Error('calling_contact_identity_lookup_failed')
+  }
 
   const phone = normalizePhone(contact.phone)
   const bsuid = validBsuid(identityRows?.[0]?.value)
-  const key = bsuid ?? phone
-  return key ? { key, phone, bsuid, parentBsuid: null } : null
+  const parentBsuid = validBsuid(parentRows?.[0]?.value)
+  const key = bsuid ?? parentBsuid ?? phone
+  return key ? { key, phone, bsuid, parentBsuid } : null
 }
 
 function metaTarget(target: CallTarget) {
