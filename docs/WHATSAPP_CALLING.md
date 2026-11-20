@@ -173,3 +173,18 @@ La última ejecución completa observada tuvo Lint y Typecheck en PASS; la suite
 En la revisión del 19/nov se encontró que la primera versión de la migración CALL-02 estaba truncada y contenía bloques duplicados, por lo que no era válida para PostgreSQL. Se reconstruyó completa en el commit `0847bd69320843bb823c466734ba944269b53c6a`, incluyendo las tablas de sesiones, eventos, permisos y solicitudes, junto con los RPCs de idempotencia, limpieza de SDP y reserva/liberación por agente.
 
 La corrección está pendiente de validación automatizada mediante Migrations #112 y CI #215. No aplicar a Supabase Cloud ni producción, no fusionar y no reactivar el webhook `calls` hasta que ambos checks y la revisión formal estén cerrados.
+
+
+## 11. Cierre de CALL-02 — 20/nov/2026
+
+- CI #232: PASS en lint, typecheck, suite de pruebas y build.
+- Migrations #129: PASS en replay completo desde cero, verificación del esquema, RLS/grants, aislamiento, idempotencia y concurrencia real de reservas.
+- Webhook firmado: pruebas de HMAC válido, cuerpo manipulado, secreto ajeno y ausencia de secreto de tenant.
+- Se corrigió el error de tipado de `recipient_id`, se preservó la identidad del destinatario en estados de llamada y se evitó clasificar BSUIDs con dígitos como teléfonos.
+- El estado `REJECTED` se persiste como terminal; valores futuros desconocidos no crean sesiones ficticias.
+
+**Estado de código:** CALL-02 ha superado QA automatizado. PR #136 continúa en Draft hasta integrar primero la base CALL-01 (#134) y completar el merge ordenado. No hay despliegue ni migración en Supabase Cloud.
+
+**Estado Meta:** `messages` activo, `calls` desactivado. La reactivación se reserva para el despliegue controlado posterior a CALL-03/CALL-04.
+
+**Límites:** la consulta `/{PHONE_NUMBER_ID}/call_permissions` de Meta es la autoridad para `can_perform_action` y las cuotas actuales. WACRM no deduce autorización a partir del tier de mensajería ni del estado local. Referencia: [Meta — User call permissions](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/user-call-permissions/).
