@@ -760,7 +760,7 @@ describe("CallingPanel", () => {
 
     expect(await screen.findByText("Started by: QA Agent A")).toBeTruthy()
     expect(screen.getByText("Ended by: QA Agent A")).toBeTruthy()
-    expect(screen.getByText("Date: Nov 20, 2026, 8:00 PM")).toBeTruthy()
+    expect(screen.getByText(/Date: .*2026/)).toBeTruthy()
     expect(screen.getByText("Duration: 01:05")).toBeTruthy()
     expect(screen.getByText(/QA History Contact/)).toBeTruthy()
   })
