@@ -262,7 +262,9 @@ export async function getWhatsAppCallPermission(args: {
   recipient?: string
 }): Promise<WhatsAppCallPermission> {
   if (!/^\d{5,25}$/.test(args.phoneNumberId.trim())) throw new Error('WhatsApp phone_number_id is invalid.')
-  if (!args.userWaId && !args.recipient) throw new Error('A WhatsApp user phone or BSUID is required.')
+  if (Boolean(args.userWaId) === Boolean(args.recipient)) {
+    throw new Error('Provide exactly one WhatsApp user phone or BSUID.')
+  }
   const params = new URLSearchParams()
   if (args.userWaId) params.set('user_wa_id', normalizeCallPhoneNumber(args.userWaId))
   if (args.recipient) params.set('recipient', normalizePermissionTarget(args.recipient, 'recipient'))
