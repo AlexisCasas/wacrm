@@ -18,7 +18,9 @@ function readTimestamp(value: unknown): string | undefined {
 
 export interface WhatsAppCallingSession {
   sdp_type: 'offer' | 'answer'
-  sdp: string
+  sdp?: string
+  /** Application-encrypted SDP inserted before the verified payload enters the durable inbox. */
+  sdpCiphertext?: string
 }
 
 export interface WhatsAppCallingContact {
@@ -95,9 +97,14 @@ function parseCall(value: unknown): WhatsAppCallingEvent | null {
   const sessionValue = isRecord(value.session) ? value.session : undefined
   const sessionType = sessionValue?.sdp_type
   const sessionSdp = readString(sessionValue?.sdp, 65_536)
+  const sessionSdpCiphertext = readString(sessionValue?.wacrm_sdp_ciphertext, 131_072)
   const session =
-    (sessionType === 'offer' || sessionType === 'answer') && sessionSdp
-      ? { sdp_type: sessionType, sdp: sessionSdp } as WhatsAppCallingSession
+    (sessionType === 'offer' || sessionType === 'answer') && (sessionSdp || sessionSdpCiphertext)
+      ? {
+          sdp_type: sessionType,
+          ...(sessionSdp ? { sdp: sessionSdp } : {}),
+          ...(sessionSdpCiphertext ? { sdpCiphertext: sessionSdpCiphertext } : {}),
+        } as WhatsAppCallingSession
       : undefined
 
   const direction =
@@ -241,4 +248,38 @@ export function parseWhatsAppCallPermissionReply(
     ...(readTimestamp(message.timestamp) ? { timestamp: readTimestamp(message.timestamp) } : {}),
     ...(readString(context?.id, 512) ? { context_message_id: readString(context?.id, 512) } : {}),
   }
+}
+
+
+/**
+ * Copy a verified Meta payload for durable storage, encrypting and removing
+ * raw Calling SDP first. The raw request body is still used for signature
+ * verification and its digest; only the inbox copy is transformed.
+ */
+export function protectWhatsAppCallingWebhookSdp<T>(
+  payload: T,
+  encryptSdp: (sdp: string) => string,
+): T {
+  const copy = structuredClone(payload) as unknown
+  if (!isRecord(copy) || !Array.isArray(copy.entry)) return copy as T
+
+  for (const entry of copy.entry) {
+    if (!isRecord(entry) || !Array.isArray(entry.changes)) continue
+    for (const change of entry.changes) {
+      if (!isRecord(change) || change.field !== 'calls' || !isRecord(change.value)) continue
+      const calls = change.value.calls
+      if (!Array.isArray(calls)) continue
+      for (const call of calls) {
+        if (!isRecord(call) || !isRecord(call.session)) continue
+        const sdp = call.session.sdp
+        if (typeof sdp !== 'string') continue
+        if (sdp.length === 0 || sdp.length > 65_536 || !/^v=0(?:\r?\n)/.test(sdp)) {
+          throw new Error('Invalid Calling SDP in verified webhook payload.')
+        }
+        call.session.wacrm_sdp_ciphertext = encryptSdp(sdp)
+        delete call.session.sdp
+      }
+    }
+  }
+  return copy as T
 }
