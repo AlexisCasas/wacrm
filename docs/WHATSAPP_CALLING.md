@@ -98,6 +98,7 @@ La migración \`20261127000001_whatsapp_calling_backend.sql\` agrega:
 - RPC \`release_whatsapp_call_session_claim\`: libera el claim del agente propietario.
 
 Las tablas tienen RLS habilitado y privilegios de acceso solo para service role. Las rutas autentican al agente y aplican el filtro de cuenta explícito.
+- La migración agrega `whatsapp_config.calling_enabled=false` por defecto. Además, todas las rutas requieren `WHATSAPP_CALLING_ENABLED=true`. Ambos interruptores deben estar activos para permitir operaciones; actualmente no se ha habilitado ninguno en producción.
 
 ### Webhook
 
