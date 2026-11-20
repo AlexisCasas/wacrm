@@ -1,6 +1,6 @@
 # CALL-02 - Persistencia y recepcion segura de WhatsApp Calling
 
-**Estado:** implementacion en rama; no desplegado. **Webhook calls:** desactivado en Meta hasta completar QA.
+**Estado:** implementacion en rama; no desplegado. **App Meta:** WACRM App Oficial (App ID 1595490382304488). **Webhook calls:** desactivado temporalmente por el operador; `messages` permanece activado.
 
 ## Alcance
 
