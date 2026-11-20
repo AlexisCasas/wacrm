@@ -147,6 +147,35 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('WhatsApp Calling signaling API', () => {
+  it('rejects a concurrent claim when another agent owns the incoming call', async () => {
+    h.session = {
+      phone_number_id: h.phoneNumberId,
+      customer_phone: '51980942247',
+      call_id: 'wacid.qa-concurrent-claim',
+    }
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_claim') return { data: false, error: null }
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      return { data: true, error: null }
+    })
+
+    const response = await POST(makeRequest({
+      action: 'claim',
+      call_id: 'wacid.qa-concurrent-claim',
+    }))
+    const data = await response.json()
+
+    expect(response.status).toBe(409)
+    expect(data.error).toContain('already claimed')
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_claim', expect.objectContaining({
+      p_account_id: h.accountId,
+      p_phone_number_id: h.phoneNumberId,
+      p_call_id: 'wacid.qa-concurrent-claim',
+      p_actor_user_id: h.userId,
+    }))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
   it('fails closed when the pilot gate is disabled', async () => {
     h.pilotAllowed.mockReturnValue(false)
     const response = await POST(makeRequest({
