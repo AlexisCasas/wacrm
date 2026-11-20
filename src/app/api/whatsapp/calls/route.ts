@@ -171,7 +171,8 @@ export async function GET(request: Request) {
         }
       }
 
-      const { session_sdp_encrypted: _encrypted, ...safeCall } = call
+      const safeCall = { ...call }
+      delete safeCall.session_sdp_encrypted
       return NextResponse.json({
         call: safeCall,
         session,
