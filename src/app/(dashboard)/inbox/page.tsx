@@ -841,7 +841,7 @@ function InboxPageInner() {
             contactPanelOpen={contactPanelOpen}
             onToggleContactPanel={handleToggleContactPanel}
             onStartCall={calling.startOutboundCall}
-            callBusy={calling.busy}
+            callBusy={calling.busy || !!calling.activeCall}
           />
         </div>
 
