@@ -180,3 +180,23 @@ La corrección está en GitHub, pero **no se considera validada hasta que Migrat
 CALL-02 supera el QA automatizado de código, migración, aislamiento multi-tenant, concurrencia y recepción autenticada del webhook. No se probó una llamada real ni el micrófono del navegador; esos controles pertenecen a CALL-03/CALL-04.
 
 **Configuración Meta sin cambios:** `messages` permanece activo; `calls` permanece desactivado. No se aplicó la migración a Supabase Cloud, no hubo despliegue VPS ni llamadas reales.
+
+
+## 9. Validación final posterior al hardening de SDP — 20/nov/2026
+
+**HEAD final:** `5d935a83b979b40fab5621c7c49d8ae668f97d47`.
+
+- CI #221: se corrigió el error original de TypeScript en `recipient_id`.
+- CI #237: el código nuevo detectó correctamente un evento `connect` sin dirección antes de llegar a la validación de identidad; se ajustó el fixture para probar por separado dirección, SDP e identidad. No se relajó la validación.
+- CI #238: **PASS completo** — Lint, Typecheck, suite de tests y Build.
+- Migrations #135: **PASS completo** — replay limpio, esquema, SQL CALL-02, aislamiento, concurrencia, inbox durable, BSUID y controles de borrado.
+
+### Validación fail-closed del SDP
+
+Los eventos `connect` deben incluir dirección y SDP coherente con el flujo:
+- `USER_INITIATED`: SDP tipo `offer`.
+- `BUSINESS_INITIATED`: SDP tipo `answer`.
+
+Si falta la dirección, falta el SDP o el tipo no corresponde, el procesador falla y el inbox no marca el evento como procesado. Esto evita guardar una llamada entrante/saliente que el agente no podría contestar.
+
+**Dictamen final CALL-02:** QA automatizado aprobado. PR #136 queda listo para integración, después de integrar su dependencia CALL-01 (#134). No se hizo merge, despliegue, migración en Supabase Cloud ni activación del webhook `calls`.
