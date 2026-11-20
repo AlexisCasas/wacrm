@@ -514,6 +514,58 @@ describe("CallingPanel", () => {
     expect(mediaTrack.stop).toHaveBeenCalled();
   });
 
+  it("keeps retry controls visible if termination fails during a conversation switch", async () => {
+    let terminateAttempts = 0;
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        if (body.action === "check_permission") {
+          return jsonResponse({
+            permission: { status: "permanent", canStartCall: true, canRequestPermission: false },
+          });
+        }
+        if (body.action === "connect") return jsonResponse({ call_id: "wacid.qa-switch-terminate-retry" });
+        if (body.action === "terminate") {
+          terminateAttempts += 1;
+          if (terminateAttempts === 1) {
+            return new Response(JSON.stringify({ error: "Switch termination failed" }), { status: 503 });
+          }
+          return jsonResponse({ success: true });
+        }
+        return jsonResponse({ success: true });
+      }
+      if (url.includes("?call_id=")) {
+        return jsonResponse({
+          call: { call_id: "wacid.qa-switch-terminate-retry", state: "connected" },
+          session: { sdp_type: "answer", sdp: "v=0\\\\r\\\\n" },
+        });
+      }
+      return jsonResponse({ calls: [] });
+    });
+
+    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const callButton = await screen.findByRole("button", { name: "call" });
+    await waitFor(() => expect(callButton).toHaveProperty("disabled", false));
+    fireEvent.click(callButton);
+    await screen.findByText("00:00");
+
+    const nextConversation = {
+      ...conversation,
+      id: "a3000000-0000-4000-8000-000000000099",
+    } as Conversation;
+    const otherContact = { ...contact, phone: "51999999999" } as Contact;
+    view.rerender(<CallingPanel conversation={nextConversation} contact={otherContact} />);
+
+    expect(await screen.findByText("Switch termination failed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "endCall" })).toBeTruthy();
+    expect(mediaTrack.stop).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "endCall" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "endCall" })).toBeNull());
+    expect(terminateAttempts).toBe(2);
+  });
+
   it("keeps the active call visible when termination fails and allows a retry", async () => {
     let terminateAttempts = 0;
     global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
