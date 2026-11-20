@@ -109,7 +109,8 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_accept,repeat('a',64),
       'connect',1795120000,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     IF public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_accept,v_user_a) IS DISTINCT FROM true THEN
       RAISE EXCEPTION 'CALL03A_INITIAL_CLAIM_FAILED';
@@ -181,7 +182,8 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_unowned,repeat('f',64),
       'connect',1795120005,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     v_unowned_accept_rejected := NOT public.whatsapp_call_session_agent_action(
       v_account_a,'740434745820831',v_call_unowned,v_user_c,'accepted',NULL
@@ -198,7 +200,8 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_reject,repeat('b',64),
       'connect',1795120001,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     IF public.whatsapp_call_session_agent_action(
       v_account_a,'740434745820831',v_call_reject,v_user_a,'rejected',v_conversation_a
