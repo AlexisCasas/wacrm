@@ -11,7 +11,7 @@ export async function GET(request: Request) {
   try {
     const { supabase, accountId, userId } = await requireRole('agent')
     await assertWhatsAppCallingEnabled(supabase, accountId)
-    const limit = checkRateLimit('calls:signal:' + userId, RATE_LIMITS.react)
+    const limit = checkRateLimit('calls:signal:' + userId, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
     const { searchParams } = new URL(request.url)
