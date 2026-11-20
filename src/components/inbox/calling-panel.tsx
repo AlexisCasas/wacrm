@@ -173,10 +173,11 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   const mountedRef = useRef(true);
   const pollBusyRef = useRef(false);
   const operationRef = useRef(false);
+  const tearingDownRef = useRef(false);
   const connectedAtRef = useRef<number | null>(null);
   const disconnectTimerRef = useRef<number | null>(null);
 
-  const isPilotContact = Boolean(contact?.phone && contact.phone.replace(/\\D/g, "") === "51980942247");
+  const isPilotContact = Boolean(contact?.phone && contact.phone.replace(/[^0-9]/g, "") === "51980942247");
 
   const refreshPermission = useCallback(async () => {
     if (!contact?.id || !isPilotContact) {
@@ -301,11 +302,13 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   }, []);
 
   const resetCall = useCallback(() => {
+    tearingDownRef.current = true;
     stopMedia();
     setCall(null);
     setIncomingCall(null);
     setUiState("idle");
     setErrorMessage(null);
+    tearingDownRef.current = false;
   }, [setCall, stopMedia]);
 
   const pollIncoming = useCallback(async () => {
@@ -584,6 +587,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     if (!peer) return;
 
     const onConnectionStateChange = () => {
+      if (tearingDownRef.current) return;
       if (peer.connectionState === "connected") {
         if (disconnectTimerRef.current !== null) {
           window.clearTimeout(disconnectTimerRef.current);
@@ -633,7 +637,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   return (
     <div className="flex items-center gap-2">
       <audio ref={audioRef} autoPlay playsInline muted className="hidden" />
-      {incomingCall && uiState === "idle" ? (
+      {isPilotContact && (incomingCall || permission?.canStartCall) ? (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5">
           <PhoneIncoming className="h-4 w-4 text-emerald-500" />
           <span className="max-w-32 truncate text-xs font-medium">
@@ -680,7 +684,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         <button
           type="button"
           onClick={() => void startOutgoing()}
-          disabled={!hasCallingIdentity || busy || !conversation || Boolean(contact?.blocked)}
+          disabled={!hasCallingIdentity || busy || permissionLoading || !conversation || Boolean(contact?.blocked)}
           title={contact?.blocked ? t("contactBlocked") : t("startCall")}
           className={cn(
             "inline-flex h-7 items-center justify-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-40",
@@ -689,7 +693,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           {busy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Phone className="h-3.5 w-3.5" />}
           <span className="hidden sm:inline">{busy ? t("connecting") : t("call")}</span>
         </button>
-      )}
+      ) : null}
       {uiState === "idle" && isPilotContact && permission?.status === "no_permission" ? (
         <div className="flex items-center gap-1">
           <span className="hidden text-[11px] text-amber-600 sm:inline">{t("permissionNeeded")}</span>
