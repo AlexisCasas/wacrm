@@ -769,7 +769,7 @@ export async function POST(request: Request) {
         p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
       })
       if (auditError || auditRecorded !== true) {
-        console.error('[calling/api] terminal agent attribution failed', { code: auditError.code ?? 'unknown' })
+        console.error('[calling/api] terminal agent attribution failed', { code: auditError?.code ?? (auditRecorded === false ? 'not_recorded' : 'unknown') })
         return NextResponse.json({ success: true, action, agent_attribution_recorded: false }, { status: 202 })
       }
       return NextResponse.json({ success: true, action, agent_attribution_recorded: true }, { status: 200 })
