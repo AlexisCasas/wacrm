@@ -147,3 +147,16 @@ export function attentionWindowElapsed(firstFailureAt: Date | null, now: Date, c
   if (!firstFailureAt) return false
   return now.getTime() - firstFailureAt.getTime() >= cfg.attentionWindowHours * 3_600_000
 }
+
+/**
+ * Consistency warnings for a configuration (never throws, changes nothing). The one that matters for the REAL provider: a claim that is not finished
+ * within `leaseSeconds` can be retaken by another worker, so the lease must cover the worst case of one tick (`batchSize` sequential queries that each
+ * take their whole `timeoutMs`) plus a margin. The numbers stay provisional until Shalom's real limits are known.
+ */
+export function shalomConfigWarnings(cfg: ShalomConfig): string[] {
+  const warnings: string[] = []
+  const worstCaseSeconds = (cfg.batchSize * cfg.timeoutMs) / 1000
+  if (cfg.leaseSeconds <= worstCaseSeconds) warnings.push(`leaseSeconds (${cfg.leaseSeconds}) must be greater than batchSize x timeoutMs (${worstCaseSeconds}s) plus a margin`)
+  if (worstCaseSeconds > cfg.tickMinutes * 60) warnings.push(`a worst-case tick (${worstCaseSeconds}s) is longer than tickMinutes (${cfg.tickMinutes} min): ticks would overlap`)
+  return warnings
+}

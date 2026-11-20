@@ -1,12 +1,16 @@
 import { readFileSync } from 'node:fs'
 
+import { createHttpShalomProvider, parseShalomBaseUrl } from '@/lib/orders/shalom/http-provider'
 import { ShalomProviderError, type ProviderResponse, type ShalomTrackingProvider, type TrackingQuery } from '@/lib/orders/shalom/types'
 
-// Provider registry. NO REAL PROVIDER EXISTS and none is wired: the Shalom API could not be confirmed as official and the InkaClick endpoint is NOT an
-// approved contract (REAL INTEGRATION: BLOCKED UNTIL CONTRACT/AUTHORIZATION VERIFIED). This file only offers the two local ones:
+// Provider registry.
 //   not_configured  default everywhere. Never makes any call: every query ends as an integration failure the cron survives.
 //   fake            deterministic stand-in for local development / tests / UAT. NEVER selectable in production (SHALOM_PROVIDER=fake outside production only).
-// No Shalom credential is read, stored or required by anything here.
+//   shalom_http     the REAL provider (http-provider.ts): one read-only GET per guide against the intermediate tracking service. It is selected ONLY when
+//                   SHALOM_PROVIDER=shalom_http AND SHALOM_BASE_URL (valid https), SHALOM_API_KEY, SHALOM_EMAIL and SHALOM_PASSWORD are ALL present; with any of them
+//                   missing the process resolves `not_configured` (fail closed, no partial credentials ever sent). Selecting it makes no call by itself: nothing
+//                   queries Shalom unless SHALOM_TRACKING_ENABLED=true, the account flags are on and the cron runs.
+// The contract of the intermediate service is NOT an official Shalom contract (see docs/operations/SHALOM-REAL-PROVIDER.md).
 
 export const notConfiguredProvider: ShalomTrackingProvider = {
   name: 'not_configured',
@@ -114,11 +118,23 @@ function readScenarioFile(path: string | undefined): FakeScenarioFile | null {
   }
 }
 
+/** Names (never values) of the variables the real provider still needs. Empty = it can be built. */
+export function missingShalomHttpVariables(env: Record<string, string | undefined> = process.env): string[] {
+  const missing: string[] = []
+  if (!parseShalomBaseUrl(env.SHALOM_BASE_URL, env)) missing.push('SHALOM_BASE_URL')
+  for (const name of ['SHALOM_API_KEY', 'SHALOM_EMAIL', 'SHALOM_PASSWORD'] as const) if (!(env[name] ?? '').trim()) missing.push(name)
+  return missing
+}
+
 /**
- * The provider for this process. Today: `not_configured`, or the fake one when SHALOM_PROVIDER=fake outside production. A real provider will be registered
- * here (and nowhere else) only after the contract / authorization is verified; until then production can only ever resolve `not_configured`.
+ * The provider for this process: `not_configured` by default; the fake one when SHALOM_PROVIDER=fake outside production; the real HTTP one when
+ * SHALOM_PROVIDER=shalom_http and every required variable is present. Any other value, or any missing variable, resolves `not_configured`.
  */
 export function resolveShalomProvider(env: Record<string, string | undefined> = process.env): ShalomTrackingProvider {
+  if (env.SHALOM_PROVIDER === 'shalom_http' && missingShalomHttpVariables(env).length === 0) {
+    const baseUrl = parseShalomBaseUrl(env.SHALOM_BASE_URL, env)!
+    return createHttpShalomProvider({ baseUrl: baseUrl.toString(), apiKey: env.SHALOM_API_KEY!.trim(), email: env.SHALOM_EMAIL!.trim(), password: env.SHALOM_PASSWORD! })
+  }
   if (env.SHALOM_PROVIDER === 'fake' && env.NODE_ENV !== 'production') {
     const path = env.SHALOM_FAKE_SCENARIO_FILE
     return createFakeProvider((numero) => pickScenario(readScenarioFile(path), numero))

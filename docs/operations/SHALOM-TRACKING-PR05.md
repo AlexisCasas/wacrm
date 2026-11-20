@@ -53,7 +53,7 @@ Se pueden acelerar para QA con `SHALOM_CONFIG_JSON` (JSON parcial; lo inválido 
 | `SHALOM_FAKE_SCENARIO_FILE` | JSON que el fake relee en cada consulta (`{"default":"origin","byNumber":{"40000001":"delivered"}}`). |
 | `SHALOM_CONFIG_JSON` | Ajuste de QA de los valores provisionales. |
 
-**No existe ninguna variable de credenciales Shalom** (ni API key, ni email, ni password): no se guardan en BD ni en el repo. El día que se autorice un proveedor real se registrará SOLO en `src/lib/orders/shalom/providers.ts` y sus secretos vivirán server-side.
+**Actualización**: el proveedor real `shalom_http` (servicio intermedio) está implementado solo en local; ver `docs/operations/SHALOM-REAL-PROVIDER.md` (variables `SHALOM_PROVIDER=shalom_http`, `SHALOM_BASE_URL`, `SHALOM_API_KEY`, `SHALOM_EMAIL`, `SHALOM_PASSWORD`; los secretos viven solo server-side, nunca en BD ni en el repo, y solo se leen en `src/lib/orders/shalom/providers.ts`). Sin esas variables el proveedor sigue siendo `not_configured`.
 
 ## 5. Cron
 
