@@ -183,12 +183,12 @@ BEGIN
     END,
     association_error_code=CASE
       WHEN whatsapp_call_sessions.contact_id IS NOT NULL
+        AND whatsapp_call_sessions.contact_id IS DISTINCT FROM EXCLUDED.contact_id
+      THEN whatsapp_call_sessions.association_error_code
+      WHEN whatsapp_call_sessions.contact_id IS NOT NULL
         AND whatsapp_call_sessions.conversation_id IS NOT NULL
       THEN whatsapp_call_sessions.association_error_code
       WHEN EXCLUDED.conversation_id IS NOT NULL THEN NULL
-      WHEN whatsapp_call_sessions.contact_id IS NOT NULL
-        AND whatsapp_call_sessions.contact_id IS DISTINCT FROM EXCLUDED.contact_id
-      THEN whatsapp_call_sessions.association_error_code
       ELSE COALESCE(EXCLUDED.association_error_code,whatsapp_call_sessions.association_error_code)
     END,
     customer_key=COALESCE(EXCLUDED.customer_key,whatsapp_call_sessions.customer_key),
