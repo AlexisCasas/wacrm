@@ -48,6 +48,7 @@ async function invoke(handler, { method = 'GET', url = '/', body, headers = {} }
     statusCode,
     headers: responseHeaders,
     body: responseBody ? JSON.parse(responseBody) : null,
+    text: responseBody,
   }
 }
 
@@ -201,7 +202,7 @@ test('peer control requires token and signs synthetic incoming call webhooks', a
 
   const page = await invoke(handler, { method: 'GET', url: '/peer' })
   assert.equal(page.statusCode, 200)
-  assert.match(page.responseBody ?? '<html></html>', /html/)
+  assert.match(page.text, new RegExp(env.MOCK_CONTROL_TOKEN))
 
   const incoming = await invoke(handler, {
     method: 'POST',
