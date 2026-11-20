@@ -128,3 +128,41 @@ El despliegue en VPS se realizará únicamente después de revisar el PR, valida
 - [Meta — Business-initiated calls](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/business-initiated-calls/)
 - [Meta — User call permissions](https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/user-call-permissions/)
 - [Meta — Webhooks overview](https://developers.facebook.com/documentation/business-messaging/whatsapp/webhooks/overview/)
+
+
+## 9. Actualización CALL-02 — 19/nov/2026
+
+**Estado:** desarrollo en PR #136 (Draft), todavía sin merge ni despliegue. PR #134 (CALL-01) también permanece abierto en Draft.
+
+### Configuración Meta confirmada por el operador
+
+- Nombre visible de la aplicación actualizado a **WACRM App Oficial**; App ID sin cambios: `1595490382304488`.
+- Webhook `messages`: activo.
+- Webhook `calls`: desactivado temporalmente.
+- Calling API: habilitado para el número piloto.
+- No reactivar `calls` hasta que el backend y el QA integral estén cerrados.
+
+### Avance de CALL-02
+
+- Persistencia idempotente de sesiones, eventos y permisos.
+- SDP cifrado y de corta duración.
+- Procesamiento de `field=calls` en el inbox durable y de `call_permission_reply` en el webhook `messages`.
+- Registro de origen de autorización (acción del usuario o revocación automática) y correlación con el mensaje que solicitó el permiso.
+- Reserva atómica de llamada por agente con lease de 90 segundos.
+- Rutas autenticadas para listar llamadas, consultar el detalle, reservar/liberar y consultar/solicitar permisos a Meta.
+- El SDP solo se entrega al agente que tiene la reserva vigente.
+- Se documentaron y corrigieron un evento de terminación fuera de orden y errores detectados por CI.
+
+### Hallazgos de QA
+
+La última ejecución completa observada tuvo Lint y Typecheck en PASS; la suite reportó 4.598 pruebas aprobadas y una expectativa incompleta en el test de acciones de permisos Meta. La expectativa fue corregida. Después se ampliaron la migración, el registro de solicitudes y las rutas autenticadas, por lo que el CI y el replay de migraciones deben repetirse sobre el HEAD actual.
+
+### Próximos pasos
+
+1. Cerrar CI y replay de migraciones sobre el HEAD actual.
+2. Completar revisión formal de aislamiento multi-tenant, claims y permisos.
+3. Finalizar CALL-02.
+4. CALL-03: interfaz del Inbox y WebRTC.
+5. CALL-04: despliegue controlado y piloto exclusivo de Keyler.
+
+**No se han realizado cambios en VPS, producción, Supabase Cloud ni en la configuración Meta desde la desactivación temporal de `calls`.**
