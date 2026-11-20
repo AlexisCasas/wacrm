@@ -200,3 +200,18 @@ Los eventos `connect` deben incluir dirección y SDP coherente con el flujo:
 Si falta la dirección, falta el SDP o el tipo no corresponde, el procesador falla y el inbox no marca el evento como procesado. Esto evita guardar una llamada entrante/saliente que el agente no podría contestar.
 
 **Dictamen final CALL-02:** QA automatizado aprobado. PR #136 queda listo para integración, después de integrar su dependencia CALL-01 (#134). No se hizo merge, despliegue, migración en Supabase Cloud ni activación del webhook `calls`.
+
+
+## 10. Hallazgo Meta de identidad UIC/BIC y BSUID — 20/nov/2026
+
+La revisión directa de los ejemplos oficiales de Meta detectó que el mapeo inicial de identidad por dirección podía asociar el teléfono de empresa al cliente en llamadas iniciadas por el usuario. Se corrigió:
+
+- **UIC (USER_INITIATED):** `to` es el teléfono del usuario; el BSUID y parent BSUID se obtienen de `from_user_id` y `from_parent_user_id`.
+- **BIC (BUSINESS_INITIATED):** `to` es el teléfono del usuario; el BSUID y parent BSUID se obtienen de `to_user_id` y `to_parent_user_id`.
+- **Estados de llamada:** se procesan `recipient_id`, `recipient_user_id` y `recipient_parent_user_id` por separado.
+- Los datos de `contacts[].wa_id/user_id/parent_user_id` son fallback cuando el evento no trae la identidad directamente.
+- Se amplió `callWhatsApp(connect)` para aceptar teléfono (`to`), BSUID/parent BSUID (`recipient`) o ambos, según el contrato de Meta. Se valida el BSUID antes de llamar a Graph API.
+
+Pruebas añadidas: UIC con teléfono de empresa en `from` y cliente en `to`; BIC con `to_user_id`; estados con BSUID/parent BSUID; llamada saliente por BSUID sin teléfono y por teléfono + BSUID.
+
+**Impacto:** evita asociar la conversación o la llamada al teléfono empresarial y permite llamadas BIC a contactos identificados únicamente por BSUID. La autorización y cuotas siguen verificándose en Meta antes de iniciar la llamada.
