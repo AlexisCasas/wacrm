@@ -580,13 +580,17 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     if (!call || operationRef.current) return;
     operationRef.current = true;
     setUiState("ending");
+    setErrorMessage(null);
     try {
       await postCallAction("terminate", { call_id: call.call_id });
+      resetCall();
     } catch (error) {
       const message = error instanceof Error ? error.message : t("endCallFailed");
+      // Keep the active call and its controls available so the agent can retry.
+      setErrorMessage(message);
+      setUiState("failed");
       toast.error(message);
     } finally {
-      resetCall();
       operationRef.current = false;
     }
   }, [resetCall, t]);
@@ -689,21 +693,25 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           </button>
         </div>
       ) : null}
-      {isPilotContact && uiState === "connected" && activeCall ? (
+      {isPilotContact && ["connected", "failed"].includes(uiState) && activeCall ? (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
-          <span className="text-xs font-medium text-emerald-500">{formatDuration(elapsedSeconds)}</span>
+          <span className={cn("text-xs font-medium", uiState === "connected" ? "text-emerald-500" : "text-red-500")}>
+            {uiState === "connected" ? formatDuration(elapsedSeconds) : t("endCallFailed")}
+          </span>
           <span className="max-w-28 truncate text-[11px] text-muted-foreground" title={profile?.full_name ?? t("agent")}>
             {profile?.full_name ?? t("agent")}
           </span>
-          <button
-            type="button"
-            onClick={toggleMute}
-            aria-label={muted ? t("unmute") : t("mute")}
-            title={muted ? t("unmute") : t("mute")}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"
-          >
-            {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
-          </button>
+          {uiState === "connected" ? (
+            <button
+              type="button"
+              onClick={toggleMute}
+              aria-label={muted ? t("unmute") : t("mute")}
+              title={muted ? t("unmute") : t("mute")}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md hover:bg-muted"
+            >
+              {muted ? <MicOff className="h-4 w-4" /> : <Mic className="h-4 w-4" />}
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => void endCall()}
@@ -713,9 +721,12 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           >
             <PhoneOff className="h-4 w-4" />
           </button>
+          {uiState === "failed" && errorMessage ? (
+            <span role="status" className="max-w-40 truncate text-[11px] text-red-500">{errorMessage}</span>
+          ) : null}
         </div>
       ) : null}
-      {isPilotContact && !incomingCall && uiState !== "connected" && permission?.canStartCall ? (
+      {isPilotContact && !incomingCall && !["connected", "failed"].includes(uiState) && permission?.canStartCall ? (
         <button
           type="button"
           onClick={() => void startOutgoing()}
