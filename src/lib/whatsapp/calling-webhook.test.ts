@@ -191,7 +191,14 @@ describe('protectWhatsAppCallingWebhookSdp', () => {
     }
 
     const protectedCopy = protectWhatsAppCallingWebhookSdp(original, (sdp) => 'cipher:' + sdp)
-    const session = (protectedCopy as typeof original).entry[0].changes[0].value.calls[0].session
+    type ProtectedPayload = {
+      entry: Array<{
+        changes: Array<{
+          value: { calls: Array<{ session: Record<string, unknown> }> }
+        }>
+      }>
+    }
+    const session = (protectedCopy as unknown as ProtectedPayload).entry[0].changes[0].value.calls[0].session
 
     expect(session.sdp).toBeUndefined()
     expect(session.wacrm_sdp_ciphertext).toContain('cipher:v=0')
