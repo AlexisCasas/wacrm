@@ -729,6 +729,42 @@ describe("CallingPanel", () => {
     });
   });
 
+  it("shows account-scoped agent attribution, date and duration in call history", async () => {
+    const historyCall = {
+      call_id: "wacid.qa-history-ui",
+      conversation_id: conversation.id,
+      direction: "BUSINESS_INITIATED",
+      state: "terminated",
+      customer_name: "QA History Contact",
+      customer_phone: "51980942247",
+      initiated_by_name: "QA Agent A",
+      accepted_by_name: null,
+      rejected_by_name: null,
+      ended_by_name: "QA Agent A",
+      created_at: "2026-11-20T20:00:00.000Z",
+      duration_seconds: 65,
+      claim_available: false,
+    }
+    global.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        return jsonResponse({
+          permission: { status: "permanent", canStartCall: true, canRequestPermission: false },
+        })
+      }
+      return jsonResponse({ calls: [historyCall] })
+    })
+
+    render(<CallingPanel conversation={conversation} contact={contact} />)
+
+    fireEvent.click(await screen.findByText(/History \(1\)/))
+
+    expect(await screen.findByText("Started by: QA Agent A")).toBeTruthy()
+    expect(screen.getByText("Ended by: QA Agent A")).toBeTruthy()
+    expect(screen.getByText("Date: Nov 20, 2026, 8:00 PM")).toBeTruthy()
+    expect(screen.getByText("Duration: 01:05")).toBeTruthy()
+    expect(screen.getByText(/QA History Contact/)).toBeTruthy()
+  })
+
   it("does not offer outgoing calls for contacts without a phone identity", async () => {
     global.fetch = vi.fn().mockResolvedValue(jsonResponse({ calls: [] }));
     render(
