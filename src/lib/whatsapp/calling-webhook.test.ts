@@ -83,6 +83,7 @@ describe('parseWhatsAppCallingWebhookChange', () => {
     })
     expect(parsed?.statuses[0]).toMatchObject({
       status: 'ACCEPTED',
+      recipient_id: '51911111111',
       type: 'call',
     })
   })
