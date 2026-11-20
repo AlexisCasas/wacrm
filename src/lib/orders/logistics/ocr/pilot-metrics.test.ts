@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { fieldEquals, scorePilot, sweepThresholds, type PilotRecord } from '@/lib/orders/logistics/ocr/pilot-metrics'
+import { fieldEquals, parseAmount, scorePilot, sweepThresholds, type PilotRecord } from '@/lib/orders/logistics/ocr/pilot-metrics'
 
 const rec = (over: Partial<PilotRecord> = {}): PilotRecord => ({
   truth: { dni: '12345678', phone: '900000001', customer_name: 'Ana María Pérez', amount: '150.50', shalom_number: '104453167', shalom_code: 'N3WC' },
@@ -21,6 +21,37 @@ describe('fieldEquals', () => {
     expect(fieldEquals('shalom_code', 'n3-wc', 'N3WC')).toBe(true)
     expect(fieldEquals('destination', null, null)).toBe(true)
     expect(fieldEquals('destination', 'Piura', null)).toBe(false)
+  })
+})
+
+describe('amount comparison ignores ONLY monetary presentation', () => {
+  it('S/ 150.00, S/150.00, 150.00, 150 (and 150.0 / PEN / spaces) are the same value', () => {
+    for (const v of ['S/ 150.00', 'S/150.00', 's/. 150.00', '150.00', '150', '150.0', 'PEN 150', ' 150.00 ']) expect(fieldEquals('amount', v, '150.00')).toBe(true)
+    expect(fieldEquals('amount', 'S/ 150.00', 'S/150')).toBe(true)
+    expect(fieldEquals('amount', '150,50', 'S/ 150.50')).toBe(true)
+    expect(fieldEquals('amount', 'S/ 1,150.00', '1150')).toBe(true)
+  })
+
+  it('numerically different values still FAIL (no rounding, no digit-only matching)', () => {
+    for (const v of ['S/ 150.01', '150.10', '15.00', '1500', 'S/ 105.00', '150.00.00', 'ciento cincuenta', 'S/ ', '']) expect(fieldEquals('amount', v, '150.00')).toBe(false)
+    expect(fieldEquals('amount', 'S/ 150.50', '150.05')).toBe(false)
+  })
+
+  it('parseAmount: cents, or null when it is not a plain number', () => {
+    expect(parseAmount('S/ 150.5')).toBe(15050)
+    expect(parseAmount('abc')).toBeNull()
+    expect(parseAmount('1.2.3')).toBeNull()
+  })
+})
+
+describe('usage is optional', () => {
+  it('a voucher answered without token usage is reported as usage_unavailable, is NOT a failure, and cost is never invented', () => {
+    const r = scorePilot([rec({ costUsd: undefined }), rec({ costUsd: 0.02 })])
+    expect(r.failed).toBe(0)
+    expect(r.usageUnavailable).toBe(1)
+    expect(r.costPerVoucherUsd).toBe(0.02) // only over the voucher that reported usage
+    expect(scorePilot([rec({ costUsd: undefined })]).costPerVoucherUsd).toBeNull()
+    expect(scorePilot([rec({ costUsd: undefined })]).fields.dni.accuracy).toBe(1)
   })
 })
 

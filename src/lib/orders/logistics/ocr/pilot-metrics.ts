@@ -22,6 +22,20 @@ export interface PilotRecord {
 const digits = (v: string) => v.replace(/\D+/g, '')
 const alnum = (v: string) => v.toUpperCase().replace(/[^A-Z0-9]+/g, '')
 
+/**
+ * The numeric value of an amount, ignoring ONLY monetary presentation: a leading currency marker (S/, S/., PEN, USD, $), spaces and thousands separators.
+ * "S/ 150.00", "S/150.00", "150.00" and "150" are the same value; anything that is not a plain number afterwards (letters, two decimal marks...) is not comparable (null).
+ * Values are compared in cents, so 150.5 and 150.50 match and 150.51 does not.
+ */
+export function parseAmount(raw: string): number | null {
+  let s = raw.trim().replace(/^(?:S\/\.?|PEN|USD|\$)\s*/i, '').replace(/\s+/g, '')
+  if (s.includes(',') && s.includes('.')) s = s.replace(/,/g, '') // 1,150.00
+  else if (/,\d{1,2}$/.test(s)) s = s.replace(/\./g, '').replace(',', '.') // 150,50 / 1.150,50
+  else s = s.replace(/,/g, '') // 1,150
+  if (!/^\d+(?:\.\d+)?$/.test(s)) return null
+  return Math.round(Number.parseFloat(s) * 100)
+}
+
 /** Field-aware equality: DNI / phone / amount / ids compare in their canonical form; names compare as the same word set. */
 export function fieldEquals(field: PilotField, a: string | null | undefined, b: string | null | undefined): boolean {
   if (!a && !b) return true
@@ -29,7 +43,11 @@ export function fieldEquals(field: PilotField, a: string | null | undefined, b: 
   switch (field) {
     case 'dni': return normalizeDni(a) !== null && normalizeDni(a) === normalizeDni(b)
     case 'phone': return normalizePhone(a) !== null && normalizePhone(a) === normalizePhone(b)
-    case 'amount': return Number.parseFloat(a.replace(',', '.')) === Number.parseFloat(b.replace(',', '.'))
+    case 'amount': {
+      const x = parseAmount(a)
+      const y = parseAmount(b)
+      return x !== null && y !== null && x === y
+    }
     case 'shalom_number': return digits(a) === digits(b)
     case 'shalom_code': return alnum(a) === alnum(b)
     default: {
@@ -59,7 +77,10 @@ export interface PilotReport {
   meanMs: number | null
   matching: { attempted: number; autoMatched: number; autoCorrect: number; autoWrong: number; pending: number; correctRate: number }
   totalCostUsd: number
+  /** Mean over the vouchers whose usage was reported; null when none was. */
   costPerVoucherUsd: number | null
+  /** Answered vouchers whose provider reported no token usage (reported as usage_unavailable; NEVER a failure and never invented). */
+  usageUnavailable: number
 }
 
 export function scorePilot(records: readonly PilotRecord[], config: PilotConfig = INITIAL_PILOT_CONFIG): PilotReport {
@@ -70,10 +91,15 @@ export function scorePilot(records: readonly PilotRecord[], config: PilotConfig 
   let clean = 0
   const times: number[] = []
   let cost = 0
+  let costed = 0
+  let usageUnavailable = 0
   const matching = { attempted: 0, autoMatched: 0, autoCorrect: 0, autoWrong: 0, pending: 0, correctRate: 0 }
 
   for (const r of records) {
-    cost += r.costUsd ?? 0
+    if (typeof r.costUsd === 'number') {
+      cost += r.costUsd
+      costed += 1
+    } else if (r.ocr) usageUnavailable += 1
     if (typeof r.ms === 'number') times.push(r.ms)
     if (!r.ocr) {
       failed += 1
@@ -129,7 +155,8 @@ export function scorePilot(records: readonly PilotRecord[], config: PilotConfig 
     meanMs: times.length ? times.reduce((a, b) => a + b, 0) / times.length : null,
     matching,
     totalCostUsd: cost,
-    costPerVoucherUsd: records.length > 0 ? cost / records.length : null,
+    costPerVoucherUsd: costed > 0 ? cost / costed : null,
+    usageUnavailable,
   }
 }
 

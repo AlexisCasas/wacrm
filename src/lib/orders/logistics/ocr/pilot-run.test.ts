@@ -8,7 +8,7 @@
  *   ORDER_OCR_PILOT_DIR=D:\ocr-pilot ORDER_OCR_PROVIDER=gemini ORDER_OCR_API_KEY=... ORDER_OCR_MODEL=<model A> npx vitest run src/lib/orders/logistics/ocr/pilot-run.test.ts
  *
  * A/B comparison on the SAME sample: ORDER_OCR_PILOT_MODELS="<model A>,<model B>" (each model is run over every file; the report has one run per model and a side-by-side summary).
- * Optional cost: ORDER_OCR_PILOT_PRICE_IN / ORDER_OCR_PILOT_PRICE_OUT = USD per 1M tokens (from the provider's price list) when the provider reports token usage.
+ * Cost needs token usage; when the provider omits it the voucher is reported as usage_unavailable (not a failure, nothing is estimated). Optional cost: ORDER_OCR_PILOT_PRICE_IN / ORDER_OCR_PILOT_PRICE_OUT = USD per 1M tokens (from the provider's price list) when the provider reports token usage.
  * Folder layout: the voucher files + `truth.json` = { "<file name>": { "truth": { "dni": "...", ... }, "trueOrder": "<any id>" } }. See docs/operations/P0-OCR-PILOT-PLAN.md.
  */
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -42,7 +42,7 @@ describe.skipIf(!DIR)('OCR pilot (manual, local files only)', () => {
       const provider = resolveOcrProvider({ ...process.env, ORDER_OCR_MODEL: model })
       expect(provider.name).not.toBe('not_configured') // refuse to "run" a pilot against nothing
       const records: PilotRecord[] = []
-      const perFile: Array<{ file: string; errorCode: string | null; ms: number }> = []
+      const perFile: Array<{ file: string; errorCode: string | null; ms: number; usage?: 'usage_unavailable' }> = []
       for (const file of files) {
         const bytes = new Uint8Array(readFileSync(join(dir, file)))
         const mimeType = sniffMime(bytes)
@@ -59,7 +59,7 @@ describe.skipIf(!DIR)('OCR pilot (manual, local files only)', () => {
           for (const f of PILOT_FIELDS) if (normalized.fields[f]) ocr[f] = normalized.fields[f]
           const costUsd = raw.usage && Number.isFinite(priceIn) && Number.isFinite(priceOut) ? (raw.usage.inputTokens * priceIn + raw.usage.outputTokens * priceOut) / 1_000_000 : undefined
           records.push({ truth: expected.truth, ocr, ms, costUsd, trueOrder: expected.trueOrder ?? undefined })
-          perFile.push({ file, errorCode: null, ms })
+          perFile.push({ file, errorCode: null, ms, ...(raw.usage ? {} : { usage: 'usage_unavailable' as const }) })
         } catch (error) {
           const code = error instanceof VoucherOcrError ? error.code : controller.signal.aborted ? 'ocr_timeout' : 'ocr_provider_error'
           const ms = Date.now() - started

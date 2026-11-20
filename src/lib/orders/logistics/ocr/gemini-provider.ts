@@ -19,7 +19,8 @@ const MAX_OUTPUT_TOKENS = 1024
 export const GEMINI_PROMPT = [
   'You read ONE Shalom Empresarial shipping voucher (a printed receipt, possibly a phone photo or a PDF). Extract ONLY what is printed; never guess or complete.',
   'customer_name, dni and phone are the RECIPIENT (destinatario); ignore the sender (remitente) entirely. amount is the total to pay: digits with a dot decimal, no currency symbol.',
-  'shalom_number is the order number and shalom_code the short alphanumeric code; destination is the destination agency or city.',
+  'shalom_number is the order number and shalom_code the short alphanumeric code.',
+  'destination is ONLY the text printed immediately after the label "Destino:" on the voucher. Do NOT include the agency name, the address, any reference, any additional branch or any text that follows that value (text after labels such as "Agencia:" or "Dirección:" is NOT part of destination).',
   'For every field return its value (null if absent or unreadable) and your confidence from 0 to 1. List in doubtful_fields every field you are not sure you read exactly.',
 ].join('\n')
 

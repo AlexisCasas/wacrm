@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { createGeminiOcrProvider, GEMINI_RESPONSE_SCHEMA } from '@/lib/orders/logistics/ocr/gemini-provider'
+import { createGeminiOcrProvider, GEMINI_PROMPT, GEMINI_RESPONSE_SCHEMA } from '@/lib/orders/logistics/ocr/gemini-provider'
 import { normalizeOcrOutput } from '@/lib/orders/logistics/ocr/normalize-result'
 import { resolveOcrProvider } from '@/lib/orders/logistics/ocr/providers'
 import { VOUCHER_FIELDS } from '@/lib/orders/logistics/ocr/vision-provider'
@@ -46,6 +46,29 @@ describe('gemini OCR provider (no network)', () => {
     expect(body.generationConfig.responseMimeType).toBe('application/json')
     expect(body.generationConfig.responseSchema).toEqual(JSON.parse(JSON.stringify(GEMINI_RESPONSE_SCHEMA)))
     expect(JSON.stringify(body)).not.toMatch(/sender_|remitente_|order_id|account|conversation|whatsapp/i)
+  })
+
+  it('destination is ONLY the text after the "Destino:" label: agency, address, reference and anything after it are excluded (instruction text; nothing hardcoded)', async () => {
+    const line = GEMINI_PROMPT.split('\n').find((l) => l.startsWith('destination is'))!
+    expect(line).toContain('ONLY')
+    expect(line).toContain('immediately after the label "Destino:"')
+    for (const excluded of ['agency name', 'address', 'reference', 'additional branch', 'text that follows']) expect(line).toContain(excluded)
+    expect(line).toContain('"Agencia:"')
+    expect(line).toContain('"Dirección:"')
+    expect(GEMINI_PROMPT).not.toMatch(/Piura|Sullana/) // no hardcoded example
+    expect(GEMINI_PROMPT).not.toContain('destination agency or city')
+    const { f, provider } = mk(async () => reply(payload()))
+    await run(provider)
+    expect(JSON.parse(String(f.mock.calls[0][1].body)).contents[0].parts[1].text).toBe(GEMINI_PROMPT)
+  })
+
+  it('missing usage metadata is not an error: usage stays undefined (never invented)', async () => {
+    for (const usageMetadata of [undefined, {}, { promptTokenCount: 10 }]) {
+      const { provider } = mk(async () => reply(payload(), { usageMetadata }))
+      const out = await run(provider) as Awaited<ReturnType<typeof provider.extract>>
+      expect(out.usage).toBeUndefined()
+      expect(out.fields.customer_name.value).toBe('Ana Perez')
+    }
   })
 
   it('every supported format goes inline with its own MIME type', async () => {
