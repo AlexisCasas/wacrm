@@ -13,7 +13,7 @@ No se activa el webhook `calls`, no se realizan llamadas reales, no se solicitan
 ## 2. Arquitectura
 
 - Componente aislado `src/components/inbox/calling-panel.tsx`, integrado en el encabezado del hilo activo. El primer alcance detecta llamadas entrantes solo para la conversación actualmente abierta; la notificación global del Inbox queda como ampliación posterior.
-- Hook/módulo de ciclo de vida separado para `RTCPeerConnection`, stream local, audio remoto, polling y cleanup.
+- Ciclo de vida de `RTCPeerConnection`, stream local, audio remoto, polling y cleanup encapsulado en `CallingPanel`.
 - API existente `/api/whatsapp/calls` como único transporte de señalización; no llamar Graph API desde el browser.
 - El componente se limita a la conversación seleccionada. Solo presenta llamadas cuyo `conversation_id` coincide con el hilo y cuyo `phone_number_id`/destinatario supera la guardia de servidor.
 - El cliente nunca lee ni escribe tablas Supabase directamente para gestionar llamadas.
