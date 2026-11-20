@@ -197,7 +197,7 @@ describe('WhatsApp Calling signaling API', () => {
     })
     expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.objectContaining({
       p_request_id: h.requestId,
-      p_agent_sdp_encrypted: 'encrypted:v=0\\r\\n',
+      p_agent_sdp_encrypted: 'encrypted:v=0\r\n',
     }))
     expect(h.callWhatsApp).toHaveBeenCalledWith(expect.objectContaining({
       phoneNumberId: h.phoneNumberId,
