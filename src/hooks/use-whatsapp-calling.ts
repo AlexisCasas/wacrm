@@ -158,7 +158,7 @@ export function useWhatsAppCalling(iceServers: RTCIceServer[] = DEFAULT_ICE_SERV
     });
     pcRef.current = pc;
     return pc;
-  }, []);
+  }, [iceServers]);
 
   const getLocalAudio = useCallback(async () => {
     if (!navigator.mediaDevices?.getUserMedia) {
