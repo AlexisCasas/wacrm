@@ -239,12 +239,15 @@ export function useWhatsAppCalling() {
       setError("La llamada no tiene una conversación asociada.");
       return false;
     }
+    let claimAcquired = false;
+    let preAcceptSubmitted = false;
     busyRef.current = true;
     setBusy(true);
     setError(null);
 
     try {
       await apiPost({ action: "claim", call_id: call.call_id });
+      claimAcquired = true;
       const detail = await apiGet(`/api/whatsapp/calls?call_id=${encodeURIComponent(call.call_id)}`);
       if (detail.session?.sdp_type !== "offer" || !detail.session.sdp) {
         throw new Error("La oferta de audio de esta llamada ya no está disponible.");
@@ -267,6 +270,7 @@ export function useWhatsAppCalling() {
         conversation_id: call.conversation_id,
         session: { sdp_type: "answer", sdp },
       });
+      preAcceptSubmitted = true;
       await apiPost({
         action: "accept",
         call_id: call.call_id,
@@ -287,9 +291,11 @@ export function useWhatsAppCalling() {
       void refreshCalls().catch(() => undefined);
       return true;
     } catch (caught) {
-      // If media setup or pre_accept failed after claiming, let another agent
-      // take over; no Meta connect/accept is repeated by this recovery path.
-      await apiPost({ action: "release", call_id: call.call_id }).catch(() => undefined);
+      // Release only if setup failed before Meta received pre_accept. If
+      // accept has an uncertain outcome, preserve the lease until it expires.
+      if (claimAcquired && !preAcceptSubmitted) {
+        await apiPost({ action: "release", call_id: call.call_id }).catch(() => undefined);
+      }
       cleanupMedia();
       setError(getErrorMessage(caught));
       return false;
@@ -358,7 +364,22 @@ export function useWhatsAppCalling() {
     setMuted(nextMuted);
   }, [muted]);
 
-  // Calls tables are intentionally service-role-only. Poll the authenticated
+  // Keep the incoming-call lease alive while this agent owns the media
+  // session. A renewal failure never starts a second call or steals ownership.
+  useEffect(() => {
+    if (!activeCall || activeCall.direction !== "USER_INITIATED") return;
+    const renew = async () => {
+      try {
+        await apiPost({ action: "renew_claim", call_id: activeCall.callId });
+      } catch {
+        setError("No se pudo renovar la asignación de esta llamada.");
+      }
+    };
+    const interval = window.setInterval(() => void renew(), 45_000);
+    return () => window.clearInterval(interval);
+  }, [activeCall?.callId, activeCall?.direction]);
+
+    // Calls tables are intentionally service-role-only. Poll the authenticated
   // API instead of subscribing to the protected table from the browser.
   useEffect(() => {
     let cancelled = false;
