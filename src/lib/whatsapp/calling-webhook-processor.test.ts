@@ -31,14 +31,14 @@ describe('CALL-02 Calling webhook persistence', () => {
       field: 'calls',
       value: {
         metadata: { phone_number_id: config.phone_number_id },
-        contacts: [{ profile: { name: 'Cliente' } }],
+        contacts: [{ profile: { name: 'Cliente' }, wa_id: '51980942247' }],
         calls: [{
           id: 'wacid.call01',
           event: 'connect',
           timestamp: '1795120000',
           direction: 'USER_INITIATED',
-          from: '51980942247',
-          to: '51911111111',
+          from: '51911111111',
+          to: '51980942247',
           from_user_id: 'PE.123456789',
           from_parent_user_id: 'PE.parent123',
           session: { sdp_type: 'offer', sdp },
@@ -53,7 +53,7 @@ describe('CALL-02 Calling webhook persistence', () => {
       p_phone_number_id: config.phone_number_id,
       p_state: 'offered',
       p_customer_key: 'PE.123456789',
-      p_customer_phone: '51911111111',
+      p_customer_phone: '51980942247',
       p_customer_bsuid: 'PE.123456789',
       p_customer_parent_bsuid: 'PE.parent123',
       p_session_sdp_encrypted: 'encrypted:' + sdp,
@@ -61,6 +61,33 @@ describe('CALL-02 Calling webhook persistence', () => {
     })
   })
 
+
+
+
+  it('uses the customer phone from to for user-initiated calls and falls back to contact wa_id', async () => {
+    rpc.mockResolvedValue({ data: true, error: null })
+    await processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        contacts: [{ wa_id: '51980942247', profile: { name: 'Cliente' } }],
+        calls: [{
+          id: 'wacid.uic-contact-fallback',
+          event: 'connect',
+          timestamp: '1795120012',
+          direction: 'USER_INITIATED',
+          from: '51911111111',
+          from_user_id: 'PE.123456789',
+          session: { sdp_type: 'offer', sdp: 'v=0\\\\r\\\\n' },
+        }],
+      },
+    })
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_customer_phone: '51980942247',
+      p_customer_key: 'PE.123456789',
+      p_customer_bsuid: 'PE.123456789',
+    })
+  })
 
   it('maps business-initiated call identity from to and to_user_id', async () => {
     rpc.mockResolvedValue({ data: true, error: null })
@@ -74,8 +101,8 @@ describe('CALL-02 Calling webhook persistence', () => {
           event: 'connect',
           timestamp: '1795120002',
           direction: 'BUSINESS_INITIATED',
-          from: '51980942247',
-          to: '51911111111',
+          from: '51911111111',
+          to: '51980942247',
           to_user_id: 'PE.987654321',
           to_parent_user_id: 'PE.parent987',
           session: { sdp_type: 'answer', sdp },
@@ -85,7 +112,7 @@ describe('CALL-02 Calling webhook persistence', () => {
     expect(rpc.mock.calls[0][1]).toMatchObject({
       p_state: 'connecting',
       p_customer_key: 'PE.987654321',
-      p_customer_phone: '51911111111',
+      p_customer_phone: '51980942247',
       p_customer_bsuid: 'PE.987654321',
       p_customer_parent_bsuid: 'PE.parent987',
     })
@@ -96,7 +123,7 @@ describe('CALL-02 Calling webhook persistence', () => {
       field: 'calls',
       value: {
         metadata: { phone_number_id: config.phone_number_id },
-        calls: [{ id: 'wacid.call-no-identity', event: 'connect', timestamp: '1795120000', direction: 'USER_INITIATED', from: '51980942247', session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' } }],
+        calls: [{ id: 'wacid.call-no-identity', event: 'connect', timestamp: '1795120000', direction: 'USER_INITIATED', from: '51911111111', session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' } }],
       },
     })).rejects.toThrow('call_event_missing_customer_identity')
     expect(rpc).not.toHaveBeenCalled()
@@ -154,8 +181,8 @@ describe('CALL-02 Calling webhook persistence', () => {
           event: 'terminate',
           timestamp: '1795120060',
           direction: 'USER_INITIATED',
-          from: '51980942247',
-          to: '51911111111',
+          from: '51911111111',
+          to: '51980942247',
           status: 'COMPLETED',
           duration: 60,
         }],
@@ -188,6 +215,7 @@ describe('CALL-02 Calling webhook persistence', () => {
           timestamp: '1795120060',
           direction: 'USER_INITIATED',
           from: '51911111111',
+          to: '51980942247',
           status: 'REJECTED',
         }],
       },
