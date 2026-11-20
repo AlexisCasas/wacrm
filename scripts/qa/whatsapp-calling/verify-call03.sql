@@ -152,6 +152,10 @@ BEGIN
     ) THEN
       RAISE EXCEPTION 'CALL03A_END_AGENT_NOT_PERSISTED';
     END IF;
+    IF public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_accept,v_user_a) IS DISTINCT FROM false
+      OR public.whatsapp_call_claim_renew(v_account_a,'740434745820831',v_call_accept,v_user_a) IS DISTINCT FROM false THEN
+      RAISE EXCEPTION 'CALL03A_TERMINATED_CALL_RECLAIMED';
+    END IF;
 
     -- A same-account agent without the claim/initiator/acceptor ownership
     -- cannot accept or terminate another agent's call.
@@ -188,6 +192,9 @@ BEGIN
         AND rejected_by_user_id=v_user_a AND conversation_id=v_conversation_a
     ) THEN
       RAISE EXCEPTION 'CALL03A_REJECT_METADATA_NOT_PERSISTED';
+    END IF;
+    IF public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_reject,v_user_c) IS DISTINCT FROM false THEN
+      RAISE EXCEPTION 'CALL03A_REJECTED_CALL_RECLAIMED';
     END IF;
 
     -- Outbound calls retain the initiating agent independently from the
