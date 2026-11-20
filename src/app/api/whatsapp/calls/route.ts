@@ -221,8 +221,9 @@ export async function GET(request: Request) {
         && typeof call.claim_expires_at === 'string'
         && Date.parse(call.claim_expires_at) > now
       const callIsActive = !['terminated','failed','rejected'].includes(call.state)
+      const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone)
       const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED' && call.initiated_by_user_id === userId
-      const canReadSession = callIsActive && (ownsClaim || ownsOutboundCall)
+      const canReadSession = callIsActive && pilotAllowed && (ownsClaim || ownsOutboundCall)
       const sdpIsFresh = typeof call.session_sdp_expires_at === 'string'
         && Date.parse(call.session_sdp_expires_at) > now
       let session: { sdp_type: 'offer' | 'answer'; sdp: string } | null = null
@@ -273,7 +274,7 @@ export async function GET(request: Request) {
         ...call,
         claim_owned_by_me: ownsClaim,
         initiated_by_me: ownsOutboundCall,
-        claim_available: call.direction === 'USER_INITIATED'
+        claim_available: pilotAllowed && call.direction === 'USER_INITIATED'
           && ['offered','ringing','connected'].includes(call.state)
           && !call.rejected_by_user_id && !call.ended_by_user_id
           && (
@@ -282,7 +283,7 @@ export async function GET(request: Request) {
             || call.claimed_by_user_id === userId
           ),
         session_available: Boolean(
-          callIsActive && (ownsClaim || ownsOutboundCall)
+          callIsActive && pilotAllowed && (ownsClaim || ownsOutboundCall)
           && call.session_sdp_type
           && call.session_sdp_expires_at
           && Date.parse(call.session_sdp_expires_at) > now
@@ -324,7 +325,7 @@ export async function POST(request: Request) {
       const db = supabaseAdmin()
       const { data: callRow, error: callLookupError } = await db
         .from('whatsapp_call_sessions')
-        .select('phone_number_id')
+        .select('phone_number_id,customer_phone')
         .eq('account_id', accountId)
         .eq('call_id', callId)
         .maybeSingle()
@@ -333,6 +334,10 @@ export async function POST(request: Request) {
         return NextResponse.json({ error: 'Failed to locate call' }, { status: 500 })
       }
       if (!callRow) return NextResponse.json({ error: 'Call not found' }, { status: 404 })
+      if (action !== 'release'
+        && !isWhatsAppCallingPilotAllowed(callRow.phone_number_id, callRow.customer_phone)) {
+        return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
+      }
 
       const rpcName = action === 'claim' ? 'whatsapp_call_claim'
         : action === 'renew_claim' ? 'whatsapp_call_claim_renew'
@@ -377,11 +382,11 @@ export async function POST(request: Request) {
       if (!config || config.status !== 'connected') {
         return NextResponse.json({ error: 'WhatsApp account is not connected' }, { status: 409 })
       }
-      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id)) {
-        return NextResponse.json({ error: 'WhatsApp Calling is disabled for this number' }, { status: 403 })
-      }
       const target = await loadCallTarget(accountId, null, contactId)
       if (!target) return NextResponse.json({ error: 'WhatsApp contact not found' }, { status: 404 })
+      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone)) {
+        return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
+      }
       const targetArgs = metaTarget(target)
       if (!targetArgs) return NextResponse.json({ error: 'Contact has no usable WhatsApp identity' }, { status: 409 })
       const accessToken = await loadAccessToken(config)
@@ -549,12 +554,12 @@ export async function POST(request: Request) {
       if (!config || config.status !== 'connected') {
         return NextResponse.json({ error: 'WhatsApp account is not connected' }, { status: 409 })
       }
-      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id)) {
-        return NextResponse.json({ error: 'WhatsApp Calling is disabled for this number' }, { status: 403 })
-      }
       const call = await loadSignalCall(accountId, callId)
       if (!call || call.phone_number_id !== config.phone_number_id) {
         return NextResponse.json({ error: 'Call not found' }, { status: 404 })
+      }
+      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, call.customer_phone)) {
+        return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
       }
       const accessToken = await loadAccessToken(config)
       if (!accessToken) return NextResponse.json({ error: 'WhatsApp credentials are unavailable' }, { status: 503 })
@@ -794,6 +799,10 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'WhatsApp credentials are unavailable' }, { status: 503 })
     }
 
+    if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone)) {
+      return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
+    }
+
     const permission = await getWhatsAppCallPermission({
       phoneNumberId: config.phone_number_id,
       accessToken,
@@ -802,10 +811,6 @@ export async function POST(request: Request) {
 
     if (action === 'check_permission') {
       return NextResponse.json({ permission })
-    }
-
-    if (!isWhatsAppCallingPilotAllowed(config.phone_number_id)) {
-      return NextResponse.json({ error: 'WhatsApp Calling is disabled for this number' }, { status: 403 })
     }
 
     if (!permission.canRequestPermission) {
