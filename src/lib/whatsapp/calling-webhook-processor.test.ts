@@ -91,6 +91,25 @@ describe('CALL-02 Calling webhook persistence', () => {
     })
   })
 
+  it('keeps rejected terminal calls distinct from completed calls', async () => {
+    rpc.mockResolvedValue({ data: true, error: null })
+    await processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        calls: [{
+          id: 'wacid.call-rejected',
+          event: 'terminate',
+          timestamp: '1795120060',
+          direction: 'USER_INITIATED',
+          from: '51911111111',
+          status: 'REJECTED',
+        }],
+      },
+    })
+    expect(rpc.mock.calls[0][1]).toMatchObject({ p_state: 'rejected', p_event_name: 'terminate' })
+  })
+
   it('persists an explicit temporary permission with its seven-day expiry', async () => {
     rpc.mockResolvedValue({ data: true, error: null })
     const reply = {
