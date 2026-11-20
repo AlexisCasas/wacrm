@@ -128,7 +128,7 @@ export async function processWhatsAppCallingWebhookChange(
       if (resolved.ok && (resolved.phone || (bsuidEnabled && resolved.bsuid))) {
         const identity = bsuidEnabled
           ? resolved
-          : { ...resolved, bsuid: undefined, parentBsuid: undefined, username: undefined }
+          : { ...resolved, bsuid: undefined, parentBsuid: undefined, previousBsuid: undefined, username: undefined }
 
         const contact = userInitiated
           ? await resolveInboundContact(
