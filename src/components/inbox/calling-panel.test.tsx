@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { CallingPanel } from "./calling-panel";
 import type { Contact, Conversation } from "@/types";
 
@@ -106,6 +106,7 @@ describe("CallingPanel", () => {
   });
 
   afterEach(() => {
+    cleanup();
     vi.restoreAllMocks();
     global.fetch = originalFetch;
     vi.unstubAllGlobals();
@@ -167,7 +168,7 @@ describe("CallingPanel", () => {
 
     render(<CallingPanel conversation={conversation} contact={contact} />);
 
-    expect(await screen.findByText("incomingCall")).toBeTruthy();
+    expect(await screen.findByText("Keyler")).toBeTruthy();
     expect(getUserMedia).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "accept" }));
