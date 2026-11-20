@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { callingSupabaseAdmin } from '@/lib/whatsapp/calling-admin'
 import { decrypt } from '@/lib/whatsapp/encryption'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { assertWhatsAppCallingEnabled } from '@/lib/whatsapp/calling-config'
@@ -21,7 +21,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Valid session_id and claim token are required' }, { status: 400 })
     }
 
-    const { data, error } = await supabaseAdmin()
+    const { data, error } = await callingSupabaseAdmin()
       .from('whatsapp_call_sessions')
       .select('state, claimed_by_user_id, claim_token, claim_expires_at, session_sdp_type, session_sdp_ciphertext, session_sdp_expires_at')
       .eq('id', sessionId)
@@ -48,7 +48,7 @@ export async function GET(request: Request) {
     if (!claimValid) return NextResponse.json({ error: 'Call claim is missing or expired' }, { status: 403 })
     if (!signalValid) {
       if (data.session_sdp_expires_at && new Date(data.session_sdp_expires_at).getTime() <= now) {
-        await supabaseAdmin()
+        await callingSupabaseAdmin()
           .from('whatsapp_call_sessions')
           .update({
             session_sdp_type: null,
