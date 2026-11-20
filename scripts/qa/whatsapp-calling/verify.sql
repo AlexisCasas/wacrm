@@ -12,6 +12,7 @@ DECLARE
   v_permission_signature text := 'public.whatsapp_call_permission_upsert(uuid,text,text,text,text,text,text,text,timestamp with time zone,text,text)';
   v_claim_signature text := 'public.whatsapp_call_claim(uuid,text,text,uuid)';
   v_release_signature text := 'public.whatsapp_call_release(uuid,text,text,uuid)';
+  v_prune_signature text := 'public.whatsapp_call_sdp_prune(integer)';
 BEGIN
   BEGIN
     IF NOT EXISTS (
@@ -58,6 +59,9 @@ BEGIN
       OR NOT has_function_privilege('service_role', v_release_signature, 'EXECUTE')
       OR has_function_privilege('anon', v_release_signature, 'EXECUTE')
       OR has_function_privilege('authenticated', v_release_signature, 'EXECUTE')
+      OR NOT has_function_privilege('service_role', v_prune_signature, 'EXECUTE')
+      OR has_function_privilege('anon', v_prune_signature, 'EXECUTE')
+      OR has_function_privilege('authenticated', v_prune_signature, 'EXECUTE')
     THEN RAISE EXCEPTION 'CALL02_RPC_GRANTS_INVALID'; END IF;
 
     v_first := public.whatsapp_call_event_apply(
@@ -99,6 +103,19 @@ BEGIN
         AND state='terminated' AND session_sdp_encrypted IS NULL
         AND session_sdp_expires_at IS NULL AND duration_seconds=60
     ) THEN RAISE EXCEPTION 'CALL02_TERMINAL_STATE_OR_SDP_CLEANUP_FAILED'; END IF;
+
+    PERFORM public.whatsapp_call_event_apply(
+      v_account,'740434745820831','wacid.qa-expired',repeat('e',64),
+      'connect',1795120100,'USER_INITIATED','PE.qa-customer','51911111111',
+      'PE.qa-customer',NULL,'Synthetic QA','offered','encrypted:expired-sdp','offer',
+      now()-interval '1 second',NULL,NULL,NULL
+    );
+    PERFORM public.whatsapp_call_sdp_prune(10);
+    IF EXISTS (
+      SELECT 1 FROM public.whatsapp_call_sessions
+      WHERE phone_number_id='740434745820831' AND call_id='wacid.qa-expired'
+        AND session_sdp_encrypted IS NOT NULL
+    ) THEN RAISE EXCEPTION 'CALL02_EXPIRED_SDP_NOT_PRUNED'; END IF;
 
     BEGIN
       PERFORM public.whatsapp_call_event_apply(
