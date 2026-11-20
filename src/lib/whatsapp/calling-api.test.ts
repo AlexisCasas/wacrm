@@ -294,9 +294,9 @@ describe('WhatsApp call permissions', () => {
   })
 
   it('sends a free-form call-permission request to a phone number', async () => {
-    let captured: { url: string; init: RequestInit } | null = null
+    const captured: Array<{ url: string; init: RequestInit }> = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
-      captured = { url, init }
+      captured.push({ url, init })
       return new Response(JSON.stringify({
         messaging_product: 'whatsapp',
         messages: [{ id: 'wamid.permission-request-01' }],
@@ -312,10 +312,10 @@ describe('WhatsApp call permissions', () => {
     })
 
     expect(result).toEqual({ messageId: 'wamid.permission-request-01' })
-    expect(captured?.url).toBe(
+    expect(captured[0]?.url).toBe(
       'https://graph.facebook.com/' + META_CALLING_API_VERSION + '/740434745820831/messages',
     )
-    expect(JSON.parse(String(captured?.init.body))).toEqual({
+    expect(JSON.parse(String(captured[0]?.init.body))).toEqual({
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
       messaging_account_id: BASE.messagingAccountId,
