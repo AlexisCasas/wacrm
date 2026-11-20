@@ -10,6 +10,7 @@ import {
   PhoneOff,
 } from "lucide-react";
 import { useTranslations } from "next-intl";
+import { useAuth } from "@/hooks/use-auth";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import type { Contact, Conversation } from "@/types";
@@ -160,6 +161,7 @@ interface CallingPanelProps {
 
 export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   const t = useTranslations("Inbox.calling");
+  const { profile } = useAuth();
   const [uiState, setUiState] = useState<UiState>("idle");
   const [incomingCall, setIncomingCall] = useState<CallSummary | null>(null);
   const [activeCall, setActiveCall] = useState<CallSummary | null>(null);
@@ -676,6 +678,9 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       ) : uiState === "connected" && activeCall ? (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
           <span className="text-xs font-medium text-emerald-500">{formatDuration(elapsedSeconds)}</span>
+          <span className="max-w-28 truncate text-[11px] text-muted-foreground" title={profile?.full_name ?? t("agent")}>
+            {profile?.full_name ?? t("agent")}
+          </span>
           <button
             type="button"
             onClick={toggleMute}
