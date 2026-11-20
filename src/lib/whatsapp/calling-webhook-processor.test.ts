@@ -59,6 +59,17 @@ describe('CALL-02 Calling webhook persistence', () => {
     })
   })
 
+  it('fails closed when a connect event has no trustworthy direction or customer identity', async () => {
+    await expect(processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        calls: [{ id: 'wacid.call-no-direction', event: 'connect', timestamp: '1795120000', to: '51980942247' }],
+      },
+    })).rejects.toThrow('call_event_missing_customer_identity')
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
   it('persists terminate and ignores non-Calling status objects', async () => {
     rpc.mockResolvedValue({ data: true, error: null })
     await processCallingWebhookChange(db, {
