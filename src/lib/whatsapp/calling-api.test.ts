@@ -211,7 +211,10 @@ describe('WhatsApp call permissions', () => {
       expirationTime: 1795724800,
       canStartCall: true,
       canRequestPermission: false,
-      actions: [{ actionName: 'start_call', canPerformAction: true }],
+      actions: [
+        { actionName: 'start_call', canPerformAction: true, limits: [{ timePeriod: 'PT24H', maxAllowed: 100, currentUsage: 1 }] },
+        { actionName: 'send_call_permission_request', canPerformAction: false, limits: [{ timePeriod: 'P7D', maxAllowed: 2, currentUsage: 2 }] },
+      ],
     })
   })
 
