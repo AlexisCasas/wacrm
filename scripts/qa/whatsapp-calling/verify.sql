@@ -10,6 +10,8 @@ DECLARE
   v_conflict boolean := false;
   v_signature text := 'public.whatsapp_call_event_apply(uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone,integer)';
   v_permission_signature text := 'public.whatsapp_call_permission_upsert(uuid,text,text,text,text,text,text,text,timestamp with time zone,text,text)';
+  v_claim_signature text := 'public.whatsapp_call_claim(uuid,text,text,uuid)';
+  v_release_signature text := 'public.whatsapp_call_release(uuid,text,text,uuid)';
 BEGIN
   BEGIN
     IF NOT EXISTS (
@@ -24,6 +26,10 @@ BEGIN
       SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
       WHERE n.nspname='public' AND c.relname='whatsapp_call_permissions' AND c.relrowsecurity
     ) THEN RAISE EXCEPTION 'CALL02_PERMISSIONS_RLS_MISSING'; END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_schema='public' AND table_name='whatsapp_call_sessions' AND column_name='claim_expires_at'
+    ) THEN RAISE EXCEPTION 'CALL02_CLAIM_LEASE_COLUMN_MISSING'; END IF;
 
     IF has_table_privilege('anon','public.whatsapp_call_sessions','SELECT')
       OR has_table_privilege('authenticated','public.whatsapp_call_sessions','SELECT')
@@ -39,6 +45,12 @@ BEGIN
       OR NOT has_function_privilege('service_role', v_permission_signature, 'EXECUTE')
       OR has_function_privilege('anon', v_permission_signature, 'EXECUTE')
       OR has_function_privilege('authenticated', v_permission_signature, 'EXECUTE')
+      OR NOT has_function_privilege('service_role', v_claim_signature, 'EXECUTE')
+      OR has_function_privilege('anon', v_claim_signature, 'EXECUTE')
+      OR has_function_privilege('authenticated', v_claim_signature, 'EXECUTE')
+      OR NOT has_function_privilege('service_role', v_release_signature, 'EXECUTE')
+      OR has_function_privilege('anon', v_release_signature, 'EXECUTE')
+      OR has_function_privilege('authenticated', v_release_signature, 'EXECUTE')
     THEN RAISE EXCEPTION 'CALL02_RPC_GRANTS_INVALID'; END IF;
 
     v_first := public.whatsapp_call_event_apply(
