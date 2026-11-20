@@ -33,7 +33,8 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
   const identity = customerIdentity(event)
   if (!identity.key && event.direction) throw new Error('call_event_missing_customer_identity')
   const terminal = event.event === 'terminate'
-  const state = terminal ? (event.status === 'FAILED' ? 'failed' : 'terminated')
+  const state = terminal
+    ? event.status === 'FAILED' ? 'failed' : event.status === 'REJECTED' ? 'rejected' : 'terminated'
     : event.event === 'connect' ? (event.direction === 'USER_INITIATED' ? 'offered' : 'connecting') : null
   const sdp = event.session?.sdp
   const encryptedSdp = sdp ? encrypt(sdp) : null
