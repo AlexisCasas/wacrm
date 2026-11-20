@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { POST } from './route'
+import { GET, POST } from './route'
 
 const h = vi.hoisted(() => ({
   accountId: 'a3000000-0000-4000-8000-000000000001',
@@ -386,5 +386,90 @@ describe('WhatsApp Calling API trust boundary', () => {
     }))
     expect(response.status).toBe(400)
     expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('GET /api/whatsapp/calls — SDP access control', () => {
+  it('does not disclose SDP for a terminal outbound call', async () => {
+    h.session = {
+      id: 'a3000000-0000-4000-8000-000000000007',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-terminal',
+      direction: 'BUSINESS_INITIATED',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: h.userId,
+      accepted_by_user_id: h.userId,
+      rejected_by_user_id: null,
+      ended_by_user_id: h.userId,
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'Synthetic',
+      state: 'terminated',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: null,
+      ended_at: null,
+      duration_seconds: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_encrypted: 'encrypted:terminal-answer',
+      session_sdp_type: 'answer',
+      session_sdp_expires_at: new Date(Date.now() + 60000).toISOString(),
+    }
+    const response = await GET(new Request(
+      'http://localhost/api/whatsapp/calls?call_id=wacid.qa-terminal',
+    ))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.session).toBeNull()
+    expect(data.session_available).toBe(false)
+    expect(data.call.session_sdp_encrypted).toBeUndefined()
+    expect(h.decrypt).not.toHaveBeenCalled()
+  })
+
+  it('allows the outbound initiator to retrieve the remote answer while the call is active', async () => {
+    h.session = {
+      id: 'a3000000-0000-4000-8000-000000000008',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-active-outbound',
+      direction: 'BUSINESS_INITIATED',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: h.userId,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'Synthetic',
+      state: 'connected',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+      duration_seconds: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_encrypted: 'encrypted:remote-answer',
+      session_sdp_type: 'answer',
+      session_sdp_expires_at: new Date(Date.now() + 60000).toISOString(),
+    }
+    const response = await GET(new Request(
+      'http://localhost/api/whatsapp/calls?call_id=wacid.qa-active-outbound',
+    ))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.session).toEqual({ sdp_type: 'answer', sdp: 'remote-answer' })
+    expect(data.initiated_by_me).toBeUndefined()
+    expect(data.initiated_by_me).toBeUndefined()
+    expect(data.call.session_sdp_encrypted).toBeUndefined()
   })
 })
