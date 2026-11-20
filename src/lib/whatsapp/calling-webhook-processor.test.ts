@@ -78,7 +78,7 @@ describe('CALL-02 Calling webhook persistence', () => {
           direction: 'USER_INITIATED',
           from: '51911111111',
           from_user_id: 'PE.123456789',
-          session: { sdp_type: 'offer', sdp: 'v=0\\\\r\\\\n' },
+          session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
         }],
       },
     })
