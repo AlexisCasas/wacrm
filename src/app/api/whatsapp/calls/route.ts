@@ -392,6 +392,8 @@ export async function POST(request: Request) {
         }, { status: 409 })
       }
 
+      const encryptedOffer = encrypt(offer)
+      const offerExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString()
       const db = supabaseAdmin()
       const { data: attemptData, error: attemptError } = await db.rpc('whatsapp_call_outbound_attempt_begin', {
         p_account_id: accountId,
@@ -405,6 +407,8 @@ export async function POST(request: Request) {
         p_customer_bsuid: target.bsuid,
         p_customer_parent_bsuid: target.parentBsuid,
         p_customer_name: null,
+        p_agent_sdp_encrypted: encryptedOffer,
+        p_agent_sdp_expires_at: offerExpiresAt,
       })
       if (attemptError) {
         console.error('[calling/api] outbound attempt begin failed', { code: attemptError.code ?? 'unknown' })
@@ -450,11 +454,19 @@ export async function POST(request: Request) {
           p_request_id: requestId,
           p_actor_user_id: userId,
           p_call_id: result.callId,
-          p_agent_sdp_encrypted: encrypt(offer),
-          p_agent_sdp_expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          p_agent_sdp_encrypted: encryptedOffer,
+          p_agent_sdp_expires_at: offerExpiresAt,
         })
         if (completeError) {
           console.error('[calling/api] outbound attempt completion failed', { code: completeError.code ?? 'unknown' })
+          await supabaseAdmin().rpc('whatsapp_call_outbound_attempt_fail', {
+            p_account_id: accountId,
+            p_phone_number_id: config.phone_number_id,
+            p_request_id: requestId,
+            p_actor_user_id: userId,
+            p_state: 'unknown',
+            p_failure_code: 'local_completion_failed',
+          })
           return NextResponse.json({
             success: true,
             call_id: result.callId,
