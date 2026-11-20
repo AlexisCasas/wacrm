@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { callingSupabaseAdmin } from '@/lib/whatsapp/calling-admin'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { getWhatsAppCallingConfig } from '@/lib/whatsapp/calling-config'
 import {
@@ -71,7 +71,7 @@ export async function GET(request: Request) {
     })
 
     const expirationTime = permission.status === 'temporary' ? permission.expirationTime! : null
-    const { error: saveError } = await supabaseAdmin()
+    const { error: saveError } = await callingSupabaseAdmin()
       .from('whatsapp_call_permissions')
       .upsert({
         account_id: accountId,
@@ -208,7 +208,7 @@ export async function POST(request: Request) {
       bodyText,
     })
 
-    const { error: requestSaveError } = await supabaseAdmin()
+    const { error: requestSaveError } = await callingSupabaseAdmin()
       .from('whatsapp_call_permission_requests')
       .insert({
         account_id: accountId,
