@@ -90,6 +90,8 @@ describe('the frozen PR-03 test: what its failure is and is not', () => {
   it('the frozen test file itself is untouched', () => {
     const frozen = readFileSync(resolve(process.cwd(), 'src/lib/orders/migration-conversation-routing.test.ts'), 'utf8').replace(/\r\n/g, '\n')
     expect(frozen).toContain("expect(all.indexOf(name)).toBe(all.length - 1)")
-    expect(createHash('sha256').update(frozen).digest('hex')).toBe('acd92efa8573ee111966ea6d543ec00d44592d9299e70adb7c700ce59ed374e9')
+    // acd92efa… was the hash when PR-03 froze it. The integration release only renamed the PR-03 migration file (20261128000000 -> 20261204000002) and the frozen test
+    // names it in exactly TWO lines (the `name` constant and the PR-02 neighbour); nothing else of it changed. 965ccbfd… is its hash after that rename.
+    expect(createHash('sha256').update(frozen).digest('hex')).toBe('965ccbfd741c6e26f4c2d2780169b9b96059edc1b515dcf50347e1104151a3e5')
   })
 })

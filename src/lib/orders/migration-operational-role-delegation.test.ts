@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const read = (f: string) => readFileSync(resolve(process.cwd(), 'supabase/migrations', f), 'utf8')
+const read = (f: string) => readFileSync(resolve(process.cwd(), 'supabase/migrations', f), 'utf8').replace(/\r\n/g, '\n') // a Windows (autocrlf) checkout has CRLF; the repository / git archive content is LF
 const mig = read('20261204000000_operational_role_supervisor_delegation.sql')
 const code = mig.replace(/^--.*$/gm, '')
 const fn = code.slice(code.indexOf('CREATE OR REPLACE FUNCTION public.set_member_operational_role('), code.indexOf('$$;') + 3)
