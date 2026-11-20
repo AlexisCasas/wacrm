@@ -6,7 +6,7 @@ Estado: **implementado localmente**, sin push, sin deploy, sin ninguna llamada a
 |---|---|
 | ARQUITECTURA DE TRACKING (modelo, RPC, poller, UI, alerta, notificación) | **TERMINADA Y VALIDADA LOCALMENTE** con proveedor fake |
 | INTEGRACIÓN REAL CON SHALOM | **BLOQUEADA hasta verificar contrato/autorización** (no se pudo confirmar que la API sea oficial; el endpoint de InkaClick NO es un contrato aprobado) |
-| COEXISTENCIA CON EL POLLER DE INKACLICK | **PRE-DEPLOY BLOCKER**: decidir qué sistema es dueño del polling antes de activar nada real |
+| COEXISTENCIA CON EL POLLER DE INKACLICK | **DECIDIDO (2026-11-20)**: WACRM es el dueño del polling Shalom; InkaClick sale del flujo. Falta ejecutar el apagado ordenado de InkaClick al activar (no antes) |
 
 ## 1. Qué hace
 
