@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   parseWhatsAppCallPermissionReply,
   parseWhatsAppCallingWebhookChange,
+  protectWhatsAppCallingWebhookSdp,
 } from './calling-webhook'
 
 describe('parseWhatsAppCallingWebhookChange', () => {
@@ -165,5 +166,77 @@ describe('parseWhatsAppCallPermissionReply', () => {
       type: 'interactive',
       interactive: { type: 'call_permission_reply', call_permission_reply: { response: 'maybe' } },
     })).toBeNull()
+  })
+})
+
+
+describe('protectWhatsAppCallingWebhookSdp', () => {
+  it('encrypts SDP and removes plaintext before the durable inbox copy', () => {
+    const original = {
+      entry: [{
+        changes: [{
+          field: 'calls',
+          value: {
+            metadata: { phone_number_id: '740434745820831' },
+            calls: [{
+              id: 'wacid.call-protect-01',
+              event: 'connect',
+              timestamp: '1795120000',
+              direction: 'USER_INITIATED',
+              session: { sdp_type: 'offer', sdp: 'v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n' },
+            }],
+          },
+        }],
+      }],
+    }
+
+    const protectedCopy = protectWhatsAppCallingWebhookSdp(original, (sdp) => 'cipher:' + sdp)
+    const session = (protectedCopy as typeof original).entry[0].changes[0].value.calls[0].session
+
+    expect(session.sdp).toBeUndefined()
+    expect(session.wacrm_sdp_ciphertext).toContain('cipher:v=0')
+    expect(original.entry[0].changes[0].value.calls[0].session.sdp).toContain('v=0')
+  })
+
+  it('rejects malformed or oversized SDP instead of persisting plaintext', () => {
+    const payload = {
+      entry: [{
+        changes: [{
+          field: 'calls',
+          value: {
+            calls: [{
+              id: 'wacid.call-protect-02',
+              session: { sdp_type: 'offer', sdp: 'not-sdp' },
+            }],
+          },
+        }],
+      }],
+    }
+    expect(() => protectWhatsAppCallingWebhookSdp(payload, (sdp) => 'cipher:' + sdp))
+      .toThrow(/Invalid Calling SDP/)
+  })
+})
+
+describe('encrypted Calling SDP parser', () => {
+  it('parses the internal ciphertext field without exposing plaintext SDP', () => {
+    const parsed = parseWhatsAppCallingWebhookChange({
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: '740434745820831' },
+        calls: [{
+          id: 'wacid.call-ciphertext-01',
+          event: 'connect',
+          timestamp: '1795120000',
+          direction: 'USER_INITIATED',
+          session: { sdp_type: 'offer', wacrm_sdp_ciphertext: 'ciphertext-only' },
+        }],
+      },
+    })
+
+    expect(parsed?.calls[0]?.session).toEqual({
+      sdp_type: 'offer',
+      sdpCiphertext: 'ciphertext-only',
+    })
+    expect(parsed?.calls[0]?.session).not.toHaveProperty('sdp')
   })
 })
