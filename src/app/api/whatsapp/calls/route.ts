@@ -48,7 +48,7 @@ export async function GET() {
       return {
         ...publicRow,
         claimed_by_me: claimed_by_user_id === userId && Boolean(claim_expires_at && new Date(claim_expires_at).getTime() > Date.now()),
-        claim_available: !claim_token || !claim_expires_at || new Date(claim_expires_at).getTime() <= Date.now(),
+        claim_available: row.state === 'ringing' && row.direction === 'USER_INITIATED' && (!claim_token || !claim_expires_at || new Date(claim_expires_at).getTime() <= Date.now()),
       }
     })
 
