@@ -159,6 +159,7 @@ describe("CallingPanel", () => {
       if (init?.method === "POST") {
         const body = JSON.parse(String(init.body));
         if (body.action === "accept") {
+          expect(mediaTrack.enabled).toBe(false);
           return jsonResponse({ success: true, agent_attribution_recorded: true });
         }
         return jsonResponse({ success: true });
@@ -557,12 +558,102 @@ describe("CallingPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "endCall" }));
     expect(await screen.findByText("Temporary termination failure")).toBeTruthy();
     expect(screen.getByRole("button", { name: "endCall" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "mute" })).toBeTruthy();
     expect(mediaTrack.stop).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "mute" }));
+    expect(mediaTrack.enabled).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "endCall" }));
     await waitFor(() => expect(mediaTrack.stop).toHaveBeenCalled());
     expect(terminateAttempts).toBe(2);
     expect(screen.queryByText("Temporary termination failure")).toBeNull();
+  });
+
+  it("keeps an outbound call visible for termination retry after setup fails", async () => {
+    let terminateAttempts = 0;
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        if (body.action === "check_permission") {
+          return jsonResponse({
+            permission: { status: "permanent", canStartCall: true, canRequestPermission: false },
+          });
+        }
+        if (body.action === "connect") return jsonResponse({ call_id: "wacid.qa-setup-terminate-retry" });
+        if (body.action === "terminate") {
+          terminateAttempts += 1;
+          if (terminateAttempts === 1) {
+            return new Response(JSON.stringify({ error: "Termination unavailable" }), { status: 503 });
+          }
+          return jsonResponse({ success: true });
+        }
+        return jsonResponse({ success: true });
+      }
+      if (url.includes("?call_id=")) {
+        return jsonResponse({
+          call: { call_id: "wacid.qa-setup-terminate-retry", state: "failed" },
+          session: null,
+        });
+      }
+      return jsonResponse({ calls: [] });
+    });
+
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+    const callButton = await screen.findByRole("button", { name: "call" });
+    await waitFor(() => expect(callButton).toHaveProperty("disabled", false));
+    fireEvent.click(callButton);
+
+    expect(await screen.findByText(/Termination unavailable/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "endCall" })).toBeTruthy();
+    expect(mediaTrack.stop).toHaveBeenCalled();
+    expect(FakePeerConnection.instances[0].connectionState).toBe("closed");
+
+    fireEvent.click(screen.getByRole("button", { name: "endCall" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "endCall" })).toBeNull());
+    expect(terminateAttempts).toBe(2);
+  });
+
+  it("terminates an active call and releases media when the Inbox panel unmounts", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        if (body.action === "check_permission") {
+          return jsonResponse({
+            permission: { status: "permanent", canStartCall: true, canRequestPermission: false },
+          });
+        }
+        if (body.action === "connect") return jsonResponse({ call_id: "wacid.qa-unmount" });
+        return jsonResponse({ success: true });
+      }
+      if (url.includes("?call_id=")) {
+        return jsonResponse({
+          call: { call_id: "wacid.qa-unmount", conversation_id: conversation.id, state: "connected" },
+          session: { sdp_type: "answer", sdp: "v=0\\\\r\\\\n" },
+        });
+      }
+      return jsonResponse({ calls: [] });
+    });
+
+    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const callButton = await screen.findByRole("button", { name: "call" });
+    await waitFor(() => expect(callButton).toHaveProperty("disabled", false));
+    fireEvent.click(callButton);
+    await screen.findByText("00:00");
+
+    const peer = FakePeerConnection.instances[0];
+    view.unmount();
+
+    expect(mediaTrack.stop).toHaveBeenCalled();
+    expect(peer.connectionState).toBe("closed");
+    await waitFor(() => {
+      const actions = vi.mocked(global.fetch).mock.calls
+        .filter(([, init]) => init?.method === "POST")
+        .map(([, init]) => JSON.parse(String(init?.body)).action);
+      expect(actions).toContain("terminate");
+    });
   });
 
   it("does not offer outgoing calls for contacts without a phone identity", async () => {
