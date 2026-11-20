@@ -124,6 +124,13 @@ function metaTarget(target: CallTarget) {
   return recipient ? { recipient } : null
 }
 
+async function pruneExpiredSdp(): Promise<void> {
+  const { error } = await supabaseAdmin().rpc('whatsapp_call_sdp_prune', { p_limit: 25 })
+  if (error) {
+    console.error('[calling/api] expired SDP cleanup failed', { code: error.code ?? 'unknown' })
+  }
+}
+
 /**
  * GET /api/whatsapp/calls
  * Lists this account's recent calls. A call_id query returns one call;
@@ -132,6 +139,7 @@ function metaTarget(target: CallTarget) {
 export async function GET(request: Request) {
   try {
     const { accountId, userId } = await requireRole('agent')
+    await pruneExpiredSdp()
     const db = supabaseAdmin()
     const callId = new URL(request.url).searchParams.get('call_id')
 
@@ -222,6 +230,7 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   try {
     const { accountId, userId } = await requireRole('agent')
+    await pruneExpiredSdp()
     const limit = checkRateLimit(`calling:${userId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
