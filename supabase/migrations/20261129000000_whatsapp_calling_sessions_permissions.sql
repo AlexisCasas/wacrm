@@ -145,7 +145,13 @@ BEGIN
     OR (p_direction IS NOT NULL AND p_direction NOT IN ('USER_INITIATED','BUSINESS_INITIATED'))
     OR (p_state IS NOT NULL AND p_state NOT IN ('offered','ringing','connecting','connected','terminated','failed','rejected'))
     OR (p_session_sdp_encrypted IS NOT NULL AND (
-      length(p_session_sdp_encrypted) > 140000 OR p_session_sdp_type NOT IN ('offer','answer')
+      length(p_session_sdp_encrypted) > 140000
+      OR p_session_sdp_type IS NULL
+      OR p_session_sdp_type NOT IN ('offer','answer')
+      OR p_session_sdp_expires_at IS NULL
+    ))
+    OR (p_session_sdp_encrypted IS NULL AND (
+      p_session_sdp_type IS NOT NULL OR p_session_sdp_expires_at IS NOT NULL
     ))
   THEN
     RAISE EXCEPTION 'invalid_call_event' USING ERRCODE='22023';
@@ -183,21 +189,39 @@ BEGIN
     END,
     session_sdp_encrypted=CASE
       WHEN EXCLUDED.last_meta_timestamp < COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
-        THEN whatsapp_call_sessions.session_sdp_encrypted
+        THEN CASE
+          WHEN whatsapp_call_sessions.session_sdp_encrypted IS NULL
+            AND whatsapp_call_sessions.state NOT IN ('terminated','failed','rejected')
+            AND EXCLUDED.session_sdp_encrypted IS NOT NULL
+          THEN EXCLUDED.session_sdp_encrypted
+          ELSE whatsapp_call_sessions.session_sdp_encrypted
+        END
       WHEN EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       WHEN EXCLUDED.session_sdp_encrypted IS NOT NULL THEN EXCLUDED.session_sdp_encrypted
       ELSE whatsapp_call_sessions.session_sdp_encrypted
     END,
     session_sdp_type=CASE
       WHEN EXCLUDED.last_meta_timestamp < COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
-        THEN whatsapp_call_sessions.session_sdp_type
+        THEN CASE
+          WHEN whatsapp_call_sessions.session_sdp_encrypted IS NULL
+            AND whatsapp_call_sessions.state NOT IN ('terminated','failed','rejected')
+            AND EXCLUDED.session_sdp_encrypted IS NOT NULL
+          THEN EXCLUDED.session_sdp_type
+          ELSE whatsapp_call_sessions.session_sdp_type
+        END
       WHEN EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       WHEN EXCLUDED.session_sdp_encrypted IS NOT NULL THEN EXCLUDED.session_sdp_type
       ELSE whatsapp_call_sessions.session_sdp_type
     END,
     session_sdp_expires_at=CASE
       WHEN EXCLUDED.last_meta_timestamp < COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
-        THEN whatsapp_call_sessions.session_sdp_expires_at
+        THEN CASE
+          WHEN whatsapp_call_sessions.session_sdp_encrypted IS NULL
+            AND whatsapp_call_sessions.state NOT IN ('terminated','failed','rejected')
+            AND EXCLUDED.session_sdp_encrypted IS NOT NULL
+          THEN EXCLUDED.session_sdp_expires_at
+          ELSE whatsapp_call_sessions.session_sdp_expires_at
+        END
       WHEN EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       WHEN EXCLUDED.session_sdp_encrypted IS NOT NULL THEN EXCLUDED.session_sdp_expires_at
       ELSE whatsapp_call_sessions.session_sdp_expires_at
@@ -289,7 +313,8 @@ BEGIN
   WHERE account_id=p_account_id
     AND phone_number_id=p_phone_number_id
     AND call_id=p_call_id
-    AND state IN ('offered','ringing')
+    AND direction='USER_INITIATED'
+    AND state IN ('offered','ringing','connected')
     AND (
       claimed_by_user_id IS NULL
       OR claim_expires_at <= now()
