@@ -16,7 +16,9 @@ export function isWhatsAppCallingPilotAllowed(
 ): boolean {
   if (process.env.WHATSAPP_CALLING_ENABLED !== 'true') return false
   if (phoneNumberId !== CALLING_PILOT_PHONE_NUMBER_ID) return false
-  if (normalizedDigits(customerPhone ?? '') !== CALLING_PILOT_CUSTOMER_PHONE) return false
+  const rawCustomerPhone = customerPhone?.trim() ?? ''
+  if (!/^\\+?\\d{6,20}$/.test(rawCustomerPhone)) return false
+  if (normalizedDigits(rawCustomerPhone) !== CALLING_PILOT_CUSTOMER_PHONE) return false
 
   const configuredNumbers = (process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS ?? '')
     .split(',')
