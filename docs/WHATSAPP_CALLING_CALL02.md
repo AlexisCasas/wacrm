@@ -138,9 +138,9 @@ Durante la revisión posterior se detectó que la migración CALL-02 del HEAD pr
 - RPCs `whatsapp_call_event_apply`, `whatsapp_call_sdp_prune`, `whatsapp_call_claim`, `whatsapp_call_release` y `whatsapp_call_permission_upsert`;
 - firma de funciones alineada con el script de QA y los argumentos usados por TypeScript.
 
-La corrección está en GitHub, pero **no se considera validada hasta que Migrations #111 complete el replay de todas las migraciones y el script CALL-02**. No aplicar esta migración en Supabase Cloud ni en producción antes de ese resultado.
+La corrección está en GitHub, pero **no se considera validada hasta que Migrations #112 complete el replay de todas las migraciones y el script CALL-02**. No aplicar esta migración en Supabase Cloud ni en producción antes de ese resultado.
 
 ### Ejecuciones sobre la corrección
-- CI #214: en ejecución al documentar este hallazgo.
-- Migrations #111: en cola/alistándose al documentar este hallazgo.
+- CI #215: ejecución activa; lint/typecheck/tests/build pendientes de completar.
+- Migrations #112: pendiente de iniciar el replay limpio y ejecutar el script CALL-02.
 - PR #136 continúa en Draft; sin merge ni despliegue.
