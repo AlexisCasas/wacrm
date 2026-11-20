@@ -184,11 +184,23 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       remoteStreamRef.current = stream;
       if (audioRef.current) {
         audioRef.current.srcObject = stream;
-        void audioRef.current.play().catch(() => {
-          setErrorMessage(t("tapToHear"));
-        });
+        audioRef.current.muted = true;
       }
     };
+  }, [t]);
+
+  const enableAudio = useCallback(async () => {
+    localStreamRef.current?.getAudioTracks().forEach((track) => {
+      track.enabled = true;
+    });
+    if (audioRef.current) {
+      audioRef.current.muted = false;
+      try {
+        await audioRef.current.play();
+      } catch {
+        setErrorMessage(t("tapToHear"));
+      }
+    }
   }, [t]);
 
   const requestMicrophone = useCallback(async () => {
@@ -343,9 +355,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       const answer = await waitForRemoteAnswer(callId);
       await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
       await waitForPeerConnected(peer);
-      stream.getAudioTracks().forEach((track) => {
-        track.enabled = true;
-      });
+      await enableAudio();
       setUiState("connected");
       setCall({ ...call, state: "connected" });
     } catch (error) {
@@ -362,7 +372,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       }
       resetCall();
     }
-  }, [addLocalAudio, attachRemoteAudio, contact, conversation, requestMicrophone, resetCall, setCall, t, uiState, waitForRemoteAnswer]);
+  }, [addLocalAudio, attachRemoteAudio, contact, conversation, enableAudio, requestMicrophone, resetCall, setCall, t, uiState, waitForRemoteAnswer]);
 
   const acceptIncoming = useCallback(async () => {
     const incoming = incomingCall;
@@ -401,9 +411,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         call_id: incoming.call_id,
         conversation_id: conversation?.id,
       });
-      stream.getAudioTracks().forEach((track) => {
-        track.enabled = true;
-      });
+      await enableAudio();
       const acceptedCall = { ...incoming, state: "connected" };
       setCall(acceptedCall);
       setIncomingCall(null);
@@ -415,7 +423,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       if (claimed) await releaseClaim(incoming.call_id);
       resetCall();
     }
-  }, [addLocalAudio, attachRemoteAudio, conversation?.id, incomingCall, releaseClaim, requestMicrophone, resetCall, setCall, t, uiState]);
+  }, [addLocalAudio, attachRemoteAudio, conversation?.id, enableAudio, incomingCall, releaseClaim, requestMicrophone, resetCall, setCall, t, uiState]);
 
   const rejectIncoming = useCallback(async () => {
     if (!incomingCall) return;
@@ -464,7 +472,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
 
   return (
     <div className="flex items-center gap-2">
-      <audio ref={audioRef} autoPlay playsInline className="hidden" />
+      <audio ref={audioRef} autoPlay playsInline muted className="hidden" />
       {incomingCall && uiState === "idle" ? (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5">
           <PhoneIncoming className="h-4 w-4 text-emerald-500" />
