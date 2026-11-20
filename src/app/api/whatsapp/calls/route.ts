@@ -221,7 +221,7 @@ export async function GET(request: Request) {
         && typeof call.claim_expires_at === 'string'
         && Date.parse(call.claim_expires_at) > now
       const callIsActive = !['terminated','failed','rejected'].includes(call.state)
-      const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone)
+      const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id)
       const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED' && call.initiated_by_user_id === userId
       const canReadSession = callIsActive && pilotAllowed && (ownsClaim || ownsOutboundCall)
       const sdpIsFresh = typeof call.session_sdp_expires_at === 'string'
@@ -335,7 +335,7 @@ export async function POST(request: Request) {
       }
       if (!callRow) return NextResponse.json({ error: 'Call not found' }, { status: 404 })
       if (action !== 'release'
-        && !isWhatsAppCallingPilotAllowed(callRow.phone_number_id, callRow.customer_phone)) {
+        && !isWhatsAppCallingPilotAllowed(callRow.phone_number_id)) {
         return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
       }
 
@@ -384,7 +384,7 @@ export async function POST(request: Request) {
       }
       const target = await loadCallTarget(accountId, null, contactId)
       if (!target) return NextResponse.json({ error: 'WhatsApp contact not found' }, { status: 404 })
-      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone)) {
+      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id)) {
         return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
       }
       const targetArgs = metaTarget(target)
@@ -558,7 +558,7 @@ export async function POST(request: Request) {
       if (!call || call.phone_number_id !== config.phone_number_id) {
         return NextResponse.json({ error: 'Call not found' }, { status: 404 })
       }
-      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, call.customer_phone)) {
+      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id)) {
         return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
       }
       const accessToken = await loadAccessToken(config)
