@@ -379,7 +379,16 @@
       "networkError": "서버에 연결할 수 없습니다.",
       "handoffTitle": "상담원 확인 필요"
     }
-  },
+  
+    "calling": {
+      "initiatedBy": "시작한 사람",
+      "acceptedBy": "수락한 사람",
+      "rejectedBy": "거절한 사람",
+      "endedBy": "종료한 사람",
+      "historyDate": "날짜",
+      "historyDuration": "통화 시간",
+      "unknownAgent": "상담원 정보 없음"
+    },},
   "Contacts": {
     "page": {
       "title": "연락처",
