@@ -161,7 +161,7 @@ describe('WhatsApp Calling signaling API', () => {
     expect(h.rpc).not.toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.anything())
   })
 
-  it('requires a current Meta permission before creating an outbound attempt', async () => {
+  it('requires a current Meta permission before sending the outbound connect', async () => {
     h.getPermission.mockResolvedValue({
       status: 'no_permission',
       canStartCall: false,
@@ -176,7 +176,45 @@ describe('WhatsApp Calling signaling API', () => {
       session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
     }))
     expect(response.status).toBe(409)
-    expect(h.rpc).not.toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.anything())
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.anything())
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
+      p_state: 'failed',
+      p_failure_code: 'call_permission_not_current',
+    }))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('marks a permission lookup failure as failed before any Meta connect request', async () => {
+    h.getPermission.mockRejectedValueOnce({ httpStatus: 503 })
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    expect(response.status).toBe(503)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
+      p_state: 'failed',
+      p_failure_code: 'permission_lookup_failed',
+    }))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('does not reuse a failed idempotency key as if it were pending', async () => {
+    h.attemptCreated = false
+    h.attemptState = 'failed'
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    const data = await response.json()
+    expect(response.status).toBe(409)
+    expect(data.code).toBe('call_attempt_failed')
+    expect(h.getPermission).not.toHaveBeenCalled()
     expect(h.callWhatsApp).not.toHaveBeenCalled()
   })
 
