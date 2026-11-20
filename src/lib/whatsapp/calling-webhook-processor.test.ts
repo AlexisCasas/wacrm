@@ -39,6 +39,7 @@ describe('CALL-02 Calling webhook persistence', () => {
           direction: 'USER_INITIATED',
           from: '51911111111',
           from_user_id: 'PE.123456789',
+          from_parent_user_id: 'PE.parent123',
           session: { sdp_type: 'offer', sdp },
         }],
       },
@@ -51,6 +52,8 @@ describe('CALL-02 Calling webhook persistence', () => {
       p_phone_number_id: config.phone_number_id,
       p_state: 'offered',
       p_customer_key: 'PE.123456789',
+      p_customer_bsuid: 'PE.123456789',
+      p_customer_parent_bsuid: 'PE.parent123',
       p_session_sdp_encrypted: 'encrypted:' + sdp,
       p_session_sdp_type: 'offer',
     })
@@ -101,6 +104,7 @@ describe('CALL-02 Calling webhook persistence', () => {
           response: 'accept',
           is_permanent: false,
           expiration_timestamp: '1795724800',
+          response_source: 'user_action',
         },
       },
     }
@@ -110,6 +114,7 @@ describe('CALL-02 Calling webhook persistence', () => {
       p_customer_key: 'PE.123456789',
       p_permission_state: 'approved',
       p_permission_type: 'temporary',
+      p_response_source: 'user_action',
       p_expires_at: new Date(1795724800 * 1000).toISOString(),
     })
   })
@@ -126,9 +131,9 @@ describe('CALL-02 Calling webhook persistence', () => {
     await processCallPermissionReply(db, config, {
       from: '51911111111',
       type: 'interactive',
-      interactive: { type: 'call_permission_reply', call_permission_reply: { response: 'reject' } },
+      interactive: { type: 'call_permission_reply', call_permission_reply: { response: 'reject', response_source: 'automatic' } },
     })
-    expect(rpc.mock.calls[0][1]).toMatchObject({ p_permission_state: 'rejected', p_permission_type: null, p_expires_at: null })
+    expect(rpc.mock.calls[0][1]).toMatchObject({ p_permission_state: 'rejected', p_permission_type: null, p_expires_at: null, p_response_source: 'automatic' })
   })
 
   it('fails closed for an accepted temporary permission without an expiry', async () => {
