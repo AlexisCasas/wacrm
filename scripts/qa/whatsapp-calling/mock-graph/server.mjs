@@ -134,8 +134,9 @@ export function assertQaEnvironment(env) {
   if (!env.MOCK_META_APP_SECRET || env.MOCK_META_APP_SECRET.length < 32) {
     throw new Error('mock_graph_requires_new_qa_webhook_secret')
   }
-  if (!env.MOCK_CONTROL_TOKEN || env.MOCK_CONTROL_TOKEN.length < 32) {
-    throw new Error('mock_graph_requires_local_control_token')
+  if (typeof env.MOCK_CONTROL_TOKEN !== 'string'
+    || !/^[A-Za-z0-9_-]{32,128}$/.test(env.MOCK_CONTROL_TOKEN)) {
+    throw new Error('mock_graph_requires_url_safe_local_control_token')
   }
   const webhook = new URL(env.WACRM_WEBHOOK_URL ?? '')
   if (webhook.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(webhook.hostname)
