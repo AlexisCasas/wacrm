@@ -151,6 +151,8 @@ function parseStatus(value: unknown): WhatsAppCallingStatus | null {
     status,
     timestamp,
     ...(readString(value.recipient_id, 256) ? { recipient_id: readString(value.recipient_id, 256) } : {}),
+    ...(readString(value.recipient_user_id, 256) ? { recipient_user_id: readString(value.recipient_user_id, 256) } : {}),
+    ...(readString(value.recipient_parent_user_id, 256) ? { recipient_parent_user_id: readString(value.recipient_parent_user_id, 256) } : {}),
     ...(readString(value.type, 32) ? { type: readString(value.type, 32) } : {}),
     ...(readString(value.biz_opaque_callback_data, 512)
       ? { biz_opaque_callback_data: readString(value.biz_opaque_callback_data, 512) }
