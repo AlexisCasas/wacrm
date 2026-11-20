@@ -10,8 +10,6 @@ export async function assertWhatsAppCallingEnabled(
     throw new Error('whatsapp_calling_disabled')
   }
 
-  await assertWhatsAppCallingEnabled(supabase, accountId)
-
   const { data, error } = await supabase
     .from('whatsapp_config')
     .select('calling_enabled')
@@ -41,6 +39,8 @@ export async function getWhatsAppCallingConfig(
   supabase: SupabaseClient,
   accountId: string,
 ): Promise<WhatsAppCallingConfig> {
+  await assertWhatsAppCallingEnabled(supabase, accountId)
+
   const { data, error } = await supabase
     .from('whatsapp_config')
     .select('phone_number_id, waba_id, access_token, messaging_account_id, status')
