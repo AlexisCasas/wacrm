@@ -186,8 +186,7 @@ export async function GET(request: Request) {
         && typeof call.claim_expires_at === 'string'
         && Date.parse(call.claim_expires_at) > now,
       claim_available: !call.claimed_by_user_id
-        || !call.claim_expires_at
-        || Date.parse(call.claim_expires_at) <= now
+        || (typeof call.claim_expires_at === 'string' && Date.parse(call.claim_expires_at) <= now)
         || call.claimed_by_user_id === userId,
       session_available: Boolean(
         call.session_sdp_type
@@ -226,10 +225,23 @@ export async function POST(request: Request) {
       if (!CALL_ID_PATTERN.test(callId)) {
         return NextResponse.json({ error: 'A valid call_id is required' }, { status: 400 })
       }
+      const db = supabaseAdmin()
+      const { data: callRow, error: callLookupError } = await db
+        .from('whatsapp_call_sessions')
+        .select('phone_number_id')
+        .eq('account_id', accountId)
+        .eq('call_id', callId)
+        .maybeSingle()
+      if (callLookupError) {
+        console.error('[calling/api] claim target lookup failed', { code: callLookupError.code ?? 'unknown' })
+        return NextResponse.json({ error: 'Failed to locate call' }, { status: 500 })
+      }
+      if (!callRow) return NextResponse.json({ error: 'Call not found' }, { status: 404 })
+
       const rpcName = action === 'claim' ? 'whatsapp_call_claim' : 'whatsapp_call_release'
-      const { data, error } = await supabaseAdmin().rpc(rpcName, {
+      const { data, error } = await db.rpc(rpcName, {
         p_account_id: accountId,
-        p_phone_number_id: (await loadConfig(accountId))?.phone_number_id,
+        p_phone_number_id: callRow.phone_number_id,
         p_call_id: callId,
         p_actor_user_id: userId,
       })
