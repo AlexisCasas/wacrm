@@ -112,7 +112,13 @@ export function useWhatsAppCalling(iceServers: RTCIceServer[] = DEFAULT_ICE_SERV
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const activeCallIdRef = useRef<string | null>(null);
+  const activeCallRef = useRef<ActiveCallingSession | null>(null);
+  const terminationRequestedRef = useRef(false);
   const busyRef = useRef(false);
+
+  useEffect(() => {
+    activeCallRef.current = activeCall;
+  }, [activeCall]);
 
   const cleanupMedia = useCallback(() => {
     stopCallingMediaStream(localStreamRef.current);
@@ -212,6 +218,7 @@ export function useWhatsAppCalling(iceServers: RTCIceServer[] = DEFAULT_ICE_SERV
       if (!response.call_id) throw new Error("Meta no devolvió el identificador de llamada.");
 
       activeCallIdRef.current = response.call_id;
+      terminationRequestedRef.current = false;
       setActiveCall({
         callId: response.call_id,
         conversationId: input.conversationId,
@@ -280,6 +287,7 @@ export function useWhatsAppCalling(iceServers: RTCIceServer[] = DEFAULT_ICE_SERV
       });
 
       activeCallIdRef.current = call.call_id;
+      terminationRequestedRef.current = false;
       setActiveCall({
         callId: call.call_id,
         conversationId: call.conversation_id,
@@ -344,6 +352,7 @@ export function useWhatsAppCalling(iceServers: RTCIceServer[] = DEFAULT_ICE_SERV
         conversation_id: current.conversationId,
       });
       activeCallIdRef.current = null;
+      terminationRequestedRef.current = true;
       cleanupMedia();
       setActiveCall(null);
       await refreshCalls();
@@ -446,9 +455,35 @@ export function useWhatsAppCalling(iceServers: RTCIceServer[] = DEFAULT_ICE_SERV
     };
   }, [activeCall?.callId, cleanupMedia, refreshCalls]);
 
-  useEffect(() => () => {
-    activeCallIdRef.current = null;
-    cleanupMedia();
+  useEffect(() => {
+    const terminateOnLeave = () => {
+      const callId = activeCallIdRef.current;
+      const current = activeCallRef.current;
+      if (!callId || !current || terminationRequestedRef.current) return;
+      terminationRequestedRef.current = true;
+      void fetch("/api/whatsapp/calls", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "terminate",
+          call_id: callId,
+          conversation_id: current.conversationId,
+        }),
+        keepalive: true,
+      }).catch(() => undefined);
+      activeCallIdRef.current = null;
+      cleanupMedia();
+    };
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (!event.persisted) terminateOnLeave();
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      terminateOnLeave();
+      activeCallIdRef.current = null;
+      cleanupMedia();
+    };
   }, [cleanupMedia]);
 
   return {
