@@ -153,7 +153,13 @@ describe("CallingPanel", () => {
           session: { sdp_type: "offer", sdp: "v=0\\r\\n" },
         });
       }
-      if (init?.method === "POST") return jsonResponse({ success: true });
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        if (body.action === "accept") {
+          return jsonResponse({ success: true, agent_attribution_recorded: true });
+        }
+        return jsonResponse({ success: true });
+      }
       return jsonResponse({ calls: [incoming] });
     });
 
@@ -174,6 +180,50 @@ describe("CallingPanel", () => {
       .filter(([, init]) => init?.method === "POST")
       .map(([, init]) => JSON.parse(String(init?.body)).action);
     expect(postedActions).toEqual(["claim", "pre_accept", "accept"]);
+  });
+
+  it("keeps audio disabled and terminates if acceptance attribution is not confirmed", async () => {
+    const incoming = {
+      call_id: "wacid.qa-accept-audit",
+      conversation_id: conversation.id,
+      direction: "USER_INITIATED",
+      state: "ringing",
+      customer_name: "Keyler",
+      customer_phone: "51980942247",
+      claim_available: true,
+    };
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("?call_id=")) {
+        return jsonResponse({
+          call: incoming,
+          session: { sdp_type: "offer", sdp: "v=0\\r\\n" },
+        });
+      }
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body));
+        if (body.action === "accept") {
+          return new Response(JSON.stringify({
+            success: true,
+            agent_attribution_recorded: false,
+          }), { status: 202 });
+        }
+        return jsonResponse({ success: true });
+      }
+      return jsonResponse({ calls: [incoming] });
+    });
+
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+    fireEvent.click(await screen.findByRole("button", { name: "accept" }));
+
+    await waitFor(() => {
+      const actions = vi.mocked(global.fetch).mock.calls
+        .filter(([, init]) => init?.method === "POST")
+        .map(([, init]) => JSON.parse(String(init?.body)).action);
+      expect(actions).toContain("terminate");
+    });
+    expect(mediaTrack.enabled).toBe(false);
+    expect(screen.queryByText("00:00")).toBeNull();
   });
 
   it("starts an outbound call only after current customer permission is confirmed", async () => {
