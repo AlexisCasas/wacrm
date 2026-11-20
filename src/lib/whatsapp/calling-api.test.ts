@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { callWhatsApp, META_CALLING_API_VERSION } from './calling-api'
+import { callWhatsApp, getWhatsAppCallPermission, sendWhatsAppCallPermissionRequest, META_CALLING_API_VERSION } from './calling-api'
 
 const BASE = {
   phoneNumberId: '740434745820831',
@@ -184,5 +184,69 @@ describe('callWhatsApp', () => {
       ...BASE,
       action: { action: 'terminate', callId: 'wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh' },
     })).rejects.toThrow(/did not confirm/)
+  })
+})
+
+describe('WhatsApp call permissions', () => {
+  it('reads Meta permission state and action limits by BSUID', async () => {
+    let requestedUrl = ''
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      requestedUrl = url
+      return new Response(JSON.stringify({
+        permission: { status: 'temporary', expiration_time: 1795724800 },
+        actions: [
+          { action_name: 'start_call', can_perform_action: true, limits: [{ time_period: 'PT24H', max_allowed: 100, current_usage: 1 }] },
+          { action_name: 'send_call_permission_request', can_perform_action: false, limits: [{ time_period: 'P7D', max_allowed: 2, current_usage: 2 }] },
+        ],
+      }), { status: 200 })
+    }))
+    const result = await getWhatsAppCallPermission({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      recipient: 'PE.123456789',
+    })
+    expect(requestedUrl).toContain('/740434745820831/call_permissions?recipient=PE.123456789')
+    expect(result).toMatchObject({
+      status: 'temporary',
+      expirationTime: 1795724800,
+      canStartCall: true,
+      canRequestPermission: false,
+      actions: [{ actionName: 'start_call', canPerformAction: true }],
+    })
+  })
+
+  it('sends the free-form permission request with Meta's interactive payload', async () => {
+    let captured: { url: string; init: RequestInit } | null = null
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({ messages: [{ id: 'wamid.permission-request' }] }), { status: 200 })
+    }))
+    const result = await sendWhatsAppCallPermissionRequest({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      userWaId: '+51911111111',
+      bodyText: '¿Nos autorizas a llamarte para ayudarte con tu consulta?',
+    })
+    expect(result).toEqual({ messageId: 'wamid.permission-request' })
+    expect(captured?.url).toBe(`https://graph.facebook.com/${META_CALLING_API_VERSION}/740434745820831/messages`)
+    expect(JSON.parse(String(captured?.init.body))).toMatchObject({
+      messaging_product: 'whatsapp',
+      to: '51911111111',
+      type: 'interactive',
+      interactive: {
+        type: 'call_permission_request',
+        action: { name: 'call_permission_request' },
+        body: { text: '¿Nos autorizas a llamarte para ayudarte con tu consulta?' },
+      },
+    })
+  })
+
+  it('fails closed when Meta does not provide a recognized permission state', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ permission: { status: 'unknown' } }), { status: 200 })))
+    await expect(getWhatsAppCallPermission({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      userWaId: '51911111111',
+    })).rejects.toThrow(/unknown WhatsApp call permission/)
   })
 })
