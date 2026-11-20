@@ -218,7 +218,7 @@ BEGIN
       v_account_a,v_phone_number_id,v_call_phone,repeat('1',64),
       'terminate',1795120107,'USER_INITIATED','51980942247','51980942247',
       NULL,NULL,'CALL0321 phone match','terminated',NULL,NULL,NULL,
-      now(),NULL,NULL
+      NULL,now(),NULL
     );
     IF NOT EXISTS (
       SELECT 1 FROM public.whatsapp_call_sessions
