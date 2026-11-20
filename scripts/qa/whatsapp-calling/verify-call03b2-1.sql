@@ -252,10 +252,18 @@ BEGIN
       v_account_a,v_phone_number_id,v_call_expired,repeat('2',64),
       'connect',1795120108,'USER_INITIATED','51980942247','51980942247',
       NULL,NULL,'CALL0321 expired','offered','encrypted:expired-offer','offer',
-      now()-interval '1 second',NULL,NULL,NULL
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     IF public.whatsapp_call_claim(v_account_a,v_phone_number_id,v_call_expired,v_user_a) IS DISTINCT FROM true THEN
       RAISE EXCEPTION 'CALL0321_EXPIRED_FIXTURE_CLAIM_FAILED';
+    END IF;
+
+    UPDATE public.whatsapp_call_sessions
+    SET session_sdp_expires_at=now()-interval '1 second',
+        claim_expires_at=now()-interval '1 second'
+    WHERE phone_number_id=v_phone_number_id AND call_id=v_call_expired;
+    IF public.whatsapp_call_claim(v_account_a,v_phone_number_id,v_call_expired,v_user_c) IS DISTINCT FROM false THEN
+      RAISE EXCEPTION 'CALL0321_EXPIRED_OFFER_WAS_RECLAIMED_BEFORE_PRUNE';
     END IF;
 
     PERFORM public.whatsapp_call_event_apply(
@@ -271,7 +279,7 @@ BEGIN
       v_account_a,v_phone_number_id,v_call_accepted,repeat('4',64),
       'connect',1795120110,'USER_INITIATED','51980942247','51980942247',
       NULL,NULL,'CALL0321 accepted','offered','encrypted:accepted-offer','offer',
-      now()-interval '1 second',NULL,NULL,NULL
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     IF public.whatsapp_call_claim(v_account_a,v_phone_number_id,v_call_accepted,v_user_a) IS DISTINCT FROM true THEN
       RAISE EXCEPTION 'CALL0321_ACCEPTED_FIXTURE_CLAIM_FAILED';
@@ -281,6 +289,10 @@ BEGIN
     ) IS DISTINCT FROM true THEN
       RAISE EXCEPTION 'CALL0321_ACCEPTED_FIXTURE_ATTRIBUTION_FAILED';
     END IF;
+
+    UPDATE public.whatsapp_call_sessions
+    SET session_sdp_expires_at=now()-interval '1 second'
+    WHERE phone_number_id=v_phone_number_id AND call_id=v_call_accepted;
 
     v_pruned := public.whatsapp_call_sdp_prune(100);
     IF v_pruned < 1 THEN
