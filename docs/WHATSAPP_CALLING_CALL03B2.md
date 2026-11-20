@@ -12,7 +12,7 @@ No se activa el webhook `calls`, no se realizan llamadas reales, no se solicitan
 
 ## 2. Arquitectura
 
-- Componente aislado `src/components/inbox/calling-panel.tsx`, integrado en el encabezado del hilo activo.
+- Componente aislado `src/components/inbox/calling-panel.tsx`, integrado en el encabezado del hilo activo. El primer alcance detecta llamadas entrantes solo para la conversación actualmente abierta; la notificación global del Inbox queda como ampliación posterior.
 - Hook/módulo de ciclo de vida separado para `RTCPeerConnection`, stream local, audio remoto, polling y cleanup.
 - API existente `/api/whatsapp/calls` como único transporte de señalización; no llamar Graph API desde el browser.
 - El componente se limita a la conversación seleccionada. Solo presenta llamadas cuyo `conversation_id` coincide con el hilo y cuyo `phone_number_id`/destinatario supera la guardia de servidor.
@@ -55,11 +55,12 @@ No se activa el webhook `calls`, no se realizan llamadas reales, no se solicitan
 - En rechazo, fin, error, cambio de conversación, desmontaje o pérdida de sesión: detener tracks, cerrar PeerConnection, pausar/desconectar audio element, cancelar polling y listeners; enviar `reject/terminate` cuando corresponda.
 - Claim/renew/release se ejecutan mediante la API autenticada; un agente no puede aceptar/rechazar llamadas reclamadas por otro.
 - No persistir SDP en localStorage, IndexedDB, sessionStorage ni logs.
+- El elemento de audio remoto permanece muteado hasta confirmar `accept` (UIC) o conectividad ICE (BIC).
 - Validar HTTPS/secure context; en HTTP local no seguro, mostrar instrucción clara sin fallback inseguro.
 
 ## 7. ICE y conectividad
 
-- Configuración ICE inyectable por una interfaz/configuración controlada; no incrustar credenciales TURN en el bundle.
+- Configuración ICE opcional mediante `NEXT_PUBLIC_WHATSAPP_CALLING_STUN_URLS` (solo URLs `stun:` públicas). No incrustar credenciales TURN en el bundle.
 - No introducir proveedor TURN ni credenciales estáticas en esta fase.
 - Sin TURN, NAT/firewall puede impedir llamadas entre redes; clasificarlo como limitación explícita del piloto y no confundir fallo ICE con error de permiso Meta.
 - No reescribir SDP manualmente ni forzar códecs; permitir negociación nativa y Opus cuando el navegador lo negocie.
