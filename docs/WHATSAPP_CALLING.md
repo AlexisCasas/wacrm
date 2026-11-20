@@ -13,7 +13,7 @@ La solución será multi-tenant desde el diseño: toda sesión y todo evento se 
 
 ## 2. Configuración de Meta observada
 
-La aplicación asociada al token de Keyler es `WACRM Lorteg Temporal` (App ID `1595490382304488`). Nombre visible deseado en Meta Developers: `WACRM App Oficial`; el cambio de nombre es una tarea administrativa pendiente y no implica crear otra app ni cambiar el App ID.
+La aplicación asociada al token de Keyler es `WACRM App Oficial` (App ID `1595490382304488`). El operador confirmó que el nombre visible ya fue actualizado, conservando el mismo App ID.
 
 La captura de WhatsApp Manager para el número de Keyler muestra:
 
@@ -86,7 +86,7 @@ El SDP y las credenciales son datos sensibles: no deben escribirse en logs, mens
 - No se crea migración ni tabla.
 - No se crea endpoint de llamadas para el navegador.
 - No se agrega interfaz ni código de micrófono/WebRTC.
-- La captura de Meta Developers del 19-nov-2026 muestra `calls` SUSCRITO en la app `WACRM Lorteg Temporal` con versión de campo `v26.0`; `messages` también aparece suscrito en `v26.0`.
+- La captura de Meta Developers del 19-nov-2026 mostró `calls` SUSCRITO en la app (entonces llamada `WACRM Lorteg Temporal`) con versión de campo `v26.0`; el operador confirmó después que desactivó `calls` y mantuvo `messages` activado.
 - Acción operativa requerida antes de continuar: desactivar temporalmente SOLO el campo `calls` en Meta Developers y conservar `messages` activo. La suscripción `calls` ya estaba habilitada antes de que WACRM tuviera su consumidor.
 - Motivo: el webhook actual valida y encola el payload, pero `processWebhook` todavía no enruta `field="calls"`. El drenaje durable puede marcar el evento como procesado sin manejar la llamada. No volver a activar `calls` hasta que CALL-02 integre el manejador, persistencia e idempotencia y pase QA.
 - No se cambia ninguna configuración de Meta, VPS, variables de entorno ni producción.
