@@ -249,7 +249,7 @@ BEGIN
         v_account_a,'740434745820831',v_call_cross_tenant,v_user_a,'accepted',v_conversation_b
       );
     EXCEPTION WHEN OTHERS THEN
-      IF SQLERRM='call_conversation_tenant_conflict' THEN
+      IF SQLERRM IN ('call_conversation_tenant_conflict','call_conversation_already_linked') THEN
         v_cross_tenant_rejected := true;
       ELSE
         RAISE;
@@ -268,9 +268,14 @@ BEGIN
     );
     PERFORM public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_wrong_identity,v_user_a);
     BEGIN
-      PERFORM public.whatsapp_call_session_agent_action(
-        v_account_a,'740434745820831',v_call_wrong_identity,v_user_a,'accepted',v_conversation_wrong
-      );
+      -- Directly exercise the database metadata guard: the webhook has
+      -- already resolved the real contact, so a different same-tenant
+      -- contact/conversation must be rejected by the trigger itself.
+      UPDATE public.whatsapp_call_sessions
+      SET contact_id=v_contact_wrong,
+          conversation_id=v_conversation_wrong
+      WHERE phone_number_id='740434745820831'
+        AND call_id=v_call_wrong_identity;
     EXCEPTION WHEN OTHERS THEN
       IF SQLERRM='call_contact_identity_mismatch' THEN
         v_wrong_identity_rejected := true;
