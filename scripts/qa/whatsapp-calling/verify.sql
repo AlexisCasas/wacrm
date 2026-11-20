@@ -8,7 +8,7 @@ DECLARE
   v_first boolean;
   v_duplicate boolean;
   v_conflict boolean := false;
-  v_signature text := 'public.whatsapp_call_event_apply(uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone,integer)';
+  v_signature text := 'public.whatsapp_call_event_apply(uuid,text,text,text,text,bigint,text,text,text,text,text,text,text,text,text,timestamp with time zone,timestamp with time zone,timestamp with time zone,integer)';
   v_permission_signature text := 'public.whatsapp_call_permission_upsert(uuid,text,text,text,text,text,text,text,timestamp with time zone,text,text)';
 BEGIN
   BEGIN
@@ -44,7 +44,7 @@ BEGIN
     v_first := public.whatsapp_call_event_apply(
       v_account,'740434745820831','wacid.qa-call',repeat('a',64),
       'connect',1795120000,'USER_INITIATED','PE.qa-customer','51911111111',
-      'PE.qa-customer','Synthetic QA','offered','encrypted:synthetic-sdp','offer',
+      'PE.qa-customer',NULL,'Synthetic QA','offered','encrypted:synthetic-sdp','offer',
       now()+interval '5 minutes',NULL,NULL,NULL
     );
     IF v_first IS DISTINCT FROM true THEN RAISE EXCEPTION 'CALL02_FIRST_EVENT_NOT_APPLIED'; END IF;
@@ -52,7 +52,7 @@ BEGIN
     v_duplicate := public.whatsapp_call_event_apply(
       v_account,'740434745820831','wacid.qa-call',repeat('a',64),
       'connect',1795120000,'USER_INITIATED','PE.qa-customer','51911111111',
-      'PE.qa-customer','Synthetic QA','offered','encrypted:synthetic-sdp','offer',
+      'PE.qa-customer',NULL,'Synthetic QA','offered','encrypted:synthetic-sdp','offer',
       now()+interval '5 minutes',NULL,NULL,NULL
     );
     IF v_duplicate IS DISTINCT FROM false THEN RAISE EXCEPTION 'CALL02_DUPLICATE_NOT_IGNORED'; END IF;
@@ -61,7 +61,7 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account,'740434745820831','wacid.qa-call',repeat('b',64),
       'terminate',1795119990,'USER_INITIATED','PE.qa-customer','51911111111',
-      'PE.qa-customer','Synthetic QA','terminated',NULL,NULL,NULL,now(),now(),60
+      'PE.qa-customer',NULL,'Synthetic QA','terminated',NULL,NULL,NULL,now(),now(),60
     );
     IF NOT EXISTS (
       SELECT 1 FROM public.whatsapp_call_sessions
@@ -72,7 +72,7 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account,'740434745820831','wacid.qa-call',repeat('c',64),
       'terminate',1795120060,'USER_INITIATED','PE.qa-customer','51911111111',
-      'PE.qa-customer','Synthetic QA','terminated',NULL,NULL,NULL,now(),now(),60
+      'PE.qa-customer',NULL,'Synthetic QA','terminated',NULL,NULL,NULL,now(),now(),60
     );
     IF NOT EXISTS (
       SELECT 1 FROM public.whatsapp_call_sessions
@@ -84,7 +84,7 @@ BEGIN
     BEGIN
       PERFORM public.whatsapp_call_event_apply(
         gen_random_uuid(),'740434745820831','wacid.qa-call',repeat('d',64),
-        'status',1795120061,NULL,NULL,NULL,NULL,NULL,'connected',NULL,NULL,NULL,NULL,NULL,NULL
+        'status',1795120061,NULL,NULL,NULL,NULL,NULL,NULL,'connected',NULL,NULL,NULL,NULL,NULL,NULL
       );
     EXCEPTION WHEN OTHERS THEN
       IF SQLERRM='call_tenant_conflict' THEN v_conflict := true; ELSE RAISE; END IF;
