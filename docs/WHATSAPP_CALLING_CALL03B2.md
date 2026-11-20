@@ -1,6 +1,6 @@
 # CALL-03B2 — Cliente WebRTC e Inbox
 
-**Estado:** diseño y ejecución en rama; no habilita llamadas reales.
+**Estado:** implementación en rama; no habilita llamadas reales.
 **Base apilada:** CALL-03B1 PR #138, HEAD `7eb40d59ee7ed2f7c8edb851b7e67ee8a4fd9b96`.
 **Piloto previsto:** Keyler, con feature flag y allowlists de servidor apagados en producción.
 
@@ -20,7 +20,7 @@ No se activa el webhook `calls`, no se realizan llamadas reales, no se solicitan
 
 ## 3. Llamada entrante (UIC)
 
-1. Consultar llamadas recientes cada 3 segundos mientras el Inbox está visible y hay conversación activa.
+1. Consultar llamadas recientes cada 2.5 segundos mientras el Inbox está visible y hay conversación activa.
 2. Detectar llamada `USER_INITIATED` en estado `offered/ringing` vinculada al hilo actual.
 3. Mostrar aviso de llamada entrante con acciones explícitas Aceptar/Rechazar; no abrir micrófono automáticamente.
 4. En click Aceptar: solicitar `getUserMedia({ audio: true, video: false })`, crear PeerConnection y deshabilitar inicialmente el track local.
@@ -28,11 +28,11 @@ No se activa el webhook `calls`, no se realizan llamadas reales, no se solicitan
 6. Añadir un único transceiver de audio, aplicar el offer, crear answer y esperar ICE gathering completo.
 7. Enviar `pre_accept` con el answer. El servidor persiste el SDP cifrado y Meta recibe el mismo answer.
 8. Esperar `connectionState=connected` o un límite controlado; enviar `accept` sin SDP para que el servidor reutilice el answer persistido.
-9. Solo tras HTTP 200 de `accept`, habilitar el micrófono y reproducir audio remoto.
+9. Solo tras HTTP 200 de `accept` con `agent_attribution_recorded=true` (o `already_accepted=true`), habilitar el micrófono y reproducir audio remoto. Si la aceptación no queda atribuida, finalizar la llamada y mantener el audio bloqueado.
 
 ## 4. Llamada saliente (BIC)
 
-1. El botón Llamar se muestra solo para contacto con identidad WhatsApp utilizable y conversación activa.
+1. El botón Llamar se muestra solo para el contacto piloto Keyler (`+51 980 942 247`), con conversación activa y permiso de llamadas vigente. La interfaz consulta y muestra el estado de consentimiento; si falta, permite solicitarlo mediante una acción explícita.
 2. En click explícito, solicitar micrófono, crear PeerConnection, añadir audio transceiver y mantener el track deshabilitado.
 3. Crear offer, esperar ICE gathering completo y enviar `connect` con `contact_id`, `conversation_id`, `request_id` UUID y SDP offer.
 4. Usar el `call_id` devuelto; consultar GET detalle hasta recibir SDP answer remoto fresco (o terminar por timeout/error).
@@ -42,7 +42,9 @@ No se activa el webhook `calls`, no se realizan llamadas reales, no se solicitan
 ## 5. Controles y estados UI
 
 - Estados: idle, requesting-media, claiming, connecting, incoming, ringing, connected, ending, ended, failed.
-- Controles: aceptar, rechazar, silenciar/activar micrófono, finalizar.
+- Controles: solicitar consentimiento, aceptar, rechazar, silenciar/activar micrófono y finalizar.
+- Historial reciente de llamadas por conversación, con dirección y estado.
+- Identidad del agente que atiende visible durante la llamada; el backend conserva la atribución por usuario para auditoría.
 - Indicadores: estado, duración local, error accionable sin SDP/token, destinatario.
 - No exponer SDP, access token, callback data ni datos de credenciales en UI, logs o analytics.
 - No permitir dos PeerConnections simultáneas; bloquear acciones repetidas mientras haya una operación pendiente.
@@ -53,6 +55,7 @@ No se activa el webhook `calls`, no se realizan llamadas reales, no se solicitan
 - Audio local `track.enabled=false` hasta que el backend confirme `accept` (UIC) o se aplique el answer y ICE esté conectado (BIC).
 - Audio remoto silenciado hasta que el estado de llamada esté confirmado.
 - En rechazo, fin, error, cambio de conversación, desmontaje o pérdida de sesión: detener tracks, cerrar PeerConnection, pausar/desconectar audio element, cancelar polling y listeners; enviar `reject/terminate` cuando corresponda.
+- Un estado ICE `disconnected` conserva una ventana de recuperación automática de 8 segundos; si vuelve a `connected`, la llamada continúa. Si llega a `failed` o no recupera dentro de la ventana, se envía `terminate` y se liberan los medios.
 - Claim/renew/release se ejecutan mediante la API autenticada; un agente no puede aceptar/rechazar llamadas reclamadas por otro.
 - No persistir SDP en localStorage, IndexedDB, sessionStorage ni logs.
 - El elemento de audio remoto permanece muteado hasta confirmar `accept` (UIC) o conectividad ICE (BIC).
@@ -72,8 +75,10 @@ No se activa el webhook `calls`, no se realizan llamadas reales, no se solicitan
 - UIC: claim requerido, answer único idéntico en `pre_accept/accept`, track muteado hasta HTTP 200.
 - BIC: request idempotente, answer remoto aplicado, audio bloqueado hasta ICE connected.
 - Pruebas de cleanup en unmount, cambio de conversación, reject, terminate, timeout y errores de permisos del navegador.
+- Pruebas de permiso/consentimiento, atribución de aceptación, claim concurrente por dos agentes, rechazo, fallo de micrófono y desconexión WebRTC.
+- Migración correctiva `20261130000002_whatsapp_call_claim_no_reclaim_after_accept.sql`: un lease vencido no permite que otro agente reclame una llamada ya aceptada.
 - Pruebas de aislamiento de conversación/tenant y doble acción; una sola PeerConnection.
-- Lint, Typecheck, Vitest, Build y replay limpio de migraciones heredadas.
+- Lint, Typecheck, Vitest, Build y replay limpio de migraciones heredadas, incluyendo el nuevo guard de claim.
 
 ## 9. Gates y fuera de alcance
 
