@@ -107,7 +107,8 @@ export async function processCallingWebhookChange(db: SupabaseClient, change: un
 export async function processCallPermissionReply(db: SupabaseClient, config: ConfigRow, message: unknown): Promise<boolean> {
   const reply = parseWhatsAppCallPermissionReply(message)
   if (!reply) return false
-  const phone = typeof reply.from === 'string' ? reply.from.replace(/\D/g,'').slice(0,20) : ''
+  const phoneDigits = typeof reply.from === 'string' ? reply.from.replace(/\D/g,'').slice(0,20) : ''
+  const phone = /^\d{6,20}$/.test(phoneDigits) ? phoneDigits : ''
   const directBsuid = typeof reply.from_user_id === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(reply.from_user_id) ? reply.from_user_id : ''
   const parentBsuid = typeof reply.from_parent_user_id === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(reply.from_parent_user_id) ? reply.from_parent_user_id : ''
   const key = directBsuid || parentBsuid || phone
