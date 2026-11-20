@@ -433,7 +433,7 @@ export async function POST(request: Request) {
         }, { status: 409 })
       }
 
-      let permission
+      let permission: Awaited<ReturnType<typeof getWhatsAppCallPermission>>
       try {
         permission = await getWhatsAppCallPermission({
           phoneNumberId: config.phone_number_id,
