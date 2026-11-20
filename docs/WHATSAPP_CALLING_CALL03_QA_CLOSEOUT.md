@@ -142,7 +142,7 @@ Las pruebas unitarias/SQL relacionadas ya pasan en CI, pero falta cerrar su ejec
 5. Verificar `initiated_by_user_id`, `accepted_by_user_id`, `rejected_by_user_id`, `ended_by_user_id`, `conversation_id`, `direction`, `state`, `duration_seconds`, `created_at`, `started_at` y `ended_at`.
 6. Confirmar que los agentes A/B no heredan atribuciones del otro y que los eventos duplicados no duplican sesiones.
 
-**Brecha de UI identificada:** el historial actual de `CallingPanel` muestra dirección y estado, pero no muestra agente, fecha ni duración. La API ya devuelve los IDs de atribución y los timestamps/duración. Para cumplir el criterio completo de CALL-03, la revisión T4 debe decidir e implementar la presentación segura del actor y de fecha/duración antes del cierre formal.
+**Corrección de UI incorporada en la punta actual de PR #142 (pendiente de CI/QA):** el GET de historial resuelve nombres de agentes desde `profiles` filtrando por el mismo `account_id`; la UI muestra iniciador, aceptante, rechazante/finalizador, fecha y duración. Se añadieron pruebas de API para aislamiento de nombres por cuenta y prueba de componente para la presentación del historial. T4 debe confirmar esta información en el navegador y contrastarla con PostgreSQL QA.
 
 ## 8. Criterio de cierre de CALL-03
 
@@ -174,5 +174,5 @@ CALL-04 no habilita automáticamente llamadas reales: la activación del webhook
 
 ## 10. Estado actual
 
-**CALL-03B2.1 desplegado y validado en QA.** Las pruebas iniciales entrantes/salientes reportadas por el usuario son satisfactorias. **CALL-03 sigue abierto** por T1–T4 y la brecha de visualización de historial. CALL-04 está pendiente de diseño tras el cierre.
+**CALL-03B2.1 desplegado y validado en QA.** Las pruebas iniciales entrantes/salientes reportadas por el usuario son satisfactorias. La mejora de historial/atribución está implementada en la punta actual de PR #142, pendiente de CI y despliegue QA. **CALL-03 sigue abierto** por T1–T4 manuales. CALL-04 está pendiente de diseño tras el cierre.
 
