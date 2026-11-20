@@ -99,6 +99,16 @@ BEGIN
     IF public.whatsapp_call_claim_renew(v_account_a,'740434745820831',v_call_accept,v_user_a) IS DISTINCT FROM true THEN
       RAISE EXCEPTION 'CALL03A_CLAIM_RENEWAL_FAILED';
     END IF;
+
+    UPDATE public.whatsapp_call_sessions
+    SET claim_expires_at=now()-interval '1 second'
+    WHERE phone_number_id='740434745820831' AND call_id=v_call_accept;
+    IF public.whatsapp_call_claim_renew(v_account_a,'740434745820831',v_call_accept,v_user_a) IS DISTINCT FROM false THEN
+      RAISE EXCEPTION 'CALL03A_EXPIRED_CLAIM_WAS_RESURRECTED';
+    END IF;
+    IF public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_accept,v_user_a) IS DISTINCT FROM true THEN
+      RAISE EXCEPTION 'CALL03A_EXPIRED_CLAIM_COULD_NOT_BE_RECLAIMED';
+    END IF;
     IF public.whatsapp_call_session_agent_action(
       v_account_a,'740434745820831',v_call_accept,v_user_a,'accepted',v_conversation_a
     ) IS DISTINCT FROM true THEN
