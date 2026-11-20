@@ -149,7 +149,7 @@ export async function GET(request: Request) {
       }
       const { data: call, error } = await db
         .from('whatsapp_call_sessions')
-        .select('id,phone_number_id,call_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_encrypted,session_sdp_type,session_sdp_expires_at')
+        .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_encrypted,session_sdp_type,session_sdp_expires_at')
         .eq('account_id', accountId)
         .eq('call_id', callId)
         .maybeSingle()
@@ -191,7 +191,7 @@ export async function GET(request: Request) {
 
     const { data, error } = await db
       .from('whatsapp_call_sessions')
-      .select('id,phone_number_id,call_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_type,session_sdp_expires_at')
+      .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_type,session_sdp_expires_at')
       .eq('account_id', accountId)
       .order('created_at', { ascending: false })
       .limit(50)
@@ -223,7 +223,7 @@ export async function GET(request: Request) {
 
 /**
  * POST /api/whatsapp/calls
- * Actions: claim, release, check_permission, request_permission.
+ * Actions: claim, release, renew_claim, check_permission, request_permission.
  * Actual connect/accept signaling is reserved for CALL-03 when WebRTC
  * can supply a browser-generated SDP offer/answer.
  */
@@ -243,7 +243,7 @@ export async function POST(request: Request) {
     const callId = typeof body.call_id === 'string' ? body.call_id.trim() : ''
     const contactId = typeof body.contact_id === 'string' ? body.contact_id.trim() : ''
 
-    if (['claim','release'].includes(action)) {
+    if (['claim','release','renew_claim'].includes(action)) {
       if (!CALL_ID_PATTERN.test(callId)) {
         return NextResponse.json({ error: 'A valid call_id is required' }, { status: 400 })
       }
@@ -260,7 +260,9 @@ export async function POST(request: Request) {
       }
       if (!callRow) return NextResponse.json({ error: 'Call not found' }, { status: 404 })
 
-      const rpcName = action === 'claim' ? 'whatsapp_call_claim' : 'whatsapp_call_release'
+      const rpcName = action === 'claim' ? 'whatsapp_call_claim'
+        : action === 'renew_claim' ? 'whatsapp_call_claim_renew'
+        : 'whatsapp_call_release'
       const { data, error } = await db.rpc(rpcName, {
         p_account_id: accountId,
         p_phone_number_id: callRow.phone_number_id,
@@ -276,10 +278,12 @@ export async function POST(request: Request) {
       }
       if (data !== true) {
         return NextResponse.json({
-          error: action === 'claim' ? 'Call is already claimed or no longer available' : 'Call is not claimed by you',
+          error: action === 'claim' ? 'Call is already claimed or no longer available'
+            : action === 'renew_claim' ? 'Call claim has expired or is no longer owned by you'
+            : 'Call is not claimed by you',
         }, { status: 409 })
       }
-      return NextResponse.json({ success: true, action, lease_seconds: action === 'claim' ? 90 : 0 })
+      return NextResponse.json({ success: true, action, lease_seconds: action === 'claim' || action === 'renew_claim' ? 90 : 0 })
     }
 
     if (action !== 'check_permission' && action !== 'request_permission') {
