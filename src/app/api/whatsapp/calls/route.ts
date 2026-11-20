@@ -493,7 +493,7 @@ export async function POST(request: Request) {
           },
         })
         if (result.action !== 'connect') throw new Error('unexpected_call_connect_response')
-        const { error: completeError } = await supabaseAdmin().rpc('whatsapp_call_outbound_attempt_complete', {
+        const { data: completed, error: completeError } = await supabaseAdmin().rpc('whatsapp_call_outbound_attempt_complete', {
           p_account_id: accountId,
           p_phone_number_id: config.phone_number_id,
           p_request_id: requestId,
@@ -502,8 +502,8 @@ export async function POST(request: Request) {
           p_agent_sdp_encrypted: encryptedOffer,
           p_agent_sdp_expires_at: offerExpiresAt,
         })
-        if (completeError) {
-          console.error('[calling/api] outbound attempt completion failed', { code: completeError.code ?? 'unknown' })
+        if (completeError || completed !== true) {
+          console.error('[calling/api] outbound attempt completion failed', { code: completeError?.code ?? (completed === false ? 'not_completed' : 'unknown') })
           await supabaseAdmin().rpc('whatsapp_call_outbound_attempt_fail', {
             p_account_id: accountId,
             p_phone_number_id: config.phone_number_id,
@@ -645,7 +645,7 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: 'Stored call answer is unavailable' }, { status: 503 })
         }
         if (call.state === 'connected') {
-          const { error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+          const { data: auditRecorded, error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
             p_account_id: accountId,
             p_phone_number_id: call.phone_number_id,
             p_call_id: callId,
@@ -653,7 +653,7 @@ export async function POST(request: Request) {
             p_action: 'accepted',
             p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
           })
-          if (auditError) {
+          if (auditError || auditRecorded !== true) {
             console.error('[calling/api] accepted agent attribution failed', { code: auditError.code ?? 'unknown' })
             return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: false }, { status: 202 })
           }
@@ -670,7 +670,7 @@ export async function POST(request: Request) {
             ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
           },
         })
-        const { error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+        const { data: auditRecorded, error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
           p_account_id: accountId,
           p_phone_number_id: call.phone_number_id,
           p_call_id: callId,
@@ -678,7 +678,7 @@ export async function POST(request: Request) {
           p_action: 'accepted',
           p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
         })
-        if (auditError) {
+        if (auditError || auditRecorded !== true) {
           console.error('[calling/api] accepted agent attribution failed', { code: auditError.code ?? 'unknown' })
           return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: false }, { status: 202 })
         }
@@ -698,7 +698,7 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: 'Another agent currently owns this call' }, { status: 409 })
         }
         if (call.state === 'rejected' && call.last_claimed_by_user_id === userId) {
-          const { error } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+          const { data, error } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
             p_account_id: accountId,
             p_phone_number_id: call.phone_number_id,
             p_call_id: callId,
@@ -706,7 +706,9 @@ export async function POST(request: Request) {
             p_action: 'rejected',
             p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
           })
-          if (error) return NextResponse.json({ error: 'Could not attribute rejected call' }, { status: 500 })
+          if (error || data !== true) {
+            return NextResponse.json({ success: true, action: 'reject', agent_attribution_recorded: false }, { status: 202 })
+          }
           return NextResponse.json({ success: true, action: 'reject', already_terminal: true }, { status: 200 })
         }
         if (!['offered','ringing'].includes(call.state)) {
@@ -726,7 +728,7 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: 'A rejected call cannot be terminated' }, { status: 409 })
         }
         if (['terminated','failed','rejected'].includes(call.state)) {
-          const { error } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+          const { data, error } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
             p_account_id: accountId,
             p_phone_number_id: call.phone_number_id,
             p_call_id: callId,
@@ -734,7 +736,9 @@ export async function POST(request: Request) {
             p_action: 'ended',
             p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
           })
-          if (error) return NextResponse.json({ error: 'Could not attribute ended call' }, { status: 500 })
+          if (error || data !== true) {
+            return NextResponse.json({ success: true, action: 'terminate', agent_attribution_recorded: false }, { status: 202 })
+          }
           return NextResponse.json({ success: true, action: 'terminate', already_terminal: true }, { status: 200 })
         }
       }
@@ -750,7 +754,7 @@ export async function POST(request: Request) {
           ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
         },
       })
-      const { error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+      const { data: auditRecorded, error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
         p_account_id: accountId,
         p_phone_number_id: call.phone_number_id,
         p_call_id: callId,
@@ -758,7 +762,7 @@ export async function POST(request: Request) {
         p_action: action === 'reject' ? 'rejected' : 'ended',
         p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
       })
-      if (auditError) {
+      if (auditError || auditRecorded !== true) {
         console.error('[calling/api] terminal agent attribution failed', { code: auditError.code ?? 'unknown' })
         return NextResponse.json({ success: true, action, agent_attribution_recorded: false }, { status: 202 })
       }
