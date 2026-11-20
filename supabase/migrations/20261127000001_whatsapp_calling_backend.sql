@@ -38,7 +38,9 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_call_sessions (
   session_sdp_type text CHECK (session_sdp_type IS NULL OR session_sdp_type IN ('offer', 'answer')),
   session_sdp_ciphertext text CHECK (
     session_sdp_ciphertext IS NULL OR
-    (length(session_sdp_ciphertext) <= 131072 AND session_sdp_ciphertext ~ '^[0-9a-f]{24}:[0-9a-f]+:[0-9a-f]{32}
+    (length(session_sdp_ciphertext) <= 131072 AND session_sdp_ciphertext ~ '^[0-9a-f]{24}:[0-9a-f]+:[0-9a-f]{32}')
+  ),
+  session_sdp_expires_at timestamptz,
   claimed_by_user_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
   claim_token uuid,
   claim_expires_at timestamptz,
@@ -183,8 +185,10 @@ BEGIN
   END IF;
 
   IF p_sdp_ciphertext IS NOT NULL
-     AND (p_sdp_type NOT IN ('offer', 'answer') OR length(p_sdp_ciphertext) > 131072
-       OR p_sdp_ciphertext !~ '^[0-9a-f]{24}:[0-9a-f]+:[0-9a-f]{32}
+     AND (p_sdp_type IS NULL OR p_sdp_type NOT IN ('offer', 'answer')
+       OR length(p_sdp_ciphertext) > 131072
+       OR p_sdp_ciphertext !~ '^[0-9a-f]{24}:[0-9a-f]+:[0-9a-f]{32}'
+       OR p_sdp_expires_at IS NULL OR p_sdp_expires_at <= now())
   THEN
     RAISE EXCEPTION 'invalid_call_sdp_ciphertext' USING ERRCODE = '22023';
   END IF;
