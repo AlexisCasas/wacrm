@@ -227,6 +227,7 @@ describe('WhatsApp call permissions', () => {
     const result = await sendWhatsAppCallPermissionRequest({
       phoneNumberId: BASE.phoneNumberId,
       accessToken: BASE.accessToken,
+      messagingAccountId: '123456789012345',
       userWaId: '+51911111111',
       bodyText: '¿Nos autorizas a llamarte para ayudarte con tu consulta?',
     })
@@ -234,6 +235,7 @@ describe('WhatsApp call permissions', () => {
     expect(captured[0]?.url).toBe(`https://graph.facebook.com/${META_CALLING_API_VERSION}/740434745820831/messages`)
     expect(JSON.parse(String(captured[0]?.init.body))).toMatchObject({
       messaging_product: 'whatsapp',
+      messaging_account_id: '123456789012345',
       to: '51911111111',
       type: 'interactive',
       interactive: {
