@@ -104,6 +104,24 @@ BEGIN
         AND session_sdp_expires_at IS NULL AND duration_seconds=60
     ) THEN RAISE EXCEPTION 'CALL02_TERMINAL_STATE_OR_SDP_CLEANUP_FAILED'; END IF;
 
+    -- A newer status may arrive before the older connect offer. Keep the newer state,
+    -- but retain the first SDP if no offer has been stored yet and the call is not terminal.
+    PERFORM public.whatsapp_call_event_apply(
+      v_account,'740434745820831','wacid.qa-late-offer',repeat('f',64),
+      'status',1795120200,NULL,NULL,NULL,NULL,NULL,NULL,'connected',NULL,NULL,NULL,NULL,NULL,NULL
+    );
+    PERFORM public.whatsapp_call_event_apply(
+      v_account,'740434745820831','wacid.qa-late-offer',repeat('0',64),
+      'connect',1795120190,'USER_INITIATED','PE.qa-customer','51911111111',
+      'PE.qa-customer',NULL,'Synthetic QA','offered','encrypted:late-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
+    );
+    IF NOT EXISTS (
+      SELECT 1 FROM public.whatsapp_call_sessions
+      WHERE phone_number_id='740434745820831' AND call_id='wacid.qa-late-offer'
+        AND state='connected' AND session_sdp_encrypted='encrypted:late-offer'
+    ) THEN RAISE EXCEPTION 'CALL02_LATE_CONNECT_LOST_REQUIRED_SDP'; END IF;
+
     PERFORM public.whatsapp_call_event_apply(
       v_account,'740434745820831','wacid.qa-expired',repeat('e',64),
       'connect',1795120100,'USER_INITIATED','PE.qa-customer','51911111111',
