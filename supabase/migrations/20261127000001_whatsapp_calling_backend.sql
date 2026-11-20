@@ -236,6 +236,12 @@ BEGIN
   IF v_current.state IN ('rejected', 'terminated', 'missed', 'failed') THEN
     RETURN v_id;
   END IF;
+  IF v_current.state = 'accepted' AND v_next_state IN ('ringing', 'connecting') THEN
+    -- A late RINGING / pre_accept delivery cannot regress an accepted call.
+    v_next_state := v_current.state;
+  ELSIF v_current.state = 'connecting' AND v_next_state = 'ringing' THEN
+    v_next_state := v_current.state;
+  END IF;
 
   UPDATE public.whatsapp_call_sessions
   SET contact_id = COALESCE(p_contact_id, contact_id),
@@ -279,6 +285,9 @@ DECLARE
   v_token uuid;
   v_until timestamptz;
 BEGIN
+  IF p_user_id IS NULL THEN
+    RAISE EXCEPTION 'invalid_call_claim_user' USING ERRCODE = '22023';
+  END IF;
   IF p_lease_seconds IS NULL OR p_lease_seconds NOT BETWEEN 15 AND 120 THEN
     RAISE EXCEPTION 'invalid_call_claim_lease' USING ERRCODE = '22023';
   END IF;
