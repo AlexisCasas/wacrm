@@ -68,7 +68,6 @@ function jsonResponse(data: unknown): Response {
 
 describe("CallingPanel", () => {
   const originalFetch = global.fetch;
-  const originalPeerConnection = global.RTCPeerConnection;
   const originalMediaDevices = navigator.mediaDevices;
   const originalSecureContext = window.isSecureContext;
 
@@ -86,12 +85,12 @@ describe("CallingPanel", () => {
         getUserMedia: vi.fn().mockResolvedValue(mediaStream),
       },
     });
-    global.RTCPeerConnection = FakePeerConnection as unknown as typeof RTCPeerConnection;
+    vi.stubGlobal("RTCPeerConnection", FakePeerConnection);
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
-    global.RTCPeerConnection = originalPeerConnection;
+    vi.unstubAllGlobals();
     Object.defineProperty(navigator, "mediaDevices", {
       configurable: true,
       value: originalMediaDevices,
