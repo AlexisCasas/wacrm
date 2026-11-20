@@ -347,6 +347,7 @@
       "permissionMissing": "No hay un permiso de llamada vigente.",
       "microphoneNotice": "El navegador solicitará acceso al micrófono únicamente cuando inicies la llamada.",
       "startCall": "Iniciar llamada",
+      "callStartFailed": "No se pudo iniciar la llamada. Revisa el permiso y el estado de conexión."
       "requestPermission": "Solicitar permiso",
       "permissionRequestSent": "Solicitud enviada. Espera la respuesta del contacto.",
       "permissionRequestFailed": "No se pudo enviar la solicitud de permiso.",
