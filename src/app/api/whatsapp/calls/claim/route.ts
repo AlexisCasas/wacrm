@@ -2,12 +2,14 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
+import { assertWhatsAppCallingEnabled } from '@/lib/whatsapp/calling-config'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export async function POST(request: Request) {
   try {
     const { accountId, userId } = await requireRole('agent')
+    await assertWhatsAppCallingEnabled((await requireRole('agent')).supabase, accountId)
     const limit = checkRateLimit('calls:claim:' + userId, RATE_LIMITS.react)
     if (!limit.success) return rateLimitResponse(limit)
 
