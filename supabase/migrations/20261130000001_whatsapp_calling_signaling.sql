@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_call_outbound_attempts (
   state text NOT NULL DEFAULT 'pending'
     CHECK (state IN ('pending','submitted','failed','unknown')),
   failure_code text CHECK (failure_code IS NULL OR length(failure_code) <= 128),
+  CHECK ((agent_sdp_encrypted IS NULL) = (agent_sdp_expires_at IS NULL)),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE (account_id, request_id)
@@ -191,6 +192,9 @@ BEGIN
     OR v_existing.contact_id IS DISTINCT FROM p_contact_id
     OR v_existing.conversation_id IS DISTINCT FROM p_conversation_id
     OR v_existing.customer_key IS DISTINCT FROM p_customer_key
+    OR v_existing.customer_phone IS DISTINCT FROM p_customer_phone
+    OR v_existing.customer_bsuid IS DISTINCT FROM p_customer_bsuid
+    OR v_existing.customer_parent_bsuid IS DISTINCT FROM p_customer_parent_bsuid
   THEN
     RAISE EXCEPTION 'call_outbound_idempotency_conflict' USING ERRCODE='42501';
   END IF;
