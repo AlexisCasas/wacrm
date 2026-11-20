@@ -2,8 +2,10 @@ import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
-import { decrypt } from '@/lib/whatsapp/encryption'
+import { decrypt, encrypt } from '@/lib/whatsapp/encryption'
+import { isWhatsAppCallingPilotAllowed } from '@/lib/whatsapp/calling-pilot'
 import {
+  callWhatsApp,
   getWhatsAppCallPermission,
   sendWhatsAppCallPermissionRequest,
 } from '@/lib/whatsapp/calling-api'
@@ -125,6 +127,52 @@ function metaTarget(target: CallTarget) {
   return recipient ? { recipient } : null
 }
 
+type SignalCallRow = {
+  phone_number_id: string
+  call_id: string
+  direction: 'USER_INITIATED' | 'BUSINESS_INITIATED' | null
+  contact_id: string | null
+  conversation_id: string | null
+  customer_key: string | null
+  customer_phone: string | null
+  customer_bsuid: string | null
+  customer_parent_bsuid: string | null
+  claimed_by_user_id: string | null
+  claim_expires_at: string | null
+  initiated_by_user_id: string | null
+  accepted_by_user_id: string | null
+  rejected_by_user_id: string | null
+  ended_by_user_id: string | null
+  biz_opaque_callback_data: string | null
+  agent_sdp_encrypted: string | null
+  agent_sdp_type: 'offer' | 'answer' | null
+  agent_sdp_expires_at: string | null
+  state: string
+}
+
+async function loadSignalCall(accountId: string, callId: string): Promise<SignalCallRow | null> {
+  const { data, error } = await supabaseAdmin()
+    .from('whatsapp_call_sessions')
+    .select('phone_number_id,call_id,direction,contact_id,conversation_id,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,claimed_by_user_id,claim_expires_at,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,biz_opaque_callback_data,agent_sdp_encrypted,agent_sdp_type,agent_sdp_expires_at,state')
+    .eq('account_id', accountId)
+    .eq('call_id', callId)
+    .maybeSingle()
+  if (error) {
+    console.error('[calling/api] signal call lookup failed', { code: error.code ?? 'unknown' })
+    throw new Error('calling_signal_lookup_failed')
+  }
+  return data as SignalCallRow | null
+}
+
+async function loadAccessToken(config: CallConfig): Promise<string | null> {
+  try {
+    return decrypt(config.access_token)
+  } catch {
+    console.error('[calling/api] WhatsApp access token decryption failed')
+    return null
+  }
+}
+
 async function pruneExpiredSdp(): Promise<void> {
   const { error } = await supabaseAdmin().rpc('whatsapp_call_sdp_prune', { p_limit: 25 })
   if (error) {
@@ -164,11 +212,13 @@ export async function GET(request: Request) {
       const ownsClaim = call.claimed_by_user_id === userId
         && typeof call.claim_expires_at === 'string'
         && Date.parse(call.claim_expires_at) > now
+      const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED' && call.initiated_by_user_id === userId
+      const canReadSession = ownsClaim || ownsOutboundCall
       const sdpIsFresh = typeof call.session_sdp_expires_at === 'string'
         && Date.parse(call.session_sdp_expires_at) > now
       let session: { sdp_type: 'offer' | 'answer'; sdp: string } | null = null
 
-      if (ownsClaim && sdpIsFresh && call.session_sdp_encrypted
+      if (canReadSession && sdpIsFresh && call.session_sdp_encrypted
         && (call.session_sdp_type === 'offer' || call.session_sdp_type === 'answer')) {
         try {
           session = {
@@ -187,6 +237,7 @@ export async function GET(request: Request) {
         session,
         session_available: Boolean(session),
         claim_owned_by_me: ownsClaim,
+        initiated_by_me: ownsOutboundCall,
       })
     }
 
@@ -207,9 +258,11 @@ export async function GET(request: Request) {
       claim_owned_by_me: call.claimed_by_user_id === userId
         && typeof call.claim_expires_at === 'string'
         && Date.parse(call.claim_expires_at) > now,
-      claim_available: !call.claimed_by_user_id
+      claim_available: !call.rejected_by_user_id && !call.ended_by_user_id && (
+        !call.claimed_by_user_id
         || (typeof call.claim_expires_at === 'string' && Date.parse(call.claim_expires_at) <= now)
-        || call.claimed_by_user_id === userId,
+        || call.claimed_by_user_id === userId
+      ),
       session_available: Boolean(
         call.session_sdp_type
         && call.session_sdp_expires_at
@@ -285,6 +338,283 @@ export async function POST(request: Request) {
         }, { status: 409 })
       }
       return NextResponse.json({ success: true, action, lease_seconds: action === 'claim' || action === 'renew_claim' ? 90 : 0 })
+    }
+
+    if (action === 'connect') {
+      const contactId = typeof body.contact_id === 'string' ? body.contact_id.trim() : ''
+      const conversationId = typeof body.conversation_id === 'string' ? body.conversation_id.trim() : ''
+      const requestId = typeof body.request_id === 'string' ? body.request_id.trim() : ''
+      const session = body.session && typeof body.session === 'object'
+        ? body.session as Record<string, unknown>
+        : null
+      const offer = typeof session?.sdp === 'string' ? session.sdp : ''
+      if (!UUID_PATTERN.test(contactId) || !UUID_PATTERN.test(conversationId)
+        || !UUID_PATTERN.test(requestId) || !offer) {
+        return NextResponse.json({ error: 'Valid contact_id, conversation_id, request_id and SDP offer are required' }, { status: 400 })
+      }
+
+      const config = await loadConfig(accountId)
+      if (!config || config.status !== 'connected') {
+        return NextResponse.json({ error: 'WhatsApp account is not connected' }, { status: 409 })
+      }
+      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id)) {
+        return NextResponse.json({ error: 'WhatsApp Calling is disabled for this number' }, { status: 403 })
+      }
+      const target = await loadCallTarget(accountId, null, contactId)
+      if (!target) return NextResponse.json({ error: 'WhatsApp contact not found' }, { status: 404 })
+      const targetArgs = metaTarget(target)
+      if (!targetArgs) return NextResponse.json({ error: 'Contact has no usable WhatsApp identity' }, { status: 409 })
+      const accessToken = await loadAccessToken(config)
+      if (!accessToken) return NextResponse.json({ error: 'WhatsApp credentials are unavailable' }, { status: 503 })
+
+      const permission = await getWhatsAppCallPermission({
+        phoneNumberId: config.phone_number_id,
+        accessToken,
+        ...targetArgs,
+      })
+      const permissionIsCurrent = permission.status === 'permanent'
+        || (permission.status === 'temporary'
+          && typeof permission.expirationTime === 'number'
+          && permission.expirationTime * 1000 > Date.now())
+      if (!permission.canStartCall || !permissionIsCurrent) {
+        return NextResponse.json({
+          error: 'A current approved WhatsApp call permission is required before connecting',
+          code: 'call_permission_required',
+          permission,
+        }, { status: 409 })
+      }
+
+      const db = supabaseAdmin()
+      const { data: attemptData, error: attemptError } = await db.rpc('whatsapp_call_outbound_attempt_begin', {
+        p_account_id: accountId,
+        p_phone_number_id: config.phone_number_id,
+        p_request_id: requestId,
+        p_actor_user_id: userId,
+        p_contact_id: contactId,
+        p_conversation_id: conversationId,
+        p_customer_key: target.key,
+        p_customer_phone: target.phone,
+        p_customer_bsuid: target.bsuid,
+        p_customer_parent_bsuid: target.parentBsuid,
+        p_customer_name: null,
+      })
+      if (attemptError) {
+        console.error('[calling/api] outbound attempt begin failed', { code: attemptError.code ?? 'unknown' })
+        if (attemptError.code === '42501') return NextResponse.json({ error: 'Contact, conversation or account does not match' }, { status: 403 })
+        return NextResponse.json({ error: 'Could not reserve outbound call attempt' }, { status: 500 })
+      }
+      const attempt = attemptData as {
+        attempt_id?: string
+        state?: string
+        call_id?: string | null
+        callback_data?: string
+        created?: boolean
+      }
+      if (!attempt.created) {
+        if (attempt.state === 'submitted' && typeof attempt.call_id === 'string') {
+          return NextResponse.json({ success: true, call_id: attempt.call_id, duplicate: true }, { status: 200 })
+        }
+        return NextResponse.json({
+          error: 'This outbound call request is already pending or has an uncertain result. Do not submit it again with the same request_id.',
+          code: attempt.state === 'unknown' ? 'call_attempt_unknown' : 'call_attempt_pending',
+        }, { status: 409 })
+      }
+
+      try {
+        const result = await callWhatsApp({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          messagingAccountId: config.messaging_account_id,
+          action: {
+            action: 'connect',
+            ...(target.phone ? { to: target.phone } : {}),
+            ...(!target.phone && (target.bsuid || target.parentBsuid)
+              ? { recipient: target.bsuid ?? target.parentBsuid ?? undefined }
+              : {}),
+            session: { sdp_type: 'offer', sdp: offer },
+            bizOpaqueCallbackData: attempt.callback_data ?? requestId,
+          },
+        })
+        if (result.action !== 'connect') throw new Error('unexpected_call_connect_response')
+        const { error: completeError } = await supabaseAdmin().rpc('whatsapp_call_outbound_attempt_complete', {
+          p_account_id: accountId,
+          p_phone_number_id: config.phone_number_id,
+          p_request_id: requestId,
+          p_actor_user_id: userId,
+          p_call_id: result.callId,
+          p_agent_sdp_encrypted: encrypt(offer),
+          p_agent_sdp_expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+        })
+        if (completeError) {
+          console.error('[calling/api] outbound attempt completion failed', { code: completeError.code ?? 'unknown' })
+          return NextResponse.json({
+            success: true,
+            call_id: result.callId,
+            session_persisted: false,
+            warning: 'Meta accepted the request but WACRM could not finish local persistence. Do not retry this request_id.',
+          }, { status: 202 })
+        }
+        return NextResponse.json({ success: true, call_id: result.callId, session_persisted: true }, { status: 201 })
+      } catch (error) {
+        const status = typeof error === 'object' && error !== null && 'status' in error
+          ? Number((error as { status?: unknown }).status)
+          : 0
+        const attemptState = status >= 400 && status < 500 ? 'failed' : 'unknown'
+        await supabaseAdmin().rpc('whatsapp_call_outbound_attempt_fail', {
+          p_account_id: accountId,
+          p_phone_number_id: config.phone_number_id,
+          p_request_id: requestId,
+          p_actor_user_id: userId,
+          p_state: attemptState,
+          p_failure_code: attemptState === 'failed' ? 'meta_request_rejected' : 'meta_request_outcome_unknown',
+        })
+        console.error('[calling/api] outbound connect failed', { status: status || 'unknown', attempt_state: attemptState })
+        return NextResponse.json({
+          error: attemptState === 'failed' ? 'Meta rejected the outbound call request' : 'The outbound call result is unknown; check call history before retrying',
+          code: attemptState === 'failed' ? 'meta_call_rejected' : 'meta_call_outcome_unknown',
+        }, { status: attemptState === 'failed' ? 502 : 202 })
+      }
+    }
+
+    if (['pre_accept','accept','reject','terminate'].includes(action)) {
+      if (!CALL_ID_PATTERN.test(callId)) {
+        return NextResponse.json({ error: 'A valid call_id is required' }, { status: 400 })
+      }
+      const config = await loadConfig(accountId)
+      if (!config || config.status !== 'connected') {
+        return NextResponse.json({ error: 'WhatsApp account is not connected' }, { status: 409 })
+      }
+      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id)) {
+        return NextResponse.json({ error: 'WhatsApp Calling is disabled for this number' }, { status: 403 })
+      }
+      const call = await loadSignalCall(accountId, callId)
+      if (!call || call.phone_number_id !== config.phone_number_id) {
+        return NextResponse.json({ error: 'Call not found' }, { status: 404 })
+      }
+      const accessToken = await loadAccessToken(config)
+      if (!accessToken) return NextResponse.json({ error: 'WhatsApp credentials are unavailable' }, { status: 503 })
+
+      if (action === 'pre_accept') {
+        const incomingSession = body.session && typeof body.session === 'object'
+          ? body.session as Record<string, unknown>
+          : null
+        const incomingAnswer = typeof incomingSession?.sdp === 'string' ? incomingSession.sdp : ''
+        if (call.direction !== 'USER_INITIATED' || !incomingAnswer) {
+          return NextResponse.json({ error: 'An inbound call and SDP answer are required' }, { status: 400 })
+        }
+        const claimOwned = call.claimed_by_user_id === userId
+          && typeof call.claim_expires_at === 'string'
+          && Date.parse(call.claim_expires_at) > Date.now()
+        if (!claimOwned) return NextResponse.json({ error: 'Claim this incoming call before accepting it' }, { status: 409 })
+
+        let answer = incomingAnswer
+        const storedAnswerIsFresh = call.agent_sdp_type === 'answer'
+          && typeof call.agent_sdp_expires_at === 'string'
+          && Date.parse(call.agent_sdp_expires_at) > Date.now()
+        if (call.agent_sdp_encrypted && storedAnswerIsFresh) {
+          try {
+            answer = decrypt(call.agent_sdp_encrypted)
+          } catch {
+            return NextResponse.json({ error: 'Stored call answer is unavailable; release and reclaim the call' }, { status: 503 })
+          }
+        } else {
+          const { data, error } = await supabaseAdmin().rpc('whatsapp_call_session_agent_sdp_store', {
+            p_account_id: accountId,
+            p_phone_number_id: call.phone_number_id,
+            p_call_id: callId,
+            p_actor_user_id: userId,
+            p_agent_sdp_encrypted: encrypt(incomingAnswer),
+            p_agent_sdp_expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          })
+          if (error || data !== true) {
+            console.error('[calling/api] inbound SDP storage failed', { code: error?.code ?? 'claim_or_state_conflict' })
+            return NextResponse.json({ error: 'Could not store the SDP answer for this call' }, { status: 409 })
+          }
+        }
+
+        await callWhatsApp({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          messagingAccountId: config.messaging_account_id,
+          action: {
+            action: 'pre_accept',
+            callId,
+            session: { sdp_type: 'answer', sdp: answer },
+            ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
+          },
+        })
+        return NextResponse.json({ success: true, action: 'pre_accept', sdp_reused: answer !== incomingAnswer }, { status: 200 })
+      }
+
+      if (action === 'accept') {
+        if (call.direction !== 'USER_INITIATED') {
+          return NextResponse.json({ error: 'Only incoming calls can be accepted' }, { status: 400 })
+        }
+        const claimOwned = call.claimed_by_user_id === userId
+          && typeof call.claim_expires_at === 'string'
+          && Date.parse(call.claim_expires_at) > Date.now()
+        if (!claimOwned && call.accepted_by_user_id !== userId) {
+          return NextResponse.json({ error: 'Claim this incoming call before accepting it' }, { status: 409 })
+        }
+        if (call.agent_sdp_type !== 'answer' || !call.agent_sdp_encrypted
+          || typeof call.agent_sdp_expires_at !== 'string'
+          || Date.parse(call.agent_sdp_expires_at) <= Date.now()) {
+          return NextResponse.json({ error: 'A fresh pre_accept SDP answer is required' }, { status: 409 })
+        }
+        let answer: string
+        try { answer = decrypt(call.agent_sdp_encrypted) } catch {
+          return NextResponse.json({ error: 'Stored call answer is unavailable' }, { status: 503 })
+        }
+        await callWhatsApp({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          messagingAccountId: config.messaging_account_id,
+          action: {
+            action: 'accept',
+            callId,
+            session: { sdp_type: 'answer', sdp: answer },
+            ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
+          },
+        })
+        const { error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+          p_account_id: accountId,
+          p_phone_number_id: call.phone_number_id,
+          p_call_id: callId,
+          p_actor_user_id: userId,
+          p_action: 'accepted',
+          p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
+        })
+        if (auditError) {
+          console.error('[calling/api] accepted agent attribution failed', { code: auditError.code ?? 'unknown' })
+          return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: false }, { status: 202 })
+        }
+        return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: true }, { status: 200 })
+      }
+
+      const metaAction = action === 'reject' ? 'reject' : 'terminate'
+      await callWhatsApp({
+        phoneNumberId: config.phone_number_id,
+        accessToken,
+        messagingAccountId: config.messaging_account_id,
+        action: {
+          action: metaAction,
+          callId,
+          ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
+        },
+      })
+      const { error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+        p_account_id: accountId,
+        p_phone_number_id: call.phone_number_id,
+        p_call_id: callId,
+        p_actor_user_id: userId,
+        p_action: action === 'reject' ? 'rejected' : 'ended',
+        p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
+      })
+      if (auditError) {
+        console.error('[calling/api] terminal agent attribution failed', { code: auditError.code ?? 'unknown' })
+        return NextResponse.json({ success: true, action, agent_attribution_recorded: false }, { status: 202 })
+      }
+      return NextResponse.json({ success: true, action, agent_attribution_recorded: true }, { status: 200 })
     }
 
     if (action === 'agent_action') {
