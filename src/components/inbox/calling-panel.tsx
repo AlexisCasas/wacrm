@@ -118,9 +118,15 @@ function waitForPeerConnected(pc: RTCPeerConnection): Promise<void> {
 }
 
 function createPeerConnection(): RTCPeerConnection {
-  // No static TURN credentials or third-party relay are embedded in the bundle.
-  // ICE servers can be injected in a later, separately approved infrastructure increment.
-  return new RTCPeerConnection({ iceServers: [] });
+  // Optional STUN-only configuration is public by design; never put TURN
+  // usernames/passwords or provider secrets in NEXT_PUBLIC variables.
+  const stunUrls = (process.env.NEXT_PUBLIC_WHATSAPP_CALLING_STUN_URLS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => value.startsWith("stun:"));
+  return new RTCPeerConnection({
+    iceServers: stunUrls.length > 0 ? [{ urls: stunUrls }] : [],
+  });
 }
 
 function formatDuration(seconds: number): string {
@@ -172,6 +178,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.srcObject = null;
+      audioRef.current.muted = true;
     }
     connectedAtRef.current = null;
     setMuted(false);
