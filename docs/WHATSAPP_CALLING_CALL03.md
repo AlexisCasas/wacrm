@@ -29,7 +29,7 @@
 - [x] Trigger de integridad: la conversación y el contacto deben pertenecer al tenant de la llamada y la identidad telefónica/BSUID debe coincidir.
 - [x] RPC atómico de atribución de agente y enlace a conversación; aceptación exige claim vigente, rechazo no puede robar una llamada reclamada por otro agente y finalización exige ownership o owner/admin.
 - [x] RPC de renovación de lease de 90 segundos; un lease vencido no puede resucitarse.
-- [x] API autenticada: `POST renew_claim` y `POST agent_action`; GET de lista/detalle expone IDs de conversación y agentes, nunca SDP cifrado ni datos opacos.
+- [x] API autenticada: `POST renew_claim`; GET de lista/detalle expone IDs de conversación y agentes, nunca SDP cifrado ni datos opacos. La atribución se ejecuta únicamente desde acciones de servidor confiables, no mediante un endpoint genérico controlado por el navegador.
 - [x] QA SQL de permisos/grants, atribución, rechazo, iniciador saliente, renovación/expiración de lease, aislamiento tenant y mismatch de contacto.
 - [ ] Señalización Meta `connect`, `pre_accept`, `accept`, `reject`, `terminate` y correlación de intentos: siguiente subincremento CALL-03B.
 - Antes de `connect`: consultar permisos y cuotas autoritativas de Meta; bloquear salvo permiso temporal vigente o permanente y `start_call` permitido.
@@ -100,7 +100,7 @@ CALL-03 no se considera terminado por tener botones visibles. Debe existir un ci
 - `src/app/api/whatsapp/calls/route.test.ts`
 
 **Archivos ampliados**
-- `src/app/api/whatsapp/calls/route.ts`: atribución de agente, enlace opcional a conversación y renovación de lease.
+- `src/app/api/whatsapp/calls/route.ts`: renovación de lease y lectura de metadatos. Las escrituras de atribución se reservan a operaciones de servidor que validan el ciclo real de llamada.
 - `.github/workflows/migrations.yml`: ejecuta la nueva verificación CALL-03A tras el replay limpio.
 - Este documento.
 
