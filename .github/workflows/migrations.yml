@@ -96,6 +96,9 @@ jobs:
       - name: Verify concurrent WhatsApp Calling agent claims and lease release
         run: bash scripts/qa/whatsapp-calling/verify-concurrency.sh
 
+      - name: Verify CALL-03 agent attribution, conversation linkage and lease renewal
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03.sql
+
       - name: Verify durable webhook inbox leases, deduplication and RLS
         run: supabase db query --local --file supabase/ci/webhook-inbox-test.sql
 
