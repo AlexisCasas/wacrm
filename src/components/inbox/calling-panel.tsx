@@ -16,6 +16,12 @@ import type { Contact, Conversation } from "@/types";
 
 type CallDirection = "USER_INITIATED" | "BUSINESS_INITIATED";
 type CallSession = { sdp_type: "offer" | "answer"; sdp: string };
+type CallPermission = {
+  status: "no_permission" | "temporary" | "permanent";
+  expirationTime?: number;
+  canStartCall: boolean;
+  canRequestPermission: boolean;
+};
 type CallSummary = {
   call_id: string;
   conversation_id: string | null;
@@ -24,6 +30,10 @@ type CallSummary = {
   customer_name: string | null;
   customer_phone: string | null;
   claim_available?: boolean;
+  created_at?: string;
+  started_at?: string | null;
+  ended_at?: string | null;
+  duration_seconds?: number | null;
 };
 type CallDetail = {
   call: CallSummary & { claimed_by_user_id?: string | null };
@@ -148,6 +158,12 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   const [muted, setMuted] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [permission, setPermission] = useState<CallPermission | null>(null);
+  const [permissionLoading, setPermissionLoading] = useState(false);
+  const [permissionRequesting, setPermissionRequesting] = useState(false);
+  const [permissionRequestSent, setPermissionRequestSent] = useState(false);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
+  const [recentCalls, setRecentCalls] = useState<CallSummary[]>([]);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const remoteStreamRef = useRef<MediaStream | null>(null);
@@ -156,7 +172,31 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   const conversationIdRef = useRef<string | null>(conversation?.id ?? null);
   const mountedRef = useRef(true);
   const pollBusyRef = useRef(false);
+  const operationRef = useRef(false);
   const connectedAtRef = useRef<number | null>(null);
+  const disconnectTimerRef = useRef<number | null>(null);
+
+  const isPilotContact = Boolean(contact?.phone && contact.phone.replace(/\\D/g, "") === "51980942247");
+
+  const refreshPermission = useCallback(async () => {
+    if (!contact?.id || !isPilotContact) {
+      setPermission(null);
+      setPermissionError(null);
+      setPermissionRequestSent(false);
+      return;
+    }
+    setPermissionLoading(true);
+    try {
+      const data = await postCallAction("check_permission", { contact_id: contact.id });
+      setPermission(data.permission as CallPermission);
+      setPermissionError(null);
+    } catch (error) {
+      setPermission(null);
+      setPermissionError(error instanceof Error ? error.message : t("permissionCheckFailed"));
+    } finally {
+      setPermissionLoading(false);
+    }
+  }, [contact?.id, isPilotContact, t]);
 
   const setCall = useCallback((call: CallSummary | null) => {
     activeCallRef.current = call;
@@ -274,6 +314,9 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       });
       const data = await readJson(response);
       const calls = Array.isArray(data.calls) ? data.calls as CallSummary[] : [];
+      if (mountedRef.current) {
+        setRecentCalls(calls.filter((call) => call.conversation_id === conversation.id));
+      }
       const incoming = calls.find((call) =>
         call.conversation_id === conversation.id
         && call.direction === "USER_INITIATED"
@@ -287,6 +330,10 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       pollBusyRef.current = false;
     }
   }, [conversation?.id, uiState]);
+
+  useEffect(() => {
+    void refreshPermission();
+  }, [refreshPermission, conversation?.id]);
 
   useEffect(() => {
     const nextConversationId = conversation?.id ?? null;
@@ -332,11 +379,18 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   }, [stopMedia]);
 
   const startOutgoing = useCallback(async () => {
-    if (!conversation?.id || !contact?.id || uiState !== "idle") return;
+    if (!conversation?.id || !contact?.id || uiState !== "idle"
+      || operationRef.current || !permission?.canStartCall || !isPilotContact) return;
+    operationRef.current = true;
+    const operationConversationId = conversation.id;
     setUiState("requesting-media");
     setErrorMessage(null);
     try {
       const stream = await requestMicrophone();
+      if (conversationIdRef.current !== operationConversationId) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error(t("conversationChanged"));
+      }
       const peer = createPeerConnection();
       peerRef.current = peer;
       attachRemoteAudio(peer);
@@ -357,6 +411,10 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       });
       const callId = typeof result.call_id === "string" ? result.call_id : "";
       if (!callId) throw new Error(t("callIdMissing"));
+      if (conversationIdRef.current !== operationConversationId) {
+        await postCallAction("terminate", { call_id: callId });
+        throw new Error(t("conversationChanged"));
+      }
       const call: CallSummary = {
         call_id: callId,
         conversation_id: conversation.id,
@@ -385,20 +443,33 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         }
       }
       resetCall();
+    } finally {
+      operationRef.current = false;
     }
-  }, [addLocalAudio, attachRemoteAudio, contact, conversation, enableAudio, requestMicrophone, resetCall, setCall, t, uiState, waitForRemoteAnswer]);
+  }, [addLocalAudio, attachRemoteAudio, contact, conversation, enableAudio, isPilotContact, permission?.canStartCall, requestMicrophone, resetCall, setCall, t, uiState, waitForRemoteAnswer]);
 
   const acceptIncoming = useCallback(async () => {
     const incoming = incomingCall;
-    if (!incoming || uiState !== "idle") return;
+    if (!incoming || uiState !== "idle" || operationRef.current) return;
+    operationRef.current = true;
+    const operationConversationId = conversation?.id ?? null;
     setUiState("requesting-media");
     setErrorMessage(null);
     let claimed = false;
     try {
       const stream = await requestMicrophone();
+      if (conversationIdRef.current !== operationConversationId) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw new Error(t("conversationChanged"));
+      }
       setUiState("claiming");
       await postCallAction("claim", { call_id: incoming.call_id });
       claimed = true;
+      if (conversationIdRef.current !== operationConversationId) {
+        await releaseClaim(incoming.call_id);
+        claimed = false;
+        throw new Error(t("conversationChanged"));
+      }
       const detail = await getCallDetail(incoming.call_id);
       if (detail.session?.sdp_type !== "offer" || !detail.session.sdp) {
         throw new Error(t("incomingOfferMissing"));
@@ -436,11 +507,14 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       toast.error(message);
       if (claimed) await releaseClaim(incoming.call_id);
       resetCall();
+    } finally {
+      operationRef.current = false;
     }
   }, [addLocalAudio, attachRemoteAudio, conversation?.id, enableAudio, incomingCall, releaseClaim, requestMicrophone, resetCall, setCall, t, uiState]);
 
   const rejectIncoming = useCallback(async () => {
-    if (!incomingCall) return;
+    if (!incomingCall || operationRef.current) return;
+    operationRef.current = true;
     setUiState("ending");
     try {
       await postCallAction("reject", {
@@ -454,12 +528,15 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       setErrorMessage(message);
       toast.error(message);
       setUiState("idle");
+    } finally {
+      operationRef.current = false;
     }
   }, [conversation?.id, incomingCall, t]);
 
   const endCall = useCallback(async () => {
     const call = activeCallRef.current;
-    if (!call) return;
+    if (!call || operationRef.current) return;
+    operationRef.current = true;
     setUiState("ending");
     try {
       await postCallAction("terminate", { call_id: call.call_id });
@@ -468,8 +545,29 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       toast.error(message);
     } finally {
       resetCall();
+      operationRef.current = false;
     }
   }, [resetCall, t]);
+
+  const requestPermission = useCallback(async () => {
+    if (!contact?.id || operationRef.current || permissionRequesting
+      || !permission?.canRequestPermission || !isPilotContact) return;
+    operationRef.current = true;
+    setPermissionRequesting(true);
+    setPermissionError(null);
+    try {
+      await postCallAction("request_permission", { contact_id: contact.id });
+      setPermissionRequestSent(true);
+      await refreshPermission();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : t("permissionRequestFailed");
+      setPermissionError(message);
+      toast.error(message);
+    } finally {
+      setPermissionRequesting(false);
+      operationRef.current = false;
+    }
+  }, [contact?.id, isPilotContact, permission?.canRequestPermission, permissionRequesting, refreshPermission, t]);
 
   const toggleMute = useCallback(() => {
     const tracks = localStreamRef.current?.getAudioTracks() ?? [];
@@ -481,7 +579,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     setMuted(nextMuted);
   }, [muted]);
 
-  const hasCallingIdentity = Boolean(contact?.id && contact.phone);
+  const hasCallingIdentity = Boolean(contact?.id && contact.phone && isPilotContact && permission?.canStartCall);
   const busy = !["idle", "incoming", "connected", "failed"].includes(uiState);
 
   return (
