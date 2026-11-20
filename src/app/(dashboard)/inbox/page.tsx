@@ -23,6 +23,8 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
+import { CallDock } from "@/components/inbox/call-dock";
+import { useWhatsAppCalling } from "@/hooks/use-whatsapp-calling";
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -108,6 +110,7 @@ function InboxPageInner() {
    * section N.
    */
   const [tagCatalogVersion, setTagCatalogVersion] = useState(0);
+  const calling = useWhatsAppCalling();
 
   /**
    * Whether the desktop contact sidebar (tags / deals / notes) is shown.
@@ -770,6 +773,20 @@ function InboxPageInner() {
         </div>
       )}
 
+      <CallDock
+        incomingCalls={calling.incomingCalls}
+        activeCall={calling.activeCall}
+        remoteStream={calling.remoteStream}
+        muted={calling.muted}
+        busy={calling.busy}
+        error={calling.error}
+        onAccept={(call) => { void calling.acceptIncomingCall(call); }}
+        onReject={(call) => { void calling.rejectIncomingCall(call); }}
+        onEnd={() => { void calling.endActiveCall(); }}
+        onToggleMute={calling.toggleMute}
+        onClearError={calling.clearError}
+      />
+
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel: Conversation list.
             Hidden on mobile when a conversation is selected so the
@@ -823,6 +840,8 @@ function InboxPageInner() {
             onRefresh={handleManualRefresh}
             contactPanelOpen={contactPanelOpen}
             onToggleContactPanel={handleToggleContactPanel}
+            onStartCall={calling.startOutboundCall}
+            callBusy={calling.busy}
           />
         </div>
 
