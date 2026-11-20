@@ -1,7 +1,7 @@
--- Behaviour test for the Inbox RLS of 20261127000000_conversation_handoff_rls.sql AS EVOLVED by 20261128000000_conversation_routing.sql:
+-- Behaviour test for the Inbox RLS of 20261204000001_conversation_handoff_rls.sql AS EVOLVED by 20261204000002_conversation_routing.sql:
 -- the stage is now conversation_routing (not the mere existence of an order), so every order below also applies the order-confirmed routing
 -- (exactly what create_order_confirmation does). The full routing matrix (shared, derive, audit) is in conversation-routing-test.sql.
--- Original description: 20261127000000_conversation_handoff_rls.sql (Comercial -> Logistica handoff enforced by RLS).
+-- Original description: 20261204000001_conversation_handoff_rls.sql (Comercial -> Logistica handoff enforced by RLS).
 -- Run against a database that already has ALL migrations applied:  psql -v ON_ERROR_STOP=1 -f supabase/ci/conversation-handoff-test.sql
 -- One transaction that ends in ROLLBACK, synthetic users/accounts only: nothing persists, no existing row is touched.
 BEGIN;

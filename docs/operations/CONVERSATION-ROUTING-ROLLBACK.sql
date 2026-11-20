@@ -1,5 +1,5 @@
 -- ============================================================
--- ROLLBACK of 20261128000000_conversation_routing.sql  (authorization only: NO order, conversation or message is deleted or changed)
+-- ROLLBACK of 20261204000002_conversation_routing.sql  (authorization only: NO order, conversation or message is deleted or changed)
 -- Restores the PR-02 behaviour: the stage of a conversation is again "has a confirmed order" (20261127000000).
 -- Run as the table owner (postgres) in ONE transaction. After it, deploy the application image WITHOUT the routing UI/API (or keep it: GET/POST routes
 -- would answer errors and the button would simply not appear).

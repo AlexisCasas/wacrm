@@ -1,7 +1,7 @@
 # PR-03 · Routing operativo de conversaciones (Comercial / Logística / Compartida)
 
 Estado: **preparado y probado solo en LOCAL** (`127.0.0.1:55322`, Realtime local). Sin push / PR / deploy. Producción no fue tocada.
-Migration: `supabase/migrations/20261128000000_conversation_routing.sql` · Rollback exacto: `docs/operations/CONVERSATION-ROUTING-ROLLBACK.sql`.
+Migration: `supabase/migrations/20261204000002_conversation_routing.sql` · Rollback exacto: `docs/operations/CONVERSATION-ROUTING-ROLLBACK.sql`.
 Feature flag: `order_integration_settings.logistics_mvp_enabled` (por cuenta, `FALSE` por defecto).
 Reemplaza **solo** la forma de derivar la etapa de PR-02 (antes "existe un pedido ⇒ logística"); las políticas RLS de PR-02 y todo lo demás se conservan.
 

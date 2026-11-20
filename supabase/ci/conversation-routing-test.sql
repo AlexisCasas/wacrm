@@ -1,4 +1,4 @@
--- Behaviour test for 20261128000000_conversation_routing.sql (explicit routing: commercial / logistics / shared).
+-- Behaviour test for 20261204000002_conversation_routing.sql (explicit routing: commercial / logistics / shared).
 -- Run against a database that already has ALL migrations applied:  psql -v ON_ERROR_STOP=1 -f supabase/ci/conversation-routing-test.sql
 -- One transaction that ends in ROLLBACK, synthetic users/accounts only: nothing persists, no existing row is touched.
 BEGIN;

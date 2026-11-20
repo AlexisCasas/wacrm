@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const dir = resolve(process.cwd(), 'supabase/migrations')
-const name = '20261128000000_conversation_routing.sql'
+const name = '20261204000002_conversation_routing.sql'
 const mig = readFileSync(resolve(dir, name), 'utf8').replace(/\r\n/g, '\n')
 const code = mig.replace(/^\s*--.*$/gm, '')
 const fnOf = (sig: string) => {
@@ -17,7 +17,7 @@ const fnOf = (sig: string) => {
 describe(name, () => {
   it('sorts after the PR-02 migrations and edits none of them', () => {
     const all = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
-    expect(all.indexOf(name)).toBeGreaterThan(all.indexOf('20261127000000_conversation_handoff_rls.sql'))
+    expect(all.indexOf(name)).toBeGreaterThan(all.indexOf('20261204000001_conversation_handoff_rls.sql'))
     expect(all.indexOf(name)).toBe(all.length - 1)
   })
 

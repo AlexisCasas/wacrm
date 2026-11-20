@@ -37,7 +37,7 @@ Tabla `order_finalizations` (una fila por `order_id`; **solo `service_role`**: e
   * `skipped_no_conversation`: pedido sin conversación.
 * **Auditoría**: `conversation_routing_events` con `reason = order_finalized_grace_elapsed`, `actor_user_id = NULL`, `actor_name = 'system'`, `order_id`, `from = logistics`, `to = commercial`, timestamp (constraint de forma + índice único). El manual conserva su actor humano y `derived_to_commercial`; así se distinguen. La señal guarda además fuente, quién la declaró y el resultado del retorno.
 
-Migración nueva (la única): `20261202000000_order_finalization_routing_return.sql` (amplía el CHECK de `reason`, tabla + guardas + 3 funciones).
+Migración nueva (la única): `20261204000017_order_finalization_routing_return.sql` (amplía el CHECK de `reason`, tabla + guardas + 3 funciones).
 
 ## 4. QA / UAT
 

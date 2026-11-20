@@ -1,7 +1,7 @@
 # Handoff Comercial → Logística (RLS del Inbox)
 
 Estado: **preparado y probado solo en LOCAL** (`127.0.0.1:55322`, Realtime local). Sin push / PR / deploy. Producción no fue tocada.
-Migration: `supabase/migrations/20261127000000_conversation_handoff_rls.sql` (posterior a `20261126000000`). Flag: `order_integration_settings.logistics_mvp_enabled`.
+Migration: `supabase/migrations/20261204000001_conversation_handoff_rls.sql` (posterior a `20261126000000`). Flag: `order_integration_settings.logistics_mvp_enabled`.
 
 ## Flujo funcional
 

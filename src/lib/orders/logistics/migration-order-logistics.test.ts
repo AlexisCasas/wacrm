@@ -10,11 +10,11 @@ const dir = resolve(process.cwd(), 'supabase/migrations')
 const read = (name: string) => readFileSync(resolve(dir, name), 'utf8').replace(/\r\n/g, '\n')
 const strip = (sql: string) => sql.replace(/^\s*--.*$/gm, '')
 
-const MODEL = '20261129000000_order_logistics_model.sql'
-const SECURITY = '20261129000001_order_logistics_security_rpcs.sql'
-const STORAGE = '20261129000002_order_docs_storage.sql'
-const EVIDENCE = '20261129000003_order_evidence_rpc.sql'
-const DISPATCH = '20261129000004_order_template_dispatch_rpcs.sql'
+const MODEL = '20261204000003_order_logistics_model.sql'
+const SECURITY = '20261204000004_order_logistics_security_rpcs.sql'
+const STORAGE = '20261204000005_order_docs_storage.sql'
+const EVIDENCE = '20261204000006_order_evidence_rpc.sql'
+const DISPATCH = '20261204000007_order_template_dispatch_rpcs.sql'
 const TABLES = ['order_logistics_settings', 'order_documents', 'order_template_dispatches', 'order_logistics', 'order_logistics_events']
 const RPCS = [
   'register_order_document',
@@ -29,7 +29,7 @@ const RPCS = [
 describe('PR-04 migrations · ordering and additivity', () => {
   it('sort after the PR-03 migration and are contiguous at the end', () => {
     const all = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
-    const base = all.indexOf('20261128000000_conversation_routing.sql')
+    const base = all.indexOf('20261204000002_conversation_routing.sql')
     expect(base).toBeGreaterThanOrEqual(0)
     expect(all.slice(base + 1, base + 6)).toEqual([MODEL, SECURITY, STORAGE, EVIDENCE, DISPATCH])
   })

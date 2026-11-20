@@ -16,10 +16,10 @@ Estado: **implementado localmente** sobre PR-05 (rama `feat/order-payments-pr06`
 
 | Migración | Contenido |
 |---|---|
-| `20261203000000_order_payments_model.sql` | `order_payment_settings` (+`activated_at`), `order_payments`, `order_financials`, `order_payment_events`, helpers de acceso y RLS (navegador solo LEE) |
-| `20261203000001_order_payment_rpcs.sql` | register / confirm / reject / void / correct, cálculo, auditoría |
-| `20261203000002_order_payment_proof.sql` | `order_documents.kind = payment_proof` + `register_payment_proof` |
-| `20261203000003_order_finalization_pr06.sql` | entrega manual, evaluador de finalización, sweeper, regla multi-pedido (reemplaza la función de retorno de PR-05C) |
+| `20261204000018_order_payments_model.sql` | `order_payment_settings` (+`activated_at`), `order_payments`, `order_financials`, `order_payment_events`, helpers de acceso y RLS (navegador solo LEE) |
+| `20261204000019_order_payment_rpcs.sql` | register / confirm / reject / void / correct, cálculo, auditoría |
+| `20261204000020_order_payment_proof.sql` | `order_documents.kind = payment_proof` + `register_payment_proof` |
+| `20261204000021_order_finalization_pr06.sql` | entrega manual, evaluador de finalización, sweeper, regla multi-pedido (reemplaza la función de retorno de PR-05C) |
 
 * **order_payments**: `amount`, `currency` (PEN), `kind` (advance / balance / full / other, **informativo**), `method` (libre), `operation_number` (opcional), `paid_at`, `status` (`recorded → confirmed | rejected`; `confirmed → voided`), `evidence_document_id`, `notes`, `source`, actor y marcas de cada transición, `row_version`. Datos de dinero **inmutables** (trigger); `rejected` / `voided` son finales; nada se borra.
 * **order_financials**: estado vigente de los pedidos rastreados (`paid_confirmed`, `financial_status`, `paid_at` = el momento en que pasó a `paid`).

@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest'
 // is left byte-for-byte intact.
 //
 // EXPECTED HISTORICAL TEST FAILURE AFTER ADDITIVE MIGRATIONS
-//   The frozen test asserts `all.indexOf('20261128000000_conversation_routing.sql') === all.length - 1` ("PR-03's migration is the LAST file"). That was true when
+//   The frozen test asserts `all.indexOf('20261204000002_conversation_routing.sql') === all.length - 1` ("PR-03's migration is the LAST file"). That was true when
 //   PR-03 closed and stops being true, legitimately, the moment ANY later additive migration exists. It is a historical invariant of PR-03, not a functional
 //   check: its other 9 assertions pass, and the functional routing suites (supabase/ci/conversation-routing-test.sql, conversation-handoff-test.sql and
 //   pr04-pr03-compat-test.sql) pass with the PR-04 migrations applied. The test below proves, with the same inputs, that the ONLY reason is the later files.
@@ -16,14 +16,14 @@ import { describe, expect, it } from 'vitest'
 // Behaviour against a real database is proven by supabase/ci/pr04-pr03-compat-test.sql (+ the PR-03 suites themselves).
 
 const dir = resolve(process.cwd(), 'supabase/migrations')
-const PR03 = '20261128000000_conversation_routing.sql'
+const PR03 = '20261204000002_conversation_routing.sql'
 const PR04 = [
-  '20261129000000_order_logistics_model.sql',
-  '20261129000001_order_logistics_security_rpcs.sql',
-  '20261129000002_order_docs_storage.sql',
-  '20261129000003_order_evidence_rpc.sql',
-  '20261129000004_order_template_dispatch_rpcs.sql',
-  '20261129000005_order_evidence_upload.sql',
+  '20261204000003_order_logistics_model.sql',
+  '20261204000004_order_logistics_security_rpcs.sql',
+  '20261204000005_order_docs_storage.sql',
+  '20261204000006_order_evidence_rpc.sql',
+  '20261204000007_order_template_dispatch_rpcs.sql',
+  '20261204000008_order_evidence_upload.sql',
 ]
 // PR-05 (Shalom tracking) migrations come after PR-04's: they are later still, so the "files after PR-03" arithmetic below must count them too.
 const PR05_FIRST = '20261130000000' // every migration from here on belongs to PR-05 (and its 05A/05B extensions)
@@ -84,7 +84,7 @@ describe('the frozen PR-03 test: what its failure is and is not', () => {
   })
 
   it('the other assertion of that test (sorts after the PR-02 migrations) still holds', () => {
-    expect(all.indexOf(PR03)).toBeGreaterThan(all.indexOf('20261127000000_conversation_handoff_rls.sql'))
+    expect(all.indexOf(PR03)).toBeGreaterThan(all.indexOf('20261204000001_conversation_handoff_rls.sql'))
   })
 
   it('the frozen test file itself is untouched', () => {

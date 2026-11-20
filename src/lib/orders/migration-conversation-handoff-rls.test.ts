@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const dir = resolve(process.cwd(), 'supabase/migrations')
-const name = '20261127000000_conversation_handoff_rls.sql'
+const name = '20261204000001_conversation_handoff_rls.sql'
 const mig = readFileSync(resolve(dir, name), 'utf8')
 const code = mig.replace(/^--.*$/gm, '')
 const fn = code.slice(code.indexOf('CREATE OR REPLACE FUNCTION public.conversation_operational_access('), code.indexOf('$$;') + 3)
@@ -19,7 +19,7 @@ describe(name, () => {
 
   it('sorts after the supervisor migration and does not edit historical ones', () => {
     const all = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
-    expect(all.indexOf(name)).toBeGreaterThan(all.indexOf('20261126000000_operational_role_supervisor_delegation.sql'))
+    expect(all.indexOf(name)).toBeGreaterThan(all.indexOf('20261204000000_operational_role_supervisor_delegation.sql'))
   })
 
   it('adds a non-destructive, account-scoped partial index for the stage lookup', () => {

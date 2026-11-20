@@ -26,14 +26,14 @@ Fuera de alcance de PR-04 (no implementado): Shalom/tracking (PR-05), cobranza/p
 
 | # | Archivo | Responsabilidad |
 |---|---|---|
-| 1 | `20261129000000_order_logistics_model.sql` | 5 tablas, constraints, índices, triggers de inmutabilidad/auditoría. RLS habilitado, sin privilegios para el navegador |
-| 2 | `20261129000001_order_logistics_security_rpcs.sql` | `order_logistics_access()`, policies SELECT-only, RPCs de voucher/OCR/revisión/asociación/embalaje (solo `service_role`) |
-| 3 | `20261129000002_order_docs_storage.sql` | Bucket **privado** `order-docs`, sin policies para `anon`/`authenticated` |
-| 4 | `20261129000003_order_evidence_rpc.sql` | `select_order_evidence()` |
-| 5 | `20261129000004_order_template_dispatch_rpcs.sql` | `begin/mark_sending/finish/resolve_template_dispatch` y el helper interno de cierre |
-| 6 | `20261129000005_order_evidence_upload.sql` | evidencia de embalaje SUBIDA desde el dispositivo: relaja un CHECK de `order_documents` (evidencia con `source='upload'`), añade el evento `evidence_uploaded` y la RPC `register_order_evidence_upload()` |
+| 1 | `20261204000003_order_logistics_model.sql` | 5 tablas, constraints, índices, triggers de inmutabilidad/auditoría. RLS habilitado, sin privilegios para el navegador |
+| 2 | `20261204000004_order_logistics_security_rpcs.sql` | `order_logistics_access()`, policies SELECT-only, RPCs de voucher/OCR/revisión/asociación/embalaje (solo `service_role`) |
+| 3 | `20261204000005_order_docs_storage.sql` | Bucket **privado** `order-docs`, sin policies para `anon`/`authenticated` |
+| 4 | `20261204000006_order_evidence_rpc.sql` | `select_order_evidence()` |
+| 5 | `20261204000007_order_template_dispatch_rpcs.sql` | `begin/mark_sending/finish/resolve_template_dispatch` y el helper interno de cierre |
+| 6 | `20261204000008_order_evidence_upload.sql` | evidencia de embalaje SUBIDA desde el dispositivo: relaja un CHECK de `order_documents` (evidencia con `source='upload'`), añade el evento `evidence_uploaded` y la RPC `register_order_evidence_upload()` |
 
-Todas sortean **después** de `20261128000000_conversation_routing.sql` (PR-03). Ninguna modifica migrations históricas ni objetos de PR-02/PR-03 (verificado por `migration-order-logistics.test.ts` y `migration-pr03-compat.test.ts`).
+Todas sortean **después** de `20261204000002_conversation_routing.sql` (PR-03). Ninguna modifica migrations históricas ni objetos de PR-02/PR-03 (verificado por `migration-order-logistics.test.ts` y `migration-pr03-compat.test.ts`).
 
 ## 2. Objetos creados
 

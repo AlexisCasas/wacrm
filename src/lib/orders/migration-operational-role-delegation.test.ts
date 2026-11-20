@@ -3,11 +3,11 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const read = (f: string) => readFileSync(resolve(process.cwd(), 'supabase/migrations', f), 'utf8')
-const mig = read('20261126000000_operational_role_supervisor_delegation.sql')
+const mig = read('20261204000000_operational_role_supervisor_delegation.sql')
 const code = mig.replace(/^--.*$/gm, '')
 const fn = code.slice(code.indexOf('CREATE OR REPLACE FUNCTION public.set_member_operational_role('), code.indexOf('$$;') + 3)
 
-describe('20261126000000_operational_role_supervisor_delegation', () => {
+describe('20261204000000_operational_role_supervisor_delegation', () => {
   it('is a function-only change: no DDL on tables/columns/types/triggers/policies, no data writes other than operational_role', () => {
     expect(code).not.toMatch(/\b(CREATE|ALTER|DROP)\s+(TABLE|TYPE|TRIGGER|POLICY|INDEX)\b/i)
     expect(code).not.toMatch(/\bADD\s+COLUMN\b|\bDROP\s+COLUMN\b/i)

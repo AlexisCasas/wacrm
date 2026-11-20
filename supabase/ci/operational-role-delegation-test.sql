@@ -1,4 +1,4 @@
--- Behaviour test for 20261126000000_operational_role_supervisor_delegation.sql (set_member_operational_role authority matrix).
+-- Behaviour test for 20261204000000_operational_role_supervisor_delegation.sql (set_member_operational_role authority matrix).
 -- Run against a database that already has ALL migrations applied:  psql -v ON_ERROR_STOP=1 -f supabase/ci/operational-role-delegation-test.sql
 -- Everything runs inside ONE transaction that ends in ROLLBACK, with synthetic users/accounts: nothing persists and no existing row is changed.
 BEGIN;

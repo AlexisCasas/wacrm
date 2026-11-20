@@ -53,7 +53,7 @@ describe('OrderLogistics catalogue', () => {
   })
 
   it('every audit event type of the database has a label', () => {
-    const migration = read('supabase/migrations/20261129000000_order_logistics_model.sql')
+    const migration = read('supabase/migrations/20261204000003_order_logistics_model.sql')
     const list = migration.slice(migration.indexOf('order_logistics_events_type_check'), migration.indexOf('order_logistics_events_outcome_check'))
     const types = [...list.matchAll(/'([a-z_]+)'/g)].map((m) => m[1])
     expect(types.length).toBe(17)

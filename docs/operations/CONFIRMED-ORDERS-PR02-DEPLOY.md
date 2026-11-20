@@ -46,8 +46,8 @@ Si una cuenta superara ~100.000 pedidos, evaluar `CREATE INDEX CONCURRENTLY orde
 
 | Orden | Migration | Contenido | Necesaria para |
 |---|---|---|---|
-| 1 | `20261126000000_operational_role_supervisor_delegation.sql` | reemplaza la función `set_member_operational_role` | ajuste Supervisor |
-| 2 | `20261127000000_conversation_handoff_rls.sql` | índice `(account_id, conversation_id)`, helper `conversation_operational_access`, `ALTER POLICY` en conversations/messages/message_reactions | handoff Comercial → Logística (RLS del Inbox) |
+| 1 | `20261204000000_operational_role_supervisor_delegation.sql` | reemplaza la función `set_member_operational_role` | ajuste Supervisor |
+| 2 | `20261204000001_conversation_handoff_rls.sql` | índice `(account_id, conversation_id)`, helper `conversation_operational_access`, `ALTER POLICY` en conversations/messages/message_reactions | handoff Comercial → Logística (RLS del Inbox) |
 
 Prerrequisito ya existente: `20261121000000_order_logistics_foundation.sql` (flag `logistics_mvp_enabled`, `operational_role`). Confirmar en producción que esté aplicada antes de empezar.
 Con el flag apagado la migration 2 no cambia el comportamiento de nadie. **Asignar las áreas operativas antes de activar el flag** (quien no tenga área pierde el Inbox operativo).

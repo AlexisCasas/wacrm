@@ -20,11 +20,11 @@ PR-05 es **aditivo**: no modifica `order_logistics.status` ni ninguna migración
 
 | Orden | Archivo | Contenido |
 |---|---|---|
-| 1 | `20261130000000_order_shipment_settings.sql` | `order_shipment_settings` (`shalom_tracking_enabled` **default FALSE**, breaker global de credenciales), `order_shipments_access()`, `order_shipments_actor()` |
-| 2 | `20261130000001_order_shipments_model.sql` | `order_shipments`, `order_shipment_events`, `order_shipment_polls`, `order_shipment_alerts`, guardas, RLS SELECT-only |
-| 3 | `20261130000002_order_shipments_rpcs.sql` | register / correct / stop / refresh / claim / apply / release / breaker / purge |
-| 4 | `20261130000003_notifications_shipment_alert.sql` | CHECK de `notifications.type` + `order_id` nullable (aditivo; `conversation_assigned` intacto) |
-| 5 | `20261130000004_order_shipment_alert_rpcs.sql` | `evaluate_destination_alerts`, `acknowledge_shipment_alert`, notificación a Logística/Supervisor |
+| 1 | `20261204000009_order_shipment_settings.sql` | `order_shipment_settings` (`shalom_tracking_enabled` **default FALSE**, breaker global de credenciales), `order_shipments_access()`, `order_shipments_actor()` |
+| 2 | `20261204000010_order_shipments_model.sql` | `order_shipments`, `order_shipment_events`, `order_shipment_polls`, `order_shipment_alerts`, guardas, RLS SELECT-only |
+| 3 | `20261204000011_order_shipments_rpcs.sql` | register / correct / stop / refresh / claim / apply / release / breaker / purge |
+| 4 | `20261204000012_notifications_shipment_alert.sql` | CHECK de `notifications.type` + `order_id` nullable (aditivo; `conversation_assigned` intacto) |
+| 5 | `20261204000013_order_shipment_alert_rpcs.sql` | `evaluate_destination_alerts`, `acknowledge_shipment_alert`, notificación a Logística/Supervisor |
 
 Una responsabilidad por tabla: **estado actual** (`order_shipments`), **historial funcional** append-only (`order_shipment_events`, deduplicado por índices únicos), **log técnico de consultas** con retención (`order_shipment_polls`) y **ciclo de vida de la alerta** (`order_shipment_alerts`, único por `(order_id, destination_episode, kind)`).
 

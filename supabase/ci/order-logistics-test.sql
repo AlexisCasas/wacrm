@@ -1,4 +1,4 @@
--- Behaviour test for 20261129000000_order_logistics_model.sql + 20261129000001_order_logistics_security_rpcs.sql (PR-04: voucher / OCR / review /
+-- Behaviour test for 20261204000003_order_logistics_model.sql + 20261204000004_order_logistics_security_rpcs.sql (PR-04: voucher / OCR / review /
 -- packaging data layer). Run against a database that already has ALL migrations applied:
 --   psql -v ON_ERROR_STOP=1 -f supabase/ci/order-logistics-test.sql
 -- One transaction that ends in ROLLBACK, synthetic users/accounts only: nothing persists, no existing row is touched.

@@ -23,7 +23,7 @@ Regla de días: igual que la alerta de PR-05: `(ahora en Lima)::date >= (entrada
   Estados: `pending → claimed → sending → sent | failed | uncertain | skipped` (mismo patrón seguro que PR-04: claim con token + lease + `SKIP LOCKED`, guardas de transición, `sent`/`skipped` finales).
 * **Evaluadores** (funciones de BD, solo `service_role`): `evaluate_pickup_day15`, `evaluate_pickup_abandonment`; ledger: `claim_shipment_messages`, `mark_shipment_message_sending`, `finish_shipment_message`, `retry_shipment_message`, `resolve_shipment_message`. No se reemplazó ninguna RPC validada de PR-05.
 
-Migraciones nuevas (ninguna editada, PR-04 intacto): `20261201000000_shipment_pickup_state.sql`, `20261201000001_shipment_customer_message.sql`, `20261201000002_shipment_abandonment.sql`.
+Migraciones nuevas (ninguna editada, PR-04 intacto): `20261204000014_shipment_pickup_state.sql`, `20261204000015_shipment_customer_message.sql`, `20261204000016_shipment_abandonment.sql`.
 
 ## 3. El mensaje al cliente (PR-05A)
 
