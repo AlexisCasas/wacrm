@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { useAuth } from "@/hooks/use-auth";
+import { useCan } from "@/hooks/use-can";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import type { Contact, Conversation } from "@/types";
@@ -162,6 +163,7 @@ interface CallingPanelProps {
 export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   const t = useTranslations("Inbox.calling");
   const { profile } = useAuth();
+  const canUseCalling = useCan("send-messages");
   const [uiState, setUiState] = useState<UiState>("idle");
   const [incomingCall, setIncomingCall] = useState<CallSummary | null>(null);
   const [activeCall, setActiveCall] = useState<CallSummary | null>(null);
@@ -190,7 +192,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   const isPilotContact = Boolean(contact?.phone && contact.phone.replace(/[^0-9]/g, "") === "51980942247");
 
   const refreshPermission = useCallback(async () => {
-    if (!contact?.id || !isPilotContact) {
+    if (!canUseCalling || !contact?.id || !isPilotContact) {
       setPermission(null);
       setPermissionError(null);
       setPermissionRequestSent(false);
@@ -207,7 +209,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     } finally {
       setPermissionLoading(false);
     }
-  }, [contact?.id, isPilotContact, t]);
+  }, [canUseCalling, contact?.id, isPilotContact, t]);
 
   const setCall = useCallback((call: CallSummary | null) => {
     activeCallRef.current = call;
@@ -322,7 +324,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   }, [setCall, stopMedia]);
 
   const pollIncoming = useCallback(async () => {
-    if (!conversation?.id || pollBusyRef.current || activeCallRef.current || uiState !== "idle") return;
+    if (!canUseCalling || !conversation?.id || pollBusyRef.current || activeCallRef.current || uiState !== "idle") return;
     pollBusyRef.current = true;
     try {
       const response = await fetch("/api/whatsapp/calls", {
@@ -346,7 +348,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     } finally {
       pollBusyRef.current = false;
     }
-  }, [conversation?.id, uiState]);
+  }, [canUseCalling, conversation?.id, uiState]);
 
   useEffect(() => {
     void refreshPermission();
@@ -709,7 +711,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   return (
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <audio ref={audioRef} autoPlay playsInline muted className="hidden" />
-      {isPilotContact && incomingCall && uiState === "idle" ? (
+      {canUseCalling && isPilotContact && incomingCall && uiState === "idle" ? (
         <div role="alert" className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5">
           <PhoneIncoming className="h-4 w-4 text-emerald-500" />
           <span className="max-w-32 truncate text-xs font-medium">
@@ -731,7 +733,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           </button>
         </div>
       ) : null}
-      {(isPilotContact || isPilotActiveCall) && ["connected", "failed"].includes(uiState) && activeCall ? (
+      {canUseCalling && (isPilotContact || isPilotActiveCall) && ["connected", "failed"].includes(uiState) && activeCall ? (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
           <span className={cn("text-xs font-medium", uiState === "connected" ? "text-emerald-500" : "text-red-500")}>
             {uiState === "connected" ? formatDuration(elapsedSeconds) : t("endCallFailed")}
@@ -764,7 +766,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           ) : null}
         </div>
       ) : null}
-      {isPilotContact && !incomingCall && !["connected", "failed"].includes(uiState) && permission?.canStartCall ? (
+      {canUseCalling && isPilotContact && !incomingCall && !["connected", "failed"].includes(uiState) && permission?.canStartCall ? (
         <button
           type="button"
           onClick={() => void startOutgoing()}
@@ -778,7 +780,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           <span className="hidden sm:inline">{busy ? t("connecting") : t("call")}</span>
         </button>
       ) : null}
-      {uiState === "idle" && isPilotContact && permission?.status === "no_permission" ? (
+      {canUseCalling && uiState === "idle" && isPilotContact && permission?.status === "no_permission" ? (
         <div className="flex items-center gap-1">
           <span className="hidden text-[11px] text-amber-600 sm:inline">{t("permissionNeeded")}</span>
           {permission.canRequestPermission ? (
@@ -795,13 +797,13 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           )}
         </div>
       ) : null}
-      {uiState === "idle" && isPilotContact && permission?.canStartCall ? (
+      {canUseCalling && uiState === "idle" && isPilotContact && permission?.canStartCall ? (
         <span className="hidden text-[11px] text-emerald-600 sm:inline">{t("permissionActive")}</span>
       ) : null}
-      {permissionError && uiState === "idle" && isPilotContact ? (
+      {canUseCalling && permissionError && uiState === "idle" && isPilotContact ? (
         <span role="status" className="max-w-40 truncate text-[11px] text-red-500">{permissionError}</span>
       ) : null}
-      {recentCalls.length > 0 && uiState === "idle" ? (
+      {canUseCalling && recentCalls.length > 0 && uiState === "idle" ? (
         <details className="max-w-52 text-xs">
           <summary className="cursor-pointer text-muted-foreground">{t("history")} ({recentCalls.length})</summary>
           <ul className="mt-1 max-h-36 space-y-1 overflow-y-auto rounded-md border border-border bg-card p-2">
@@ -814,7 +816,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           </ul>
         </details>
       ) : null}
-      {errorMessage && uiState === "idle" ? (
+      {canUseCalling && errorMessage && uiState === "idle" ? (
         <span role="status" className="max-w-40 truncate text-[11px] text-red-500">{errorMessage}</span>
       ) : null}
     </div>
