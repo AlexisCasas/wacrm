@@ -262,6 +262,33 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Failed to list calls' }, { status: 500 })
     }
 
+    const actorIds = [...new Set((data ?? []).flatMap((call) => [
+      call.initiated_by_user_id,
+      call.accepted_by_user_id,
+      call.rejected_by_user_id,
+      call.ended_by_user_id,
+    ]).filter((value): value is string => typeof value === 'string' && value.length > 0))]
+    const actorNameById = new Map<string, string>()
+    if (actorIds.length > 0) {
+      const { data: actorProfiles, error: actorProfilesError } = await db
+        .from('profiles')
+        .select('user_id,full_name')
+        .eq('account_id', accountId)
+        .in('user_id', actorIds)
+        .limit(actorIds.length)
+      if (actorProfilesError) {
+        console.error('[calling/api] call history actor lookup failed', {
+          code: actorProfilesError.code ?? 'unknown',
+        })
+      } else {
+        for (const actor of actorProfiles ?? []) {
+          if (typeof actor.user_id === 'string' && typeof actor.full_name === 'string' && actor.full_name.trim()) {
+            actorNameById.set(actor.user_id, actor.full_name.trim())
+          }
+        }
+      }
+    }
+
     const now = Date.now()
     const calls = (data ?? []).map((call) => {
       const ownsClaim = call.claimed_by_user_id === userId
@@ -273,6 +300,18 @@ export async function GET(request: Request) {
       const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone)
       return {
         ...call,
+        initiated_by_name: call.initiated_by_user_id
+          ? actorNameById.get(call.initiated_by_user_id) ?? null
+          : null,
+        accepted_by_name: call.accepted_by_user_id
+          ? actorNameById.get(call.accepted_by_user_id) ?? null
+          : null,
+        rejected_by_name: call.rejected_by_user_id
+          ? actorNameById.get(call.rejected_by_user_id) ?? null
+          : null,
+        ended_by_name: call.ended_by_user_id
+          ? actorNameById.get(call.ended_by_user_id) ?? null
+          : null,
         claim_owned_by_me: ownsClaim,
         initiated_by_me: ownsOutboundCall,
         claim_available: pilotAllowed && call.direction === 'USER_INITIATED'
