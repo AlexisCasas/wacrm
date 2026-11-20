@@ -98,6 +98,8 @@ Fuera de alcance: habilitar Meta `calls`, cambiar variables/secretos, desplegar 
 
 ## 10. Estado de cierre técnico — 20/nov/2026
 
+> **Nota histórica:** este corte fue anterior al despliegue del simulador en la VPS QA y a las pruebas manuales de navegador descritas en la sección 11. El estado vigente está en la sección 11 y en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`.
+
 **Implementación y QA automatizado:** PASS en el código CALL-03B2.  
 **QA visual de navegador:** PENDIENTE por falta de un proyecto Vercel enlazado al repositorio WACRM. No se creó proyecto ni deployment.
 
@@ -134,3 +136,66 @@ Fuera de alcance: habilitar Meta `calls`, cambiar variables/secretos, desplegar 
 4. Mantener CALL-04 separado: habilitación de flags/webhook y pruebas reales requieren autorización operativa explícita.
 
 **Estado:** CALL-03B2 automatizado PASS; cierre formal bloqueado únicamente por QA visual y la integración ordenada de dependencias.
+
+## 11. Estado actualizado — QA en VPS y llamadas manuales
+
+**Estado:** CALL-03B2 y CALL-03B2.1 desplegados en QA. Las primeras pruebas manuales salientes y entrantes fueron satisfactorias; el cierre formal de CALL-03 permanece condicionado a cuatro pruebas finales.
+
+### Ramas y PRs
+
+| PR | Alcance | HEAD | Gates |
+|---|---|---|---|
+| #140 | Cliente WebRTC e Inbox | `5f8f9d6b17dddd8aecdf7b9329969f24d7444543` | CI #373 PASS; Migrations #237 PASS |
+| #141 | Simulador Graph/peer, solo QA | `62974616cde92e8bb0cb7e232758dd143d79e475` | CI #380 PASS; Migrations #244 PASS |
+| #142 | Asociación entrante y lifecycle | `35cac275fa981ac4dc1ac2def1b38ac2c5481d46` | CI #403 PASS; Migrations #267 PASS |
+
+Los tres PR permanecen abiertos como Draft. PR #141 contiene herramientas exclusivas de QA y no debe desplegarse a producción.
+
+### Despliegue QA
+
+- Worktree del mock: `/opt/apps/wacrm-call03b2-qa`.
+- Worktree de aplicación: `/opt/apps/wacrm-call03b2-1-qa`.
+- Stack: `/opt/apps/call03b2-qa-stack`.
+- App QA: `wacrm-app:call03b2-1-8f2d4ec`.
+- Mock: `wacrm-call03b2-mock-graph:62974616`.
+- WACRM: `http://127.0.0.1:38089`.
+- Peer: `http://127.0.0.1:38090/peer`.
+
+PostgreSQL QA, Auth, REST y Gateway permanecieron en marcha. El mock Graph está aislado en el namespace de la app, `graph.facebook.com` resuelve a loopback y los puertos publicados son loopback-only.
+
+### Resultados manuales reportados
+
+- **Saliente:** llamada establecida; voz y sonido de teclado audibles con buena calidad; desconexión completada.
+- **Entrante:** la llamada sintética apareció en el Inbox con Aceptar/Rechazar.
+- **Aceptación:** el usuario aceptó la llamada y confirmó recepción de audio.
+- **Rechazo:** el rechazo finalizó correctamente y el peer confirmó liberación del micrófono.
+
+La comprobación explícita de audio en ambos sentidos y las pruebas de concurrencia/cambio de conversación/ICE/historial siguen pendientes de evidencia formal.
+
+### CALL-03B2.1 y base QA
+
+- Se asocia una llamada entrante con un contacto/conversación existentes dentro de la cuenta correcta.
+- BSUID y parent BSUID se soportan; las identidades ambiguas y los cruces de tenant fallan de forma segura.
+- Ofertas entrantes reciben TTL de 60 segundos; ofertas antiguas sin SDP/expiry metadata se terminan después de cinco minutos.
+- La migración `20261130000003_whatsapp_calling_inbound_association_lifecycle.sql` está aplicada en `call03b2-qa-db`.
+- La función `whatsapp_call_sdp_prune(integer)` se actualizó desde el commit #142. `whatsapp_call_sdp_prune(100)` devolvió `0`.
+- La actualización de la función no modificó ninguna de las ocho sesiones existentes. Las tres llamadas históricas ya habían sido terminadas antes de esa operación.
+- QA no tiene tabla `supabase_migrations.schema_migrations`; las migraciones históricas fueron aplicadas manualmente y no se creó un historial artificial.
+
+### Seguridad y producción
+
+- Webhook real de Meta `calls`: desactivado.
+- Tráfico real hacia Meta: bloqueado por la resolución loopback del mock.
+- Secretos del simulador: solo en `.env` QA, fuera de Git.
+- Producción: sin cambios; `wacrm-app-1` se mantuvo healthy, sin reinicios ni cambio de imagen.
+
+### Pruebas finales pendientes
+
+1. Concurrencia de dos agentes A/B intentando aceptar la misma llamada.
+2. Cambio de conversación mientras una llamada entrante está pendiente.
+3. Desconexión ICE persistente y recuperación transitoria dentro de ocho segundos.
+4. Historial y atribución por agente. La UI actual muestra dirección/estado; todavía falta validar la presentación de agente, fecha y duración para cumplir el criterio completo.
+
+El runbook y los criterios de aceptación están en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`.
+
+**CALL-04 no comienza hasta que estas cuatro pruebas estén cerradas.** La activación real del webhook `calls`, flags de producción y piloto real requieren diseño separado y autorización operativa explícita.
