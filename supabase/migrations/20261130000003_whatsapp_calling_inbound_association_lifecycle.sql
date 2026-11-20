@@ -384,9 +384,16 @@ BEGIN
       AND accepted_by_user_id IS NULL
       AND rejected_by_user_id IS NULL
       AND ended_by_user_id IS NULL
-      AND session_sdp_expires_at IS NOT NULL
-      AND session_sdp_expires_at <= now()
-    ORDER BY session_sdp_expires_at
+      AND (
+        (session_sdp_expires_at IS NOT NULL AND session_sdp_expires_at <= now())
+        OR (
+          session_sdp_expires_at IS NULL
+          AND created_at <= now()-interval '5 minutes'
+          AND agent_sdp_encrypted IS NULL
+          AND agent_sdp_expires_at IS NULL
+        )
+      )
+    ORDER BY COALESCE(session_sdp_expires_at,created_at)
     LIMIT v_limit
     FOR UPDATE SKIP LOCKED
   )
