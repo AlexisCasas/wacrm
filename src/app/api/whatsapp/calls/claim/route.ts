@@ -25,7 +25,7 @@ export async function POST(request: Request) {
 
     const { data: session, error: sessionError } = await supabaseAdmin()
       .from('whatsapp_call_sessions')
-      .select('id, state, direction')
+      .select('id, state, direction, contact_id')
       .eq('id', sessionId)
       .eq('account_id', accountId)
       .maybeSingle()
@@ -37,6 +37,21 @@ export async function POST(request: Request) {
     if (!session) return NextResponse.json({ error: 'Call not found' }, { status: 404 })
     if (session.state !== 'ringing' || session.direction !== 'USER_INITIATED') {
       return NextResponse.json({ error: 'Call is not available to answer' }, { status: 409 })
+    }
+    if (session.contact_id) {
+      const { data: contact, error: contactError } = await supabaseAdmin()
+        .from('contacts')
+        .select('blocked')
+        .eq('id', session.contact_id)
+        .eq('account_id', accountId)
+        .maybeSingle()
+      if (contactError) {
+        console.error('[calling-api] blocked-contact check failed', { code: contactError.code ?? 'unknown' })
+        return NextResponse.json({ error: 'Could not verify call contact' }, { status: 500 })
+      }
+      if (contact?.blocked) {
+        return NextResponse.json({ error: 'Calls from blocked contacts cannot be answered' }, { status: 403 })
+      }
     }
 
     const { data, error } = await supabaseAdmin().rpc('claim_whatsapp_call_session', {
