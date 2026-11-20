@@ -60,6 +60,10 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
     ? terminalStatus === 'FAILED' ? 'failed' : terminalStatus === 'REJECTED' ? 'rejected' : 'terminated'
     : event.event === 'connect' ? (event.direction === 'USER_INITIATED' ? 'offered' : 'connecting') : null
   const sdp = event.session?.sdp
+  // Meta gives the business roughly 30–60 seconds to accept an inbound call.
+  // Keep inbound offers for at most 60 seconds; outbound SDP keeps its
+  // existing five-minute ephemeral lifetime.
+  const sdpTtlMs = event.direction === 'USER_INITIATED' ? 60_000 : 5 * 60 * 1000
   const encryptedSdp = sdp ? encrypt(sdp) : null
   const { error } = await db.rpc('whatsapp_call_event_apply', {
     p_account_id: config.account_id, p_phone_number_id: config.phone_number_id, p_call_id: event.id,
@@ -70,7 +74,7 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
     p_customer_parent_bsuid: identity.parentBsuid, p_customer_name: contact?.profile?.name?.slice(0,256) ?? null,
     p_state: state, p_session_sdp_encrypted: encryptedSdp,
     p_session_sdp_type: sdp ? event.session?.sdp_type ?? null : null,
-    p_session_sdp_expires_at: sdp ? new Date(Date.now()+5*60*1000).toISOString() : null,
+    p_session_sdp_expires_at: sdp ? new Date(Date.now()+sdpTtlMs).toISOString() : null,
     p_started_at: iso(event.start_time), p_ended_at: iso(event.end_time),
     p_duration_seconds: typeof event.duration === 'number' ? Math.floor(event.duration) : null,
   })
