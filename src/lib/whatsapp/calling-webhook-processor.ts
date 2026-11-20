@@ -70,7 +70,7 @@ async function persistStatus(db: SupabaseClient, config: ConfigRow, status: {id:
 }
 export async function processCallingWebhookChange(db: SupabaseClient, change: unknown): Promise<boolean> {
   const parsed = parseWhatsAppCallingWebhookChange(change)
-  if (!parsed) return false
+  if (!parsed) throw new Error('invalid_calling_webhook_payload')
   const { data, error } = await db.from('whatsapp_config').select('account_id,user_id,phone_number_id')
     .eq('phone_number_id',parsed.phoneNumberId).maybeSingle()
   if (error || !data) {
