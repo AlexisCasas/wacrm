@@ -5,6 +5,7 @@ DO $qa$
 DECLARE
   v_user_a uuid := 'c3000000-0000-4000-8000-000000000001';
   v_user_b uuid := 'c3000000-0000-4000-8000-000000000002';
+  v_user_c uuid := 'c3000000-0000-4000-8000-000000000003';
   v_account_a uuid;
   v_account_b uuid;
   v_contact_phone uuid := gen_random_uuid();
@@ -60,12 +61,26 @@ BEGIN
       (v_user_a,'authenticated','authenticated','call0321-a@example.invalid','',now(),
        '{}'::jsonb,'{"full_name":"CALL0321 Agent A"}'::jsonb,now(),now()),
       (v_user_b,'authenticated','authenticated','call0321-b@example.invalid','',now(),
-       '{}'::jsonb,'{"full_name":"CALL0321 Agent B"}'::jsonb,now(),now());
+       '{}'::jsonb,'{"full_name":"CALL0321 Agent B"}'::jsonb,now(),now()),
+      (v_user_c,'authenticated','authenticated','call0321-c@example.invalid','',now(),
+       '{}'::jsonb,'{"full_name":"CALL0321 Agent C"}'::jsonb,now(),now());
 
     SELECT account_id INTO v_account_a FROM public.profiles WHERE user_id=v_user_a;
     SELECT account_id INTO v_account_b FROM public.profiles WHERE user_id=v_user_b;
     IF v_account_a IS NULL OR v_account_b IS NULL OR v_account_a=v_account_b THEN
       RAISE EXCEPTION 'CALL0321_SYNTHETIC_ACCOUNTS_NOT_CREATED';
+    END IF;
+
+    -- Agent C is a second agent in account A for accepted-call ownership checks.
+    UPDATE public.profiles
+    SET account_id=v_account_a, account_role='agent'
+    WHERE user_id=v_user_c;
+    DELETE FROM public.accounts WHERE owner_user_id=v_user_c;
+    IF NOT EXISTS (
+      SELECT 1 FROM public.profiles
+      WHERE user_id=v_user_c AND account_id=v_account_a AND account_role='agent'
+    ) THEN
+      RAISE EXCEPTION 'CALL0321_SECOND_AGENT_SETUP_FAILED';
     END IF;
 
     INSERT INTO public.contacts(id,user_id,account_id,phone,name) VALUES
@@ -299,7 +314,7 @@ BEGIN
     ) THEN
       RAISE EXCEPTION 'CALL0321_ACCEPTED_CALL_WAS_PREMATURELY_TERMINATED';
     END IF;
-    IF public.whatsapp_call_claim(v_account_a,v_phone_number_id,v_call_accepted,v_user_b) IS DISTINCT FROM false THEN
+    IF public.whatsapp_call_claim(v_account_a,v_phone_number_id,v_call_accepted,v_user_c) IS DISTINCT FROM false THEN
       RAISE EXCEPTION 'CALL0321_ACCEPTED_CALL_RECLAIMED';
     END IF;
 
