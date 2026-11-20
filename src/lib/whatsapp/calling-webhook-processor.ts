@@ -38,8 +38,9 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
   const identity = customerIdentity(event)
   if (event.event === 'connect' && !identity.key) throw new Error('call_event_missing_customer_identity')
   const terminal = event.event === 'terminate'
+  const terminalStatus = event.status?.toUpperCase()
   const state = terminal
-    ? event.status === 'FAILED' ? 'failed' : event.status === 'REJECTED' ? 'rejected' : 'terminated'
+    ? terminalStatus === 'FAILED' ? 'failed' : terminalStatus === 'REJECTED' ? 'rejected' : 'terminated'
     : event.event === 'connect' ? (event.direction === 'USER_INITIATED' ? 'offered' : 'connecting') : null
   const sdp = event.session?.sdp
   const encryptedSdp = sdp ? encrypt(sdp) : null
@@ -64,7 +65,13 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
 async function persistStatus(db: SupabaseClient, config: ConfigRow, status: WhatsAppCallingStatus) {
   const timestamp = seconds(status.timestamp)
   if (timestamp === null) throw new Error('invalid_call_status_timestamp')
-  const state = status.status === 'ACCEPTED' ? 'connected' : status.status === 'RINGING' ? 'ringing' : null
+  const statusName = status.status.toUpperCase()
+  const state = statusName === 'ACCEPTED' ? 'connected'
+    : statusName === 'RINGING' ? 'ringing'
+    : statusName === 'REJECTED' ? 'rejected'
+    : null
+  // Unknown future status values must not create a phantom 'offered' session.
+  if (!state) return
   const rawRecipient = typeof status.recipient_id === 'string' ? status.recipient_id.trim() : ''
   // Do not turn digit-containing BSUIDs into phone numbers. A phone recipient
   // must consist entirely of digits (optionally prefixed with one plus sign).
