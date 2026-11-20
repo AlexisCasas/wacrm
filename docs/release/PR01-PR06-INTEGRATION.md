@@ -76,3 +76,11 @@ Producción no tiene `schema_migrations`; el registro es un `.applied` por migra
 ## 7. Qué NO activa el candidato
 
 Todos los flags nacen apagados (`order_payments_enabled`, `shalom_tracking_enabled`, `destination_customer_message_enabled`; `logistics_mvp_enabled` no se cambia). `scripts/qa/**`, seeds, `finalize.cjs`, `pay.cjs`, smoke, usuarios `qa-*`, fixtures, `meta-sim`, Shalom fake y OCR fake **existen en el repo pero nada los ejecuta**: ni `package.json`, ni `Dockerfile`, ni compose, ni workflows, ni scripts de deploy los referencian; los proveedores fake se ignoran con `NODE_ENV=production`; `.dockerignore` excluye `supabase` y `docs` de la imagen.
+
+## 8. Decisiones de negocio cerradas (2026-11-20)
+
+* **Fuente de verdad financiera: WACRM.** **Dueño del polling Shalom: WACRM.** InkaClick queda fuera del flujo cuando se active la nueva operación. Ya no son decisiones pendientes. Esta fase **no modifica InkaClick**; su apagado ordenado (outbox, aviso al llegar a destino, polling) se ejecuta al activar, no antes.
+
+## 9. Dry-run de base de datos sobre una copia aislada del backup productivo
+
+Resultados y evidencia: `docs/release/DATABASE-DRY-RUN.md`. Herramientas: `scripts/release/db-baseline.sql` (estructura + conteos + hashes de datos, sin contenido) y `scripts/release/dryrun-apply.cjs` (aplica las 22 una por una, solo contra el contenedor aislado `dryrun-db`).

@@ -107,7 +107,7 @@ Guía manual (entrar como **qa-logistica** salvo que se indique):
 
 ## 11. Pendientes externos / decisiones fuera de PR-06
 
-1. **InkaClick** mantiene su propio `pago_inicial` / `pago_restante` / `estado_pedido`: definir cuál sistema es la verdad financiera de WACRM antes de activar nada real (no hay sincronización, PRE-DEPLOY).
+1. ~~**InkaClick** mantiene su propio `pago_inicial` / `pago_restante` / `estado_pedido`~~ — **DECISIÓN CERRADA (2026-11-20): WACRM es la fuente de verdad financiera y el dueño del polling Shalom; InkaClick queda FUERA del flujo migrado** (no se modifica InkaClick en esta fase). WACRM asume la responsabilidad financiera cuando se active `order_payments_enabled`; InkaClick no será fuente de verdad financiera ni recibirá sincronización de pagos.
 2. Meta CAPI `Purchase` sigue bloqueado (no es parte del MVP; PR-06 solo deja la señal "pagado").
 3. Muestras reales de vouchers / OCR real, integración bancaria o Yape: fuera de alcance.
 4. Reembolsos / devoluciones monetarias y cobranza de saldos (recordatorios, mensajes): automatizaciones futuras; en abandono el saldo simplemente permanece.

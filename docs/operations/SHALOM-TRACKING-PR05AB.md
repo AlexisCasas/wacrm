@@ -83,6 +83,6 @@ Guía manual (usuario **qa-logistica** o **qa-supervisor**, `http://localhost:30
 
 1. **Plantilla Meta real** del mensaje de recojo (texto aprobado por el negocio, categoría, idioma, variables), creada y aprobada en Meta; hoy solo existe la fake `qa_pendiente_recojo`. Registrar su nombre en `order_shipment_settings` de la cuenta real **cuando esté `APPROVED`**.
 2. **Plazo en el texto**: el concepto menciona "el plazo indicado" sin cifra; el negocio debe definir el texto final (incluida la política de devolución a agencia de origen).
-3. **Coexistencia con InkaClick**: InkaClick hoy envía `pedido_listo_en_agencia` al llegar a destino; definir qué sistema envía cada aviso para no duplicar al cliente (sigue siendo PRE-DEPLOY BLOCKER de PR-05).
+3. ~~**Coexistencia con InkaClick**~~ — **DECISIÓN CERRADA (2026-11-20): WACRM es la fuente de verdad financiera y el dueño del polling Shalom; InkaClick queda FUERA del flujo migrado** (no se modifica InkaClick en esta fase). El aviso al cliente al llegar a destino pasa a ser de WACRM (plantilla real pendiente); hay que apagar el que envía InkaClick (`pedido_listo_en_agencia`) en el momento de activar, para no duplicarlo.
 4. Mantener `destination_customer_message_enabled = false` en producción hasta tener la plantilla real, el simulador reemplazado por Meta real y el visto bueno del negocio.
 5. Qué se hace **después** de "En abandono" (reventa, devolución, cancelación…) es una decisión de negocio aparte, fuera de este alcance.
