@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { callingSupabaseAdmin } from '@/lib/whatsapp/calling-admin'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { assertWhatsAppCallingEnabled } from '@/lib/whatsapp/calling-config'
 
@@ -11,7 +11,7 @@ export async function GET() {
     const limit = checkRateLimit('calls:list:' + userId, RATE_LIMITS.react)
     if (!limit.success) return rateLimitResponse(limit)
 
-    const admin = supabaseAdmin()
+    const admin = callingSupabaseAdmin()
     // Opportunistic expiry cleanup: stale encrypted SDP is no longer usable.
     await admin
       .from('whatsapp_call_sessions')
