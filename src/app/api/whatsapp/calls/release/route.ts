@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
-import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { callingSupabaseAdmin } from '@/lib/whatsapp/calling-admin'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { assertWhatsAppCallingEnabled } from '@/lib/whatsapp/calling-config'
 
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'session_id and claim_token must be UUIDs' }, { status: 400 })
     }
 
-    const { data, error } = await supabaseAdmin().rpc('release_whatsapp_call_session_claim', {
+    const { data, error } = await callingSupabaseAdmin().rpc('release_whatsapp_call_session_claim', {
       p_account_id: accountId,
       p_session_id: sessionId,
       p_user_id: userId,
