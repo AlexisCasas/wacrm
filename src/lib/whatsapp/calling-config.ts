@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { decrypt } from '@/lib/whatsapp/encryption'
+import { ForbiddenError } from '@/lib/auth/account'
 
 export async function assertWhatsAppCallingEnabled(
   supabase: SupabaseClient,
@@ -7,7 +8,7 @@ export async function assertWhatsAppCallingEnabled(
 ): Promise<void> {
   // Global gate is intentionally absent/false in all current environments.
   if (process.env.WHATSAPP_CALLING_ENABLED !== 'true') {
-    throw new Error('whatsapp_calling_disabled')
+    throw new ForbiddenError('WhatsApp Calling is disabled')
   }
 
   const { data, error } = await supabase
@@ -20,7 +21,7 @@ export async function assertWhatsAppCallingEnabled(
     console.error('[calling-config] feature gate lookup failed', { code: error.code ?? 'unknown' })
     throw new Error('calling_feature_gate_unavailable')
   }
-  if (data?.calling_enabled !== true) throw new Error('whatsapp_calling_disabled')
+  if (data?.calling_enabled !== true) throw new ForbiddenError('WhatsApp Calling is disabled')
 }
 
 export interface WhatsAppCallingConfig {
