@@ -6,7 +6,9 @@ on:
   # dependent increment targeted another feature branch.
   pull_request:
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'feat/whatsapp-calling-*'
 
 # Cancel older CI runs for the same branch when a new commit arrives —
 # saves minutes when someone pushes a stack of fixes to one PR.
