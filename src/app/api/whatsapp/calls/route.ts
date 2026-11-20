@@ -8,7 +8,7 @@ export async function GET() {
   try {
     const { supabase, accountId, userId } = await requireRole('agent')
     await assertWhatsAppCallingEnabled(supabase, accountId)
-    const limit = checkRateLimit('calls:list:' + userId, RATE_LIMITS.react)
+    const limit = checkRateLimit('calls:list:' + userId, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
     const admin = callingSupabaseAdmin()
