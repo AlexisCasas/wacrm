@@ -50,7 +50,7 @@ Los tres PR continúan abiertos como Draft y no están fusionados. #141 contiene
 - Cleanup de streams, tracks, PeerConnection, timers y listeners.
 - Manejo de rechazo, permisos denegados, claim ocupado, cambio de conversación y estados ICE.
 - Historial reciente por conversación.
-- 17 pruebas unitarias de `src/components/inbox/calling-panel.test.tsx` en el HEAD revisado.
+- 18 pruebas unitarias de `src/components/inbox/calling-panel.test.tsx` en el HEAD revisado.
 
 ### CALL-03B2.1
 
