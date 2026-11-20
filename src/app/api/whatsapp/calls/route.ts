@@ -9,7 +9,6 @@ import {
 } from '@/lib/whatsapp/calling-api'
 
 const CALL_ID_PATTERN = /^wacid\.[A-Za-z0-9._~+/=-]{1,512}$/
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 type CallConfig = {
   phone_number_id: string
@@ -224,7 +223,7 @@ export async function GET(request: Request) {
 
 /**
  * POST /api/whatsapp/calls
- * Actions: claim, release, check_permission, request_permission.
+ * Actions: claim, release, renew_claim, check_permission, request_permission.
  * Actual connect/accept signaling is reserved for CALL-03 when WebRTC
  * can supply a browser-generated SDP offer/answer.
  */
@@ -285,56 +284,6 @@ export async function POST(request: Request) {
         }, { status: 409 })
       }
       return NextResponse.json({ success: true, action, lease_seconds: action === 'claim' || action === 'renew_claim' ? 90 : 0 })
-    }
-
-    if (action === 'agent_action') {
-      if (!CALL_ID_PATTERN.test(callId)) {
-        return NextResponse.json({ error: 'A valid call_id is required' }, { status: 400 })
-      }
-      const agentAction = typeof body.agent_action === 'string' ? body.agent_action : ''
-      if (!['initiated','accepted','rejected','ended'].includes(agentAction)) {
-        return NextResponse.json({ error: 'Unsupported agent call action' }, { status: 400 })
-      }
-      const conversationId = typeof body.conversation_id === 'string' ? body.conversation_id.trim() : ''
-      if (conversationId && !UUID_PATTERN.test(conversationId)) {
-        return NextResponse.json({ error: 'Invalid conversation_id' }, { status: 400 })
-      }
-
-      const db = supabaseAdmin()
-      const { data: callRow, error: callLookupError } = await db
-        .from('whatsapp_call_sessions')
-        .select('phone_number_id')
-        .eq('account_id', accountId)
-        .eq('call_id', callId)
-        .maybeSingle()
-      if (callLookupError) {
-        console.error('[calling/api] agent action target lookup failed', { code: callLookupError.code ?? 'unknown' })
-        return NextResponse.json({ error: 'Failed to locate call' }, { status: 500 })
-      }
-      if (!callRow) return NextResponse.json({ error: 'Call not found' }, { status: 404 })
-
-      const { data, error } = await db.rpc('whatsapp_call_session_agent_action', {
-        p_account_id: accountId,
-        p_phone_number_id: callRow.phone_number_id,
-        p_call_id: callId,
-        p_actor_user_id: userId,
-        p_action: agentAction,
-        p_conversation_id: conversationId || null,
-      })
-      if (error) {
-        console.error('[calling/api] agent action persistence failed', { code: error.code ?? 'unknown' })
-        if (error.code === '42501') {
-          return NextResponse.json({ error: 'You are not allowed to perform this action for the call' }, { status: 403 })
-        }
-        if (error.code === '22023') {
-          return NextResponse.json({ error: 'The call does not allow this agent action' }, { status: 400 })
-        }
-        return NextResponse.json({ error: 'Call agent action failed' }, { status: 500 })
-      }
-      if (data !== true) {
-        return NextResponse.json({ error: 'Call state or agent ownership no longer allows this action' }, { status: 409 })
-      }
-      return NextResponse.json({ success: true, action: agentAction, conversation_id: conversationId || null })
     }
 
     if (action !== 'check_permission' && action !== 'request_permission') {
