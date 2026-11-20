@@ -9,8 +9,8 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 export async function GET(request: Request) {
   try {
-    const { accountId, userId } = await requireRole('agent')
-    await assertWhatsAppCallingEnabled((await requireRole('agent')).supabase, accountId)
+    const { supabase, accountId, userId } = await requireRole('agent')
+    await assertWhatsAppCallingEnabled(supabase, accountId)
     const limit = checkRateLimit('calls:signal:' + userId, RATE_LIMITS.react)
     if (!limit.success) return rateLimitResponse(limit)
 
