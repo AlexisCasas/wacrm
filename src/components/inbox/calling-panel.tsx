@@ -459,19 +459,28 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       const message = error instanceof Error ? error.message : t("callFailed");
       toast.error(message);
       const call = activeCallRef.current;
+      let terminationError: string | null = null;
       if (call) {
         try {
           await postCallAction("terminate", { call_id: call.call_id });
-        } catch {
-          // Preserve the original failure; the server/webhook can reconcile termination.
+        } catch (terminateError) {
+          terminationError = terminateError instanceof Error ? terminateError.message : t("endCallFailed");
         }
       }
-      resetCall();
-      setErrorMessage(message);
+      if (call && terminationError) {
+        // Do not hide a server-side call whose termination could not be confirmed.
+        // Stop local media for privacy, but preserve the call ID and retry control.
+        stopMedia();
+        setUiState("failed");
+        setErrorMessage(`${message} · ${terminationError}`);
+      } else {
+        resetCall();
+        setErrorMessage(message);
+      }
     } finally {
       operationRef.current = false;
     }
-  }, [addLocalAudio, attachRemoteAudio, contact, conversation, enableAudio, isPilotContact, permission?.canStartCall, requestMicrophone, resetCall, setCall, t, uiState, waitForRemoteAnswer]);
+  }, [addLocalAudio, attachRemoteAudio, contact, conversation, enableAudio, isPilotContact, permission?.canStartCall, requestMicrophone, resetCall, setCall, stopMedia, t, uiState, waitForRemoteAnswer]);
 
   const acceptIncoming = useCallback(async () => {
     const incoming = incomingCall;
@@ -538,21 +547,31 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     } catch (error) {
       const message = error instanceof Error ? error.message : t("callFailed");
       toast.error(message);
+      let terminationError: string | null = null;
       if (preAcceptAttempted) {
         try {
           await postCallAction("terminate", { call_id: incoming.call_id });
-        } catch {
-          // The Meta call may already be terminal; the webhook remains authoritative.
+        } catch (terminateError) {
+          terminationError = terminateError instanceof Error ? terminateError.message : t("endCallFailed");
         }
       } else if (claimed) {
         await releaseClaim(incoming.call_id);
       }
-      resetCall();
-      setErrorMessage(message);
+      if (preAcceptAttempted && terminationError) {
+        // Keep the call visible for a retry, while releasing all local media.
+        stopMedia();
+        setCall({ ...incoming, state: "failed" });
+        setIncomingCall(null);
+        setUiState("failed");
+        setErrorMessage(`${message} · ${terminationError}`);
+      } else {
+        resetCall();
+        setErrorMessage(message);
+      }
     } finally {
       operationRef.current = false;
     }
-  }, [addLocalAudio, attachRemoteAudio, conversation?.id, enableAudio, incomingCall, releaseClaim, requestMicrophone, resetCall, setCall, t, uiState]);
+  }, [addLocalAudio, attachRemoteAudio, conversation?.id, enableAudio, incomingCall, releaseClaim, requestMicrophone, resetCall, setCall, stopMedia, t, uiState]);
 
   const rejectIncoming = useCallback(async () => {
     if (!incomingCall || operationRef.current) return;
@@ -701,7 +720,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           <span className="max-w-28 truncate text-[11px] text-muted-foreground" title={profile?.full_name ?? t("agent")}>
             {profile?.full_name ?? t("agent")}
           </span>
-          {uiState === "connected" ? (
+          {["connected", "failed"].includes(uiState) ? (
             <button
               type="button"
               onClick={toggleMute}
