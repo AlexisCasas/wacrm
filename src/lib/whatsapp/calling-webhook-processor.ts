@@ -36,8 +36,8 @@ function customerIdentity(call: WhatsAppCallingEvent, contact?: CallingContact) 
   const rawBsuid = (userInitiated ? call.from_user_id : call.to_user_id) ?? contact?.user_id
   const rawParentBsuid = (userInitiated ? call.from_parent_user_id : call.to_parent_user_id) ?? contact?.parent_user_id
   const phoneValue = typeof rawPhone === 'string' ? rawPhone.trim() : ''
-  const phoneIsValid = /^\\+?\\d{6,20}$/.test(phoneValue)
-  const phone = phoneIsValid ? phoneValue.replace(/\\D/g, '') : ''
+  const phoneIsValid = /^\+?\d{6,20}$/.test(phoneValue)
+  const phone = phoneIsValid ? phoneValue.replace(/\D/g, '') : ''
   const bsuid = typeof rawBsuid === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(rawBsuid) ? rawBsuid : ''
   const parentBsuid = typeof rawParentBsuid === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(rawParentBsuid) ? rawParentBsuid : ''
   return { key: bsuid || parentBsuid || phone, phone: phone || null, bsuid: bsuid || null, parentBsuid: parentBsuid || null }
@@ -88,8 +88,8 @@ async function persistStatus(db: SupabaseClient, config: ConfigRow, status: What
   // Unknown future status values must not create a phantom 'offered' session.
   if (!state) return
   const rawRecipient = typeof status.recipient_id === 'string' ? status.recipient_id.trim() : ''
-  const recipientIsPhone = /^\\+?\\d{6,20}$/.test(rawRecipient)
-  const recipientPhone = recipientIsPhone ? rawRecipient.replace(/\\D/g, '') : null
+  const recipientIsPhone = /^\+?\d{6,20}$/.test(rawRecipient)
+  const recipientPhone = recipientIsPhone ? rawRecipient.replace(/\D/g, '') : null
   const recipientBsuid = typeof status.recipient_user_id === 'string'
     && /^[A-Za-z0-9._~-]{1,256}$/.test(status.recipient_user_id)
     ? status.recipient_user_id : null
