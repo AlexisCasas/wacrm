@@ -111,10 +111,13 @@ No se exponen todavía acciones `connect`, `accept`, `pre_accept`, `reject` o `t
 - [x] Procesador durable integrado.
 - [x] Rutas autenticadas de consulta, reserva y permisos añadidas.
 - [x] Limpieza acotada de SDP expirado integrada en la API.
-- [ ] CI completo sobre el HEAD actual: lint, typecheck, tests y build.
-- [ ] Replay de la migración actual, incluyendo lease y tabla de auditoría.
-- [ ] Revisión formal de seguridad de rutas y reservas.
-- [ ] Prueba de extremo a extremo con webhook sintético firmado en entorno aislado.
+- [x] CI #232 sobre el HEAD `2909a825`: lint, typecheck, suite completa de tests y build.
+- [x] Migrations #129: replay de todas las migraciones en PostgreSQL limpio y verificación del esquema.
+- [x] Script SQL CALL-02: RLS/grants, aislamiento de tenant, idempotencia, eventos fuera de orden, permisos y limpieza SDP.
+- [x] Concurrencia real en PostgreSQL: dos sesiones independientes compiten por la misma llamada; exactamente un agente obtiene el lease; el segundo puede reclamar al expirar; el propietario puede liberar.
+- [x] Webhook firmado: HMAC SHA-256 real sobre el cuerpo sin modificar; se acepta y encola `calls`; se rechazan cuerpo alterado, secreto de otra cuenta y ausencia de secreto de tenant.
+- [x] Revisión de rutas: `requireRole('agent')`, `account_id` derivado de la sesión, filtros por cuenta, SDP solo para el agente con lease vigente y RPC/tablas privadas.
+- [ ] Prueba de extremo a extremo contra Meta y navegador con micrófono real: corresponde a CALL-03/CALL-04, sin activar `calls` en esta fase.
 
 ## 6. Fuera de alcance y condiciones de activación
 
@@ -144,3 +147,36 @@ La corrección está en GitHub, pero **no se considera validada hasta que Migrat
 - CI #215: ejecución activa; lint/typecheck/tests/build pendientes de completar.
 - Migrations #112: pendiente de iniciar el replay limpio y ejecutar el script CALL-02.
 - PR #136 continúa en Draft; sin merge ni despliegue.
+
+
+## 8. Cierre de QA — CI #232 / Migrations #129
+
+**HEAD validado:** `2909a8257ba87e7c4a73b79eaac0877d612ed227`.
+
+### Corrección del único fallo reportado en CI #221
+
+- Typecheck fallaba porque el procesador de estados de llamada utilizaba `recipient_id` sin incluirlo en el tipo local. Se reemplazó ese tipo parcial por `WhatsAppCallingStatus`, compartido con el parser.
+- La corrección también persiste la identidad del destinatario en el evento de estado: teléfono o BSUID.
+- Se detectó un caso adicional: BSUIDs con varios dígitos podían clasificarse erróneamente como teléfonos. Ahora solo se considera teléfono un identificador formado enteramente por dígitos (opcionalmente precedido por `+`).
+- Se mapeó `REJECTED` a estado terminal `rejected`; los estados futuros desconocidos se ignoran sin crear una sesión ficticia `offered`.
+
+### Evidencia de CI
+
+| Ejecución | Resultado |
+|---|---|
+| CI #221 | FAIL inicial: typecheck en `recipient_id` |
+| CI #232 | **PASS**: Lint, Typecheck, Tests y Build |
+| Migrations #129 | **PASS**: replay completo, esquema, SQL CALL-02, aislamiento, concurrencia y controles existentes |
+
+### Pruebas nuevas
+
+- `src/app/api/whatsapp/webhook/calling-signature.test.ts`: firma válida, cuerpo manipulado, secreto de otra cuenta y falta de secreto resuelto.
+- `src/lib/whatsapp/calling-webhook-processor.test.ts`: estados con teléfono, BSUID numérico/alfa, rechazo y estado futuro desconocido.
+- `scripts/qa/whatsapp-calling/verify-concurrency.sh`: dos conexiones PostgreSQL simultáneas prueban el claim atómico, expiración y liberación del lease.
+- `scripts/qa/whatsapp-calling/verify.sql`: pruebas SQL transaccionales con fixtures revertidos.
+
+### Dictamen
+
+CALL-02 supera el QA automatizado de código, migración, aislamiento multi-tenant, concurrencia y recepción autenticada del webhook. No se probó una llamada real ni el micrófono del navegador; esos controles pertenecen a CALL-03/CALL-04.
+
+**Configuración Meta sin cambios:** `messages` permanece activo; `calls` permanece desactivado. No se aplicó la migración a Supabase Cloud, no hubo despliegue VPS ni llamadas reales.
