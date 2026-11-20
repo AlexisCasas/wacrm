@@ -9,14 +9,17 @@ DECLARE
   v_account_b uuid;
   v_contact_a uuid := gen_random_uuid();
   v_contact_b uuid := gen_random_uuid();
+  v_contact_wrong uuid := gen_random_uuid();
   v_conversation_a uuid := gen_random_uuid();
   v_conversation_b uuid := gen_random_uuid();
+  v_conversation_wrong uuid := gen_random_uuid();
   v_call_accept text := 'wacid.qa-call03-accept';
   v_call_reject text := 'wacid.qa-call03-reject';
   v_call_outbound text := 'wacid.qa-call03-outbound';
   v_call_cross_tenant text := 'wacid.qa-call03-cross-tenant';
-  v_result boolean;
+  v_call_wrong_identity text := 'wacid.qa-call03-wrong-identity';
   v_cross_tenant_rejected boolean := false;
+  v_wrong_identity_rejected boolean := false;
   v_renew_signature text := 'public.whatsapp_call_claim_renew(uuid,text,text,uuid)';
   v_action_signature text := 'public.whatsapp_call_session_agent_action(uuid,text,text,uuid,text,uuid)';
 BEGIN
@@ -74,12 +77,14 @@ BEGIN
     INSERT INTO public.contacts(id,user_id,account_id,phone,name)
     VALUES
       (v_contact_a,v_user_a,v_account_a,'51911111111','CALL03A synthetic A'),
-      (v_contact_b,v_user_b,v_account_b,'51922222222','CALL03A synthetic B');
+      (v_contact_b,v_user_b,v_account_b,'51922222222','CALL03A synthetic B'),
+      (v_contact_wrong,v_user_a,v_account_a,'51933333333','CALL03A wrong identity');
 
     INSERT INTO public.conversations(id,user_id,account_id,contact_id,status)
     VALUES
       (v_conversation_a,v_user_a,v_account_a,v_contact_a,'open'),
-      (v_conversation_b,v_user_b,v_account_b,v_contact_b,'open');
+      (v_conversation_b,v_user_b,v_account_b,v_contact_b,'open'),
+      (v_conversation_wrong,v_user_a,v_account_a,v_contact_wrong,'open');
 
     -- Inbound offer -> one agent claims, renews and accepts it. Link trigger
     -- must resolve the conversation to the same contact and tenant.
@@ -180,6 +185,29 @@ BEGIN
     END;
     IF NOT v_cross_tenant_rejected THEN
       RAISE EXCEPTION 'CALL03A_CROSS_TENANT_CONVERSATION_WAS_LINKED';
+    END IF;
+
+    -- A same-tenant conversation is still invalid when its contact does
+    -- not match the WhatsApp phone/BSUID stored on the call.
+    PERFORM public.whatsapp_call_event_apply(
+      v_account_a,'740434745820831',v_call_wrong_identity,repeat('e',64),
+      'connect',1795120004,'USER_INITIATED','51911111111','51911111111',
+      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+    );
+    PERFORM public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_wrong_identity,v_user_a);
+    BEGIN
+      PERFORM public.whatsapp_call_session_agent_action(
+        v_account_a,'740434745820831',v_call_wrong_identity,v_user_a,'accepted',v_conversation_wrong
+      );
+    EXCEPTION WHEN OTHERS THEN
+      IF SQLERRM='call_contact_identity_mismatch' THEN
+        v_wrong_identity_rejected := true;
+      ELSE
+        RAISE;
+      END IF;
+    END;
+    IF NOT v_wrong_identity_rejected THEN
+      RAISE EXCEPTION 'CALL03A_WRONG_CONTACT_CONVERSATION_WAS_LINKED';
     END IF;
 
     RAISE EXCEPTION '__CALL03A_QA_ROLLBACK__';
