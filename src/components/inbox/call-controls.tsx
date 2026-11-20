@@ -108,6 +108,7 @@ export function CallControls({
     try {
       const started = await onStartCall({ contactId, conversationId, contactName });
       if (started) setOpen(false);
+      else setMessage(t("callStartFailed"));
     } finally {
       setStartingCall(false);
     }
