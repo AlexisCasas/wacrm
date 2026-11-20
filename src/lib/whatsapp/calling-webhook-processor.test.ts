@@ -253,6 +253,28 @@ describe('CALL-02 Calling webhook persistence', () => {
     })
   })
 
+  it('records the ACCEPTED status time as the call start and leaves other statuses without one', async () => {
+    rpc.mockResolvedValue({ data: true, error: null })
+    const statusChange = (status: string, timestamp: string) => ({
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        statuses: [{ id: 'wacid.status-start', status, timestamp, recipient_id: '51911111111', type: 'call' }],
+      },
+    })
+    await processCallingWebhookChange(db, statusChange('RINGING', '1795120003'))
+    await processCallingWebhookChange(db, statusChange('ACCEPTED', '1795120005'))
+    await processCallingWebhookChange(db, statusChange('REJECTED', '1795120009'))
+    expect(rpc.mock.calls[0][1]).toMatchObject({ p_state: 'ringing', p_started_at: null })
+    expect(rpc.mock.calls[1][1]).toMatchObject({
+      p_state: 'connected',
+      p_started_at: new Date(1795120005 * 1000).toISOString(),
+      p_ended_at: null,
+      p_duration_seconds: null,
+    })
+    expect(rpc.mock.calls[2][1]).toMatchObject({ p_state: 'rejected', p_started_at: null })
+  })
+
   it('persists call status state together with the recipient BSUID identity', async () => {
     rpc.mockResolvedValue({ data: true, error: null })
     await processCallingWebhookChange(db, {

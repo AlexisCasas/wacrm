@@ -120,7 +120,7 @@ async function persistStatus(db: SupabaseClient, config: ConfigRow, status: What
     p_event_key: hash([status.id,'status',status.status,status.timestamp]),p_event_name:'status',
     p_meta_timestamp:timestamp,p_direction:null,p_customer_key:recipientKey,p_customer_phone:recipientPhone,p_customer_bsuid:recipientBsuid,
     p_customer_parent_bsuid:recipientParentBsuid,p_customer_name:null,p_state:state,p_session_sdp_encrypted:null,p_session_sdp_type:null,p_session_sdp_expires_at:null,
-    p_started_at:null,p_ended_at:null,p_duration_seconds:null,
+    p_started_at: statusName === 'ACCEPTED' ? iso(status.timestamp) : null,p_ended_at:null,p_duration_seconds:null,
   })
   if (error) {
     console.error('[calling] call status persistence failed', { code: error.code ?? 'unknown' })
