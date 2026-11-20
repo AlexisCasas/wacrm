@@ -1,51 +1,126 @@
-# CALL-02 - Persistencia y recepcion segura de WhatsApp Calling
+# CALL-02 — Persistencia, permisos y recepción segura de WhatsApp Calling
 
-**Estado:** implementacion en rama; no desplegado. **App Meta:** WACRM App Oficial (App ID 1595490382304488). **Webhook calls:** desactivado temporalmente por el operador; `messages` permanece activado.
+**Estado:** desarrollo en rama; PR #136 abierto en Draft. No desplegado.  
+**Base técnica:** CALL-01, PR #134.  
+**Piloto previsto:** Keyler Ortega, Phone Number ID `740434745820831`.  
+**App Meta:** WACRM App Oficial, App ID `1595490382304488`.  
+**Configuración operativa confirmada:** `messages` activo; `calls` desactivado temporalmente. No reactivar `calls` hasta completar QA y autorizar el cambio.
 
-## Alcance
+## 1. Hallazgos de revisión
 
-- Persistir connect, terminate y estados RINGING/ACCEPTED de field=calls.
-- Deduplicar por hash estable y actualizar una sesion por phone_number_id + call_id.
-- Resolver la cuenta exclusivamente desde whatsapp_config.phone_number_id.
-- Cifrar SDP antes de almacenarlo; caducidad de cinco minutos. No se registra ni se conserva en historial conversacional.
-- Persistir respuestas explicitas call_permission_reply del webhook messages, con permiso temporal/permanente o rechazo.
-- Tablas y RPCs inaccesibles para anon/authenticated; solo service_role.
-- Integrar field=calls en el procesador durable existente.
+### 1.1 Estado de los PR
 
-## Modelo
+- PR #134 (CALL-01) sigue abierto en Draft; no está fusionado.
+- PR #136 (CALL-02) sigue abierto en Draft; no está fusionado.
+- CALL-02 se desarrolló inicialmente sobre la rama de CALL-01. Se debe conservar la relación de PR apilados: CALL-02 debe comparar contra la rama CALL-01, no duplicar su diff contra `main`.
+- No se ha hecho merge, despliegue, migración en producción ni cambio adicional en Meta.
 
-- whatsapp_call_sessions: estado actual, identidad minima y SDP cifrado efimero.
-- whatsapp_call_events: registro idempotente minimo, sin payload ni SDP.
-- whatsapp_call_permissions: ultima decision por numero empresarial y clave de cliente (BSUID preferido; telefono fallback).
+### 1.2 Fallos encontrados en CI y correcciones
 
-## Estados
+- **Lint:** una descripción de prueba contenía un apóstrofo sin escapar y rompía el análisis del archivo TypeScript. Corregido.
+- **Migraciones/SQL QA:** el workflow ejecutaba un archivo con varias sentencias como una consulta preparada. El script se convirtió en una sola sentencia `DO`; las fixtures sintéticas se ejecutan dentro de un subbloque que se revierte mediante una excepción centinela.
+- **Prueba de permisos Meta:** el endpoint devuelve una lista de acciones, no solo `start_call`. La expectativa se amplió para comprobar también `send_call_permission_request`.
+- **Orden de eventos:** se detectó que una terminación antigua podía limpiar el SDP de una llamada más reciente. La actualización ahora compara `meta_timestamp` antes de modificar estado, SDP, expiración, duración o datos de finalización.
+- **Identidad:** se añadió soporte separado para BSUID y parent BSUID; no se copia un BSUID al campo teléfono.
+- **Concurrencia:** se añadió una reserva atómica de llamada por agente con lease de 90 segundos y liberación controlada.
 
-- connect + USER_INITIATED: offered.
-- connect + BUSINESS_INITIATED: connecting.
-- statuses[type=call,status=RINGING]: ringing.
-- statuses[type=call,status=ACCEPTED]: connected.
-- terminate: terminated/failed; elimina SDP efimero.
-- call_permission_reply: approved temporal/permanente o rejected.
+### 1.3 Resultado de la última ejecución CI completa observada
 
-## Fuera de alcance
+En la ejecución #195, sobre una revisión anterior a los últimos cambios:
 
-No activa Meta calls, no inicia llamadas, no solicita permisos, no ofrece endpoints al navegador, no añade WebRTC ni UI, no cambia VPS ni producción.
+- Lint: PASS.
+- Typecheck: PASS.
+- Tests: 4.598 pasaron; 1 falló por una expectativa incompleta en la lista de acciones de permisos.
+- Build: omitido porque la suite de tests falló.
 
-## QA requerido
+La ejecución de migraciones #84 había pasado la reproducción y las comprobaciones de CALL-02 de aquella revisión. Después se añadieron las reservas de agente y la auditoría de solicitudes de permiso; por ello, el replay final de la migración actual debe volver a ejecutarse y aprobarse. No se considera cerrado por el resultado anterior.
 
-Migracion aislada; SQL QA para RLS/grants/deduplicacion/aislamiento/orden temporal/permisos; unit tests; lint, typecheck, test y build. La suscripcion calls solo se reactivara despues de QA integral y autorizacion del operador.
+## 2. Implementación actual
 
+### 2.1 Modelo de datos
 
-## Integración aplicada en esta rama
+- `whatsapp_call_sessions`: estado de cada llamada, identidad de cliente, SDP cifrado y lease del agente que la atiende.
+- `whatsapp_call_events`: registro mínimo e idempotente de eventos; no conserva el payload Meta ni SDP.
+- `whatsapp_call_permissions`: último permiso aprobado/rechazado, tipo, expiración y origen de la respuesta.
+- `whatsapp_call_permission_requests`: auditoría de solicitudes salientes, agente que la envió, WAMID y respuesta correlacionada cuando Meta devuelve el contexto.
 
-- `processWebhook` deriva `field=calls` al procesador Calling y evita tratar sus `statuses` como estados de mensajes.
-- En `field=messages`, las respuestas `interactive.call_permission_reply` se procesan además del mensaje ordinario, usando el `phone_number_id` resuelto por WACRM.
-- Las tablas `whatsapp_call_sessions`, `whatsapp_call_events` y `whatsapp_call_permissions` usan RLS y grants exclusivos de `service_role`.
-- `whatsapp_call_event_apply` aplica evento + sesión en una transacción, con clave idempotente y protección de tenant.
-- El SDP se cifra con el mecanismo GCM existente antes de persistir y se elimina al terminar la llamada; el registro de eventos no almacena SDP ni payloads.
-- Se agregan helpers para consultar `/{PHONE_NUMBER_ID}/call_permissions` y enviar solicitudes interactivas de permiso. La consulta devuelve tanto el permiso como `can_perform_action` y cuotas para `start_call` / `send_call_permission_request`.
-- Se incluye `scripts/qa/whatsapp-calling/verify.sql` para ejecutar en una base aislada con transacción y rollback.
+Las cuatro tablas tienen RLS y privilegios restringidos al rol `service_role`; no se exponen directamente al navegador.
 
-## Fuera de este PR
+### 2.2 Webhook durable
 
-No se crean todavía rutas HTTP autenticadas para que el navegador consulte llamadas o solicite permisos; se implementarán junto a la interfaz Inbox en la siguiente subfase. Los helpers Calling solo se invocan desde servidor. No hay acceso a tokens ni SDP desde el navegador.
+- `field=calls` se deriva al procesador Calling después de que la ruta general valide la firma HMAC y encole el payload en el inbox durable.
+- Los estados de llamada no pasan al procesador de estados de mensajes.
+- Las respuestas `interactive.call_permission_reply` se procesan en el webhook `messages`, que permanece activo.
+- La cuenta se resuelve exclusivamente por `whatsapp_config.phone_number_id`.
+- Un evento duplicado no vuelve a aplicar la mutación.
+- Eventos antiguos no pueden reabrir llamadas terminales ni reemplazar un SDP más reciente.
+- Los eventos de terminación limpian SDP y liberan la reserva del agente.
+
+### 2.3 SDP y seguridad
+
+- El SDP se cifra con el mecanismo GCM existente antes de persistirlo.
+- La expiración lógica es de cinco minutos.
+- La API solo descifra y entrega el SDP al agente autenticado que posee una reserva vigente de esa llamada.
+- No se registran tokens, SDP ni payloads completos.
+- El audio no pasa por el backend: WebRTC del navegador se implementará en CALL-03.
+
+### 2.4 Reserva de llamada por agente
+
+- `whatsapp_call_claim` realiza una actualización atómica; solo un agente puede obtener la reserva vigente.
+- La reserva dura 90 segundos. Repetir la acción desde el mismo agente renueva el lease.
+- `whatsapp_call_release` permite liberar la reserva propia; owner/admin pueden liberar una reserva de la cuenta.
+- Las funciones verifican que el actor sea miembro de la cuenta con rol owner/admin/agent.
+- Las funciones y tablas siguen siendo invocables/consultables solo desde servidor mediante `service_role`.
+
+## 3. Rutas autenticadas añadidas
+
+Todas requieren `requireRole('agent')` o superior y filtran por el `account_id` resuelto desde la sesión autenticada.
+
+| Ruta | Acción |
+|---|---|
+| `GET /api/whatsapp/calls` | Lista las últimas 50 llamadas de la cuenta. |
+| `GET /api/whatsapp/calls?call_id=...` | Consulta una llamada; solo entrega SDP al agente que posee la reserva vigente. |
+| `POST /api/whatsapp/calls` con `action=claim` | Reserva una llamada entrante. |
+| `POST /api/whatsapp/calls` con `action=release` | Libera la reserva. |
+| `POST /api/whatsapp/calls` con `action=check_permission` | Consulta el permiso y las cuotas reales de Meta para el contacto. |
+| `POST /api/whatsapp/calls` con `action=request_permission` | Comprueba `can_perform_action` y solicita permiso al cliente; registra el WAMID para correlacionar la respuesta. |
+
+La ruta de permiso acepta `call_id` o `contact_id`; resuelve teléfono/BSUID dentro de la misma cuenta. Si Meta no permite solicitar el permiso, WACRM no envía el mensaje.
+
+No se exponen todavía acciones `connect`, `accept`, `pre_accept`, `reject` o `terminate` al navegador. Las acciones que necesitan SDP generado por WebRTC corresponden a CALL-03.
+
+## 4. Permisos y límites de Meta
+
+- `GET /{PHONE_NUMBER_ID}/call_permissions` es la fuente autoritativa para consultar el permiso actual y las acciones permitidas.
+- WACRM consulta `can_perform_action` para `start_call` y `send_call_permission_request`; no decide únicamente por el estado guardado localmente.
+- El helper exige exactamente un identificador: `user_wa_id` o `recipient` (BSUID), evitando consultas ambiguas.
+- La solicitud interactiva solo se envía si Meta informa que `send_call_permission_request` está permitido.
+- La respuesta explícita puede ser temporal, permanente o de rechazo; también se registra `response_source` cuando Meta lo proporciona.
+- El permiso local es una proyección/auditoría; antes de iniciar una llamada empresarial se volverá a consultar Meta.
+
+## 5. QA y estado pendiente
+
+- [x] Corrección del error de sintaxis en la prueba de Calling.
+- [x] Script SQL convertido en una única sentencia y con rollback de fixtures.
+- [x] Prueba de deduplicación de eventos.
+- [x] Prueba de evento de terminación fuera de orden.
+- [x] Prueba de aislamiento de tenant y grants/RLS.
+- [x] Pruebas de permisos temporales/permanentes/rechazados.
+- [x] Helpers Meta de consulta y solicitud de permiso.
+- [x] Procesador durable integrado.
+- [x] Rutas autenticadas de consulta, reserva y permisos añadidas.
+- [ ] CI completo sobre el HEAD actual: lint, typecheck, tests y build.
+- [ ] Replay de la migración actual, incluyendo lease y tabla de auditoría.
+- [ ] Revisión formal de seguridad de rutas y reservas.
+- [ ] Prueba de extremo a extremo con webhook sintético firmado en entorno aislado.
+
+## 6. Fuera de alcance y condiciones de activación
+
+- No activar ni modificar el webhook `calls` en Meta durante CALL-02.
+- No iniciar ni contestar llamadas reales.
+- No implementar WebRTC ni interfaz de llamada; corresponde a CALL-03.
+- No modificar VPS, producción, secretos ni variables de entorno.
+- No aplicar migraciones en Supabase Cloud de producción.
+- No fusionar CALL-01/CALL-02 ni desplegar hasta completar QA y recibir autorización.
+
+**Condición operativa:** mantener `calls` desactivado y `messages` activado. La reactivación se hará únicamente después de CALL-02/03, QA integral y autorización expresa.
