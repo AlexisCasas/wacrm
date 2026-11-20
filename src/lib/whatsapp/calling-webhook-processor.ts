@@ -33,6 +33,11 @@ function customerIdentity(call: WhatsAppCallingEvent) {
   return { key: bsuid || parentBsuid || phone, phone: phone || null, bsuid: bsuid || null, parentBsuid: parentBsuid || null }
 }
 async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsAppCallingEvent, name?: string) {
+  if (event.event === 'connect') {
+    if (!event.direction) throw new Error('call_connect_missing_direction')
+    const expectedSdpType = event.direction === 'USER_INITIATED' ? 'offer' : 'answer'
+    if (event.session?.sdp_type !== expectedSdpType) throw new Error('call_connect_invalid_sdp_type')
+  }
   const timestamp = seconds(event.timestamp)
   if (timestamp === null) throw new Error('invalid_call_event_timestamp')
   const identity = customerIdentity(event)
