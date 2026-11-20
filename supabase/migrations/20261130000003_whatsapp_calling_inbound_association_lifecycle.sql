@@ -328,6 +328,9 @@ BEGIN
     FROM public.whatsapp_call_sessions
     WHERE direction='USER_INITIATED'
       AND state IN ('offered','ringing')
+      AND accepted_by_user_id IS NULL
+      AND rejected_by_user_id IS NULL
+      AND ended_by_user_id IS NULL
       AND session_sdp_expires_at IS NOT NULL
       AND session_sdp_expires_at <= now()
     ORDER BY session_sdp_expires_at
@@ -343,6 +346,9 @@ BEGIN
       session_sdp_encrypted=NULL,
       session_sdp_type=NULL,
       session_sdp_expires_at=NULL,
+      agent_sdp_encrypted=NULL,
+      agent_sdp_type=NULL,
+      agent_sdp_expires_at=NULL,
       updated_at=now()
   FROM expired_inbound
   WHERE s.id=expired_inbound.id;
