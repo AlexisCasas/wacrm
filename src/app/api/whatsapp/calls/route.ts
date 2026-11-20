@@ -138,6 +138,7 @@ type SignalCallRow = {
   customer_bsuid: string | null
   customer_parent_bsuid: string | null
   claimed_by_user_id: string | null
+  last_claimed_by_user_id: string | null
   claim_expires_at: string | null
   initiated_by_user_id: string | null
   accepted_by_user_id: string | null
@@ -153,7 +154,7 @@ type SignalCallRow = {
 async function loadSignalCall(accountId: string, callId: string): Promise<SignalCallRow | null> {
   const { data, error } = await supabaseAdmin()
     .from('whatsapp_call_sessions')
-    .select('phone_number_id,call_id,direction,contact_id,conversation_id,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,claimed_by_user_id,claim_expires_at,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,biz_opaque_callback_data,agent_sdp_encrypted,agent_sdp_type,agent_sdp_expires_at,state')
+    .select('phone_number_id,call_id,direction,contact_id,conversation_id,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,claimed_by_user_id,last_claimed_by_user_id,claim_expires_at,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,biz_opaque_callback_data,agent_sdp_encrypted,agent_sdp_type,agent_sdp_expires_at,state')
     .eq('account_id', accountId)
     .eq('call_id', callId)
     .maybeSingle()
@@ -589,6 +590,60 @@ export async function POST(request: Request) {
           return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: false }, { status: 202 })
         }
         return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: true }, { status: 200 })
+      }
+
+      const claimIsActive = typeof call.claim_expires_at === 'string'
+        && Date.parse(call.claim_expires_at) > Date.now()
+      if (action === 'reject') {
+        if (call.direction !== 'USER_INITIATED') {
+          return NextResponse.json({ error: 'Only incoming calls can be rejected' }, { status: 400 })
+        }
+        if (call.ended_by_user_id || (call.rejected_by_user_id && call.rejected_by_user_id !== userId)) {
+          return NextResponse.json({ error: 'This call is already terminal' }, { status: 409 })
+        }
+        if (call.claimed_by_user_id && claimIsActive && call.claimed_by_user_id !== userId) {
+          return NextResponse.json({ error: 'Another agent currently owns this call' }, { status: 409 })
+        }
+        if (call.state === 'rejected' && call.last_claimed_by_user_id === userId) {
+          const { error } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+            p_account_id: accountId,
+            p_phone_number_id: call.phone_number_id,
+            p_call_id: callId,
+            p_actor_user_id: userId,
+            p_action: 'rejected',
+            p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
+          })
+          if (error) return NextResponse.json({ error: 'Could not attribute rejected call' }, { status: 500 })
+          return NextResponse.json({ success: true, action: 'reject', already_terminal: true }, { status: 200 })
+        }
+        if (!['offered','ringing'].includes(call.state)) {
+          return NextResponse.json({ error: 'Call is no longer rejectable' }, { status: 409 })
+        }
+      } else {
+        const ownsCall = call.initiated_by_user_id === userId
+          || call.accepted_by_user_id === userId
+          || call.last_claimed_by_user_id === userId
+          || (call.claimed_by_user_id === userId && claimIsActive)
+          || role === 'owner'
+          || role === 'admin'
+        if (!ownsCall) {
+          return NextResponse.json({ error: 'Only the initiating, accepting or assigned agent can terminate this call' }, { status: 403 })
+        }
+        if (call.rejected_by_user_id && call.ended_by_user_id !== userId) {
+          return NextResponse.json({ error: 'A rejected call cannot be terminated' }, { status: 409 })
+        }
+        if (['terminated','failed','rejected'].includes(call.state)) {
+          const { error } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+            p_account_id: accountId,
+            p_phone_number_id: call.phone_number_id,
+            p_call_id: callId,
+            p_actor_user_id: userId,
+            p_action: 'ended',
+            p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
+          })
+          if (error) return NextResponse.json({ error: 'Could not attribute ended call' }, { status: 500 })
+          return NextResponse.json({ success: true, action: 'terminate', already_terminal: true }, { status: 200 })
+        }
       }
 
       const metaAction = action === 'reject' ? 'reject' : 'terminate'
