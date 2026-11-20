@@ -1,0 +1,354 @@
+{
+  "schema": 1,
+  "release": {
+    "branch": "release/pr01-pr06-prod-integration",
+    "production_source_commit": "fa9066ecb0f9a7e3b851ba48d231eadad69673e5",
+    "production_source_tree": "cdb0380dba0ac647363c30309281151184978dda",
+    "production_image": "wacrm-app:clear-fields-manual-flow-fa9066ec (sha256:e866ae8126b78f62b6250c85eeffdeed06453bc62ea08daa0e18583d173ac23e)",
+    "pr06_tag": "pr06-complete-local",
+    "pr06_sha": "9664306c967d9df49e7950a57bd002a748a7105e",
+    "checksum": "sha256 of the migration file with LF line endings (the content of `git show` / `git archive`; the same convention as production .applied records)",
+    "ledger": "production has no supabase_migrations.schema_migrations; the record is one .applied file per migration in /opt/backups/wacrm/migrations-applied"
+  },
+  "historical_main_max": "20261125000000",
+  "historical_main_note": "every version <= historical_main_max is origin/main history (in the production source tree); production applied them without a ledger",
+  "production_baseline": [
+    {
+      "version": "20261121000000",
+      "name": "order_logistics_foundation",
+      "file": "20261121000000_order_logistics_foundation.sql",
+      "sha256": "c4371fbd96a9012d872a0ba87c290c216edf3de80bd6c2821743984d8cc4371b",
+      "recorded_in_applied": false,
+      "applied_at_utc": null,
+      "evidence": "ledger-less: objects present in the production schema (order_integration_settings.logistics_mvp_enabled)",
+      "source": "origin/main"
+    },
+    {
+      "version": "20261125000000",
+      "name": "whatsapp_inbound_dispatch_ledger",
+      "file": "20261125000000_whatsapp_inbound_dispatch_ledger.sql",
+      "sha256": "96f5b8d1252ffebfe05f36cca071a3fbcbaf4e17fe500711482ec36ec15b1b8b",
+      "recorded_in_applied": false,
+      "applied_at_utc": null,
+      "evidence": "ledger-less: public.inbound_dispatch_ledger present (verified read-only 2026-11-19)",
+      "source": "origin/main"
+    },
+    {
+      "version": "20261126000000",
+      "name": "contacts_name_locked",
+      "file": "20261126000000_contacts_name_locked.sql",
+      "sha256": "fa2ed3a147ddbd47ebe1c7b51723c028f0e651f9d119100f6990b75635aac8ae",
+      "recorded_in_applied": true,
+      "applied_at_utc": "2026-11-18T22:23:18Z",
+      "applied_record": "/opt/backups/wacrm/migrations-applied/20261126000000_contacts_name_locked.applied",
+      "source": "fix/contact-name-lock-03-20261118 (main d31bf1e)"
+    },
+    {
+      "version": "20261127000000",
+      "name": "contact_deletion_controls",
+      "file": "20261127000000_contact_deletion_controls.sql",
+      "sha256": "c90573bcb86fa9091a1d612ed339b23a1e3891fac4abf7436103168a131d6cdd",
+      "recorded_in_applied": true,
+      "applied_at_utc": "2026-11-19T00:06:17Z",
+      "applied_record": "/opt/backups/wacrm/migrations-applied/20261127000000_contact_deletion_controls.applied",
+      "source": "fix/contact-deletion-controls-04-20261119 (main 758413f, PR #133)"
+    }
+  ],
+  "reserved_external": [
+    {
+      "version": "20261127000001",
+      "name": "whatsapp_calling_backend",
+      "branch": "feat/whatsapp-calling-call02-shadow (not deployed, not in the production image)"
+    },
+    {
+      "version": "20261128000000",
+      "name": "whatsapp_calls_shadow",
+      "branch": "feat/whatsapp-calling-call02-shadow (not deployed)"
+    },
+    {
+      "version": "20261129000000",
+      "name": "whatsapp_calling_sessions_permissions",
+      "branch": "origin branch (not deployed)"
+    }
+  ],
+  "release_migrations": [
+    {
+      "order": 1,
+      "old_version": "20261126000000",
+      "old_file": "20261126000000_operational_role_supervisor_delegation.sql",
+      "new_version": "20261204000000",
+      "new_file": "20261204000000_operational_role_supervisor_delegation.sql",
+      "sha256": "5d267dfeca4cc478a56f4fdc75396c8930b5be55631af752f845652db150648e",
+      "depends_on": [
+        "20261121000000_order_logistics_foundation"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 2,
+      "old_version": "20261127000000",
+      "old_file": "20261127000000_conversation_handoff_rls.sql",
+      "new_version": "20261204000001",
+      "new_file": "20261204000001_conversation_handoff_rls.sql",
+      "sha256": "25e8ac97842982b7c9aac123c85a1a0f3b01b7415eee752feafcf9429333d36a",
+      "depends_on": [
+        "order 1"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 3,
+      "old_version": "20261128000000",
+      "old_file": "20261128000000_conversation_routing.sql",
+      "new_version": "20261204000002",
+      "new_file": "20261204000002_conversation_routing.sql",
+      "sha256": "931ad2b6597b8995c89c2d435fc7b35f12bbdccb6d4643571dad58fe43ffa298",
+      "depends_on": [
+        "order 2"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 4,
+      "old_version": "20261129000000",
+      "old_file": "20261129000000_order_logistics_model.sql",
+      "new_version": "20261204000003",
+      "new_file": "20261204000003_order_logistics_model.sql",
+      "sha256": "5cbfd5fb05edac564833dc806e74c76f204d1ff93b735b0541e9dd77849e9a43",
+      "depends_on": [
+        "order 3 (conversation_routing)",
+        "order_confirmations"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 5,
+      "old_version": "20261129000001",
+      "old_file": "20261129000001_order_logistics_security_rpcs.sql",
+      "new_version": "20261204000004",
+      "new_file": "20261204000004_order_logistics_security_rpcs.sql",
+      "sha256": "63ed2f600a3800e3eff3d6aa35e42a365bc2cff0b5c0b3886fa92fcd8fd82198",
+      "depends_on": [
+        "order 4"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 6,
+      "old_version": "20261129000002",
+      "old_file": "20261129000002_order_docs_storage.sql",
+      "new_version": "20261204000005",
+      "new_file": "20261204000005_order_docs_storage.sql",
+      "sha256": "abd289778649cd174cb6d1ea2505dc5764566f0bd2128cf7eb613cbef31216ac",
+      "depends_on": [
+        "order 4"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 7,
+      "old_version": "20261129000003",
+      "old_file": "20261129000003_order_evidence_rpc.sql",
+      "new_version": "20261204000006",
+      "new_file": "20261204000006_order_evidence_rpc.sql",
+      "sha256": "be0d778c20f77bc522ff3c5ddb906229a4273d7f777c3e854379a0d4fbb9c1dc",
+      "depends_on": [
+        "order 4",
+        "order 5"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 8,
+      "old_version": "20261129000004",
+      "old_file": "20261129000004_order_template_dispatch_rpcs.sql",
+      "new_version": "20261204000007",
+      "new_file": "20261204000007_order_template_dispatch_rpcs.sql",
+      "sha256": "3c579e84ae7ef4f7f3caf533ad0d9693e0333143f48428bfdf2811bae665f32a",
+      "depends_on": [
+        "order 4"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 9,
+      "old_version": "20261129000005",
+      "old_file": "20261129000005_order_evidence_upload.sql",
+      "new_version": "20261204000008",
+      "new_file": "20261204000008_order_evidence_upload.sql",
+      "sha256": "871fdcbc67e174abe9e6a23a375c5319351a1cb92bd85662be46e36fad007591",
+      "depends_on": [
+        "order 4",
+        "order 5"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 10,
+      "old_version": "20261130000000",
+      "old_file": "20261130000000_order_shipment_settings.sql",
+      "new_version": "20261204000009",
+      "new_file": "20261204000009_order_shipment_settings.sql",
+      "sha256": "cbf573a33790397262ecd1dd2852b1cc055a2df101189f0399f71ac82361d7e7",
+      "depends_on": [
+        "order_confirmations",
+        "order_logistics (order 4)"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 11,
+      "old_version": "20261130000001",
+      "old_file": "20261130000001_order_shipments_model.sql",
+      "new_version": "20261204000010",
+      "new_file": "20261204000010_order_shipments_model.sql",
+      "sha256": "82441398281ec91c0c61750d4abad317c6f4b0c718a55d24e4daf483cb0bb728",
+      "depends_on": [
+        "order 10"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 12,
+      "old_version": "20261130000002",
+      "old_file": "20261130000002_order_shipments_rpcs.sql",
+      "new_version": "20261204000011",
+      "new_file": "20261204000011_order_shipments_rpcs.sql",
+      "sha256": "723f3e5d8e407b89bc72901d8f4878aef7f969c0ddb921654c5ca74119b55452",
+      "depends_on": [
+        "order 11",
+        "notifications (027)"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 13,
+      "old_version": "20261130000003",
+      "old_file": "20261130000003_notifications_shipment_alert.sql",
+      "new_version": "20261204000012",
+      "new_file": "20261204000012_notifications_shipment_alert.sql",
+      "sha256": "e1d6f0e2958b194215b04b2f0b5a3e657b110c70fe5b072737ed732fde921a58",
+      "depends_on": [
+        "order 11"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 14,
+      "old_version": "20261130000004",
+      "old_file": "20261130000004_order_shipment_alert_rpcs.sql",
+      "new_version": "20261204000013",
+      "new_file": "20261204000013_order_shipment_alert_rpcs.sql",
+      "sha256": "82755a4c2c7a88df60cfeb29eab85c993d6581be83d871d1990b7a3517f7a638",
+      "depends_on": [
+        "order 11"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 15,
+      "old_version": "20261201000000",
+      "old_file": "20261201000000_shipment_pickup_state.sql",
+      "new_version": "20261204000014",
+      "new_file": "20261204000014_shipment_pickup_state.sql",
+      "sha256": "14ee056691c7d5b6b5995a8d98e0b1d0c1486bca7c58caf67a32f8fa4af76635",
+      "depends_on": [
+        "order 15 (shipment_pickup_state)",
+        "order 12"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 16,
+      "old_version": "20261201000001",
+      "old_file": "20261201000001_shipment_customer_message.sql",
+      "new_version": "20261204000015",
+      "new_file": "20261204000015_shipment_customer_message.sql",
+      "sha256": "b0490dea744f8563e8d8887021d8ea2fd9b2ac51905cfbaeea69e428d187b931",
+      "depends_on": [
+        "order 15",
+        "order 14 (settings columns)"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 17,
+      "old_version": "20261201000002",
+      "old_file": "20261201000002_shipment_abandonment.sql",
+      "new_version": "20261204000016",
+      "new_file": "20261204000016_shipment_abandonment.sql",
+      "sha256": "72926f399b7cb5608172d49d602eac21bf302b2b5bf1cc086be8b299cd89ef7b",
+      "depends_on": [
+        "order 14",
+        "order 3 (conversation_routing)"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 18,
+      "old_version": "20261202000000",
+      "old_file": "20261202000000_order_finalization_routing_return.sql",
+      "new_version": "20261204000017",
+      "new_file": "20261204000017_order_finalization_routing_return.sql",
+      "sha256": "254ab0e76bda0fb699581cc33897bf45ed6741e4d0be2004d6e4707bbd105d8d",
+      "depends_on": [
+        "order 3",
+        "order 11",
+        "order 17"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 19,
+      "old_version": "20261203000000",
+      "old_file": "20261203000000_order_payments_model.sql",
+      "new_version": "20261204000018",
+      "new_file": "20261204000018_order_payments_model.sql",
+      "sha256": "35c5bb637db39a01d3c3742fdb9390593fe20de562fa51213f53b13e8374f0f4",
+      "depends_on": [
+        "order 4",
+        "order 3"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 20,
+      "old_version": "20261203000001",
+      "old_file": "20261203000001_order_payment_rpcs.sql",
+      "new_version": "20261204000019",
+      "new_file": "20261204000019_order_payment_rpcs.sql",
+      "sha256": "e24cc2a467f26c186e7fd628222df7474c1fe999f21ac65539b9fa1df556f76f",
+      "depends_on": [
+        "order 19"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 21,
+      "old_version": "20261203000002",
+      "old_file": "20261203000002_order_payment_proof.sql",
+      "new_version": "20261204000020",
+      "new_file": "20261204000020_order_payment_proof.sql",
+      "sha256": "7143f8c5332d3411229e0a4da02fd6e9292639916d58efdb1130e215b224522d",
+      "depends_on": [
+        "order 19",
+        "order 5"
+      ],
+      "status": "pending (not applied in production)"
+    },
+    {
+      "order": 22,
+      "old_version": "20261203000003",
+      "old_file": "20261203000003_order_finalization_pr06.sql",
+      "new_version": "20261204000021",
+      "new_file": "20261204000021_order_finalization_pr06.sql",
+      "sha256": "f12163db383eafe800341080508123159259adbd41278ff02118fa62b9dfbe42",
+      "depends_on": [
+        "order 18",
+        "order 21",
+        "order 11"
+      ],
+      "status": "pending (not applied in production)"
+    }
+  ]
+}
