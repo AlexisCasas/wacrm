@@ -429,14 +429,15 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       };
       setCall(call);
       const answer = await waitForRemoteAnswer(callId);
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       await peer.setRemoteDescription({ type: "answer", sdp: answer.sdp });
       await waitForPeerConnected(peer);
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       await enableAudio();
       setUiState("connected");
       setCall({ ...call, state: "connected" });
     } catch (error) {
       const message = error instanceof Error ? error.message : t("callFailed");
-      setErrorMessage(message);
       toast.error(message);
       const call = activeCallRef.current;
       if (call) {
@@ -447,6 +448,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         }
       }
       resetCall();
+      setErrorMessage(message);
     } finally {
       operationRef.current = false;
     }
@@ -475,6 +477,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         throw new Error(t("conversationChanged"));
       }
       const detail = await getCallDetail(incoming.call_id);
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       if (detail.session?.sdp_type !== "offer" || !detail.session.sdp) {
         throw new Error(t("incomingOfferMissing"));
       }
@@ -495,7 +498,9 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         session: { sdp_type: "answer", sdp: localSdp },
         conversation_id: conversation?.id,
       });
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       await waitForPeerConnected(peer);
+      if (conversationIdRef.current !== operationConversationId) throw new Error(t("conversationChanged"));
       await postCallAction("accept", {
         call_id: incoming.call_id,
         conversation_id: conversation?.id,
@@ -507,10 +512,10 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       setUiState("connected");
     } catch (error) {
       const message = error instanceof Error ? error.message : t("callFailed");
-      setErrorMessage(message);
       toast.error(message);
       if (claimed) await releaseClaim(incoming.call_id);
       resetCall();
+      setErrorMessage(message);
     } finally {
       operationRef.current = false;
     }
