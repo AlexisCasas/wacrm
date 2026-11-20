@@ -744,7 +744,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
             {recentCalls.slice(0, 8).map((call) => (
               <li key={call.call_id} className="flex items-center justify-between gap-2">
                 <span className="truncate">{call.direction === "USER_INITIATED" ? t("incoming") : t("outgoing")}</span>
-                <span className="shrink-0 text-muted-foreground">{t(call.state)}</span>
+                <span className="shrink-0 text-muted-foreground">{call.state.replace(/_/g, " ")}</span>
               </li>
             ))}
           </ul>
