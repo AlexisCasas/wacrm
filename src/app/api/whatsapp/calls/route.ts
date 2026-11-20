@@ -198,7 +198,13 @@ export async function GET(request: Request) {
     const { accountId, userId } = await requireRole('agent')
     await pruneExpiredSdp()
     const db = supabaseAdmin()
-    const callId = new URL(request.url).searchParams.get('call_id')
+    const searchParams = new URL(request.url).searchParams
+    const callId = searchParams.get('call_id')
+    const conversationId = searchParams.get('conversation_id')
+
+    if (conversationId && !UUID_PATTERN.test(conversationId)) {
+      return NextResponse.json({ error: 'Invalid conversation_id' }, { status: 400 })
+    }
 
     if (callId) {
       if (!CALL_ID_PATTERN.test(callId)) {
@@ -251,12 +257,14 @@ export async function GET(request: Request) {
       })
     }
 
-    const { data, error } = await db
+    let callsQuery = db
       .from('whatsapp_call_sessions')
       .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_type,session_sdp_expires_at')
       .eq('account_id', accountId)
       .order('created_at', { ascending: false })
       .limit(50)
+    if (conversationId) callsQuery = callsQuery.eq('conversation_id', conversationId)
+    const { data, error } = await callsQuery
     if (error) {
       console.error('[calling/api] call list lookup failed', { code: error.code ?? 'unknown' })
       return NextResponse.json({ error: 'Failed to list calls' }, { status: 500 })
