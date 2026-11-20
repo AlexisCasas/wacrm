@@ -26,8 +26,8 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_call_outbound_attempts (
   customer_parent_bsuid text,
   customer_name text,
   actor_user_id uuid REFERENCES auth.users(id) ON DELETE SET NULL,
-  agent_sdp_encrypted text NOT NULL,
-  agent_sdp_expires_at timestamptz NOT NULL,
+  agent_sdp_encrypted text,
+  agent_sdp_expires_at timestamptz,
   biz_opaque_callback_data text NOT NULL
     CHECK (length(biz_opaque_callback_data) BETWEEN 1 AND 512),
   call_id text CHECK (
@@ -295,7 +295,8 @@ BEGIN
   END IF;
 
   UPDATE public.whatsapp_call_outbound_attempts
-  SET state='submitted',call_id=p_call_id,updated_at=now()
+  SET state='submitted',call_id=p_call_id,
+      agent_sdp_encrypted=NULL,agent_sdp_expires_at=NULL,updated_at=now()
   WHERE id=v_attempt.id;
   RETURN FOUND;
 END;
@@ -321,7 +322,10 @@ BEGIN
   END IF;
 
   UPDATE public.whatsapp_call_outbound_attempts
-  SET state=p_state,failure_code=p_failure_code,updated_at=now()
+  SET state=p_state,failure_code=p_failure_code,
+      agent_sdp_encrypted=CASE WHEN p_state='failed' THEN NULL ELSE agent_sdp_encrypted END,
+      agent_sdp_expires_at=CASE WHEN p_state='failed' THEN NULL ELSE agent_sdp_expires_at END,
+      updated_at=now()
   WHERE account_id=p_account_id
     AND phone_number_id=p_phone_number_id
     AND request_id=p_request_id
@@ -414,6 +418,7 @@ BEGIN
   UPDATE public.whatsapp_call_sessions
   SET biz_opaque_callback_data=p_callback_data,updated_at=now()
   WHERE account_id=p_account_id AND phone_number_id=p_phone_number_id AND call_id=p_call_id;
+  IF NOT FOUND THEN RETURN false; END IF;
 
   -- A status/terminate webhook echoes the opaque data after the initial
   -- connect. Use it to reconcile an HTTP response lost after Meta accepted
@@ -433,13 +438,19 @@ BEGIN
       initiated_by_user_id=COALESCE(s.initiated_by_user_id,a.actor_user_id),
       agent_sdp_encrypted=CASE
         WHEN s.state IN ('terminated','failed','rejected') THEN NULL
-        ELSE COALESCE(s.agent_sdp_encrypted,a.agent_sdp_encrypted) END,
+        WHEN a.agent_sdp_encrypted IS NOT NULL AND a.agent_sdp_expires_at > now()
+          THEN COALESCE(s.agent_sdp_encrypted,a.agent_sdp_encrypted)
+        ELSE s.agent_sdp_encrypted END,
       agent_sdp_type=CASE
         WHEN s.state IN ('terminated','failed','rejected') THEN NULL
-        ELSE COALESCE(s.agent_sdp_type,'offer') END,
+        WHEN a.agent_sdp_encrypted IS NOT NULL AND a.agent_sdp_expires_at > now()
+          THEN COALESCE(s.agent_sdp_type,'offer')
+        ELSE s.agent_sdp_type END,
       agent_sdp_expires_at=CASE
         WHEN s.state IN ('terminated','failed','rejected') THEN NULL
-        ELSE COALESCE(s.agent_sdp_expires_at,a.agent_sdp_expires_at) END,
+        WHEN a.agent_sdp_encrypted IS NOT NULL AND a.agent_sdp_expires_at > now()
+          THEN COALESCE(s.agent_sdp_expires_at,a.agent_sdp_expires_at)
+        ELSE s.agent_sdp_expires_at END,
       updated_at=now()
   FROM public.whatsapp_call_outbound_attempts a
   WHERE a.account_id=p_account_id
@@ -453,7 +464,16 @@ BEGIN
     AND (s.initiated_by_user_id IS NULL OR s.initiated_by_user_id=a.actor_user_id)
     AND (s.conversation_id IS NULL OR s.conversation_id=a.conversation_id);
 
-  RETURN FOUND;
+  IF FOUND THEN
+    UPDATE public.whatsapp_call_outbound_attempts
+    SET agent_sdp_encrypted=NULL,agent_sdp_expires_at=NULL,updated_at=now()
+    WHERE account_id=p_account_id
+      AND phone_number_id=p_phone_number_id
+      AND biz_opaque_callback_data=p_callback_data
+      AND call_id=p_call_id;
+  END IF;
+
+  RETURN true;
 END;
 $callback$;
 
@@ -676,6 +696,7 @@ SET search_path=public
 AS $prune$
 DECLARE
   v_count integer;
+  v_attempt_count integer;
 BEGIN
   WITH expired AS (
     SELECT id FROM public.whatsapp_call_sessions
@@ -706,7 +727,21 @@ BEGIN
       updated_at=now()
   FROM expired WHERE s.id=expired.id;
   GET DIAGNOSTICS v_count=ROW_COUNT;
-  RETURN v_count;
+
+  WITH expired_attempts AS (
+    SELECT id FROM public.whatsapp_call_outbound_attempts
+    WHERE agent_sdp_encrypted IS NOT NULL
+      AND agent_sdp_expires_at IS NOT NULL
+      AND agent_sdp_expires_at <= now()
+    ORDER BY agent_sdp_expires_at
+    LIMIT LEAST(1000,GREATEST(1,COALESCE(p_limit,100)))
+    FOR UPDATE SKIP LOCKED
+  )
+  UPDATE public.whatsapp_call_outbound_attempts a
+  SET agent_sdp_encrypted=NULL,agent_sdp_expires_at=NULL,updated_at=now()
+  FROM expired_attempts WHERE a.id=expired_attempts.id;
+  GET DIAGNOSTICS v_attempt_count=ROW_COUNT;
+  RETURN v_count+v_attempt_count;
 END;
 $prune$;
 
