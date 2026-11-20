@@ -55,11 +55,20 @@ The existing GET/POST Calling API invokes this bounded cleanup before listing or
 - Missing and cross-tenant contacts remain unlinked.
 - Closed conversations are not selected.
 - Duplicate events and later terminate preserve associations.
-- Expired inbound offers become failed and cannot be reclaimed.
+- Expired inbound offers become `terminated` and cannot be reclaimed.
 - Fresh offers remain available.
 
 All SQL fixtures are synthetic and rolled back in the verification script.
 
 ## Operational boundary
 
-This increment changes only the application migration, tests and documentation. It does not activate Meta webhooks, enable real Calling, or change production configuration.
+This increment changes the application migration, webhook processor, authenticated Calling API, tests and documentation. It does not activate Meta webhooks, enable real Calling, or change production configuration.
+
+## QA deployment verification
+
+- Deployed to the isolated `call03b2-qa` stack from commit `35cac275fa981ac4dc1ac2def1b38ac2c5481d46`.
+- `20261130000003_whatsapp_calling_inbound_association_lifecycle.sql` was applied to `call03b2-qa-db` with `supabase_admin`.
+- The exact `whatsapp_call_sdp_prune(integer)` definition from this commit was installed in a separate locked transaction. `whatsapp_call_sdp_prune(100)` returned `0`.
+- All eight pre-existing QA call sessions remained byte-for-byte equivalent by the reported row/hash comparison; no session attribution or timestamps changed during the function update.
+- The three older inbound sessions had already been explicitly terminated before this final prune-function update; they were not terminated by the prune invocation returning zero.
+- Production, Meta configuration and the real `calls` webhook were not changed.
