@@ -126,3 +126,21 @@ No se exponen todavía acciones `connect`, `accept`, `pre_accept`, `reject` o `t
 - No fusionar CALL-01/CALL-02 ni desplegar hasta completar QA y recibir autorización.
 
 **Condición operativa:** mantener `calls` desactivado y `messages` activado. La reactivación se hará únicamente después de CALL-02/03, QA integral y autorización expresa.
+
+
+## 7. Hallazgo crítico adicional — migración SQL reconstruida
+
+Durante la revisión posterior se detectó que la migración CALL-02 del HEAD previo estaba dañada: la definición de `whatsapp_call_permission_requests` quedó truncada, había bloques SQL duplicados/intercalados y varias funciones usaban delimitadores dollar-quote incompletos (`AS $` / `END $`). Esa versión no era apta para PostgreSQL y no debía aplicarse en ningún entorno.
+
+**Corrección aplicada:** commit `0847bd69320843bb823c466734ba944269b53c6a`. Se reconstruyó el archivo completo manteniendo el contrato requerido por el procesador, la API y `verify.sql`:
+- cuatro tablas: sesiones, eventos, permisos y solicitudes de permisos;
+- RLS y privilegios exclusivos de `service_role`;
+- RPCs `whatsapp_call_event_apply`, `whatsapp_call_sdp_prune`, `whatsapp_call_claim`, `whatsapp_call_release` y `whatsapp_call_permission_upsert`;
+- firma de funciones alineada con el script de QA y los argumentos usados por TypeScript.
+
+La corrección está en GitHub, pero **no se considera validada hasta que Migrations #111 complete el replay de todas las migraciones y el script CALL-02**. No aplicar esta migración en Supabase Cloud ni en producción antes de ese resultado.
+
+### Ejecuciones sobre la corrección
+- CI #214: en ejecución al documentar este hallazgo.
+- Migrations #111: en cola/alistándose al documentar este hallazgo.
+- PR #136 continúa en Draft; sin merge ni despliegue.
