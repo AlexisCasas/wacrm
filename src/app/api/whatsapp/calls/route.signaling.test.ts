@@ -17,6 +17,7 @@ const h = vi.hoisted(() => ({
   contact: { id: 'a3000000-0000-4000-8000-000000000003', phone: '51980942247' },
   session: null as Record<string, unknown> | null,
   listCalls: [] as Array<Record<string, unknown>>,
+  actorProfiles: [] as Array<{ account_id: string; user_id: string; full_name: string | null }>,
   attemptCreated: true,
   attemptState: 'pending',
   from: vi.fn(),
@@ -77,6 +78,7 @@ function setupDb() {
       filters: Record<string, unknown>
       select: () => typeof builder
       eq: (key: string, value: unknown) => typeof builder
+      in: (key: string, values: unknown[]) => typeof builder
       maybeSingle: () => Promise<{ data: unknown; error: null }>
       order: (key: string, options?: Record<string, unknown>) => typeof builder
       limit: () => Promise<{ data: unknown[]; error: null }>
@@ -87,6 +89,10 @@ function setupDb() {
         builder.filters[key] = value
         return builder
       },
+      in: (key, values) => {
+        builder.filters[key] = values
+        return builder
+      },
       maybeSingle: async () => {
         if (table === 'whatsapp_config') return { data: h.config, error: null }
         if (table === 'contacts') return { data: h.contact, error: null }
@@ -94,7 +100,14 @@ function setupDb() {
         return { data: null, error: null }
       },
       order: () => builder,
-      limit: async () => ({ data: h.listCalls, error: null }),
+      limit: async () => ({
+        data: table === 'profiles'
+          ? h.actorProfiles.filter((profile) =>
+              profile.account_id === builder.filters.account_id
+              && (builder.filters.user_id as string[] | undefined)?.includes(profile.user_id))
+          : h.listCalls,
+        error: null,
+      }),
     }
     return builder
   })
@@ -126,6 +139,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   h.session = null
   h.listCalls = []
+  h.actorProfiles = []
   h.attemptCreated = true
   h.attemptState = 'pending'
   setupDb()
@@ -637,3 +651,57 @@ describe('GET /api/whatsapp/calls — SDP access control', () => {
     expect(data.call.session_sdp_encrypted).toBeUndefined()
   })
 })
+
+describe('GET /api/whatsapp/calls — call history attribution', () => {
+  it('returns actor display names scoped to the authenticated account', async () => {
+    h.listCalls = [{
+      id: 'session-history-attribution',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-history-attribution',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: 'agent-a',
+      accepted_by_user_id: 'agent-b',
+      rejected_by_user_id: null,
+      ended_by_user_id: 'agent-b',
+      direction: 'BUSINESS_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'terminated',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: '2026-11-20T20:00:00.000Z',
+      ended_at: '2026-11-20T20:01:05.000Z',
+      duration_seconds: 65,
+      created_at: '2026-11-20T20:00:00.000Z',
+      updated_at: '2026-11-20T20:01:05.000Z',
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }]
+    h.actorProfiles = [
+      { account_id: h.accountId, user_id: 'agent-a', full_name: 'QA Agent A' },
+      { account_id: h.accountId, user_id: 'agent-b', full_name: 'QA Agent B' },
+      { account_id: 'another-account', user_id: 'agent-a', full_name: 'Other Tenant Agent' },
+    ]
+
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(h.from).toHaveBeenCalledWith('profiles')
+    expect(data.calls[0]).toMatchObject({
+      initiated_by_name: 'QA Agent A',
+      accepted_by_name: 'QA Agent B',
+      rejected_by_name: null,
+      ended_by_name: 'QA Agent B',
+      duration_seconds: 65,
+      created_at: '2026-11-20T20:00:00.000Z',
+    })
+    expect(JSON.stringify(data.calls[0])).not.toContain('Other Tenant Agent')
+  })
+})
+
