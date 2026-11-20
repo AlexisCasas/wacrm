@@ -320,6 +320,7 @@ export async function POST(request: Request) {
     const sent = await sendWhatsAppCallPermissionRequest({
       phoneNumberId: config.phone_number_id,
       accessToken,
+      messagingAccountId: config.messaging_account_id,
       ...targetArgs,
       bodyText,
     })
