@@ -19,10 +19,15 @@ function hash(parts: string[]): string {
 }
 function customerIdentity(call: WhatsAppCallingEvent) {
   const userInitiated = call.direction === 'USER_INITIATED'
+  const businessInitiated = call.direction === 'BUSINESS_INITIATED'
+  if (!userInitiated && !businessInitiated) {
+    return { key: '', phone: null, bsuid: null, parentBsuid: null }
+  }
   const rawPhone = userInitiated ? call.from : call.to
   const rawBsuid = userInitiated ? call.from_user_id : call.to_user_id
   const rawParentBsuid = userInitiated ? call.from_parent_user_id : call.to_parent_user_id
-  const phone = typeof rawPhone === 'string' ? rawPhone.replace(/\D/g, '').slice(0, 20) : ''
+  const digits = typeof rawPhone === 'string' ? rawPhone.replace(/\D/g, '').slice(0, 20) : ''
+  const phone = /^\d{6,20}$/.test(digits) ? digits : ''
   const bsuid = typeof rawBsuid === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(rawBsuid) ? rawBsuid : ''
   const parentBsuid = typeof rawParentBsuid === 'string' && /^[A-Za-z0-9._~-]{1,256}$/.test(rawParentBsuid) ? rawParentBsuid : ''
   return { key: bsuid || parentBsuid || phone, phone: phone || null, bsuid: bsuid || null, parentBsuid: parentBsuid || null }
@@ -31,7 +36,7 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
   const timestamp = seconds(event.timestamp)
   if (timestamp === null) throw new Error('invalid_call_event_timestamp')
   const identity = customerIdentity(event)
-  if (!identity.key && event.direction) throw new Error('call_event_missing_customer_identity')
+  if (event.event === 'connect' && !identity.key) throw new Error('call_event_missing_customer_identity')
   const terminal = event.event === 'terminate'
   const state = terminal
     ? event.status === 'FAILED' ? 'failed' : event.status === 'REJECTED' ? 'rejected' : 'terminated'
@@ -60,6 +65,11 @@ async function persistStatus(db: SupabaseClient, config: ConfigRow, status: {id:
   const timestamp = seconds(status.timestamp)
   if (timestamp === null) throw new Error('invalid_call_status_timestamp')
   const state = status.status === 'ACCEPTED' ? 'connected' : status.status === 'RINGING' ? 'ringing' : null
+  const rawRecipient = typeof status.recipient_id === 'string' ? status.recipient_id : ''
+  const recipientDigits = rawRecipient.replace(/\D/g, '').slice(0, 20)
+  const recipientPhone = /^\d{6,20}$/.test(recipientDigits) ? recipientDigits : null
+  const recipientBsuid = !recipientPhone && /^[A-Za-z0-9._~-]{1,256}$/.test(rawRecipient) ? rawRecipient : null
+  const recipientKey = recipientBsuid ?? recipientPhone
   const { error } = await db.rpc('whatsapp_call_event_apply', {
     p_account_id: config.account_id,p_phone_number_id: config.phone_number_id,p_call_id: status.id,
     p_event_key: hash([status.id,'status',status.status,status.timestamp]),p_event_name:'status',
