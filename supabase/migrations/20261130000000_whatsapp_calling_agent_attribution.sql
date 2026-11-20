@@ -140,7 +140,7 @@ CREATE OR REPLACE FUNCTION public.whatsapp_call_claim(
 LANGUAGE plpgsql
 SECURITY INVOKER
 SET search_path=public
-AS $
+AS $call_claim$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM public.profiles
@@ -171,7 +171,7 @@ BEGIN
 
   RETURN FOUND;
 END;
-$;
+$call_claim$;
 
 -- Keep a claimed inbound call owned by the same agent while WebRTC is
 -- connecting/connected. A lease cannot be resurrected after it expires.
