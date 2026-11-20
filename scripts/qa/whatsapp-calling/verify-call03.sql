@@ -149,6 +149,7 @@ BEGIN
       SELECT 1 FROM public.whatsapp_call_sessions
       WHERE phone_number_id='740434745820831' AND call_id=v_call_accept
         AND ended_by_user_id=v_user_a
+        AND claimed_by_user_id IS NULL AND claim_expires_at IS NULL
     ) THEN
       RAISE EXCEPTION 'CALL03A_END_AGENT_NOT_PERSISTED';
     END IF;
@@ -190,6 +191,7 @@ BEGIN
       SELECT 1 FROM public.whatsapp_call_sessions
       WHERE phone_number_id='740434745820831' AND call_id=v_call_reject
         AND rejected_by_user_id=v_user_a AND conversation_id=v_conversation_a
+        AND claimed_by_user_id IS NULL AND claim_expires_at IS NULL
     ) THEN
       RAISE EXCEPTION 'CALL03A_REJECT_METADATA_NOT_PERSISTED';
     END IF;
