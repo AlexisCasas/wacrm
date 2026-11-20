@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS public.whatsapp_call_sessions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   account_id uuid NOT NULL REFERENCES public.accounts(id) ON DELETE CASCADE,
   phone_number_id text NOT NULL CHECK (phone_number_id ~ '^[0-9]{5,25}$'),
-  call_id text NOT NULL CHECK (call_id ~ '^wacid\\.[A-Za-z0-9._~+/=-]{1,512}$'),
+  call_id text NOT NULL CHECK (call_id ~ '^wacid\.[A-Za-z0-9._~+/=-]{1,512}$'),
   contact_id uuid REFERENCES public.contacts(id) ON DELETE SET NULL,
   conversation_id uuid REFERENCES public.conversations(id) ON DELETE SET NULL,
   contact_phone text CHECK (contact_phone IS NULL OR length(contact_phone) <= 32),
@@ -145,7 +145,7 @@ DECLARE
 BEGIN
   IF p_account_id IS NULL
      OR p_phone_number_id IS NULL OR p_phone_number_id !~ '^[0-9]{5,25}$'
-     OR p_call_id IS NULL OR p_call_id !~ '^wacid\\.[A-Za-z0-9._~+/=-]{1,512}$'
+     OR p_call_id IS NULL OR p_call_id !~ '^wacid\.[A-Za-z0-9._~+/=-]{1,512}$'
      OR p_event IS NULL OR length(p_event) NOT BETWEEN 1 AND 64
      OR p_event_at IS NULL
   THEN
