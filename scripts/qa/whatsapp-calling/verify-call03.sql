@@ -5,6 +5,7 @@ DO $qa$
 DECLARE
   v_user_a uuid := 'a3000000-0000-4000-8000-000000000001';
   v_user_b uuid := 'a3000000-0000-4000-8000-000000000002';
+  v_user_c uuid := 'a3000000-0000-4000-8000-000000000003';
   v_account_a uuid;
   v_account_b uuid;
   v_contact_a uuid := gen_random_uuid();
@@ -18,8 +19,11 @@ DECLARE
   v_call_outbound text := 'wacid.qa-call03-outbound';
   v_call_cross_tenant text := 'wacid.qa-call03-cross-tenant';
   v_call_wrong_identity text := 'wacid.qa-call03-wrong-identity';
+  v_call_unowned text := 'wacid.qa-call03-unowned';
   v_cross_tenant_rejected boolean := false;
   v_wrong_identity_rejected boolean := false;
+  v_unowned_accept_rejected boolean := false;
+  v_unowned_end_rejected boolean := false;
   v_renew_signature text := 'public.whatsapp_call_claim_renew(uuid,text,text,uuid)';
   v_action_signature text := 'public.whatsapp_call_session_agent_action(uuid,text,text,uuid,text,uuid)';
 BEGIN
@@ -66,12 +70,26 @@ BEGIN
       (v_user_a,'authenticated','authenticated','call03a-agent-a@example.invalid','',now(),
        '{}'::jsonb,'{"full_name":"CALL03A Agent A"}'::jsonb,now(),now()),
       (v_user_b,'authenticated','authenticated','call03a-agent-b@example.invalid','',now(),
-       '{}'::jsonb,'{"full_name":"CALL03A Agent B"}'::jsonb,now(),now());
+       '{}'::jsonb,'{"full_name":"CALL03A Agent B"}'::jsonb,now(),now()),
+      (v_user_c,'authenticated','authenticated','call03a-agent-c@example.invalid','',now(),
+       '{}'::jsonb,'{"full_name":"CALL03A Agent C"}'::jsonb,now(),now());
 
     SELECT account_id INTO v_account_a FROM public.profiles WHERE user_id=v_user_a;
     SELECT account_id INTO v_account_b FROM public.profiles WHERE user_id=v_user_b;
     IF v_account_a IS NULL OR v_account_b IS NULL OR v_account_a=v_account_b THEN
       RAISE EXCEPTION 'CALL03A_SYNTHETIC_ACCOUNTS_NOT_CREATED';
+    END IF;
+
+    -- Agent C is a member of A's account but has not claimed any call.
+    UPDATE public.profiles
+    SET account_id=v_account_a, account_role='agent'
+    WHERE user_id=v_user_c;
+    DELETE FROM public.accounts WHERE owner_user_id=v_user_c;
+    IF NOT EXISTS (
+      SELECT 1 FROM public.profiles
+      WHERE user_id=v_user_c AND account_id=v_account_a AND account_role='agent'
+    ) THEN
+      RAISE EXCEPTION 'CALL03A_UNOWNED_AGENT_SETUP_FAILED';
     END IF;
 
     INSERT INTO public.contacts(id,user_id,account_id,phone,name)
@@ -133,6 +151,23 @@ BEGIN
         AND ended_by_user_id=v_user_a
     ) THEN
       RAISE EXCEPTION 'CALL03A_END_AGENT_NOT_PERSISTED';
+    END IF;
+
+    -- A same-account agent without the claim/initiator/acceptor ownership
+    -- cannot accept or terminate another agent's call.
+    PERFORM public.whatsapp_call_event_apply(
+      v_account_a,'740434745820831',v_call_unowned,repeat('f',64),
+      'connect',1795120005,'USER_INITIATED','51911111111','51911111111',
+      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+    );
+    v_unowned_accept_rejected := NOT public.whatsapp_call_session_agent_action(
+      v_account_a,'740434745820831',v_call_unowned,v_user_c,'accepted',NULL
+    );
+    v_unowned_end_rejected := NOT public.whatsapp_call_session_agent_action(
+      v_account_a,'740434745820831',v_call_unowned,v_user_c,'ended',NULL
+    );
+    IF NOT v_unowned_accept_rejected OR NOT v_unowned_end_rejected THEN
+      RAISE EXCEPTION 'CALL03A_UNOWNED_AGENT_ACTION_WAS_ALLOWED';
     END IF;
 
     -- An unclaimed incoming call can be rejected, but the rejecting agent
