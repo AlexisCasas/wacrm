@@ -347,7 +347,7 @@
       "permissionMissing": "There is no current call permission.",
       "microphoneNotice": "Your browser will request microphone access only after you start the call.",
       "startCall": "Start call",
-      "callStartFailed": "The call could not be started. Check permission and connection status."
+      "callStartFailed": "The call could not be started. Check permission and connection status.",
       "requestPermission": "Request permission",
       "permissionRequestSent": "Request sent. Wait for the contact's response.",
       "permissionRequestFailed": "Could not send the permission request.",
