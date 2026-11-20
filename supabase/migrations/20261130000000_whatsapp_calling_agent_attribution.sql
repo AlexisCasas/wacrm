@@ -47,7 +47,7 @@ BEGIN
   END IF;
 
   IF NEW.contact_id IS NOT NULL THEN
-    SELECT c.account_id, regexp_replace(COALESCE(c.phone,''), '\\D', '', 'g')
+    SELECT c.account_id, regexp_replace(COALESCE(c.phone,''), '\D', '', 'g')
       INTO v_contact_account_id, v_contact_phone
     FROM public.contacts c
     WHERE c.id=NEW.contact_id;
@@ -79,7 +79,7 @@ BEGIN
   -- Do not re-check identity on unrelated webhook state updates. Check it
   -- whenever a new contact/conversation association is established.
   IF v_link_changed AND NEW.contact_id IS NOT NULL THEN
-    SELECT regexp_replace(COALESCE(c.phone,''), '\\D', '', 'g')
+    SELECT regexp_replace(COALESCE(c.phone,''), '\D', '', 'g')
       INTO v_contact_phone
     FROM public.contacts c
     WHERE c.id=NEW.contact_id
@@ -87,7 +87,7 @@ BEGIN
 
     IF NEW.customer_phone IS NOT NULL
       AND NEW.customer_phone <> ''
-      AND v_contact_phone = regexp_replace(NEW.customer_phone, '\\D', '', 'g') THEN
+      AND v_contact_phone = regexp_replace(NEW.customer_phone, '\D', '', 'g') THEN
       v_identity_match := true;
     END IF;
 
