@@ -54,7 +54,10 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Call signal is unavailable' }, { status: 500 })
     }
 
-    return NextResponse.json({ sdp_type: data.session_sdp_type, sdp })
+    return NextResponse.json(
+      { sdp_type: data.session_sdp_type, sdp },
+      { headers: { 'Cache-Control': 'private, no-store, max-age=0' } },
+    )
   } catch (error) {
     return toErrorResponse(error)
   }
