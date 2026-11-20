@@ -67,12 +67,13 @@ export async function processWhatsAppCallingWebhookChange(
   change: unknown,
   envelopeWabaId?: string,
 ): Promise<void> {
+  if (process.env.WHATSAPP_CALLING_ENABLED !== 'true') return
   const parsed = parseWhatsAppCallingWebhookChange(change)
   if (!parsed) throw new Error('calling_webhook_payload_invalid')
 
   const { data: configs, error: configError } = await db
     .from('whatsapp_config')
-    .select('account_id, user_id, phone_number_id, waba_id')
+    .select('account_id, user_id, phone_number_id, waba_id, calling_enabled')
     .eq('phone_number_id', parsed.phoneNumberId)
     .limit(2)
 
@@ -85,7 +86,8 @@ export async function processWhatsAppCallingWebhookChange(
     throw new Error('calling_webhook_config_ambiguous')
   }
 
-  const config = configs[0] as CallingConfig
+  const config = configs[0] as CallingConfig & { calling_enabled: boolean }
+  if (config.calling_enabled !== true) return
   const bsuidEnabled = isBsuidPilotEnabledWithScopes(
     {
       accountId: config.account_id,
