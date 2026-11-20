@@ -256,7 +256,7 @@ BEGIN
     IF NOT EXISTS (
       SELECT 1 FROM public.whatsapp_call_sessions
       WHERE phone_number_id=v_phone_number_id AND call_id=v_call_expired
-        AND state='failed' AND ended_at IS NOT NULL
+        AND state='terminated' AND ended_at IS NOT NULL
         AND session_sdp_encrypted IS NULL
         AND claimed_by_user_id IS NULL AND claim_expires_at IS NULL
     ) THEN
