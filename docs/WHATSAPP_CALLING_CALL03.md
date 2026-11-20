@@ -1,6 +1,6 @@
 # CALL-03 — Inbox UI, WebRTC y ciclo de vida de llamadas
 
-**Estado:** CALL-03A implementado en la rama; CI y revisión técnica pendientes.  
+**Estado:** CALL-03A implementado y validado; CI #274 y Migrations #168 en PASS. PR #137 permanece Draft y apilado sobre CALL-02.  
 **Dependencia:** CALL-02 (#136), cuyo gate técnico CI #252 + Migrations #147 está en PASS sobre `f4e26fe1cca3122d664e6ef0fbfd14ef0346b039`. CALL-01 (#134) y CALL-02 siguen sin merge; esta rama se apila sobre el HEAD CALL-02 y su PR debe apuntar inicialmente a `feat/whatsapp-calling-call02-20261119`.  
 **Piloto futuro:** solo Keyler Ortega, teléfono `+51 980 942 247`, Phone Number ID `740434745820831`.
 
@@ -106,4 +106,10 @@ CALL-03 no se considera terminado por tener botones visibles. Debe existir un ci
 
 **No realizado:** ninguna migración en Supabase Cloud, despliegue Vercel/VPS, cambio en Meta, activación del webhook `calls`, solicitud de micrófono ni llamada real.
 
-**Gate actual:** pendiente de CI completo, replay de migraciones y revisión de cualquier fallo antes de continuar a CALL-03B.
+**Validación final CALL-03A — HEAD `10c2a337c5a475ba79a6b36aadda87a65e4158a1`**
+- CI #274: **PASS** — Lint, Typecheck, Tests y Build.
+- Migrations #168: **PASS** — replay limpio, CALL-02, concurrencia, CALL-03A, webhook durable/RLS, BSUID y controles de eliminación.
+- La revisión detectó y corrigió dos riesgos antes del PASS: condiciones SQL con valores NULL que no cerraban el acceso a agentes sin ownership y un delimitador PL/pgSQL mal cerrado. La suite SQL ahora comprueba ambos casos, así como el bloqueo de reclamos tras rechazo/finalización.
+- Sin llamadas reales, micrófono, Meta, VPS, Supabase Cloud ni despliegue.
+
+**Resultado:** `CALL03A_QA=PASS`. PR #137 continúa Draft; no se fusiona ni se despliega hasta integrar CALL-01 y CALL-02 en orden y recibir autorización. El siguiente subincremento será CALL-03B (señalización y cliente WebRTC).
