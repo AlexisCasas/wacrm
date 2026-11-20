@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   },
   contact: { id: 'a3000000-0000-4000-8000-000000000003', phone: '51980942247' },
   session: null as Record<string, unknown> | null,
+  attemptCreated: true,
+  attemptState: 'pending',
   from: vi.fn(),
   rpc: vi.fn(),
   callWhatsApp: vi.fn(),
@@ -100,10 +102,10 @@ function setupDb() {
       return {
         data: {
           attempt_id: 'a3000000-0000-4000-8000-000000000006',
-          state: 'pending',
+          state: h.attemptState,
           call_id: null,
           callback_data: h.requestId,
-          created: true,
+          created: h.attemptCreated,
         },
         error: null,
       }
@@ -120,6 +122,8 @@ function setupDb() {
 beforeEach(() => {
   vi.clearAllMocks()
   h.session = null
+  h.attemptCreated = true
+  h.attemptState = 'pending'
   setupDb()
   h.pilotAllowed.mockReturnValue(true)
   h.decrypt.mockImplementation((value: string) => {
@@ -191,6 +195,10 @@ describe('WhatsApp Calling signaling API', () => {
       call_id: 'wacid.qa-outbound',
       session_persisted: true,
     })
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.objectContaining({
+      p_request_id: h.requestId,
+      p_agent_sdp_encrypted: 'encrypted:v=0\\r\\n',
+    }))
     expect(h.callWhatsApp).toHaveBeenCalledWith(expect.objectContaining({
       phoneNumberId: h.phoneNumberId,
       action: expect.objectContaining({
@@ -247,6 +255,87 @@ describe('WhatsApp Calling signaling API', () => {
       p_actor_user_id: h.userId,
     }))
   })
+
+  it('does not resend a request whose idempotency key is already pending', async () => {
+    h.attemptCreated = false
+    h.attemptState = 'pending'
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+    }))
+    expect(response.status).toBe(409)
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('marks a definite Meta 4xx rejection as failed, not unknown', async () => {
+    h.callWhatsApp.mockRejectedValueOnce({ httpStatus: 400 })
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+    }))
+    expect(response.status).toBe(502)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
+      p_request_id: h.requestId,
+      p_state: 'failed',
+      p_failure_code: 'meta_request_rejected',
+    }))
+  })
+
+  it('keeps a network-uncertain Meta outcome blocked from automatic retry', async () => {
+    h.callWhatsApp.mockRejectedValueOnce(new Error('network timeout'))
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\\r\\n' },
+    }))
+    expect(response.status).toBe(202)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
+      p_request_id: h.requestId,
+      p_state: 'unknown',
+      p_failure_code: 'meta_request_outcome_unknown',
+    }))
+  })
+
+  it('does not send a second accept after Meta has already connected the call', async () => {
+    h.session = {
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-inbound',
+      direction: 'USER_INITIATED',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      claimed_by_user_id: h.userId,
+      claim_expires_at: new Date(Date.now() + 60000).toISOString(),
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      biz_opaque_callback_data: null,
+      agent_sdp_encrypted: 'encrypted:stored-answer',
+      agent_sdp_type: 'answer',
+      agent_sdp_expires_at: new Date(Date.now() + 60000).toISOString(),
+      state: 'connected',
+    }
+    const response = await POST(makeRequest({
+      action: 'accept',
+      call_id: 'wacid.qa-inbound',
+      conversation_id: h.conversationId,
+    }))
+    expect(response.status).toBe(200)
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_session_agent_action', expect.objectContaining({
+      p_action: 'accepted',
+      p_actor_user_id: h.userId,
+    }))
+  })
+
 })
 
 
