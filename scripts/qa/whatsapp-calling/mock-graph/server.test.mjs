@@ -5,6 +5,7 @@ import {
   assertQaEnvironment,
   buildCallWebhook,
   createCallStore,
+  createCallEvent,
   createGraphHandler,
   createPeerHandler,
   isControlTokenValid,
@@ -96,6 +97,18 @@ test('buildCallWebhook creates a routable synthetic calls change', () => {
   assert.equal(change.field, 'calls')
   assert.equal(change.value.metadata.phone_number_id, '740434745820831')
   assert.equal(change.value.calls[0].session.sdp_type, 'answer')
+})
+
+test('synthetic Calling events use the business phone as from and customer phone as to', () => {
+  const event = createCallEvent(
+    { id: 'wacid.qa-direction-contract', direction: 'USER_INITIATED' },
+    { ...env, MOCK_DISPLAY_PHONE: '+51 980 000 000' },
+    'connect',
+    { session: { sdp_type: 'offer', sdp: offer } },
+  )
+  assert.equal(event.from, '51980000000')
+  assert.equal(event.to, '51980942247')
+  assert.equal(event.direction, 'USER_INITIATED')
 })
 
 test('buildCallWebhook supports synthetic call status changes', () => {
