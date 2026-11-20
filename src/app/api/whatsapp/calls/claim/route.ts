@@ -78,11 +78,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Call is no longer available' }, { status: 409 })
     }
 
-    return NextResponse.json({
-      success: true,
-      claim_token: result.claim_token,
-      claim_expires_at: result.claim_expires_at,
-    })
+    return NextResponse.json(
+      {
+        success: true,
+        claim_token: result.claim_token,
+        claim_expires_at: result.claim_expires_at,
+      },
+      { headers: { 'Cache-Control': 'private, no-store, max-age=0' } },
+    )
   } catch (error) {
     return toErrorResponse(error)
   }
