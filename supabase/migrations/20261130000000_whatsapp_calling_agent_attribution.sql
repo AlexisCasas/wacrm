@@ -129,6 +129,50 @@ CREATE TRIGGER whatsapp_call_session_metadata_guard
   FOR EACH ROW
   EXECUTE FUNCTION public.whatsapp_call_session_metadata_guard();
 
+-- Preserve CALL-02's atomic claim contract while preventing another
+-- agent from claiming a call after reject/terminate has been requested.
+CREATE OR REPLACE FUNCTION public.whatsapp_call_claim(
+  p_account_id uuid,
+  p_phone_number_id text,
+  p_call_id text,
+  p_actor_user_id uuid
+) RETURNS boolean
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path=public
+AS $
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM public.profiles
+    WHERE account_id=p_account_id
+      AND user_id=p_actor_user_id
+      AND account_role IN ('owner','admin','agent')
+  ) THEN
+    RAISE EXCEPTION 'call_claim_actor_forbidden' USING ERRCODE='42501';
+  END IF;
+
+  UPDATE public.whatsapp_call_sessions
+  SET claimed_by_user_id=p_actor_user_id,
+      claimed_at=now(),
+      claim_expires_at=now()+interval '90 seconds',
+      updated_at=now()
+  WHERE account_id=p_account_id
+    AND phone_number_id=p_phone_number_id
+    AND call_id=p_call_id
+    AND direction='USER_INITIATED'
+    AND state IN ('offered','ringing','connected')
+    AND rejected_by_user_id IS NULL
+    AND ended_by_user_id IS NULL
+    AND (
+      claimed_by_user_id IS NULL
+      OR claim_expires_at <= now()
+      OR claimed_by_user_id=p_actor_user_id
+    );
+
+  RETURN FOUND;
+END;
+$;
+
 -- Keep a claimed inbound call owned by the same agent while WebRTC is
 -- connecting/connected. A lease cannot be resurrected after it expires.
 CREATE OR REPLACE FUNCTION public.whatsapp_call_claim_renew(
@@ -159,11 +203,13 @@ BEGIN
     AND call_id=p_call_id
     AND claimed_by_user_id=p_actor_user_id
     AND claim_expires_at > now()
-    AND state IN ('offered','ringing','connected');
+    AND state IN ('offered','ringing','connected')
+    AND rejected_by_user_id IS NULL
+    AND ended_by_user_id IS NULL;
 
   RETURN FOUND;
 END;
-$$;
+$;
 
 -- Record the human actor and optional Inbox conversation for a call.
 -- Meta remains authoritative for call state; this RPC records agent intent
@@ -228,7 +274,11 @@ BEGIN
       IF v_call.direction IS DISTINCT FROM 'USER_INITIATED' THEN
         RAISE EXCEPTION 'call_accept_direction_invalid' USING ERRCODE='22023';
       END IF;
-      IF v_call.state IN ('terminated','failed','rejected') THEN RETURN false; END IF;
+      IF v_call.state IN ('terminated','failed','rejected')
+        OR v_call.rejected_by_user_id IS NOT NULL
+        OR v_call.ended_by_user_id IS NOT NULL THEN
+        RETURN false;
+      END IF;
       IF v_call.accepted_by_user_id IS DISTINCT FROM p_actor_user_id
         AND NOT COALESCE(
           v_call.claimed_by_user_id=p_actor_user_id
@@ -242,6 +292,7 @@ BEGIN
       IF v_call.direction IS DISTINCT FROM 'USER_INITIATED' THEN
         RAISE EXCEPTION 'call_reject_direction_invalid' USING ERRCODE='22023';
       END IF;
+      IF v_call.ended_by_user_id IS NOT NULL THEN RETURN false; END IF;
       IF v_call.rejected_by_user_id IS DISTINCT FROM p_actor_user_id
         AND (
           v_call.state NOT IN ('offered','ringing')
@@ -259,6 +310,10 @@ BEGIN
       END IF;
 
     WHEN 'ended' THEN
+      IF v_call.rejected_by_user_id IS NOT NULL
+        AND v_call.ended_by_user_id IS DISTINCT FROM p_actor_user_id THEN
+        RETURN false;
+      END IF;
       IF v_call.ended_by_user_id IS DISTINCT FROM p_actor_user_id
         AND (
           v_call.state IN ('terminated','failed','rejected')
