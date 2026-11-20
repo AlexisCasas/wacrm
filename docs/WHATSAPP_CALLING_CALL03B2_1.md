@@ -41,7 +41,7 @@ Later terminate/status updates preserve existing associations. Duplicate event k
 
 ### Offer expiration
 
-`whatsapp_call_sdp_prune` now marks unanswered inbound `offered`/`ringing` sessions as `failed` when their session SDP expires. It sets `ended_at`, releases any claim and clears ephemeral SDP. Connected calls are not failed merely because their SDP expires.
+`whatsapp_call_sdp_prune` now marks unanswered inbound `offered`/`ringing` sessions as `terminated` when their session SDP expires. The processor gives inbound offers a 60-second SDP lifetime, aligned with Meta's documented 30–60-second acceptance window; outbound SDP retains its five-minute lifetime. It sets `ended_at`, releases any claim and clears ephemeral SDP. Connected calls are not failed merely because their SDP expires.
 
 The existing GET/POST Calling API invokes this bounded cleanup before listing or acting on calls, so expired offers cannot be claimed or accepted.
 
