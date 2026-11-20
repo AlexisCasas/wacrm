@@ -216,9 +216,9 @@ describe('WhatsApp call permissions', () => {
   })
 
   it('sends the free-form permission request with Meta's interactive payload', async () => {
-    let captured: { url: string; init: RequestInit } | null = null
+    const captured: Array<{ url: string; init: RequestInit }> = []
     vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
-      captured = { url, init }
+      captured.push({ url, init })
       return new Response(JSON.stringify({ messages: [{ id: 'wamid.permission-request' }] }), { status: 200 })
     }))
     const result = await sendWhatsAppCallPermissionRequest({
@@ -228,8 +228,8 @@ describe('WhatsApp call permissions', () => {
       bodyText: '¿Nos autorizas a llamarte para ayudarte con tu consulta?',
     })
     expect(result).toEqual({ messageId: 'wamid.permission-request' })
-    expect(captured?.url).toBe(`https://graph.facebook.com/${META_CALLING_API_VERSION}/740434745820831/messages`)
-    expect(JSON.parse(String(captured?.init.body))).toMatchObject({
+    expect(captured[0]?.url).toBe(`https://graph.facebook.com/${META_CALLING_API_VERSION}/740434745820831/messages`)
+    expect(JSON.parse(String(captured[0]?.init.body))).toMatchObject({
       messaging_product: 'whatsapp',
       to: '51911111111',
       type: 'interactive',
