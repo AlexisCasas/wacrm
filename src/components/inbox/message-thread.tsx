@@ -63,6 +63,8 @@ import { formatRemaining } from "@/lib/whatsapp/fep-window";
 import { toast } from "sonner";
 import { useCan } from "@/hooks/use-can";
 import { FlowStartPicker } from "./flow-start-picker";
+import { CallControls } from "./call-controls";
+import { CallHistory } from "./call-history";
 import {
   Dialog,
   DialogContent,
@@ -146,6 +148,14 @@ interface MessageThreadProps {
    * `canSendMessages` to render, independent of this being wired up).
    */
   onContactBlocked?: (conversationId: string) => void;
+  /** Starts an outbound WhatsApp Calling session from this conversation. */
+  onStartCall?: (input: {
+    contactId: string;
+    conversationId: string;
+    contactName: string;
+  }) => Promise<boolean>;
+  callBusy?: boolean;
+  callHistoryRefreshToken?: number;
 }
 
 function formatDateSeparator(
@@ -211,6 +221,9 @@ export function MessageThread({
   contactPanelOpen,
   onToggleContactPanel,
   onContactBlocked,
+  onStartCall,
+  callBusy = false,
+  callHistoryRefreshToken = 0,
 }: MessageThreadProps) {
   const t = useTranslations("Inbox.messageThread");
   const tTimer = useTranslations("Inbox.sessionTimer");
@@ -1261,6 +1274,16 @@ export function MessageThread({
             </button>
           )}
 
+          {onStartCall && canStartFlow && contact && conversation && contact.phone && !contact.blocked && (
+            <CallControls
+              contactId={contact.id}
+              conversationId={conversation.id}
+              contactName={contactDisplayName}
+              callBusy={callBusy}
+              onStartCall={onStartCall}
+            />
+          )}
+
           {/* Start Flow — P0 manual dispatch from the Inbox. A customer
               may arrive via an ad/link tied to a commercial Flow but
               type something the keyword trigger doesn't match; this
@@ -1395,6 +1418,13 @@ export function MessageThread({
           </DropdownMenu>
         </div>
       </div>
+
+      <CallHistory
+        conversationId={conversation.id}
+        profilesByUserId={profilesByUserId}
+        currentUserId={user?.id}
+        refreshToken={callHistoryRefreshToken + resyncToken}
+      />
 
       {/* Messages Area */}
       <div
