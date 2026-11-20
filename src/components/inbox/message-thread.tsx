@@ -63,6 +63,7 @@ import { formatRemaining } from "@/lib/whatsapp/fep-window";
 import { toast } from "sonner";
 import { useCan } from "@/hooks/use-can";
 import { FlowStartPicker } from "./flow-start-picker";
+import { CallingPanel } from "./calling-panel";
 import {
   Dialog,
   DialogContent,
@@ -1212,6 +1213,7 @@ export function MessageThread({
         </div>
 
         <div className="flex items-center gap-2">
+          <CallingPanel conversation={conversation} contact={contact} />
           {/* Contact-panel toggle — desktop only. The contact sidebar
               eats a chunk of horizontal width that crowds the thread on
               smaller laptops; this lets agents reclaim it when they just
