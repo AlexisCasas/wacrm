@@ -9,7 +9,7 @@
 - Meta `calls` permanece desactivado; `messages` continúa activado.
 - No se ejecutan llamadas reales ni se usa el micrófono en CI.
 - No se cambian VPS, Supabase Cloud, secretos, variables de entorno ni configuración Meta.
-- Toda señalización queda fail-closed por defecto: requiere `WHATSAPP_CALLING_ENABLED=true` y que el `phone_number_id` autenticado esté incluido en `WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS`. El piloto queda limitado al WABA de Keyler; sus contactos siguen siendo los destinatarios de las llamadas.
+- Toda señalización queda fail-closed por defecto: requiere `WHATSAPP_CALLING_ENABLED=true`, el `phone_number_id` del WABA en `WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS` y el teléfono del destinatario en `WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES`. Ambos valores se validan en servidor; el piloto queda limitado a Keyler (`+51 980 942 247`).
 - Sin allowlist/flag, ninguna ruta puede enviar `connect`, `pre_accept`, `accept`, `reject` o `terminate`.
 - No se habilita WebRTC ni se despliega a Vercel producción en esta fase.
 
