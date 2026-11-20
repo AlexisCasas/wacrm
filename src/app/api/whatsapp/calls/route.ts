@@ -11,7 +11,19 @@ export async function GET() {
     const limit = checkRateLimit('calls:list:' + userId, RATE_LIMITS.react)
     if (!limit.success) return rateLimitResponse(limit)
 
-    const { data, error } = await supabaseAdmin()
+    const admin = supabaseAdmin()
+    // Opportunistic expiry cleanup: stale encrypted SDP is no longer usable.
+    await admin
+      .from('whatsapp_call_sessions')
+      .update({
+        session_sdp_type: null,
+        session_sdp_ciphertext: null,
+        session_sdp_expires_at: null,
+      })
+      .eq('account_id', accountId)
+      .lt('session_sdp_expires_at', new Date().toISOString())
+
+    const { data, error } = await admin
       .from('whatsapp_call_sessions')
       .select([
         'id',
@@ -54,7 +66,7 @@ export async function GET() {
       }
     })
 
-    return NextResponse.json({ sessions })
+    return NextResponse.json({ sessions }, { headers: { 'Cache-Control': 'private, no-store, max-age=0' } })
   } catch (error) {
     return toErrorResponse(error)
   }
