@@ -654,7 +654,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   return (
     <div className="flex items-center gap-2">
       <audio ref={audioRef} autoPlay playsInline muted className="hidden" />
-      {isPilotContact ? (
+      {isPilotContact && incomingCall && uiState === "idle" ? (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-2 py-1.5">
           <PhoneIncoming className="h-4 w-4 text-emerald-500" />
           <span className="max-w-32 truncate text-xs font-medium">
@@ -675,7 +675,8 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
             {t("reject")}
           </button>
         </div>
-      ) : uiState === "connected" && activeCall ? (
+      ) : null}
+      {isPilotContact && uiState === "connected" && activeCall ? (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
           <span className="text-xs font-medium text-emerald-500">{formatDuration(elapsedSeconds)}</span>
           <span className="max-w-28 truncate text-[11px] text-muted-foreground" title={profile?.full_name ?? t("agent")}>
@@ -700,10 +701,11 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
             <PhoneOff className="h-4 w-4" />
           </button>
         </div>
-      ) : permission?.canStartCall ? (
+      ) : null}
+      {isPilotContact && !incomingCall && uiState !== "connected" && permission?.canStartCall ? (
         <button
           type="button"
-          onClick={() => void startOutgoing()
+          onClick={() => void startOutgoing()}
           disabled={!hasCallingIdentity || busy || permissionLoading || !conversation || Boolean(contact?.blocked)}
           title={contact?.blocked ? t("contactBlocked") : t("startCall")}
           className={cn(
@@ -713,7 +715,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           {busy ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <Phone className="h-3.5 w-3.5" />}
           <span className="hidden sm:inline">{busy ? t("connecting") : t("call")}</span>
         </button>
-      ) : null) : null}
+      ) : null}
       {uiState === "idle" && isPilotContact && permission?.status === "no_permission" ? (
         <div className="flex items-center gap-1">
           <span className="hidden text-[11px] text-amber-600 sm:inline">{t("permissionNeeded")}</span>
