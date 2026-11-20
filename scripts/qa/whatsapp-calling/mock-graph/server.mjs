@@ -180,7 +180,7 @@ function safeCall(call) {
 export function createCallEvent(call, env, event, extra = {}) {
   // Meta's Calling webhook identifies the business phone as "from" and
   // the WhatsApp user/callee as "to" for both call directions.
-  const businessPhone = (env.MOCK_DISPLAY_PHONE ?? '').replace(/\D/g, '')
+  const businessPhone = (env.MOCK_DISPLAY_PHONE ?? '+51 980 000 000').replace(/\D/g, '')
   return {
     id: call.id,
     event,
