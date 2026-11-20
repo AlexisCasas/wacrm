@@ -123,6 +123,7 @@ BEGIN
       SELECT 1 FROM public.whatsapp_call_outbound_attempts
       WHERE account_id=v_account AND request_id=v_request_id
         AND state='submitted' AND call_id=v_call_id
+        AND agent_sdp_encrypted IS NULL AND agent_sdp_expires_at IS NULL
     ) THEN
       RAISE EXCEPTION 'CALL03B_OUTBOUND_ATTEMPT_NOT_RECONCILED';
     END IF;
