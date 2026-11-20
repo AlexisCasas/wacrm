@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { callWhatsApp, META_CALLING_API_VERSION } from './calling-api'
+import { callWhatsApp, META_CALLING_API_VERSION, getWhatsAppCallPermission, canPerformWhatsAppCallAction, hasActiveWhatsAppCallPermission, sendWhatsAppCallPermissionRequest } from './calling-api'
 
 const BASE = {
   phoneNumberId: '740434745820831',
@@ -184,5 +184,175 @@ describe('callWhatsApp', () => {
       ...BASE,
       action: { action: 'terminate', callId: 'wacid.ABGGFjFVU2AfAgo6V-Hc5eCgK5Gh' },
     })).rejects.toThrow(/did not confirm/)
+  })
+})
+
+
+describe('WhatsApp call permissions', () => {
+  it('reads permission and action limits by WhatsApp phone number', async () => {
+    let requestedUrl = ''
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      requestedUrl = url
+      expect((init.headers as Record<string, string>).Authorization).toBe('Bearer test-access-token')
+      return new Response(JSON.stringify({
+        messaging_product: 'whatsapp',
+        permission: { status: 'temporary', expiration_time: 1795724800 },
+        actions: [
+          {
+            action_name: 'send_call_permission_request',
+            can_perform_action: false,
+            limits: [{ time_period: 'PT24H', max_allowed: 1, current_usage: 1 }],
+          },
+          {
+            action_name: 'start_call',
+            can_perform_action: true,
+            limits: [{ time_period: 'PT24H', max_allowed: 5, current_usage: 2 }],
+          },
+        ],
+      }), { status: 200 })
+    }))
+
+    const permission = await getWhatsAppCallPermission({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      userWaId: '+51911111111',
+    })
+
+    expect(requestedUrl).toBe(
+      'https://graph.facebook.com/' + META_CALLING_API_VERSION +
+      '/740434745820831/call_permissions?user_wa_id=51911111111',
+    )
+    expect(permission).toEqual({
+      status: 'temporary',
+      expirationTime: 1795724800,
+      actions: [
+        {
+          actionName: 'send_call_permission_request',
+          canPerformAction: false,
+          limits: [{ timePeriod: 'PT24H', maxAllowed: 1, currentUsage: 1 }],
+        },
+        {
+          actionName: 'start_call',
+          canPerformAction: true,
+          limits: [{ timePeriod: 'PT24H', maxAllowed: 5, currentUsage: 2 }],
+        },
+      ],
+    })
+    expect(canPerformWhatsAppCallAction(permission, 'start_call')).toBe(true)
+    expect(canPerformWhatsAppCallAction(permission, 'send_call_permission_request')).toBe(false)
+    expect(hasActiveWhatsAppCallPermission(permission, 1795000000)).toBe(true)
+    expect(hasActiveWhatsAppCallPermission(permission, 1796000000)).toBe(false)
+  })
+
+  it('supports BSUID lookup and permanent permissions', async () => {
+    let requestedUrl = ''
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      requestedUrl = url
+      return new Response(JSON.stringify({
+        permission: { status: 'permanent' },
+        actions: [{ action_name: 'start_call', can_perform_action: true, limits: [] }],
+      }), { status: 200 })
+    }))
+
+    const permission = await getWhatsAppCallPermission({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      recipient: 'PE.123456789',
+    })
+
+    expect(requestedUrl).toContain('/call_permissions?recipient=PE.123456789')
+    expect(permission.status).toBe('permanent')
+    expect(hasActiveWhatsAppCallPermission(permission)).toBe(true)
+  })
+
+  it('fails closed for missing permission, absent action, expired permission and malformed inputs', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      permission: { status: 'no_permission' },
+      actions: [],
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const permission = await getWhatsAppCallPermission({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      userWaId: '51911111111',
+    })
+    expect(hasActiveWhatsAppCallPermission(permission)).toBe(false)
+    expect(canPerformWhatsAppCallAction(permission, 'start_call')).toBe(false)
+
+    await expect(getWhatsAppCallPermission({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+    })).rejects.toThrow(/exactly one/)
+    await expect(getWhatsAppCallPermission({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      userWaId: '51911111111',
+      recipient: 'PE.123456789',
+    })).rejects.toThrow(/exactly one/)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('sends a free-form call-permission request to a phone number', async () => {
+    let captured: { url: string; init: RequestInit } | null = null
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init: RequestInit) => {
+      captured = { url, init }
+      return new Response(JSON.stringify({
+        messaging_product: 'whatsapp',
+        messages: [{ id: 'wamid.permission-request-01' }],
+      }), { status: 200 })
+    }))
+
+    const result = await sendWhatsAppCallPermissionRequest({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      messagingAccountId: BASE.messagingAccountId,
+      to: '+51911111111',
+      bodyText: '¿Nos autorizas a llamarte para atender tu consulta?',
+    })
+
+    expect(result).toEqual({ messageId: 'wamid.permission-request-01' })
+    expect(captured?.url).toBe(
+      'https://graph.facebook.com/' + META_CALLING_API_VERSION + '/740434745820831/messages',
+    )
+    expect(JSON.parse(String(captured?.init.body))).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      messaging_account_id: BASE.messagingAccountId,
+      to: '51911111111',
+      type: 'interactive',
+      interactive: {
+        type: 'call_permission_request',
+        action: { name: 'call_permission_request' },
+        body: { text: '¿Nos autorizas a llamarte para atender tu consulta?' },
+      },
+    })
+  })
+
+  it('supports a BSUID permission request and rejects ambiguous recipients', async () => {
+    let body: Record<string, unknown> | null = null
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      body = JSON.parse(String(init.body))
+      return new Response(JSON.stringify({ messages: [{ id: 'wamid.permission-request-02' }] }), { status: 200 })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    await sendWhatsAppCallPermissionRequest({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      recipient: 'PE.123456789',
+      bodyText: 'Permítenos llamarte para ayudarte.',
+    })
+    expect(body).toMatchObject({ recipient: 'PE.123456789', type: 'interactive' })
+    expect(body).not.toHaveProperty('to')
+
+    await expect(sendWhatsAppCallPermissionRequest({
+      phoneNumberId: BASE.phoneNumberId,
+      accessToken: BASE.accessToken,
+      to: '51911111111',
+      recipient: 'PE.123456789',
+      bodyText: 'Permítenos llamarte.',
+    })).rejects.toThrow(/exactly one/)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
   })
 })
