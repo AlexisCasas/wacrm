@@ -46,7 +46,21 @@ export async function GET(request: Request) {
       Boolean(data.session_sdp_expires_at && new Date(data.session_sdp_expires_at).getTime() > now)
 
     if (!claimValid) return NextResponse.json({ error: 'Call claim is missing or expired' }, { status: 403 })
-    if (!signalValid) return NextResponse.json({ error: 'Call signal is unavailable or expired' }, { status: 410 })
+    if (!signalValid) {
+      if (data.session_sdp_expires_at && new Date(data.session_sdp_expires_at).getTime() <= now) {
+        await supabaseAdmin()
+          .from('whatsapp_call_sessions')
+          .update({
+            session_sdp_type: null,
+            session_sdp_ciphertext: null,
+            session_sdp_expires_at: null,
+          })
+          .eq('id', sessionId)
+          .eq('account_id', accountId)
+          .eq('claim_token', claimToken)
+      }
+      return NextResponse.json({ error: 'Call signal is unavailable or expired' }, { status: 410 })
+    }
 
     let sdp: string
     try {
