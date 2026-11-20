@@ -4,8 +4,8 @@ set -euo pipefail
 # Run after `supabase db start` and `supabase db reset --local`.
 # Two independent PostgreSQL sessions race for one synthetic call. Exactly
 # one agent must win the atomic UPDATE lease; the loser must receive false.
-# All fixtures are deleted by the EXIT trap. No hosted/production database
-# URL is accepted: this script only reads the local Supabase DB_URL.
+# All fixtures are deleted by the EXIT trap. Only the local Supabase DB_URL
+# is accepted; this script must never target Supabase Cloud or production.
 
 if ! command -v psql >/dev/null 2>&1; then
   echo "CALL02_CONCURRENCY=FAIL (psql client missing)" >&2
@@ -26,7 +26,19 @@ call_id="wacid.qa-concurrency"
 tmp_dir="$(mktemp -d)"
 
 cleanup() {
-  psql "$db_url" -X -v ON_ERROR_STOP=1 -q <<'SQL'
+  psql "$db_url" -X -v ON_ERROR_STOP=1 -q <<SQL >/dev/null 2>&1 || true
+DELETE FROM public.whatsapp_call_events WHERE call_id = '$call_id';
+DELETE FROM public.whatsapp_call_sessions WHERE call_id = '$call_id';
+DELETE FROM public.accounts WHERE owner_user_id IN ('$user_a', '$user_b');
+DELETE FROM auth.users WHERE id IN ('$user_a', '$user_b');
+SQL
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+# Auth signup trigger creates each synthetic account and profile. Agent B is
+# then moved into A's account with the real membership enum/columns.
+psql "$db_url" -X -v ON_ERROR_STOP=1 -q <<'SQL'
 DO $qa$
 DECLARE
   v_account uuid;
@@ -74,8 +86,7 @@ if [[ -z "$account_id" ]]; then
   exit 1
 fi
 
-# A small common delay makes both independent sessions contend for the same
-# row rather than relying on shell process scheduling to overlap by chance.
+# A common delay makes both independent sessions contend for the same row.
 psql "$db_url" -X -v ON_ERROR_STOP=1 -qAtc \
   "SELECT pg_sleep(0.25); SELECT public.whatsapp_call_claim('$account_id', '$phone_number_id', '$call_id', '$user_a')" \
   >"$tmp_dir/agent-a.out" &
@@ -87,8 +98,8 @@ pid_b=$!
 wait "$pid_a"
 wait "$pid_b"
 
-result_a="$(tail -n 1 "$tmp_dir/agent-a.out" | tr -d '\r[:space:]')"
-result_b="$(tail -n 1 "$tmp_dir/agent-b.out" | tr -d '\r[:space:]')"
+result_a="$(tail -n 1 "$tmp_dir/agent-a.out" | tr -d '[:space:]')"
+result_b="$(tail -n 1 "$tmp_dir/agent-b.out" | tr -d '[:space:]')"
 if ! { [[ "$result_a" == "t" && "$result_b" == "f" ]] || [[ "$result_a" == "f" && "$result_b" == "t" ]]; }; then
   echo "CALL02_CONCURRENCY=FAIL (race results agent-a=$result_a agent-b=$result_b)" >&2
   exit 1
@@ -100,7 +111,7 @@ if [[ "$winner" != "$user_a" && "$winner" != "$user_b" ]]; then
   exit 1
 fi
 
-# Verify lease expiry transfers ownership and the new owner can release it.
+# Verify an expired lease can be claimed by the other agent and released.
 other="$user_a"
 [[ "$winner" == "$user_a" ]] && other="$user_b"
 psql "$db_url" -X -v ON_ERROR_STOP=1 -q <<SQL
@@ -108,11 +119,13 @@ UPDATE public.whatsapp_call_sessions
 SET claim_expires_at = now() - interval '1 second'
 WHERE phone_number_id = '$phone_number_id' AND call_id = '$call_id';
 SQL
-release_claim="$(psql "$db_url" -X -v ON_ERROR_STOP=1 -qAtc "SELECT public.whatsapp_call_claim('$account_id', '$phone_number_id', '$call_id', '$other')")"
-if [[ "$release_claim" != "t" ]]; then
+
+claim_after_expiry="$(psql "$db_url" -X -v ON_ERROR_STOP=1 -qAtc "SELECT public.whatsapp_call_claim('$account_id', '$phone_number_id', '$call_id', '$other')")"
+if [[ "$claim_after_expiry" != "t" ]]; then
   echo "CALL02_CONCURRENCY=FAIL (expired lease was not claimable)" >&2
   exit 1
 fi
+
 release_result="$(psql "$db_url" -X -v ON_ERROR_STOP=1 -qAtc "SELECT public.whatsapp_call_release('$account_id', '$phone_number_id', '$call_id', '$other')")"
 if [[ "$release_result" != "t" ]]; then
   echo "CALL02_CONCURRENCY=FAIL (claim owner could not release lease)" >&2
