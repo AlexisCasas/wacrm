@@ -31,7 +31,7 @@ export function ShalomSection({ orderId }: { orderId: string }) {
   const locale = useLocale();
   const errorText = useErrorText();
   const [view, setView] = useState<View>({ kind: "loading" });
-  const [busy, setBusy] = useState<null | "register" | "correct" | "refresh" | "stop" | "ack" | "message">(null);
+  const [busy, setBusy] = useState<null | "register" | "correct" | "refresh" | "stop" | "ack" | "message" | "voucher">(null);
   const [numero, setNumero] = useState("");
   const [codigo, setCodigo] = useState("");
   const [correcting, setCorrecting] = useState(false);
@@ -137,6 +137,9 @@ export function ShalomSection({ orderId }: { orderId: string }) {
   const episodeMessages = (panel.messages ?? []).filter((m) => m.destination_episode === s.destination_episode);
   const arrivalMessage = episodeMessages.find((m) => m.kind === "destination_arrival_customer") ?? null;
   const episodeMessage = episodeMessages.find((m) => m.kind !== "destination_arrival_customer") ?? null;
+  // P0 parity: the voucher notice of the CURRENT guide (manual, one per guide). A guide corrected after a send is a new notice.
+  const voucherMessage = (panel.voucher_messages ?? []).find((m) => m.identifier_version === s.identifier_version) ?? null;
+  const canSendVoucher = !closed && voucherMessage === null;
   const actionableMessages = [arrivalMessage, episodeMessage].filter((m): m is NonNullable<typeof m> => m !== null && (m.status === "failed" || m.status === "uncertain"));
   const episodeAlert = panel.alerts.find((a) => a.destination_episode === s.destination_episode) ?? null;
   const showPickup = (s.pickup_state ?? "none") !== "none" || (s.logistic_status === "at_destination" && s.tracking_state !== "stopped");
@@ -271,6 +274,8 @@ export function ShalomSection({ orderId }: { orderId: string }) {
         <dd className="text-foreground">{when(s.last_polled_at)}</dd>
         <dt className="text-muted-foreground">{t("lastUpdate")}</dt>
         <dd className="text-foreground">{when(s.status_changed_at)}</dd>
+        <dt className="text-muted-foreground">{t("voucherNotice")}</dt>
+        <dd className="text-foreground">{t(`voucherStatus.${voucherMessage?.status === "claimed" || voucherMessage?.status === "sending" ? "sending" : voucherMessage?.status ?? "none"}`)}</dd>
         {!closed && s.tracking_state !== "requires_attention" ? (
           <>
             <dt className="text-muted-foreground">{t("nextPoll")}</dt>
@@ -308,6 +313,27 @@ export function ShalomSection({ orderId }: { orderId: string }) {
               {t("stop")}
             </Button>
           ) : null}
+        </div>
+      ) : null}
+
+      {canSendVoucher || voucherMessage?.status === "failed" || voucherMessage?.status === "uncertain" ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {voucherMessage === null ? (
+            <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("voucher", base, { action: "send_voucher" }, t("voucherSentToast"))}>
+              {busy === "voucher" ? <Loader2 className="size-3 animate-spin" /> : null}
+              {t("sendVoucher")}
+            </Button>
+          ) : voucherMessage.status === "failed" ? (
+            <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("voucher", base, { action: "retry_voucher", message_id: voucherMessage.id }, t("voucherSentToast"))}>
+              {busy === "voucher" ? <Loader2 className="size-3 animate-spin" /> : null}
+              {t("retryVoucher")}
+            </Button>
+          ) : (
+            <>
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("voucher", base, { action: "resolve_voucher", message_id: voucherMessage.id, resolution: "confirmed_sent" }, t("resolvedToast"))}>{t("resolveSent")}</Button>
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={busy !== null} onClick={() => void run("voucher", base, { action: "resolve_voucher", message_id: voucherMessage.id, resolution: "confirmed_not_sent" }, t("resolvedToast"))}>{t("resolveNotSent")}</Button>
+            </>
+          )}
         </div>
       ) : null}
 

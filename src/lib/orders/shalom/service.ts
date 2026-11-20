@@ -176,6 +176,18 @@ export interface ShipmentAlertView {
   resolved_reason: string | null
 }
 
+/** The voucher notice (P0 parity) of the current guide: one row per guide, sent by a person. */
+export interface VoucherMessageView {
+  id: string
+  identifier_version: number
+  status: 'claimed' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'skipped'
+  attempt: number
+  error_code: string | null
+  resolution: string | null
+  created_at: string
+  finished_at: string | null
+}
+
 export interface ShipmentMessageView {
   id: string
   destination_episode: number
@@ -208,6 +220,7 @@ export interface ShipmentPanel {
   polls: ShipmentPollView[]
   /** PR-05A: the day-15 customer message of the CURRENT episode first (newest episode first). */
   messages: ShipmentMessageView[]
+  voucher_messages: VoucherMessageView[]
   /** Complete calendar days En destino (null when not En destino). */
   days_at_destination: number | null
   can_stop: boolean
@@ -231,15 +244,16 @@ export async function getShipmentPanel(ctx: LogisticsCaller, orderId: string, ca
   if (orderError) return fail(500, 'internal_error')
   if (!order) return fail(404, 'not_found')
 
-  const [logistics, shipment, events, alerts, polls, messages] = await Promise.all([
+  const [logistics, shipment, events, alerts, polls, messages, voucherMessages] = await Promise.all([
     ctx.supabase.from('order_logistics').select('status').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_shipments').select(SHIPMENT_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_shipment_events').select('id, event_type, from_status, to_status, source, actor_name, detail, created_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(40),
     ctx.supabase.from('order_shipment_alerts').select('id, destination_episode, status, due_date, created_at, acknowledged_at, resolved_at, resolved_reason').eq('account_id', ctx.accountId).eq('order_id', orderId).order('destination_episode', { ascending: false }).limit(10),
     ctx.supabase.from('order_shipment_polls').select('id, trigger, started_at, outcome, http_status, latency_ms, applied, ignored_reason').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(8),
     ctx.supabase.from('order_shipment_messages').select('id, destination_episode, kind, status, attempt, error_code, next_attempt_at, resolution, created_at, finished_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('destination_episode', { ascending: false }).limit(10),
+    ctx.supabase.from('order_shipment_voucher_messages').select('id, identifier_version, status, attempt, error_code, resolution, created_at, finished_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('identifier_version', { ascending: false }).limit(5),
   ])
-  if (logistics.error || shipment.error || events.error || alerts.error || polls.error || messages.error) {
+  if (logistics.error || shipment.error || events.error || alerts.error || polls.error || messages.error || voucherMessages.error) {
     console.error('[shalom] panel read failed')
     return fail(500, 'internal_error')
   }
@@ -255,6 +269,7 @@ export async function getShipmentPanel(ctx: LogisticsCaller, orderId: string, ca
       alerts: (alerts.data ?? []) as ShipmentAlertView[],
       polls: (polls.data ?? []) as ShipmentPollView[],
       messages: (messages.data ?? []) as ShipmentMessageView[],
+      voucher_messages: (voucherMessages.data ?? []) as VoucherMessageView[],
       days_at_destination: view?.logistic_status === 'at_destination' ? daysAtDestination(view.destination_entered_at) : null,
       can_stop: canStop,
     },

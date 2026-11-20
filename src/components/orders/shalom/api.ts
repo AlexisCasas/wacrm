@@ -77,6 +77,17 @@ export interface ShipmentMessageView {
   finished_at: string | null
 }
 
+export interface VoucherMessageView {
+  id: string
+  identifier_version: number
+  status: 'claimed' | 'sending' | 'sent' | 'failed' | 'uncertain' | 'skipped'
+  attempt: number
+  error_code: string | null
+  resolution: string | null
+  created_at: string
+  finished_at: string | null
+}
+
 export interface ShipmentPanelData {
   eligible: boolean
   shipment: ShipmentView | null
@@ -84,6 +95,7 @@ export interface ShipmentPanelData {
   alerts: ShipmentAlertView[]
   polls: ShipmentPollView[]
   messages: ShipmentMessageView[]
+  voucher_messages?: VoucherMessageView[]
   days_at_destination: number | null
   can_stop: boolean
 }

@@ -385,6 +385,19 @@
       ],
       "status": "pending",
       "note": "P0 parity patch (feat/p0-parity-balance-voucher) unit 1: opt-in balance variants of the packaging / arrival templates (packaging_balance_template_*, arrival_balance_template_*) and the per-account customer_payment_instructions. Additive, nullable columns only; nothing loaded, nothing activated."
+    },
+    {
+      "new_version": "20261205000003",
+      "new_file": "20261205000003_shipment_voucher_message.sql",
+      "sha256": "83e18dad6baf232acf30ecd277ad07abdf7fe329f15a441810d5d5384276d2fb",
+      "depends_on": [
+        "20261204000003",
+        "20261204000009",
+        "20261204000010",
+        "20261205000001"
+      ],
+      "status": "pending",
+      "note": "P0 parity patch (feat/p0-parity-balance-voucher) unit 2: manual voucher notice (voucher_envio_shalom, UTILITY, header DOCUMENT) with its own ledger order_shipment_voucher_messages (one per guide), settings voucher_message_template_*, human-only retry/resolve RPCs. Additive; inert until destination_customer_message_enabled and a voucher template are configured."
     }
   ]
 }
