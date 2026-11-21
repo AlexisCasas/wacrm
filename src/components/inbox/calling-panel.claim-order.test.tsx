@@ -27,6 +27,7 @@ const mediaStream = {
 class FakePeerConnection extends EventTarget {
   static instances: FakePeerConnection[] = [];
   static autoConnect = true;
+  static iceDelayMs = 0;
   connectionState: RTCPeerConnectionState = "new";
   iceGatheringState: RTCIceGatheringState = "complete";
   localDescription: RTCSessionDescriptionInit | null = null;
@@ -52,6 +53,13 @@ class FakePeerConnection extends EventTarget {
   }
   async setLocalDescription(description: RTCSessionDescriptionInit) {
     this.localDescription = description;
+    if (FakePeerConnection.iceDelayMs > 0) {
+      this.iceGatheringState = "gathering";
+      setTimeout(() => {
+        this.iceGatheringState = "complete";
+        this.dispatchEvent(new Event("icegatheringstatechange"));
+      }, FakePeerConnection.iceDelayMs);
+    }
   }
   connect() {
     this.connectionState = "connected";
@@ -93,6 +101,8 @@ type PostHandler = (body: Record<string, unknown>, nth: number) => Response | Pr
 
 interface Harness {
   events: string[];
+  /** Date.now() of every POST, per action. */
+  times: Record<string, number[]>;
   posts: Array<{ action: string; body: Record<string, unknown> }>;
   count: (action: string) => number;
   gumCount: () => number;
@@ -106,6 +116,7 @@ function installHarness(options: {
   gum?: () => Promise<MediaStream>;
 } = {}): Harness {
   const events: string[] = [];
+  const times: Record<string, number[]> = {};
   const posts: Harness["posts"] = [];
   let detailCalls = 0;
   const offerMs = options.offerMs ?? 50_000;
@@ -121,6 +132,7 @@ function installHarness(options: {
       const body = JSON.parse(String(init.body)) as Record<string, unknown>;
       const action = String(body.action);
       events.push(action);
+      (times[action] ??= []).push(Date.now());
       posts.push({ action, body });
       const nth = posts.filter((post) => post.action === action).length;
       const handler = options.post?.[action];
@@ -145,6 +157,7 @@ function installHarness(options: {
 
   return {
     events,
+    times,
     posts,
     count: (action) => posts.filter((post) => post.action === action).length,
     gumCount: () => events.filter((event) => event === "gum").length,
@@ -188,6 +201,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     vi.clearAllMocks();
     FakePeerConnection.instances = [];
     FakePeerConnection.autoConnect = true;
+    FakePeerConnection.iceDelayMs = 0;
     mediaTrack.enabled = false;
     mediaTrack.stop.mockClear();
     vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
@@ -327,6 +341,8 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     expect(harness.count("release")).toBe(1);
     expect(screen.getByRole("status").textContent).toBe("microphoneTimedOut");
     expect(harness.count("terminate")).toBe(0);
+    // No heartbeat exists while the offer is read or the dialog is open.
+    expect(harness.count("renew_claim")).toBe(0);
 
     // The user finally grants the dialog: tracks must be stopped, nothing built.
     await act(async () => { grant(mediaStream); });
@@ -435,9 +451,10 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     expect(FakePeerConnection.instances).toHaveLength(0);
   });
 
-  it("renews on the 30 s heartbeat while waiting for the WebRTC connection, then renews again before accept", async () => {
+  it("starts the heartbeat only after the post-permission renew, then renews before accept", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     FakePeerConnection.autoConnect = false;
+    FakePeerConnection.iceDelayMs = 10_000; // slow ICE: the negotiation outlasts one heartbeat period
     let grant: (stream: MediaStream) => void = () => {};
     const harness = installHarness({
       offerMs: 120_000,
@@ -445,26 +462,34 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     });
     render(<CallingPanel conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButtonFake());
+    const t0 = Date.now();
     await flush();
-    await advance(20_000); // the permission dialog takes 20 s
+
+    await advance(20_000); // the permission dialog is open for 20 s
+    expect(harness.count("renew_claim")).toBe(0); // no heartbeat while the dialog is open
     await act(async () => { grant(mediaStream); });
+    await flush(); // T = 20 s: renew right after the permission, heartbeat starts
+    expect(harness.count("renew_claim")).toBe(1);
+    expect(harness.count("pre_accept")).toBe(0); // still gathering ICE
+
+    await advance(10_000); // T = 30 s: ICE done, pre_accept
     await flush();
     expect(harness.count("pre_accept")).toBe(1);
-    expect(harness.count("renew_claim")).toBe(1); // right after the permission
-
-    await advance(10_000); // t = 30 s since the claim: heartbeat tick
+    await advance(20_000); // T = 50 s: first heartbeat beat (20 s + 30 s)
     await flush();
     expect(harness.count("renew_claim")).toBe(2);
     expect(harness.count("accept")).toBe(0);
 
+    await advance(5_000); // T = 55 s: connection established
     await act(async () => { FakePeerConnection.instances[0].connect(); });
     await flush();
-    expect(harness.count("renew_claim")).toBe(3); // renewed before accept
+    expect(harness.count("renew_claim")).toBe(3); // mandatory renew before accept
     expect(harness.count("accept")).toBe(1);
     expect(harness.events.slice(-2)).toEqual(["renew_claim", "accept"]);
     expect(screen.getByText("00:00")).toBeTruthy();
+    expect((harness.times.renew_claim ?? []).map((time) => Math.round((time - t0) / 1000))).toEqual([20, 50, 55]);
 
-    // Heartbeat is stopped once the call is accepted.
+    // The heartbeat stops once the call is accepted.
     await advance(120_000);
     expect(harness.count("renew_claim")).toBe(3);
   });
@@ -472,6 +497,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
   it("stops locally without terminate when the heartbeat reports the claim lost during negotiation", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
     FakePeerConnection.autoConnect = false;
+    FakePeerConnection.iceDelayMs = 10_000;
     let grant: (stream: MediaStream) => void = () => {};
     const harness = installHarness({
       offerMs: 120_000,
@@ -486,9 +512,11 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     await advance(20_000);
     await act(async () => { grant(mediaStream); });
     await flush();
+    await advance(10_000);
+    await flush();
     expect(harness.count("pre_accept")).toBe(1);
 
-    await advance(10_000); // heartbeat at +30 s is refused (409)
+    await advance(20_000); // heartbeat beat at 20 s + 30 s is refused (409)
     await flush();
 
     expect(screen.getByRole("status").textContent).toBe("claimLost");
@@ -567,5 +595,97 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
       expect(harness.count("accept"), name).toBe(0);
       expect(FakePeerConnection.instances, name).toHaveLength(0);
     }
+  });
+
+  describe("never acts on a call that now belongs to another agent", () => {
+    const claimedByOther = () => json({
+      call: { ...incoming, claimed_by_user_id: "agent-b", claim_expires_at: new Date(Date.now() + 60_000).toISOString() },
+      session: null,
+      claim_owned_by_me: false,
+    });
+    const mineAgain = () => json({
+      call: { ...incoming, claimed_by_user_id: "agent-a", claim_expires_at: new Date(Date.now() + 60_000).toISOString() },
+      session: null,
+      claim_owned_by_me: true,
+    });
+    const nobody = () => json({
+      call: { ...incoming, claimed_by_user_id: null, claim_expires_at: null },
+      session: null,
+      claim_owned_by_me: false,
+    });
+    const firstDetail = () => json({
+      call: { ...incoming, session_sdp_expires_at: new Date(Date.now() + 120_000).toISOString() },
+      session: { sdp_type: "offer", sdp: "v=0\\r\\n" },
+      claim_owned_by_me: true,
+    });
+
+    async function abortDuringDialogAfterLeaseExpired(later: () => Response) {
+      vi.useFakeTimers({ toFake: ["Date"] }); // real timers for RTL; only the clock jumps
+      let grant: (stream: MediaStream) => void = () => {};
+      const harness = installHarness({
+        gum: () => new Promise<MediaStream>((resolve) => { grant = resolve; }),
+        detail: (nth) => (nth === 1 ? firstDetail() : later()),
+      });
+      const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+      fireEvent.click(await acceptButton());
+      await waitFor(() => expect(harness.gumCount()).toBe(1));
+      vi.setSystemTime(Date.now() + 100_000); // the 90 s lease lapsed while the dialog sat open
+      view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+      return { harness, grant: () => act(async () => { grant(mediaStream); }) };
+    }
+
+    it("does not release an expired lease that another agent now holds (an admin release would clear it)", async () => {
+      const { harness, grant } = await abortDuringDialogAfterLeaseExpired(claimedByOther);
+      await waitFor(() => expect(harness.events.filter((event) => event === "detail")).toHaveLength(2));
+      expect(harness.count("release")).toBe(0);
+      expect(harness.count("terminate")).toBe(0);
+      await grant();
+      expect(mediaTrack.stop).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not release when ownership cannot be read after the lease expired", async () => {
+      const { harness } = await abortDuringDialogAfterLeaseExpired(() => { throw new TypeError("Failed to fetch"); });
+      await waitFor(() => expect(harness.events.filter((event) => event === "detail")).toHaveLength(2));
+      expect(harness.count("release")).toBe(0);
+    });
+
+    it("releases an expired lease only after reading that it is still mine", async () => {
+      const { harness } = await abortDuringDialogAfterLeaseExpired(mineAgain);
+      await waitFor(() => expect(harness.count("release")).toBe(1));
+      expect(harness.events.indexOf("release")).toBeGreaterThan(harness.events.lastIndexOf("detail") - 1);
+    });
+
+    async function abortAfterPreAcceptWithStaleLease(later: () => Response) {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      FakePeerConnection.autoConnect = false;
+      const harness = installHarness({ detail: (nth) => (nth === 1 ? firstDetail() : later()) });
+      const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+      fireEvent.click(await acceptButton());
+      await waitFor(() => expect(harness.count("pre_accept")).toBe(1));
+      vi.setSystemTime(Date.now() + 100_000);
+      view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+      return harness;
+    }
+
+    it("does not terminate after pre_accept when another agent holds the call (lease expired for me)", async () => {
+      const harness = await abortAfterPreAcceptWithStaleLease(claimedByOther);
+      await waitFor(() => expect(harness.events.filter((event) => event === "detail")).toHaveLength(2));
+      await waitFor(() => expect(FakePeerConnection.instances[0].closed).toBe(true));
+      expect(harness.count("terminate")).toBe(0);
+      expect(harness.count("release")).toBe(0);
+    });
+
+    it("does not terminate after pre_accept when ownership cannot be read", async () => {
+      const harness = await abortAfterPreAcceptWithStaleLease(() => { throw new TypeError("Failed to fetch"); });
+      await waitFor(() => expect(FakePeerConnection.instances[0].closed).toBe(true));
+      await waitFor(() => expect(harness.events.filter((event) => event === "detail")).toHaveLength(2));
+      expect(harness.count("terminate")).toBe(0);
+    });
+
+    it("still closes the call after pre_accept when the expired lease has no new owner", async () => {
+      const harness = await abortAfterPreAcceptWithStaleLease(nobody);
+      await waitFor(() => expect(harness.count("terminate")).toBe(1));
+      expect(harness.count("release")).toBe(0);
+    });
   });
 });

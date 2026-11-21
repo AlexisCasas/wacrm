@@ -202,11 +202,11 @@ Cierra H1: el agente que pierde la carrera por una llamada entrante **nunca** re
 1. Token de operación (`AcceptOperation`): único dueño del claim, los medios y los temporizadores del intento.
 2. Estado `claiming`.
 3. `claim`. Un 4xx definitivo (409, 403, 404…) termina sin tocar el micrófono ni liberar nada.
-4. Claim confirmado; arranca el heartbeat.
+4. Claim confirmado (sin heartbeat todavía).
 5. `GET` del detalle: valida la oferta SDP y `claim_owned_by_me`.
 6. Vigencia: `timeout_mic = min(30 s, expiración_SDP − ahora − 15 s)`. Si es menor de 5 s (o la expiración es desconocida) no se pide micrófono, se libera el claim y se muestra `offerExpiringSoon`.
 7. Estado `requesting-media`; un único `getUserMedia` con ese timeout.
-8. `renew_claim` inmediatamente después del permiso (un reintento ante error transitorio).
+8. `renew_claim` inmediatamente después del permiso (un reintento ante error transitorio). Si falla, se detienen los tracks y se aborta. **Solo después arranca el heartbeat**: no existe durante la lectura de la oferta ni el diálogo de micrófono.
 9. Se revalida que la conversación no cambió.
 10. `PeerConnection`, 11. negociación WebRTC, 12. `pre_accept`.
 13. Espera de conexión (el heartbeat sigue activo).
@@ -215,7 +215,7 @@ Cierra H1: el agente que pierde la carrera por una llamada entrante **nunca** re
 
 ### Heartbeat y lease
 
-El lease del servidor es de 90 s y la oferta SDP entrante vive 60 s desde el webhook. El cliente renueva cada 30 s mientras dura el intento (se detiene al terminar o abortar). Un 409/403/404 equivale a claim perdido. Los fallos transitorios (red, 429, 5xx) solo cuentan como pérdida cuando la última renovación confirmada está a 5 s de caducar.
+El lease del servidor es de 90 s y la oferta SDP entrante vive 60 s desde el webhook. Tras la renovación posterior al permiso, el cliente renueva cada 30 s mientras dura el intento (se detiene al aceptar o abortar). El diálogo (máx. 30 s) cabe dentro de un lease sin heartbeat. Un 409/403/404 equivale a claim perdido. Los fallos transitorios (red, 429, 5xx) solo cuentan como pérdida cuando la última renovación confirmada está a 5 s de caducar.
 
 Rate limit medido: las acciones de claim/renew/release comparten el bucket `calling:<userId>` con `RATE_LIMITS.send` = **60 solicitudes/min** (no 3/min). Un accept completo usa ~7 POST y el heartbeat añade 2/min, por lo que no se separó el bucket ni se modificó `route.ts`. `route.test.ts` fija ese supuesto.
 
@@ -225,6 +225,7 @@ Rate limit medido: las acciones de claim/renew/release comparten el bucket `call
 - Claim propio y sin `pre_accept`: `release` (sin `terminate`).
 - Tras `pre_accept` y claim propio: `terminate` (cierre seguro).
 - Claim perdido: no se libera ni se termina nada (la llamada pertenece a otro agente). Tras un 409 en `pre_accept`/`accept` se lee `claim_owned_by_me`; si no es verificable se asume perdido.
+- Propiedad antes de actuar: un lease confirmado hace menos de 80 s solo puede ser propio. Si es más antiguo se lee la llamada: `release` solo si sigue siendo mío; `terminate` (tras `pre_accept`) solo si no lo tiene otro agente. Con propiedad no verificable no se hace ninguna de las dos (el servidor permite a owner/admin actuar sobre cualquier llamada, así que no puede ser la última línea de defensa).
 - Un `getUserMedia` que resuelve tarde detiene todos sus tracks de inmediato y no crea `PeerConnection`.
 - No hay actualizaciones de estado tras el desmontaje (`unmountedRef`).
 
@@ -232,9 +233,17 @@ Rate limit medido: las acciones de claim/renew/release comparten el bucket `call
 
 No se pide micrófono. Se comprueba por lectura (`claim_owned_by_me`) si el servidor adquirió el claim y solo entonces se libera. Si no puede confirmarse, **el lease de 90 s es la protección residual** (nunca se emite un `release` a ciegas: la RPC permite a owner/admin liberar claims ajenos).
 
+### Pruebas
+
+- `calling-panel.claim-order.test.tsx` (25): orden, timeouts, abortos, heartbeat y guardas de propiedad.
+- `calling-panel.concurrency.test.tsx`: dos paneles con `runtime` inyectado por panel (`fetch`, `getUserMedia`, `PeerConnection`); el ganador hace claim 200, 1 `getUserMedia`, 1 `PeerConnection`, 1 `pre_accept` y 1 `accept`; el perdedor 409 y cero de todo lo demás.
+- `calling-claim-limits.test.ts`: ata las constantes del cliente a los valores reales (lease 90 s en las RPC y la ruta, SDP 60 s, 60/min).
+- `CallingPanel` acepta la prop opcional `runtime` (solo para tests; por defecto usa los globales del navegador).
+
 ### Riesgos residuales
 
 - Mismo agente en dos pestañas: el claim es idempotente para el mismo usuario y ambas pueden continuar. Requiere un token de claim en servidor (migración) y queda fuera de esta fase.
 - La vigencia de la oferta usa el reloj del navegador; el margen de 15 s absorbe desfases de segundos.
 - `getUserMedia` no es cancelable: el diálogo puede seguir abierto tras abortar; sus tracks se detienen si se concede.
-- Pendiente: validación de navegador en QA (Firefox/Chromium con micrófono falso) antes de cualquier despliegue.
+- Pendiente: validación de navegador en QA (Firefox/Chromium con micrófono falso) y build de Next en un entorno con memoria suficiente antes de cualquier despliegue.
+- Un owner/admin puede terminar o liberar cualquier llamada en el servidor; el cliente ya no lo hace sobre llamadas ajenas, pero la ruta no lo impide (sin cambios por restricción de alcance).

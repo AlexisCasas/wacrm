@@ -74,6 +74,44 @@ const OFFER_SAFETY_MARGIN_MS = 15_000;
 // Below this window a permission dialog cannot realistically be answered.
 const MIN_MIC_WINDOW_MS = 5_000;
 const RENEW_RETRIES = 1;
+// A lease confirmed this recently cannot belong to anyone else: the claim RPC
+// only hands a call to another agent once the lease has expired.
+const LEASE_FRESH_MARGIN_MS = 10_000;
+
+/** Exposed so tests can pin the timing contract to the server limits. */
+export const CALLING_ACCEPT_LIMITS = {
+  claimLeaseMs: CLAIM_LEASE_MS,
+  heartbeatMs: CLAIM_HEARTBEAT_MS,
+  micTimeoutMaxMs: MIC_TIMEOUT_MAX_MS,
+  offerSafetyMarginMs: OFFER_SAFETY_MARGIN_MS,
+  minMicWindowMs: MIN_MIC_WINDOW_MS,
+} as const;
+
+/**
+ * Browser services used by one panel instance. Defaults to the real globals;
+ * tests inject per-panel instrumentation so two panels can be told apart.
+ */
+export interface CallingPanelRuntime {
+  fetch: typeof fetch;
+  getUserMedia: (constraints: MediaStreamConstraints) => Promise<MediaStream>;
+  createPeerConnection: () => RTCPeerConnection;
+}
+
+function resolveRuntime(override?: Partial<CallingPanelRuntime>) {
+  const fetchImpl: typeof fetch = override?.fetch ?? ((input, init) => fetch(input, init));
+  return {
+    fetch: fetchImpl,
+    post: (action: string, values: Record<string, unknown> = {}) => postCallAction(action, values, fetchImpl),
+    detail: (callId: string) => getCallDetail(callId, fetchImpl),
+    hasMicrophoneApi: () => Boolean(override?.getUserMedia ?? navigator.mediaDevices?.getUserMedia),
+    getUserMedia: (constraints: MediaStreamConstraints) => (
+      override?.getUserMedia
+        ? override.getUserMedia(constraints)
+        : navigator.mediaDevices.getUserMedia(constraints)
+    ),
+    createPeerConnection: override?.createPeerConnection ?? (() => createPeerConnection()),
+  };
+}
 
 type AcceptAbortReason = "conversation-changed" | "unmount" | "claim-lost";
 type AcceptStepCode = "offer-expiring" | "mic-timeout" | "claim-lost";
@@ -186,8 +224,12 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   return data as Record<string, unknown>;
 }
 
-async function postCallAction(action: string, values: Record<string, unknown> = {}) {
-  const response = await fetch("/api/whatsapp/calls", {
+async function postCallAction(
+  action: string,
+  values: Record<string, unknown> = {},
+  fetchImpl: typeof fetch = (input, init) => fetch(input, init),
+) {
+  const response = await fetchImpl("/api/whatsapp/calls", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
@@ -196,8 +238,11 @@ async function postCallAction(action: string, values: Record<string, unknown> = 
   return readJson(response);
 }
 
-async function getCallDetail(callId: string): Promise<CallDetail> {
-  const response = await fetch(
+async function getCallDetail(
+  callId: string,
+  fetchImpl: typeof fetch = (input, init) => fetch(input, init),
+): Promise<CallDetail> {
+  const response = await fetchImpl(
     `/api/whatsapp/calls?call_id=${encodeURIComponent(callId)}`,
     { cache: "no-store", credentials: "same-origin" },
   );
@@ -289,10 +334,13 @@ function formatCallDate(value?: string): string {
 interface CallingPanelProps {
   conversation: Conversation | null;
   contact: Contact | null;
+  /** Test seam: per-panel fetch / microphone / PeerConnection. Defaults to the browser globals. */
+  runtime?: Partial<CallingPanelRuntime>;
 }
 
-export function CallingPanel({ conversation, contact }: CallingPanelProps) {
+export function CallingPanel({ conversation, contact, runtime: runtimeOverride }: CallingPanelProps) {
   const t = useTranslations("Inbox.calling");
+  const [runtime] = useState(() => resolveRuntime(runtimeOverride));
   const { profile } = useAuth();
   const canUseCalling = useCan("send-messages");
   const [uiState, setUiState] = useState<UiState>("idle");
@@ -334,7 +382,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     }
     setPermissionLoading(true);
     try {
-      const data = await postCallAction("check_permission", { contact_id: contact.id });
+      const data = await runtime.post("check_permission", { contact_id: contact.id });
       setPermission(data.permission as CallPermission);
       setPermissionError(null);
     } catch (error) {
@@ -343,7 +391,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     } finally {
       setPermissionLoading(false);
     }
-  }, [canUseCalling, contact?.id, isPilotContact, t]);
+  }, [runtime, canUseCalling, contact?.id, isPilotContact, t]);
 
   const setCall = useCallback((call: CallSummary | null) => {
     activeCallRef.current = call;
@@ -404,10 +452,10 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   }, [t]);
 
   const requestMicrophone = useCallback(async () => {
-    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    if (!window.isSecureContext || !runtime.hasMicrophoneApi()) {
       throw new Error(t("secureContextRequired"));
     }
-    const stream = await navigator.mediaDevices.getUserMedia({
+    const stream = await runtime.getUserMedia({
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
@@ -420,7 +468,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     });
     localStreamRef.current = stream;
     return stream;
-  }, [t]);
+  }, [runtime, t]);
 
   const addLocalAudio = useCallback((peer: RTCPeerConnection, stream: MediaStream) => {
     const track = stream.getAudioTracks()[0];
@@ -431,7 +479,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
   const waitForRemoteAnswer = useCallback(async (callId: string) => {
     const deadline = Date.now() + SIGNALING_TIMEOUT_MS;
     while (Date.now() < deadline) {
-      const detail = await getCallDetail(callId);
+      const detail = await runtime.detail(callId);
       if (detail.session?.sdp_type === "answer" && detail.session.sdp) return detail.session;
       if (["failed", "terminated", "rejected"].includes(detail.call.state)) {
         throw new Error(t("callEndedBeforeAnswer"));
@@ -439,15 +487,15 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       await new Promise((resolve) => window.setTimeout(resolve, 900));
     }
     throw new Error(t("remoteAnswerTimedOut"));
-  }, [t]);
+  }, [runtime, t]);
 
   const releaseClaim = useCallback(async (callId: string) => {
     try {
-      await postCallAction("release", { call_id: callId });
+      await runtime.post("release", { call_id: callId });
     } catch {
       // A terminal webhook may already have released the lease.
     }
-  }, []);
+  }, [runtime, ]);
 
   const stopHeartbeat = useCallback((op: AcceptOperation) => {
     if (op.heartbeat !== null) {
@@ -463,14 +511,47 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
    * - after pre_accept: close the call safely with terminate;
    * - otherwise: release the lease only (no terminate).
    */
+  /**
+   * Who holds the lease right now? A lease confirmed within the last ~80 s can
+   * only be ours (the claim RPC hands a call over once the lease expires).
+   * Otherwise read the call: "other" and "unknown" must never lead to a
+   * release or terminate (owner/admin roles may act on any call server-side).
+   */
+  const inspectLeaseOwner = useCallback(async (op: AcceptOperation): Promise<"mine" | "free" | "other" | "unknown"> => {
+    if (Date.now() - op.lastRenewAt < CLAIM_LEASE_MS - LEASE_FRESH_MARGIN_MS) return "mine";
+    try {
+      const detail = await runtime.detail(op.callId);
+      if (detail.claim_owned_by_me === true) return "mine";
+      const expiresAt = Date.parse(detail.call.claim_expires_at ?? "");
+      const heldByAnother = Boolean(detail.call.claimed_by_user_id)
+        && Number.isFinite(expiresAt)
+        && expiresAt > Date.now();
+      return heldByAnother ? "other" : "free";
+    } catch {
+      return "unknown";
+    }
+  }, [runtime]);
+
+  /**
+   * Releases whatever this attempt still owns, exactly once per resource and
+   * serialised so a late claim response cannot skip its release.
+   * - claim lost / owned by someone else: never touch the call;
+   * - after pre_accept: close the call safely with terminate;
+   * - otherwise: release the lease only (no terminate).
+   */
   const finalizeAcceptClaim = useCallback((op: AcceptOperation): Promise<void> => {
     op.finalizeChain = op.finalizeChain.then(async () => {
       if (op.claimLost) return;
       if (op.preAccept) {
         if (op.terminateSent) return;
+        const owner = await inspectLeaseOwner(op);
+        if (owner === "other" || owner === "unknown") {
+          op.claimLost = true;
+          return;
+        }
         op.terminateSent = true;
         try {
-          await postCallAction("terminate", { call_id: op.callId });
+          await runtime.post("terminate", { call_id: op.callId });
         } catch (terminateError) {
           op.terminationError = terminateError instanceof Error ? terminateError.message : t("endCallFailed");
         }
@@ -478,11 +559,13 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       }
       if (op.claimed && !op.released) {
         op.released = true;
-        await releaseClaim(op.callId);
+        // Only a lease that is provably ours is released; an expired one that
+        // someone else now holds must stay untouched.
+        if ((await inspectLeaseOwner(op)) === "mine") await releaseClaim(op.callId);
       }
     });
     return op.finalizeChain;
-  }, [releaseClaim, t]);
+  }, [inspectLeaseOwner, releaseClaim, runtime, t]);
 
   /** Central abort: conversation switch, unmount and lost claim all land here. */
   const abortAccept = useCallback((reason: AcceptAbortReason) => {
@@ -514,7 +597,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     op.heartbeat = window.setInterval(() => {
       if (op.aborted || op.finished || op.renewing) return;
       op.renewing = true;
-      void postCallAction("renew_claim", { call_id: op.callId })
+      void runtime.post("renew_claim", { call_id: op.callId })
         .then(() => {
           op.lastRenewAt = Date.now();
         })
@@ -529,13 +612,13 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           op.renewing = false;
         });
     }, CLAIM_HEARTBEAT_MS);
-  }, [abortAccept, stopHeartbeat]);
+  }, [runtime, abortAccept, stopHeartbeat]);
 
   const renewClaimStrict = useCallback(async (op: AcceptOperation) => {
     let lastError: unknown;
     for (let attempt = 0; attempt <= RENEW_RETRIES; attempt += 1) {
       try {
-        await abortable(op, postCallAction("renew_claim", { call_id: op.callId }));
+        await abortable(op, runtime.post("renew_claim", { call_id: op.callId }));
         op.lastRenewAt = Date.now();
         return;
       } catch (error) {
@@ -548,12 +631,12 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       }
     }
     throw lastError;
-  }, []);
+  }, [runtime, ]);
 
   /** After a 409 once pre_accept was sent: is the claim still mine? */
   const confirmClaimOwnership = useCallback(async (op: AcceptOperation) => {
     try {
-      const detail = await getCallDetail(op.callId);
+      const detail = await runtime.detail(op.callId);
       const terminal = ["terminated", "failed", "rejected"].includes(detail.call.state);
       if (detail.claim_owned_by_me === true && !terminal) return;
     } catch {
@@ -561,7 +644,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     }
     op.claimLost = true;
     throw new AcceptStepError("claim-lost");
-  }, []);
+  }, [runtime, ]);
 
   const postAfterPreAccept = useCallback(async (
     op: AcceptOperation,
@@ -569,16 +652,16 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     values: Record<string, unknown>,
   ) => {
     try {
-      return await abortable(op, postCallAction(action, values));
+      return await abortable(op, runtime.post(action, values));
     } catch (error) {
       if (isClaimRejection(error)) await confirmClaimOwnership(op);
       throw error;
     }
-  }, [confirmClaimOwnership]);
+  }, [runtime, confirmClaimOwnership]);
 
   /** getUserMedia with a hard timeout; a late grant is stopped immediately. */
   const acquireMicrophone = useCallback((op: AcceptOperation, timeoutMs: number): Promise<MediaStream> => {
-    if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
+    if (!window.isSecureContext || !runtime.hasMicrophoneApi()) {
       return Promise.reject(new Error(t("secureContextRequired")));
     }
     return new Promise<MediaStream>((resolve, reject) => {
@@ -590,7 +673,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       }, timeoutMs);
       let pending: Promise<MediaStream>;
       try {
-        pending = navigator.mediaDevices.getUserMedia({
+        pending = runtime.getUserMedia({
           audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
           video: false,
         });
@@ -622,7 +705,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         reject(error);
       });
     });
-  }, [t]);
+  }, [runtime, t]);
 
   const describeAcceptError = useCallback((error: unknown): string => {
     if (error instanceof AcceptAborted) {
@@ -652,7 +735,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     if (!canUseCalling || !conversation?.id || pollBusyRef.current || activeCallRef.current || uiState !== "idle") return;
     pollBusyRef.current = true;
     try {
-      const response = await fetch("/api/whatsapp/calls", {
+      const response = await runtime.fetch("/api/whatsapp/calls", {
         cache: "no-store",
         credentials: "same-origin",
       });
@@ -673,7 +756,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     } finally {
       pollBusyRef.current = false;
     }
-  }, [canUseCalling, conversation?.id, uiState]);
+  }, [runtime, canUseCalling, conversation?.id, uiState]);
 
   useEffect(() => {
     void refreshPermission();
@@ -692,7 +775,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       } else if (active && !operationRef.current) {
         operationRef.current = true;
         setUiState("ending");
-        void postCallAction("terminate", { call_id: active.call_id })
+        void runtime.post("terminate", { call_id: active.call_id })
           .then(() => {
             if (activeCallRef.current?.call_id === active.call_id) resetCall();
           })
@@ -712,7 +795,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         setUiState("idle");
       }
     }
-  }, [abortAccept, conversation?.id, resetCall, stopMedia, t]);
+  }, [runtime, abortAccept, conversation?.id, resetCall, stopMedia, t]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -743,11 +826,11 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       abortAcceptRef.current("unmount");
       const call = activeCallRef.current;
       if (call) {
-        void postCallAction("terminate", { call_id: call.call_id });
+        void runtime.post("terminate", { call_id: call.call_id });
       }
       stopMedia();
     };
-  }, [stopMedia]);
+  }, [runtime, stopMedia]);
 
   const startOutgoing = useCallback(async () => {
     if (!conversation?.id || !contact?.id || uiState !== "idle"
@@ -762,7 +845,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         stream.getTracks().forEach((track) => track.stop());
         throw new Error(t("conversationChanged"));
       }
-      const peer = createPeerConnection();
+      const peer = runtime.createPeerConnection();
       peerRef.current = peer;
       attachRemoteAudio(peer);
       addLocalAudio(peer, stream);
@@ -775,7 +858,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
 
       setUiState("connecting");
       const requestId = crypto.randomUUID();
-      const result = await postCallAction("connect", {
+      const result = await runtime.post("connect", {
         contact_id: contact.id,
         conversation_id: conversation.id,
         request_id: requestId,
@@ -809,7 +892,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       let terminationError: string | null = null;
       if (call) {
         try {
-          await postCallAction("terminate", { call_id: call.call_id });
+          await runtime.post("terminate", { call_id: call.call_id });
         } catch (terminateError) {
           terminationError = terminateError instanceof Error ? terminateError.message : t("endCallFailed");
         }
@@ -827,7 +910,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     } finally {
       operationRef.current = false;
     }
-  }, [addLocalAudio, attachRemoteAudio, contact, conversation, enableAudio, isPilotContact, permission?.canStartCall, requestMicrophone, resetCall, setCall, stopMedia, t, uiState, waitForRemoteAnswer]);
+  }, [runtime, addLocalAudio, attachRemoteAudio, contact, conversation, enableAudio, isPilotContact, permission?.canStartCall, requestMicrophone, resetCall, setCall, stopMedia, t, uiState, waitForRemoteAnswer]);
 
   const acceptIncoming = useCallback(async () => {
     const incoming = incomingCall;
@@ -842,7 +925,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     try {
       // 3-4. Claim, and confirm we are the winner. Losers stop here (zero getUserMedia).
       try {
-        await abortable(op, postCallAction("claim", { call_id: incoming.call_id }));
+        await abortable(op, runtime.post("claim", { call_id: incoming.call_id }));
         op.claimed = true;
         op.lastRenewAt = Date.now();
       } catch (claimError) {
@@ -851,7 +934,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
           // only when the claim is provably ours; otherwise the 90 s lease is the
           // residual protection.
           try {
-            const check = await getCallDetail(incoming.call_id);
+            const check = await runtime.detail(incoming.call_id);
             if (check.claim_owned_by_me === true) op.claimed = true;
           } catch {
             // Unconfirmed: leave the lease to expire.
@@ -859,11 +942,10 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         }
         throw claimError;
       }
-      startHeartbeat(op);
       assertAcceptActive(op);
 
       // 5-6. Offer SDP and enough validity left to ask for the microphone.
-      const detail = await abortable(op, getCallDetail(incoming.call_id));
+      const detail = await abortable(op, runtime.detail(incoming.call_id));
       assertAcceptActive(op);
       if (detail.claim_owned_by_me === false) {
         op.claimLost = true;
@@ -886,12 +968,15 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       const stream = await abortable(op, acquireMicrophone(op, micTimeoutMs));
       assertAcceptActive(op);
 
-      // 8-9. Renew right after the permission dialog; conversation re-checked above.
+      // 8-9. Renew right after the permission dialog; a refusal aborts (tracks are
+      // stopped by the catch below). Only then does the heartbeat start: there is
+      // none while the offer is read or the dialog is open.
       await renewClaimStrict(op);
       assertAcceptActive(op);
+      startHeartbeat(op);
 
       // 10-11. PeerConnection and WebRTC negotiation.
-      const peer = createPeerConnection();
+      const peer = runtime.createPeerConnection();
       peerRef.current = peer;
       attachRemoteAudio(peer);
       addLocalAudio(peer, stream);
@@ -964,6 +1049,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       operationRef.current = false;
     }
   }, [
+    runtime,
     acquireMicrophone, addLocalAudio, assertAcceptActive, attachRemoteAudio,
     conversation?.id, describeAcceptError, enableAudio, finalizeAcceptClaim, incomingCall,
     postAfterPreAccept, renewClaimStrict, resetCall, setCall, startHeartbeat, stopHeartbeat,
@@ -975,7 +1061,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     operationRef.current = true;
     setUiState("ending");
     try {
-      await postCallAction("reject", {
+      await runtime.post("reject", {
         call_id: incomingCall.call_id,
         conversation_id: conversation?.id,
       });
@@ -989,7 +1075,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     } finally {
       operationRef.current = false;
     }
-  }, [conversation?.id, incomingCall, t]);
+  }, [runtime, conversation?.id, incomingCall, t]);
 
   const endCall = useCallback(async () => {
     const call = activeCallRef.current;
@@ -998,7 +1084,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     setUiState("ending");
     setErrorMessage(null);
     try {
-      await postCallAction("terminate", { call_id: call.call_id });
+      await runtime.post("terminate", { call_id: call.call_id });
       resetCall();
     } catch (error) {
       const message = error instanceof Error ? error.message : t("endCallFailed");
@@ -1009,7 +1095,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     } finally {
       operationRef.current = false;
     }
-  }, [resetCall, t]);
+  }, [runtime, resetCall, t]);
 
   const requestPermission = useCallback(async () => {
     if (!contact?.id || operationRef.current || permissionRequesting
@@ -1018,7 +1104,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
     setPermissionRequesting(true);
     setPermissionError(null);
     try {
-      await postCallAction("request_permission", { contact_id: contact.id });
+      await runtime.post("request_permission", { contact_id: contact.id });
       setPermissionRequestSent(true);
       await refreshPermission();
     } catch (error) {
@@ -1029,7 +1115,7 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
       setPermissionRequesting(false);
       operationRef.current = false;
     }
-  }, [contact?.id, isPilotContact, permission?.canRequestPermission, permissionRequesting, refreshPermission, t]);
+  }, [runtime, contact?.id, isPilotContact, permission?.canRequestPermission, permissionRequesting, refreshPermission, t]);
 
   useEffect(() => {
     if (uiState !== "connected") return;
