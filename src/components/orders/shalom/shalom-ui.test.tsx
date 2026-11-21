@@ -115,8 +115,12 @@ describe('ShalomSection · the guide, its status and the actions', () => {
     fireEvent.click(await screen.findByRole('button', { name: /refresh/ }))
     await waitFor(() => expect(posted(f, '/shalom/orders/')).toContainEqual({ action: 'refresh' }))
     expect(screen.queryByRole('button', { name: /^stop$/ })).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: 'correct' }))
-    fireEvent.change(screen.getByLabelText('numero'), { target: { value: '87654321' } })
+    // The preceding refresh may still have its server-side completion in flight.
+    // Wait for the UI to become actionable before opening the correction form.
+    const correctButton = await screen.findByRole('button', { name: 'correct' }) as HTMLButtonElement
+    await waitFor(() => expect(correctButton.disabled).toBe(false))
+    fireEvent.click(correctButton)
+    fireEvent.change(await screen.findByLabelText('numero'), { target: { value: '87654321' } })
     fireEvent.change(screen.getByLabelText('codigo'), { target: { value: 'zz11' } })
     fireEvent.click(screen.getByRole('button', { name: 'saveCorrection' }))
     await waitFor(() => expect(posted(f, '/shalom/orders/')).toContainEqual({ action: 'correct', numero_orden: '87654321', codigo: 'zz11', expected_version: 1 }))
