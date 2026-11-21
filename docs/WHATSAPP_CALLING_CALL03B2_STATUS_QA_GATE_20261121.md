@@ -105,3 +105,15 @@ Identificar la misma VPS `srv1917080`, sin asumir que los IDs, imágenes, sesion
 5. **Drift histórico**: la evidencia de la VPS y los hashes son resultados reportados, no nuevamente verificados desde esta sesión.
 
 **Estado resultante:** CALL-03B2.5 código y CI PASS; **QA isolated PRECHECK = PENDIENTE**; **merge = NO-GO**; **producción/Meta = NO-GO**.
+
+## 8. Actualización — ROOT A2 y decisión BUILD-QA (21/nov/2026)
+
+La auditoría ROOT A2 de solo lectura cerró los pendientes de inventario de dumps, HASH histórico e identidad de migración. Detalles y evidencias en [ROOT A2](WHATSAPP_CALLING_CALL03B2_5_VPS_PREFLIGHT_20261121.md), sección G.
+
+- BKP-ROOT **PASS**: SHA256 del dump previo a 00004 coincide y `pg_restore -l` pudo leer su índice (1.908 entradas). **Restaurabilidad no ensayada**; redactar y autorizar un restore-test en destino efímero antes de migrar.
+- HIST-18 **PASS**: MD5 histórico completo `2c0040780134cab5a7c807b6063ee090`; `hist.sql` sobre las 18 más antiguas por `created_at`, serialización `to_jsonb(s)::text`, orden `s.id`; resultado actual coincide. 23 sesiones totales y `config_md5` sin desviación.
+- DB-00005 **PASS**: las seis columnas, constraint y RPC de `20261201000000` aún están ausentes de QA, como se esperaba.
+- PROD-ROTATION **PASS técnico**: dos operaciones blue-green del proceso `ops/deploy` se asociaron al corte OCR `4e1b7b8` (15:06 y 15:29Z), saludables; **actor humano no atribuible**. No mezclar las tres migraciones productivas `20261205…` de ese flujo con CALL-03.
+- BUILD-QA **PENDIENTE**: GitHub Runner sí puede *compilar* URLs públicas de loopback si build no requiere conectar a QA, pero el navegador necesita túnel/origen correcto; las cuatro variables `NEXT_PUBLIC_*` deben ser QA y el locale explícito. Decisión detallada en [plan de imagen QA](WHATSAPP_CALLING_CALL03B2_5_QA_IMAGE_PLAN.md).
+
+**Gate actualizado:** `CALL03B25_ROOT_A2=BLOCKED_BUILD_QA_ONLY`. Ninguna modificación de QA/producción está autorizada por esta revisión. Además, `accept` en tránsito vs `terminate` permanece como gate de seguridad independiente del build.
