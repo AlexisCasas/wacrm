@@ -38,7 +38,7 @@ WITH matching AS (
       AND rejected_by_user_id IS NULL
       AND signal_action = 'accept' AND signal_status = 'acknowledged'
       AND terminal_action = 'terminate' AND terminal_status = 'acknowledged'
-      AND claimed_by_user_id IS NULL
+      AND (claimed_by_user_id IS NULL OR claim_expires_at <= now())
       AND session_sdp_encrypted IS NULL AND agent_sdp_encrypted IS NULL
       AND created_at > timestamptz '2026-11-21 18:18:48.714064+00'
     )::integer AS valid_winner,
