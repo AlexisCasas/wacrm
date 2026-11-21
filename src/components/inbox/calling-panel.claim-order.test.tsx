@@ -619,6 +619,37 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
       claim_owned_by_me: true,
     });
 
+    it("does not release a fresh but transferred lease during the microphone dialog", async () => {
+      let grant: (stream: MediaStream) => void = () => {};
+      const harness = installHarness({
+        gum: () => new Promise<MediaStream>((resolve) => { grant = resolve; }),
+        detail: (nth) => (nth === 1 ? firstDetail() : claimedByOther()),
+      });
+      const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+      fireEvent.click(await acceptButton());
+      await waitFor(() => expect(harness.gumCount()).toBe(1));
+      // No clock jump: the client must not trust a newly confirmed 90 s lease.
+      view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+      await waitFor(() => expect(harness.events.filter((event) => event === "detail")).toHaveLength(2));
+      expect(harness.count("release")).toBe(0);
+      expect(harness.count("terminate")).toBe(0);
+      await act(async () => { grant(mediaStream); });
+      expect(mediaTrack.stop).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not terminate a recently acquired claim transferred after pre_accept", async () => {
+      FakePeerConnection.autoConnect = false;
+      const harness = installHarness({ detail: (nth) => (nth === 1 ? firstDetail() : claimedByOther()) });
+      const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+      fireEvent.click(await acceptButton());
+      await waitFor(() => expect(harness.count("pre_accept")).toBe(1));
+      view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+      await waitFor(() => expect(harness.events.filter((event) => event === "detail")).toHaveLength(2));
+      await waitFor(() => expect(FakePeerConnection.instances[0].closed).toBe(true));
+      expect(harness.count("terminate")).toBe(0);
+      expect(harness.count("release")).toBe(0);
+    });
+
     async function abortDuringDialogAfterLeaseExpired(later: () => Response) {
       vi.useFakeTimers({ toFake: ["Date"] }); // real timers for RTL; only the clock jumps
       let grant: (stream: MediaStream) => void = () => {};
@@ -682,9 +713,10 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
       expect(harness.count("terminate")).toBe(0);
     });
 
-    it("still closes the call after pre_accept when the expired lease has no new owner", async () => {
+    it("does not terminate after pre_accept if its lease is free/expired; SDP expiry handles cleanup", async () => {
       const harness = await abortAfterPreAcceptWithStaleLease(nobody);
-      await waitFor(() => expect(harness.count("terminate")).toBe(1));
+      await waitFor(() => expect(harness.events.filter((event) => event === "detail")).toHaveLength(2));
+      expect(harness.count("terminate")).toBe(0);
       expect(harness.count("release")).toBe(0);
     });
   });
