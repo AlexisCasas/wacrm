@@ -16,8 +16,8 @@ const MAX_DURATION_SECONDS = 2_147_483_647
 export function effectiveCallDuration(call: CallTiming): number | null {
   if (call.state !== 'terminated') return null
   const duration = call.duration_seconds
-  return Number.isSafeInteger(duration)
-    && duration !== null
+  return typeof duration === 'number'
+    && Number.isSafeInteger(duration)
     && duration >= 0
     && duration <= MAX_DURATION_SECONDS
     ? duration
