@@ -1,4 +1,5 @@
 import { execFileSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { readFileSync, readdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
@@ -12,6 +13,7 @@ const root = process.cwd()
 const manifest = JSON.parse(readFileSync(resolve(root, 'supabase/release/migration-manifest.json'), 'utf8')) as {
   production_baseline: Array<{ version: string; file: string; sha256: string; recorded_in_applied: boolean }>
   reserved_external: Array<{ version: string }>
+  integrated_external: Array<{ version: string; file: string; sha256: string; execution_policy: string }>
   release_migrations: Array<{ order: number; old_version: string; old_file: string; new_version: string; new_file: string; sha256: string }>
 }
 const files = readdirSync(resolve(root, 'supabase/migrations')).filter((f) => f.endsWith('.sql')).sort()
@@ -21,6 +23,32 @@ describe('release migration block', () => {
   it('the checker agrees (names, order, contiguity, uniqueness, checksums)', () => {
     const out = execFileSync(process.execPath, ['scripts/release/migration-ledger.cjs', 'verify'], { cwd: root }).toString()
     expect(out).toMatch(/VERIFY OK: 22 release migrations 20261204000000\.\.20261204000021/)
+  })
+
+  it('tracks all 8 Calling RC2 migrations separately with exact source checksums', () => {
+    const external = manifest.integrated_external
+    const expectedFiles = [
+      '20261129000000_whatsapp_calling_sessions_permissions.sql',
+      '20261130000000_whatsapp_calling_agent_attribution.sql',
+      '20261130000001_whatsapp_calling_signaling.sql',
+      '20261130000002_whatsapp_call_claim_no_reclaim_after_accept.sql',
+      '20261130000003_whatsapp_calling_inbound_association_lifecycle.sql',
+      '20261130000004_whatsapp_calling_authoritative_timing.sql',
+      '20261201000000_whatsapp_call_terminal_reservation.sql',
+      '20261201000001_whatsapp_call_signal_fencing.sql',
+    ]
+    expect(external.map((m) => m.file)).toEqual(expectedFiles)
+    expect(external.map((m) => m.version)).toEqual([...external.map((m) => m.version)].sort())
+    for (const m of external) {
+      expect(m.version).toBe(version(m.file))
+      expect(m.execution_policy).toMatch(/separate verified migration gate/)
+      const sql = readFileSync(resolve(root, 'supabase/migrations', m.file), 'utf8').replace(/\r\n/g, '\n')
+      expect(createHash('sha256').update(sql).digest('hex')).toBe(m.sha256)
+    }
+    // Orders migration-ledger plan manages ONLY its original 22 migrations.
+    for (const m of external) {
+      expect(manifest.release_migrations.some((r) => r.new_version === m.version)).toBe(false)
+    }
   })
 
   it('every migration version is unique (the CI rule "no duplicated versions")', () => {
