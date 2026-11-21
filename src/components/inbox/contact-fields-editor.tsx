@@ -1,12 +1,20 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Loader2, RefreshCw, Save, Search } from "lucide-react";
+import { Loader2, RefreshCw, Save, Search, Trash2 } from "lucide-react";
 import { useTranslations } from "next-intl";
 import { toast } from "sonner";
 
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/use-auth";
 import { createClient } from "@/lib/supabase/client";
 import { changedCustomFieldIds } from "@/lib/contacts/field-diff";
@@ -61,6 +69,8 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
   const [loadError, setLoadError] = useState(false);
   const [savingStandard, setSavingStandard] = useState(false);
   const [savingCustom, setSavingCustom] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [confirmClear, setConfirmClear] = useState(false);
   const [reload, setReload] = useState(0);
   // Contact id the loaded state belongs to. Never render values while it
   // differs from the contact on screen, even if the component is reused.
@@ -252,6 +262,26 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
     }
   }
 
+  async function clearAllCustom() {
+    if (!canSendMessages || !accountId || clearing || savingCustom || savingStandard) return;
+    setClearing(true);
+    try {
+      // Server route re-validates session, account and contact ownership.
+      const res = await fetch(`/api/contacts/${encodeURIComponent(contact.id)}/custom-values`, { method: "DELETE" });
+      if (!res.ok) throw new Error("clear_failed");
+      // Only after a confirmed success: empty the local state (definitions stay).
+      setStored({});
+      setValues({});
+      setSavedValues({});
+      setConfirmClear(false);
+      toast.success(t("fieldsClearedToast"));
+    } catch {
+      toast.error(t("fieldsClearError"));
+    } finally {
+      setClearing(false);
+    }
+  }
+
   const canEdit = Boolean(accountId && canSendMessages);
 
   if (loading && !loadError) {
@@ -350,6 +380,31 @@ export function InboxContactFields({ contact, onContactUpdated }: InboxContactFi
                 {t("fieldsSaveCustom")}
               </Button>
             )}
+            {canEdit && (
+              <Button type="button" variant="outline" size="sm" className="mt-2 w-full"
+                onClick={() => setConfirmClear(true)}
+                disabled={clearing || savingCustom || savingStandard}>
+                <Trash2 className="mr-1 h-3.5 w-3.5" />
+                {t("fieldsClearAll")}
+              </Button>
+            )}
+            <Dialog open={confirmClear} onOpenChange={(open) => { if (!clearing) setConfirmClear(open); }}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>{t("fieldsClearTitle")}</DialogTitle>
+                  <DialogDescription>{t("fieldsClearDescription")}</DialogDescription>
+                </DialogHeader>
+                <DialogFooter>
+                  <Button type="button" variant="outline" onClick={() => setConfirmClear(false)} disabled={clearing}>
+                    {t("fieldsClearCancel")}
+                  </Button>
+                  <Button type="button" variant="destructive" onClick={clearAllCustom} disabled={clearing}>
+                    {clearing && <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />}
+                    {t("fieldsClearConfirm")}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </>
         )}
       </div>

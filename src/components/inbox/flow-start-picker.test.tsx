@@ -208,7 +208,7 @@ describe("FlowStartPicker — starting a flow", () => {
         }),
       );
     });
-    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith("Flow started: Combo XTD Taladro"));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith("Flow started: Combo XTD Taladro", { description: "Juan Pérez" }));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
     expect(onStarted).toHaveBeenCalledTimes(1);
   });
@@ -244,7 +244,7 @@ describe("FlowStartPicker — starting a flow", () => {
     expect(startCalls).toHaveLength(1);
   });
 
-  it("active_flow_exists error shows a distinct toast naming the existing flow and keeps the dialog open", async () => {
+  it("active_flow_exists error shows a distinct toast naming the existing flow and the dialog is already released", async () => {
     const onOpenChange = vi.fn();
     vi.stubGlobal(
       "fetch",
@@ -268,9 +268,10 @@ describe("FlowStartPicker — starting a flow", () => {
     await waitFor(() =>
       expect(toastMock.error).toHaveBeenCalledWith(
         "This contact already has an active Flow: AMOLADORA TOTAL.",
+        { description: "Juan Pérez" },
       ),
     );
-    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it("service_window_expired error shows the service-window toast", async () => {
@@ -292,6 +293,7 @@ describe("FlowStartPicker — starting a flow", () => {
     await waitFor(() =>
       expect(toastMock.error).toHaveBeenCalledWith(
         "A Flow can't be started outside the 24-hour service window.",
+        { description: "Juan Pérez" },
       ),
     );
   });
@@ -315,11 +317,12 @@ describe("FlowStartPicker — starting a flow", () => {
     await waitFor(() =>
       expect(toastMock.error).toHaveBeenCalledWith(
         "This contact is blocked. Unblock them first to start a Flow.",
+        { description: "Juan Pérez" },
       ),
     );
   });
 
-  it("flow_failed_immediately shows a distinct error toast, does NOT close the dialog, and does NOT fire onStarted (P1 bug #2)", async () => {
+  it("flow_failed_immediately shows a distinct error toast and does NOT fire onStarted (P1 bug #2)", async () => {
     const onOpenChange = vi.fn();
     const onStarted = vi.fn();
     vi.stubGlobal(
@@ -351,12 +354,11 @@ describe("FlowStartPicker — starting a flow", () => {
     await waitFor(() =>
       expect(toastMock.error).toHaveBeenCalledWith(
         "The Flow couldn't be started. Check the contact's details or the Flow's configuration and try again.",
+        { description: "Juan Pérez" },
       ),
     );
-    // Never treated as success: no success toast, dialog stays open,
-    // no onStarted refresh callback.
+    // Never treated as success: no success toast, no onStarted refresh.
     expect(toastMock.success).not.toHaveBeenCalled();
-    expect(onOpenChange).not.toHaveBeenCalledWith(false);
     expect(onStarted).not.toHaveBeenCalled();
   });
 
@@ -374,7 +376,7 @@ describe("FlowStartPicker — starting a flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start Flow" }));
 
     await waitFor(() =>
-      expect(toastMock.error).toHaveBeenCalledWith("Couldn't start the flow. Please try again."),
+      expect(toastMock.error).toHaveBeenCalledWith("Couldn't start the flow. Please try again.", { description: "Juan Pérez" }),
     );
   });
 });

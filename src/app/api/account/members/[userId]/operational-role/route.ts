@@ -1,14 +1,16 @@
 // ============================================================
-// PATCH /api/account/members/[userId]/operational-role   Admin+.
+// PATCH /api/account/members/[userId]/operational-role   Any signed-in member; the RPC decides.
 //
 // Sets a member's operational area (commercial | logistics | supervisor | null). Deliberately separate from the account_role endpoint: it never
-// touches account_role. The account is resolved from the session; the SECURITY DEFINER RPC `set_member_operational_role` (migration
-// 20261121000000) re-checks admin+, same account and logistics_mvp_enabled.
+// touches account_role. This route only authenticates, validates the payload (UUID + enum | null) and forwards to the SECURITY DEFINER RPC
+// `set_member_operational_role` (migrations 20261121000000 + 20261126000000), which is the single authority: owner/admin may assign any area;
+// an operational supervisor (who is not owner/admin) may assign commercial/logistics/NULL to non-supervisors only; everyone else is rejected;
+// same account is always enforced there (the logistics_mvp_enabled gate was removed by 20261205000000 so areas can be assigned BEFORE activation). No account_id / role is ever read from the browser.
 // ============================================================
 
 import { NextResponse } from "next/server";
 
-import { requireRole, toErrorResponse } from "@/lib/auth/account";
+import { getCurrentAccount, toErrorResponse } from "@/lib/auth/account";
 import { isOperationalRole } from "@/lib/auth/operational-role";
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from "@/lib/rate-limit";
 
@@ -19,7 +21,8 @@ export async function PATCH(
   { params }: { params: Promise<{ userId: string }> },
 ) {
   try {
-    const ctx = await requireRole("admin");
+    // No role gate here on purpose: an operational supervisor can be a plain `agent`. The RPC authorizes (and fails closed with 42501).
+    const ctx = await getCurrentAccount();
 
     const limit = checkRateLimit(`admin:memberOperationalRole:${ctx.userId}`, RATE_LIMITS.adminAction);
     if (!limit.success) return rateLimitResponse(limit);

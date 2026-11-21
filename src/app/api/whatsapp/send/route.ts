@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { assertConversationOperationalAccess } from '@/lib/conversations/operational-access'
 import {
   checkRateLimit,
   rateLimitResponse,
@@ -97,6 +98,8 @@ export async function POST(request: Request) {
     let conversationId: string | null = null
 
     if (conversationIdInput) {
+      // Handoff gate (403 before anything else; RLS enforces the same rule on the read below).
+      await assertConversationOperationalAccess(supabase, accountId, String(conversationIdInput))
       const { data, error: convError } = await supabase
         .from('conversations')
         .select('id')
@@ -141,6 +144,7 @@ export async function POST(request: Request) {
         )
       }
       conversationId = resolved
+      await assertConversationOperationalAccess(supabase, accountId, resolved)
     }
 
     if (!conversationId) {
