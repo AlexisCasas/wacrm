@@ -14,6 +14,14 @@ grep -Fq 'isWhatsAppCallingPilotAllowed' \
   src/app/api/whatsapp/calls/route.ts || fail "API no longer calls pilot guard"
 grep -Fq 'isWhatsAppCallingPilotAllowed' \
   src/lib/whatsapp/calling-pilot.test.ts || fail "pilot tests missing"
+grep -Fq 'isWhatsAppCallingPhoneEnabled(change.value?.metadata?.phone_number_id)' \
+  src/lib/whatsapp/webhook-processor.ts || fail "calling webhook does not gate incoming events"
+grep -Fq 'if (isWhatsAppCallingPhoneEnabled(phoneNumberId))' \
+  src/lib/whatsapp/webhook-processor.ts || fail "calling permission reply does not gate writes"
+grep -Fq 'isWhatsAppCallingPhoneEnabled' \
+  src/lib/whatsapp/calling-pilot.test.ts || fail "webhook pilot flag tests missing"
+grep -Fq 'await processMessage(' \
+  src/lib/whatsapp/webhook-processor.ts || fail "normal message handling missing"
 for forbidden in \
   scripts/qa/whatsapp-calling/mock-graph/server.mjs \
   scripts/qa/whatsapp-calling/mock-graph/peer.html \
