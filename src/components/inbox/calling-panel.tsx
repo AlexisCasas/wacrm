@@ -74,10 +74,6 @@ const OFFER_SAFETY_MARGIN_MS = 15_000;
 // Below this window a permission dialog cannot realistically be answered.
 const MIN_MIC_WINDOW_MS = 5_000;
 const RENEW_RETRIES = 1;
-// A lease confirmed this recently cannot belong to anyone else: the claim RPC
-// only hands a call to another agent once the lease has expired.
-const LEASE_FRESH_MARGIN_MS = 10_000;
-
 /** Exposed so tests can pin the timing contract to the server limits. */
 export const CALLING_ACCEPT_LIMITS = {
   claimLeaseMs: CLAIM_LEASE_MS,
@@ -435,7 +431,7 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
         audioRef.current.muted = true;
       }
     };
-  }, [t]);
+  }, []);
 
   const enableAudio = useCallback(async () => {
     localStreamRef.current?.getAudioTracks().forEach((track) => {
@@ -505,20 +501,12 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
   }, []);
 
   /**
-   * Releases whatever this attempt still owns, exactly once per resource and
-   * serialised so a late claim response cannot skip its release.
-   * - claim lost: never touch the call (it belongs to someone else now);
-   * - after pre_accept: close the call safely with terminate;
-   * - otherwise: release the lease only (no terminate).
-   */
-  /**
-   * Who holds the lease right now? A lease confirmed within the last ~80 s can
-   * only be ours (the claim RPC hands a call over once the lease expires).
-   * Otherwise read the call: "other" and "unknown" must never lead to a
-   * release or terminate (owner/admin roles may act on any call server-side).
+   * Confirm current claim ownership before any cleanup action. A recently
+   * renewed lease is not proof of ownership: an admin may release it and a
+   * different agent may claim the call before its original expiry.
+   * This GET is defensive, not atomic with the subsequent POST.
    */
   const inspectLeaseOwner = useCallback(async (op: AcceptOperation): Promise<"mine" | "free" | "other" | "unknown"> => {
-    if (Date.now() - op.lastRenewAt < CLAIM_LEASE_MS - LEASE_FRESH_MARGIN_MS) return "mine";
     try {
       const detail = await runtime.detail(op.callId);
       if (detail.claim_owned_by_me === true) return "mine";
@@ -545,7 +533,9 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
       if (op.preAccept) {
         if (op.terminateSent) return;
         const owner = await inspectLeaseOwner(op);
-        if (owner === "other" || owner === "unknown") {
+        // After pre_accept, a missing/free lease is not authority to end
+        // the call. Let server-side SDP expiry clean it up if no owner exists.
+        if (owner !== "mine") {
           op.claimLost = true;
           return;
         }
