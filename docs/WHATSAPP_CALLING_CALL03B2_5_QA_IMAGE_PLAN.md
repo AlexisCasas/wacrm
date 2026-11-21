@@ -8,6 +8,7 @@
 - QA anterior se construyó con el `app.env` de `/opt/apps/call03b2-qa-stack/`: URLs públicas de Supabase y sitio dirigidas a loopback `127.0.0.1:38089`, y clave anon **específica de QA**. No publicar su contenido; el auditor solo informó su longitud. `NEXT_PUBLIC_APP_LOCALE` no existe en ese entorno y Dockerfile usa `en` por defecto.
 - El workflow existente `.github/workflows/wacrm-candidate-image.yml` exige el HEAD de `main` y utiliza variables/secrets de **producción**. **Prohibido reutilizarlo para #144**.
 - La VPS tiene 7.222 MiB MemAvailable en el corte A2, pero también contiene producción y siete servicios QA. La memoria disponible no obliga a construir allí.
+- **Evidencia histórica del túnel:** [`WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`](WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md), líneas 31–33, documenta explícitamente WACRM QA `http://127.0.0.1:38089`, Peer `http://127.0.0.1:38090/peer` y acceso desde el equipo de QA **mediante túnel SSH**. Falta confirmar si ese túnel sigue disponible para las nuevas pruebas; no es necesario rediseñar la arquitectura.
 - GitHub Actions CI con variables ficticias ya compiló correctamente el código, pero ese build **no produce una imagen con configuración QA**.
 
 ## Distinción técnica: compilar contra loopback no exige tener servidor en GitHub
@@ -36,7 +37,7 @@ Empaquetar en máquina de desarrollo **separada de producción**, con `app.env` 
 
 | Consulta SOLO LECTURA | Criterio de cierre |
 |---|---|
-| ¿Cómo abrió Firefox el QA anterior? ¿Desde la VPS, un túnel SSH, o proxy local? | Ruta de navegador -> puerto QA -> REST/Auth/Next demostrable; puertos siguen atados a loopback |
+| ¿Sigue operativo el túnel SSH histórico usado por Firefox en QA? | Confirmar el mapeo actual del navegador a 38089 y 38090; REST/Auth/Next se mantienen en loopback, sin exponer puertos públicos |
 | ¿`http://127.0.0.1:38089` es exactamente el `SITE_URL` de la sesión QA? ¿Hay redirects o cookies con host distinto? | Origen, redirect allowlist y cookies compatibles, sin mostrar credenciales |
 | ¿Se dispone de una vía para cargar las cuatro variables QA en GitHub Actions sin exponer el anon key en chat, logs ni repositorio? | Entorno QA separado y protegido identificado; configuración NO es de producción |
 | ¿Qué locale usan las pantallas QA? | Elegir `en` o `es` explícitamente; no depender de fallback accidental |
