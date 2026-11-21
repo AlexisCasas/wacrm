@@ -703,5 +703,46 @@ describe('GET /api/whatsapp/calls — call history attribution', () => {
     })
     expect(JSON.stringify(data.calls[0])).not.toContain('Other Tenant Agent')
   })
+
+  it('derives history duration only for completed calls and preserves Meta duration', async () => {
+    const base = {
+      phone_number_id: h.phoneNumberId,
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: 'agent-a',
+      rejected_by_user_id: null,
+      ended_by_user_id: 'agent-a',
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      created_at: '2026-11-20T20:00:00.000Z',
+      updated_at: '2026-11-20T20:01:05.000Z',
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }
+    h.listCalls = [
+      { ...base, id: 's-derived', call_id: 'wacid.qa-dur-derived', state: 'terminated', duration_seconds: null, started_at: '2026-11-20T20:00:00.000Z', ended_at: '2026-11-20T20:01:05.000Z' },
+      { ...base, id: 's-rejected', call_id: 'wacid.qa-dur-rejected', state: 'rejected', duration_seconds: 99, started_at: '2026-11-20T20:00:00.000Z', ended_at: '2026-11-20T20:01:39.000Z' },
+      { ...base, id: 's-reported', call_id: 'wacid.qa-dur-reported', state: 'terminated', duration_seconds: 42, started_at: '2026-11-20T20:00:00.000Z', ended_at: '2026-11-20T20:09:00.000Z' },
+    ]
+    h.actorProfiles = []
+
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+
+    expect(response.status).toBe(200)
+    const byId = Object.fromEntries(data.calls.map((c: { call_id: string; duration_seconds: number | null }) => [c.call_id, c.duration_seconds]))
+    expect(byId['wacid.qa-dur-derived']).toBe(65)
+    expect(byId['wacid.qa-dur-rejected']).toBeNull()
+    expect(byId['wacid.qa-dur-reported']).toBe(42)
+  })
+
 })
 
