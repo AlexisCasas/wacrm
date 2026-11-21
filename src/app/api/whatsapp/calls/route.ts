@@ -4,6 +4,7 @@ import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { decrypt, encrypt } from '@/lib/whatsapp/encryption'
 import { isWhatsAppCallingPilotAllowed } from '@/lib/whatsapp/calling-pilot'
+import { effectiveCallDuration } from '@/lib/whatsapp/calling-duration'
 import {
   callWhatsApp,
   getWhatsAppCallPermission,
@@ -240,7 +241,7 @@ export async function GET(request: Request) {
         }
       }
 
-      const safeCall = { ...call }
+      const safeCall = { ...call, duration_seconds: effectiveCallDuration(call) }
       delete safeCall.session_sdp_encrypted
       return NextResponse.json({
         call: safeCall,
@@ -300,6 +301,7 @@ export async function GET(request: Request) {
       const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone)
       return {
         ...call,
+        duration_seconds: effectiveCallDuration(call),
         initiated_by_name: call.initiated_by_user_id
           ? actorNameById.get(call.initiated_by_user_id) ?? null
           : null,
