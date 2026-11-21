@@ -121,11 +121,14 @@ BEGIN
     IF public.whatsapp_call_terminal_reserve(
       v_account,v_phone,v_outbound,v_a,gen_random_uuid(),'terminate','owned_call',NULL
     ) IS DISTINCT FROM 'reserved' THEN RAISE EXCEPTION 'CALL035_OUTBOUND_TERMINATE_BLOCKED'; END IF;
-    IF public.whatsapp_call_terminal_reserve(
-      v_account,v_phone,v_outbound,v_c,gen_random_uuid(),'terminate','admin_override',NULL
-    ) IS NOT NULL THEN
+    BEGIN
+      PERFORM public.whatsapp_call_terminal_reserve(
+        v_account,v_phone,v_outbound,v_c,gen_random_uuid(),'terminate','admin_override',NULL
+      );
       RAISE EXCEPTION 'CALL035_CROSS_ACCOUNT_ACCESS_ALLOWED';
-    END IF;
+    EXCEPTION WHEN insufficient_privilege THEN
+      NULL; -- a foreign-account actor has no service-side authority here
+    END;
 
     RAISE EXCEPTION 'CALL035_SENTINEL_ROLLBACK';
   EXCEPTION WHEN OTHERS THEN
