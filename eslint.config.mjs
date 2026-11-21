@@ -17,6 +17,12 @@ const eslintConfig = defineConfig([
     // Standalone CommonJS Node tooling for LOCAL QA (not part of the app bundle): seeds, simulators, helpers.
     "scripts/qa/**",
   ]),
+  // Runtime release tools are intentionally CommonJS (.cjs) and must be
+  // linted, not rewritten to ESM or excluded wholesale.
+  {
+    files: ["scripts/release/**/*.cjs"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
 ]);
 
 export default eslintConfig;
