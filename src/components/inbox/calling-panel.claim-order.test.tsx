@@ -237,13 +237,18 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
         terminate: () => conflict("terminal_in_progress"),
       },
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    const { unmount } = render(<CallingPanel conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
     await waitFor(() => expect(harness.count("pre_accept")).toBe(1));
     await waitFor(() => expect(harness.count("terminate")).toBe(1));
+    // Wait for the failed terminal response to settle before unmounting.
+    // It must remain a single attempt, not silently retry via cleanup.
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("terminal_in_progress"));
     expect(harness.count("accept")).toBe(0);
     expect(mediaTrack.stop).toHaveBeenCalled();
     expect(harness.gumCount()).toBe(1);
+    unmount();
+    expect(harness.count("terminate")).toBe(1);
   });
 
   it("claims first, asks for the microphone once, renews after the dialog and again before accept", async () => {
