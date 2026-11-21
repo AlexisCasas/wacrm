@@ -285,6 +285,8 @@ Hay una sutileza que debe resolverse antes de fusionar el parche de aplicación:
 
 **Corrección requerida antes del merge:** ajustar la RPC/contrato de persistencia para que un `start_time` explícito del evento `terminate` prevalezca sobre el timestamp provisional de `ACCEPTED`, respetando el guard de orden temporal e idempotencia. Si Meta no envía `start_time`, el timestamp de `ACCEPTED` puede utilizarse como fallback aproximado, pero no debe presentarse como la hora exacta de inicio. Añadir prueba de ambos eventos y de llegada fuera de orden. Confirmar si el fallback aplica solo a BIC, que es donde Meta documenta el status `ACCEPTED`.
 
+**Hallazgo adicional en el mock:** el endpoint sintético `accept` para llamadas entrantes (`USER_INITIATED`) también emite un status `ACCEPTED`. La documentación UIC consultada no describe ese status separado; sí documenta el `terminate` con `start_time`, `end_time` y `duration`. El mock no debe presentar ese status sintético como contrato real UIC. Ajustar el mock para no emitirlo en UIC, o marcarlo explícitamente como extensión de simulación y excluirlo de la prueba de fidelidad Meta. La prueba UIC de duración debe depender de los campos del `terminate`.
+
 Referencias Meta:
 
 - BIC: `ACCEPTED` llega después de establecerse la llamada: https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/business-initiated-calls
