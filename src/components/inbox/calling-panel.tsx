@@ -835,8 +835,13 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
       // Releases the claim (or closes the call after pre_accept) and stops media.
       abortAcceptRef.current("unmount");
       const call = activeCallRef.current;
-      if (call) {
-        void runtime.post("terminate", { call_id: call.call_id });
+      // A failed call already has an attempted or uncertain terminal request.
+      // Never resend it on unmount. Other unmount cleanup is best-effort:
+      // a terminal reservation may reject the request with HTTP 409.
+      if (call && call.state !== "failed") {
+        void runtime.post("terminate", { call_id: call.call_id }).catch(() => {
+          // The server owns the durable terminal outcome and blocks retries.
+        });
       }
       stopMedia();
     };
