@@ -1030,3 +1030,60 @@ describe('CALL-03B2.6 — cross-operation fencing around Meta', () => {
     expect(h.callWhatsApp).not.toHaveBeenCalled()
   })
 })
+
+
+describe('CALL-03B2.6 — signaling visibility in GET', () => {
+  it('does not advertise a reserved signal as available for another claim', async () => {
+    h.listCalls = [{
+      id: 'signal-reserved-session',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-signal-reserved',
+      direction: 'USER_INITIATED',
+      customer_phone: '51980942247',
+      state: 'ringing',
+      terminal_status: null,
+      signal_status: 'reserved',
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      initiated_by_user_id: null,
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      session_sdp_type: 'offer',
+      session_sdp_expires_at: new Date(Date.now() + 50000).toISOString(),
+    }]
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.calls[0].claim_available).toBe(false)
+  })
+
+  it('does not return decrypted SDP when the Meta signaling outcome is unknown', async () => {
+    h.session = {
+      id: 'signal-unknown-session',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-signal-unknown',
+      direction: 'USER_INITIATED',
+      customer_phone: '51980942247',
+      state: 'ringing',
+      terminal_status: null,
+      signal_status: 'unknown',
+      accepted_by_user_id: null,
+      initiated_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      claimed_by_user_id: h.userId,
+      claim_expires_at: new Date(Date.now() + 50000).toISOString(),
+      session_sdp_encrypted: 'encrypted:v=0\r\n',
+      session_sdp_type: 'offer',
+      session_sdp_expires_at: new Date(Date.now() + 50000).toISOString(),
+    }
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls?call_id=wacid.qa-signal-unknown'))
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.session).toBeNull()
+    expect(body.session_available).toBe(false)
+    expect(h.decrypt).not.toHaveBeenCalled()
+  })
+})
