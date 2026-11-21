@@ -177,6 +177,16 @@ function safeCall(call) {
   }
 }
 
+// Meta reports start_time, end_time and duration on terminate only for calls
+// that were actually connected. Rejected or unanswered calls carry end_time only.
+export function terminateTiming(call, endSeconds) {
+  const timing = { end_time: String(endSeconds) }
+  if (!call.acceptedAt) return timing
+  const startSeconds = Math.floor(Date.parse(call.acceptedAt) / 1000)
+  if (!Number.isFinite(startSeconds) || startSeconds > endSeconds) return timing
+  return { start_time: String(startSeconds), ...timing, duration: endSeconds - startSeconds }
+}
+
 export function createCallEvent(call, env, event, extra = {}) {
   // Meta's Calling webhook identifies the business phone as "from" and
   // the WhatsApp user/callee as "to" for both call directions.
@@ -268,17 +278,8 @@ export function createGraphHandler({ env, calls, fetchImpl = fetch, log = consol
         }
         call.state = 'connected'
         call.acceptedAt = new Date().toISOString()
-        try {
-          await sendWebhook(buildCallWebhook({
-            phoneNumberId: env.MOCK_PHONE_NUMBER_ID,
-            wabaId: env.MOCK_WABA_ID,
-            displayPhone: env.MOCK_DISPLAY_PHONE ?? '+51 980 000 000',
-            customerPhone: env.MOCK_CUSTOMER_PHONE,
-            statuses: [createStatus(call, env, 'ACCEPTED')],
-          }))
-        } catch {
-          return json(res, 502, { error: { message: 'QA webhook delivery failed', code: 1 } })
-        }
+        // UIC acceptance is represented by the terminate timing fields.
+        // Do not synthesize a separate ACCEPTED status absent from the UIC contract.
         return json(res, 200, { success: true })
       }
 
@@ -294,7 +295,7 @@ export function createGraphHandler({ env, calls, fetchImpl = fetch, log = consol
             customerPhone: env.MOCK_CUSTOMER_PHONE,
             calls: [createCallEvent(call, env, 'terminate', {
               status: rejected ? 'REJECTED' : 'COMPLETED',
-              end_time: String(Math.floor(Date.now() / 1000)),
+              ...terminateTiming(call, Math.floor(Date.now() / 1000)),
             })],
           }))
         } catch {
