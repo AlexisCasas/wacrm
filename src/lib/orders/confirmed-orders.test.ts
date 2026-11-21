@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 vi.mock('@/lib/flows/admin-client', () => ({ supabaseAdmin: () => ({}) }))
 
-import { decodeCursor, encodeCursor, parseLimit, sanitizeSearch, canViewConfirmedOrders, CONFIRMED_ORDER_COLUMNS } from './confirmed-orders'
+import { decodeCursor, encodeCursor, idPrefixRange, parseLimit, sanitizeSearch, canViewConfirmedOrders, CONFIRMED_ORDER_COLUMNS } from './confirmed-orders'
 
 describe('canViewConfirmedOrders', () => {
   it('only supervisor and logistics: commercial (handoff done), no area, technical roles and junk have no access', () => {
@@ -39,6 +39,20 @@ describe('sanitizeSearch', () => {
     expect(sanitizeSearch('a,b(c)"d\'e\\f%g*h_i')).toBe('a b c d e f g h i')
     expect(sanitizeSearch(null)).toBe('')
     expect(sanitizeSearch('x'.repeat(500))).toHaveLength(80)
+  })
+})
+
+describe('idPrefixRange', () => {
+  it('a full UUID is a one-point range; a prefix pads with 0 / f; dashes are optional but only where a UUID has them', () => {
+    const id = 'b5479c55-78d8-4507-8ba5-d9c9923d9199'
+    expect(idPrefixRange(id)).toEqual({ lo: id, hi: id })
+    expect(idPrefixRange(id.toUpperCase())).toEqual({ lo: id, hi: id })
+    expect(idPrefixRange(id.replace(/-/g, ''))).toEqual({ lo: id, hi: id })
+    expect(idPrefixRange('b5479c55')).toEqual({ lo: 'b5479c55-0000-0000-0000-000000000000', hi: 'b5479c55-ffff-ffff-ffff-ffffffffffff' })
+    expect(idPrefixRange('b5479c55-78d8')).toEqual({ lo: 'b5479c55-78d8-0000-0000-000000000000', hi: 'b5479c55-78d8-ffff-ffff-ffffffffffff' })
+  })
+  it('rejects anything that is not an id prefix of at least 8 hex characters', () => {
+    for (const bad of ['', 'b5479c5', 'taladro', 'b5479c55x', 'b547-9c55', 'b5479c-5578', '-b5479c55', 'b5479c55-78d8-4507-8ba5-d9c9923d9199a', 'b5479c55,id.eq.x']) expect(idPrefixRange(bad)).toBeNull()
   })
 })
 

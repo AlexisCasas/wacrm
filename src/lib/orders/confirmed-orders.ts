@@ -116,6 +116,22 @@ export function sanitizeSearch(raw: string | null): string {
     .slice(0, MAX_SEARCH_LENGTH)
 }
 
+/**
+ * The search text as an order id (full UUID or a prefix of at least 8 hex characters, dashes optional) -> the inclusive uuid range that prefix
+ * covers, or null when the text is not an id prefix. `id` is a uuid column (no ILIKE), so a prefix is matched as lo <= id <= hi. Only hex and
+ * dashes can reach the filter, so it can never carry filter syntax.
+ */
+export function idPrefixRange(q: string): { lo: string; hi: string } | null {
+  const text = q.toLowerCase()
+  const hex = text.replace(/-/g, '')
+  if (!/^[0-9a-f]{8,32}$/.test(hex)) return null
+  const dashed = (h: string) => `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`
+  const lo = dashed(hex.padEnd(32, '0'))
+  // the text is either plain hex or a prefix of the canonical dashed form (dashes only where a UUID has them)
+  if (text !== hex && text !== lo.slice(0, text.length)) return null
+  return { lo, hi: dashed(hex.padEnd(32, 'f')) }
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // Response shape
 // ---------------------------------------------------------------------------------------------------------------------------------------------

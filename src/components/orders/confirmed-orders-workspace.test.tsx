@@ -186,6 +186,39 @@ describe('ConfirmedOrdersWorkspace: list', () => {
   })
 })
 
+describe('ConfirmedOrdersWorkspace: no "Con saldo" filter, id search', () => {
+  it('there is NO "Con saldo" chip (even when /with-balance would answer ids) and the screen never asks for it', async () => {
+    const f = vi.fn(async (url: string) =>
+      String(url).includes('/api/orders/payments/with-balance')
+        ? new Response(JSON.stringify({ order_ids: [order().id] }))
+        : String(url).includes('/api/orders/shalom/abandoned')
+          ? new Response('{}', { status: 403 })
+          : new Response(JSON.stringify({ orders: [order(), multi()], next_cursor: null })),
+    )
+    vi.stubGlobal('fetch', f)
+    render(<ConfirmedOrdersWorkspace />)
+    await screen.findByText('Cliente Uno')
+    expect(screen.getByText('Cliente Tres')).toBeTruthy() // the whole list, not only tracked orders
+    expect(screen.queryByRole('button', { name: /balanceFilter/ })).toBeNull()
+    expect(screen.queryByText(/balanceFilter/)).toBeNull()
+    expect(f.mock.calls.some(([u]) => String(u).includes('with-balance'))).toBe(false)
+  })
+
+  it('the search box sends a full UUID and an id prefix as q, unchanged, and "Clear filters" resets it', async () => {
+    const f = answer({ orders: [order()], next_cursor: null })
+    render(<ConfirmedOrdersWorkspace />)
+    await screen.findByText('Cliente Uno')
+    const box = screen.getByLabelText('searchLabel') as HTMLInputElement
+    fireEvent.change(box, { target: { value: 'b5479c55-78d8-4507-8ba5-d9c9923d9199' } })
+    await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).includes('q=b5479c55-78d8-4507-8ba5-d9c9923d9199'))).toBe(true))
+    fireEvent.change(box, { target: { value: 'b5479c55' } })
+    await waitFor(() => expect(f.mock.calls.some(([u]) => /q=b5479c55(&|$)/.test(String(u)))).toBe(true))
+    fireEvent.click(screen.getByRole('button', { name: 'clearFilters' }))
+    expect(box.value).toBe('')
+    await waitFor(() => expect(String(f.mock.calls[f.mock.calls.length - 1][0])).not.toContain('q='))
+  })
+})
+
 describe('ConfirmedOrdersWorkspace: selection and drawer', () => {
   it('opening an order marks its row selected, shows the full multi-product detail and the Open conversation link', async () => {
     answer({ orders: [multi(), order()], next_cursor: null })
