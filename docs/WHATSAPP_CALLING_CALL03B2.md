@@ -192,3 +192,49 @@ Claude reportó 4,672 tests PASS (213 omitidos), TypeScript y ESLint sin errores
 **Revisión de precisión temporal pendiente antes de merge:** Meta documenta que el status `ACCEPTED` BIC llega después de que la llamada ya está establecida. El `start_time` explícito de `terminate` debe prevalecer sobre ese fallback. La RPC actual conserva el primer `started_at` mediante `COALESCE`, por lo que hay que corregir esa precedencia y probar eventos duplicados/fuera de orden.
 
 El detalle operativo y las pruebas post-deploy están en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`. H1 (claim antes de micrófono) sigue pendiente y precede a cualquier piloto real.
+
+## 13. CALL-03B2.4 — Claim antes del micrófono (21/nov/2026)
+
+Cierra H1: el agente que pierde la carrera por una llamada entrante **nunca** recibe el diálogo de micrófono. Base `9bc35479175278d60b9cb318b2aaaf060d83eb32`; rama local `feat/whatsapp-calling-call03b2-4-claim-order-20261121`. Sin migraciones ni cambios en `route.ts`, RPC, PostgreSQL, Compose o Meta.
+
+### Flujo de `acceptIncoming`
+
+1. Token de operación (`AcceptOperation`): único dueño del claim, los medios y los temporizadores del intento.
+2. Estado `claiming`.
+3. `claim`. Un 4xx definitivo (409, 403, 404…) termina sin tocar el micrófono ni liberar nada.
+4. Claim confirmado; arranca el heartbeat.
+5. `GET` del detalle: valida la oferta SDP y `claim_owned_by_me`.
+6. Vigencia: `timeout_mic = min(30 s, expiración_SDP − ahora − 15 s)`. Si es menor de 5 s (o la expiración es desconocida) no se pide micrófono, se libera el claim y se muestra `offerExpiringSoon`.
+7. Estado `requesting-media`; un único `getUserMedia` con ese timeout.
+8. `renew_claim` inmediatamente después del permiso (un reintento ante error transitorio).
+9. Se revalida que la conversación no cambió.
+10. `PeerConnection`, 11. negociación WebRTC, 12. `pre_accept`.
+13. Espera de conexión (el heartbeat sigue activo).
+14. `renew_claim` antes de `accept`.
+15. `accept` y confirmación de atribución.
+
+### Heartbeat y lease
+
+El lease del servidor es de 90 s y la oferta SDP entrante vive 60 s desde el webhook. El cliente renueva cada 30 s mientras dura el intento (se detiene al terminar o abortar). Un 409/403/404 equivale a claim perdido. Los fallos transitorios (red, 429, 5xx) solo cuentan como pérdida cuando la última renovación confirmada está a 5 s de caducar.
+
+Rate limit medido: las acciones de claim/renew/release comparten el bucket `calling:<userId>` con `RATE_LIMITS.send` = **60 solicitudes/min** (no 3/min). Un accept completo usa ~7 POST y el heartbeat añade 2/min, por lo que no se separó el bucket ni se modificó `route.ts`. `route.test.ts` fija ese supuesto.
+
+### `abortAccept` (cambio de conversación, desmontaje, claim perdido)
+
+- Marca el token, detiene el heartbeat, rechaza todas las esperas en curso, detiene `PeerConnection` y tracks.
+- Claim propio y sin `pre_accept`: `release` (sin `terminate`).
+- Tras `pre_accept` y claim propio: `terminate` (cierre seguro).
+- Claim perdido: no se libera ni se termina nada (la llamada pertenece a otro agente). Tras un 409 en `pre_accept`/`accept` se lee `claim_owned_by_me`; si no es verificable se asume perdido.
+- Un `getUserMedia` que resuelve tarde detiene todos sus tracks de inmediato y no crea `PeerConnection`.
+- No hay actualizaciones de estado tras el desmontaje (`unmountedRef`).
+
+### Errores de red en `claim`
+
+No se pide micrófono. Se comprueba por lectura (`claim_owned_by_me`) si el servidor adquirió el claim y solo entonces se libera. Si no puede confirmarse, **el lease de 90 s es la protección residual** (nunca se emite un `release` a ciegas: la RPC permite a owner/admin liberar claims ajenos).
+
+### Riesgos residuales
+
+- Mismo agente en dos pestañas: el claim es idempotente para el mismo usuario y ambas pueden continuar. Requiere un token de claim en servidor (migración) y queda fuera de esta fase.
+- La vigencia de la oferta usa el reloj del navegador; el margen de 15 s absorbe desfases de segundos.
+- `getUserMedia` no es cancelable: el diálogo puede seguir abierto tras abortar; sus tracks se detienen si se concede.
+- Pendiente: validación de navegador en QA (Firefox/Chromium con micrófono falso) antes de cualquier despliegue.
