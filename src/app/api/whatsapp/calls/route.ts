@@ -351,7 +351,7 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    const { accountId, userId, role } = await requireRole('agent')
+    const { accountId, userId } = await requireRole('agent')
     await pruneExpiredSdp()
     const limit = checkRateLimit(`calling:${userId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
