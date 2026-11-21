@@ -64,3 +64,87 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # Temporary RC2 packaging gate. PR #154 runs this scoped review job.
+  # Checkout and build use only exact authorized HEAD of PR #153.
+  build-rc2-from-stacked-pr:
+    if: github.event_name == 'pull_request' && github.event.pull_request.number == 154 && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.base.ref == 'release/wacrm-calling-rc2-prod-parity-20261121'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      EXPECTED_RELEASE_SHA: 14c5f3c8c1ab41db76841a0c7680efbc577ddd9f
+      NEXT_PUBLIC_SUPABASE_URL: ${{ vars.WACRM_NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.WACRM_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      NEXT_PUBLIC_SITE_URL: ${{ vars.WACRM_NEXT_PUBLIC_SITE_URL }}
+      NEXT_PUBLIC_APP_LOCALE: ${{ vars.WACRM_NEXT_PUBLIC_APP_LOCALE || 'en' }}
+    steps:
+      - name: Checkout pinned release source instead of QA branch
+        uses: actions/checkout@v7
+        with:
+          ref: 14c5f3c8c1ab41db76841a0c7680efbc577ddd9f
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Fail closed on source drift or missing public production config
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_RELEASE_SHA" ] || exit 1
+          LIVE_SOURCE_HEAD="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/release/wacrm-calling-rc2-prod-parity-20261121" --jq '.object.sha')"
+          [ "$LIVE_SOURCE_HEAD" = "$EXPECTED_RELEASE_SHA" ] || { echo 'RC2 source drift'; exit 1; }
+          [ -n "$NEXT_PUBLIC_SUPABASE_URL" ] && [ -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ] || { echo 'Missing public production configuration'; exit 1; }
+          case "$NEXT_PUBLIC_SUPABASE_URL" in https://*) ;; *) echo 'Supabase URL must be HTTPS'; exit 1 ;; esac
+          case "$NEXT_PUBLIC_SUPABASE_URL:$NEXT_PUBLIC_SITE_URL" in *127.0.0.1*|*localhost*|*:38089*) echo 'QA origin forbidden'; exit 1 ;; esac
+          [ -z "$(git status --porcelain)" ] || exit 1
+          echo 'RC2_SOURCE_AND_PUBLIC_CONFIG=PASS'
+      - name: Build isolated production-configured RC2 image
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="wacrm-app:rc2-${EXPECTED_RELEASE_SHA:0:8}"
+          TREE="$(git rev-parse HEAD^{tree})"
+          docker build --platform linux/amd64 --pull \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY \
+            --build-arg NEXT_PUBLIC_SITE_URL \
+            --build-arg NEXT_PUBLIC_APP_LOCALE \
+            --label "org.opencontainers.image.revision=$EXPECTED_RELEASE_SHA" \
+            --label "io.wacrm.source-tree=$TREE" \
+            --label "org.opencontainers.image.source=https://github.com/AlexisCasas/wacrm" \
+            -t "$TAG" .
+          [ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$TAG")" = "$EXPECTED_RELEASE_SHA" ]
+          [ "$(docker image inspect -f '{{ .Os }}/{{ .Architecture }}' "$TAG")" = linux/amd64 ]
+          echo 'RC2_ISOLATED_BUILD=PASS'
+          mkdir -p release
+          docker save "$TAG" | gzip -1 > release/image.tar.gz
+          (
+            cd release
+            sha256sum image.tar.gz > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+          CONFIG_FP="$(
+            {
+              printf '%s\0' "$NEXT_PUBLIC_SUPABASE_URL"
+              printf '%s\0' "$NEXT_PUBLIC_SUPABASE_ANON_KEY"
+              printf '%s\0' "$NEXT_PUBLIC_SITE_URL"
+              printf '%s\0' "$NEXT_PUBLIC_APP_LOCALE"
+            } | sha256sum | cut -d ' ' -f1
+          )"
+          {
+            printf 'SOURCE_SHA=%s\n' "$EXPECTED_RELEASE_SHA"
+            printf 'SOURCE_TREE=%s\n' "$TREE"
+            printf 'IMAGE_TAG=%s\n' "$TAG"
+            printf 'IMAGE_ID=%s\n' "$(docker image inspect -f '{{ .Id }}' "$TAG")"
+            printf 'PLATFORM=linux/amd64\n'
+            printf 'PUBLIC_BUILD_CONFIG_SHA256=%s\n' "$CONFIG_FP"
+            printf 'DEPLOYED=false\n'
+          } > release/manifest.txt
+          echo 'RC2_IMAGE_ARCHIVE_AND_SHA256=PASS'
+      - name: Upload pinned RC2 image for manual verification
+        uses: actions/upload-artifact@v4
+        with:
+          name: wacrm-rc2-14c5f3c8
+          path: release/
+          retention-days: 3
+          if-no-files-found: error

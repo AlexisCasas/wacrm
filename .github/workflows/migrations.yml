@@ -90,6 +90,9 @@ jobs:
       - name: Verify the resulting schema
         run: supabase db query --local --file supabase/ci/verify-schema.sql
 
+      - name: Verify Calling RC2 dark-release RLS and client ACL
+        run: supabase db query --local --file supabase/ci/rc2-dark-acl.sql
+
       - name: Verify WhatsApp Calling sessions, permissions, deduplication and tenant isolation
         run: supabase db query --local --file scripts/qa/whatsapp-calling/verify.sql
 
