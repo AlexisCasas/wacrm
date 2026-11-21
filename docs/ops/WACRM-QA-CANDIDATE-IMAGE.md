@@ -1,6 +1,6 @@
 # WACRM — CALL-03B2.5 QA image artifact workflow
 
-**Status: proposed in a separate Draft PR. Not authorized to execute or merge.** This workflow is independent of the production-only `.github/workflows/wacrm-candidate-image.yml`.
+**Status: workflow infrastructure reviewed separately from Calling PR #144. Manual image builds, database changes and deployments require separate authorization.** This workflow is independent of the production-only `.github/workflows/wacrm-candidate-image.yml`.
 
 ## Safety contract
 
@@ -11,9 +11,9 @@
 - No production `WACRM_NEXT_PUBLIC_*`, service-role key, Meta credentials, SSH, Supabase Cloud, registry push, VPS access, Docker load/compose, migrations or production deployment.
 - `docker save | gzip` produces `image.tar.gz`; `manifest.json` includes full commit SHA, source tree, Docker image ID, tag, platform, QA config hashes, locale and `deployed=false`. `SHA256SUMS` covers both files; artifact retention 3 days.
 
-## Required manual setup — NOT DONE
+## GitHub QA Environment setup — configured, runtime fingerprint verification pending
 
-In GitHub repository **Settings → Environments**, create exactly **`qa-call03b2`**. Configure environment protection **required reviewers** and deployment branch restriction to `main` (when available on the repository plan). Do **not** create an unprotected environment and do not run the workflow if required reviewers / protections cannot be enabled without a risk acceptance review.
+The repository administrator confirmed in screenshots on 21-Nov-2026 that **`qa-call03b2`** exists with **Required reviewers = AlexisCasas**, self-review restriction disabled for the single-reviewer setup, administrator bypass disabled, and **Selected branches and tags = `main` only**. The three QA environment variables and one environment secret are displayed as configured. **The secret value itself is not visible or verified yet**: the first separately authorized build must validate its SHA256 fingerprint; it must not be copied into chat or logs. Required reviewers is a one-person manual gate, not independent two-person approval.
 
 Within **that Environment only**, add these values:
 
