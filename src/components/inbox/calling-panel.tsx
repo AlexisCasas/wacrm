@@ -653,7 +653,16 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
     values: Record<string, unknown>,
   ) => {
     try {
-      return await abortable(op, runtime.post(action, values));
+      const result = await abortable(op, runtime.post(action, values));
+      // HTTP 202 is intentionally successful at the transport layer but NOT
+      // proof that Meta applied pre_accept/accept. Fail closed in the Inbox.
+      if (result.success === false && (result.signal_status === "unknown" || result.signal_status === "reserved")) {
+        throw new CallApiError(
+          typeof result.error === "string" ? result.error : "Meta signaling not confirmed; do not retry",
+          202,
+        );
+      }
+      return result;
     } catch (error) {
       if (isClaimRejection(error)) await confirmClaimOwnership(op);
       throw error;
@@ -826,8 +835,13 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
       // Releases the claim (or closes the call after pre_accept) and stops media.
       abortAcceptRef.current("unmount");
       const call = activeCallRef.current;
-      if (call) {
-        void runtime.post("terminate", { call_id: call.call_id });
+      // A failed call already has an attempted or uncertain terminal request.
+      // Never resend it on unmount. Other unmount cleanup is best-effort:
+      // a terminal reservation may reject the request with HTTP 409.
+      if (call && call.state !== "failed") {
+        void runtime.post("terminate", { call_id: call.call_id }).catch(() => {
+          // The server owns the durable terminal outcome and blocks retries.
+        });
       }
       stopMedia();
     };

@@ -140,6 +140,7 @@ type SignalCallRow = {
   customer_parent_bsuid: string | null
   claimed_by_user_id: string | null
   last_claimed_by_user_id: string | null
+  claimed_at: string | null
   claim_expires_at: string | null
   initiated_by_user_id: string | null
   accepted_by_user_id: string | null
@@ -150,6 +151,8 @@ type SignalCallRow = {
   agent_sdp_type: 'offer' | 'answer' | null
   agent_sdp_expires_at: string | null
   terminal_status: 'reserved' | 'acknowledged' | 'unknown' | null
+  signal_status: 'reserved' | 'acknowledged' | 'unknown' | null
+  signal_action: 'pre_accept' | 'accept' | null
   state: string
 }
 
@@ -163,7 +166,7 @@ function validSdp(value: unknown): value is string {
 async function loadSignalCall(accountId: string, callId: string): Promise<SignalCallRow | null> {
   const { data, error } = await supabaseAdmin()
     .from('whatsapp_call_sessions')
-    .select('phone_number_id,call_id,direction,contact_id,conversation_id,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,claimed_by_user_id,last_claimed_by_user_id,claim_expires_at,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,biz_opaque_callback_data,agent_sdp_encrypted,agent_sdp_type,agent_sdp_expires_at,terminal_status,state')
+    .select('phone_number_id,call_id,direction,contact_id,conversation_id,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,claimed_by_user_id,last_claimed_by_user_id,claimed_at,claim_expires_at,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,biz_opaque_callback_data,agent_sdp_encrypted,agent_sdp_type,agent_sdp_expires_at,terminal_status,signal_status,signal_action,state')
     .eq('account_id', accountId)
     .eq('call_id', callId)
     .maybeSingle()
@@ -208,7 +211,7 @@ export async function GET(request: Request) {
       }
       const { data: call, error } = await db
         .from('whatsapp_call_sessions')
-        .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_encrypted,session_sdp_type,session_sdp_expires_at,terminal_status')
+        .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_encrypted,session_sdp_type,session_sdp_expires_at,terminal_status,signal_status')
         .eq('account_id', accountId)
         .eq('call_id', callId)
         .maybeSingle()
@@ -225,7 +228,7 @@ export async function GET(request: Request) {
       const callIsActive = !['terminated','failed','rejected'].includes(call.state)
       const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone)
       const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED' && call.initiated_by_user_id === userId
-      const canReadSession = callIsActive && !call.terminal_status && pilotAllowed && (ownsClaim || ownsOutboundCall)
+      const canReadSession = callIsActive && !call.terminal_status && call.signal_status !== 'unknown' && pilotAllowed && (ownsClaim || ownsOutboundCall)
       const sdpIsFresh = typeof call.session_sdp_expires_at === 'string'
         && Date.parse(call.session_sdp_expires_at) > now
       let session: { sdp_type: 'offer' | 'answer'; sdp: string } | null = null
@@ -255,7 +258,7 @@ export async function GET(request: Request) {
 
     const { data, error } = await db
       .from('whatsapp_call_sessions')
-      .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_type,session_sdp_expires_at,terminal_status')
+      .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_type,session_sdp_expires_at,terminal_status,signal_status')
       .eq('account_id', accountId)
       .order('created_at', { ascending: false })
       .limit(50)
@@ -320,6 +323,7 @@ export async function GET(request: Request) {
         claim_available: pilotAllowed && call.direction === 'USER_INITIATED'
           && ['offered','ringing','connected'].includes(call.state)
           && !call.terminal_status
+          && !call.signal_status
           && !call.accepted_by_user_id
           && !call.rejected_by_user_id && !call.ended_by_user_id
           && typeof call.session_sdp_expires_at === 'string'
@@ -330,7 +334,7 @@ export async function GET(request: Request) {
             || call.claimed_by_user_id === userId
           ),
         session_available: Boolean(
-          callIsActive && !call.terminal_status && pilotAllowed && (ownsClaim || ownsOutboundCall)
+          callIsActive && !call.terminal_status && call.signal_status !== 'unknown' && pilotAllowed && (ownsClaim || ownsOutboundCall)
           && call.session_sdp_type
           && call.session_sdp_expires_at
           && Date.parse(call.session_sdp_expires_at) > now
@@ -614,6 +618,51 @@ export async function POST(request: Request) {
       const accessToken = await loadAccessToken(config)
       if (!accessToken) return NextResponse.json({ error: 'WhatsApp credentials are unavailable' }, { status: 503 })
 
+      const signalDb = supabaseAdmin()
+      const reserveSignal = async (signalAction: 'pre_accept' | 'accept', requestId: string) =>
+        signalDb.rpc('whatsapp_call_signal_begin', {
+          p_account_id: accountId,
+          p_phone_number_id: call.phone_number_id,
+          p_call_id: callId,
+          p_actor_user_id: userId,
+          p_request_id: requestId,
+          p_action: signalAction,
+          p_expected_claimed_at: call.claimed_at,
+        })
+      const finishSignal = async (requestId: string, outcome: 'acknowledged' | 'unknown') => {
+        const { data, error } = await signalDb.rpc('whatsapp_call_signal_finish', {
+          p_account_id: accountId,
+          p_phone_number_id: call.phone_number_id,
+          p_call_id: callId,
+          p_actor_user_id: userId,
+          p_request_id: requestId,
+          p_outcome: outcome,
+          p_conversation_id: typeof body.conversation_id === 'string' && UUID_PATTERN.test(body.conversation_id)
+            ? body.conversation_id : null,
+        })
+        if (error || data !== outcome) {
+          console.error('[calling/api] signaling completion unverified', { code: error?.code ?? 'outcome_mismatch' })
+          return false
+        }
+        return true
+      }
+      const signalNotReserved = (result: string) => {
+        const code = result === 'terminal_in_progress' ? 'terminal_in_progress'
+          : result === 'unknown' ? 'signal_outcome_unknown'
+          : result === 'in_progress' ? 'signal_in_progress' : 'signal_claim_conflict'
+        return NextResponse.json({
+          error: 'Call signaling is unavailable or already in progress; do not repeat the Meta action',
+          code,
+        }, { status: 409 })
+      }
+      const signalUncertain = (signalAction: 'pre_accept' | 'accept', status: 'unknown' | 'reserved') =>
+        NextResponse.json({
+          success: false, action: signalAction,
+          signal_status: status,
+          code: status === 'unknown' ? 'signal_outcome_unknown' : 'signal_result_unrecorded',
+          error: 'Meta signaling was not confirmed; do not retry automatically',
+        }, { status: 202 })
+
       if (action === 'pre_accept') {
         const incomingSession = body.session && typeof body.session === 'object'
           ? body.session as Record<string, unknown>
@@ -656,17 +705,37 @@ export async function POST(request: Request) {
           }
         }
 
-        await callWhatsApp({
-          phoneNumberId: config.phone_number_id,
-          accessToken,
-          messagingAccountId: config.messaging_account_id,
-          action: {
-            action: 'pre_accept',
-            callId,
-            session: { sdp_type: 'answer', sdp: answer },
-            ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
-          },
-        })
+        const requestId = crypto.randomUUID()
+        const { data: reserved, error: beginError } = await reserveSignal('pre_accept', requestId)
+        if (beginError) {
+          console.error('[calling/api] pre_accept reservation failed', { code: beginError.code ?? 'unknown' })
+          return NextResponse.json({ error: 'Pre-accept reservation unavailable' }, { status: 503 })
+        }
+        if (reserved === 'already_acknowledged') {
+          return NextResponse.json({ success: true, action: 'pre_accept', already_acknowledged: true }, { status: 200 })
+        }
+        if (reserved !== 'reserved') return signalNotReserved(reserved ?? 'denied')
+        try {
+          await callWhatsApp({
+            phoneNumberId: config.phone_number_id,
+            accessToken,
+            messagingAccountId: config.messaging_account_id,
+            action: {
+              action: 'pre_accept',
+              callId,
+              session: { sdp_type: 'answer', sdp: answer },
+              ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
+            },
+          })
+        } catch (error) {
+          await finishSignal(requestId, 'unknown')
+          console.error('[calling/api] pre_accept Graph outcome unknown', {
+            status: typeof error === 'object' && error !== null && 'httpStatus' in error
+              ? (error as { httpStatus?: number }).httpStatus ?? 'unknown' : 'unknown',
+          })
+          return signalUncertain('pre_accept', 'unknown')
+        }
+        if (!(await finishSignal(requestId, 'acknowledged'))) return signalUncertain('pre_accept', 'reserved')
         return NextResponse.json({ success: true, action: 'pre_accept', sdp_reused: answer !== incomingAnswer }, { status: 200 })
       }
 
@@ -699,45 +768,48 @@ export async function POST(request: Request) {
         try { answer = decrypt(call.agent_sdp_encrypted) } catch {
           return NextResponse.json({ error: 'Stored call answer is unavailable' }, { status: 503 })
         }
-        if (call.state === 'connected') {
-          const { data: auditRecorded, error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
-            p_account_id: accountId,
-            p_phone_number_id: call.phone_number_id,
-            p_call_id: callId,
-            p_actor_user_id: userId,
-            p_action: 'accepted',
-            p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
-          })
-          if (auditError || auditRecorded !== true) {
-            console.error('[calling/api] accepted agent attribution failed', { code: auditError?.code ?? (auditRecorded === false ? 'not_recorded' : 'unknown') })
-            return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: false }, { status: 202 })
+        const requestId = crypto.randomUUID()
+        const { data: reserved, error: beginError } = await reserveSignal('accept', requestId)
+        if (beginError) {
+          console.error('[calling/api] accept reservation failed', { code: beginError.code ?? 'unknown' })
+          return NextResponse.json({ error: 'Accept reservation unavailable' }, { status: 503 })
+        }
+        if (reserved === 'already_acknowledged') {
+          return NextResponse.json({
+            success: true, action: 'accept', already_accepted: true, agent_attribution_recorded: true,
+          }, { status: 200 })
+        }
+        if (reserved !== 'reserved') return signalNotReserved(reserved ?? 'denied')
+
+        const alreadyConnected = call.state === 'connected'
+        if (!alreadyConnected) {
+          try {
+            await callWhatsApp({
+              phoneNumberId: config.phone_number_id,
+              accessToken,
+              messagingAccountId: config.messaging_account_id,
+              action: {
+                action: 'accept',
+                callId,
+                session: { sdp_type: 'answer', sdp: answer },
+                ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
+              },
+            })
+          } catch (error) {
+            await finishSignal(requestId, 'unknown')
+            console.error('[calling/api] accept Graph outcome unknown', {
+              status: typeof error === 'object' && error !== null && 'httpStatus' in error
+                ? (error as { httpStatus?: number }).httpStatus ?? 'unknown' : 'unknown',
+            })
+            return signalUncertain('accept', 'unknown')
           }
-          return NextResponse.json({ success: true, action: 'accept', already_accepted: true, agent_attribution_recorded: true }, { status: 200 })
         }
-        await callWhatsApp({
-          phoneNumberId: config.phone_number_id,
-          accessToken,
-          messagingAccountId: config.messaging_account_id,
-          action: {
-            action: 'accept',
-            callId,
-            session: { sdp_type: 'answer', sdp: answer },
-            ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
-          },
-        })
-        const { data: auditRecorded, error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
-          p_account_id: accountId,
-          p_phone_number_id: call.phone_number_id,
-          p_call_id: callId,
-          p_actor_user_id: userId,
-          p_action: 'accepted',
-          p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
-        })
-        if (auditError || auditRecorded !== true) {
-          console.error('[calling/api] accepted agent attribution failed', { code: auditError?.code ?? (auditRecorded === false ? 'not_recorded' : 'unknown') })
-          return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: false }, { status: 202 })
-        }
-        return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: true }, { status: 200 })
+        // Acknowledgment and accepted_by_user_id are written atomically by
+        // signal_finish. The old separate attribution RPC left another gap.
+        if (!(await finishSignal(requestId, 'acknowledged'))) return signalUncertain('accept', 'reserved')
+        return NextResponse.json({
+          success: true, action: 'accept', already_accepted: alreadyConnected, agent_attribution_recorded: true,
+        }, { status: 200 })
       }
 
       // Reserve the terminal side effect with the same row lock used by claim.

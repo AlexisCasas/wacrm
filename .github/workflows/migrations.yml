@@ -111,6 +111,12 @@ jobs:
       - name: Race terminal reservation and claim in independent PostgreSQL sessions
         run: bash scripts/qa/whatsapp-calling/verify-terminal-concurrency.sh
 
+      - name: Verify CALL-03B2.6 signaling fencing and atomic accept attribution
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03b2-6.sql
+
+      - name: Race accept/pre_accept and terminal reservations across PostgreSQL sessions
+        run: bash scripts/qa/whatsapp-calling/verify-signal-terminal-concurrency.sh
+
       - name: Verify durable webhook inbox leases, deduplication and RLS
         run: supabase db query --local --file supabase/ci/webhook-inbox-test.sql
 
