@@ -37,7 +37,13 @@ Expected: `CALL03B26_QA_REJECT=PASS|sessions=25|rejected=4|active=0|claims=0|sdp
 
 The verifier is read-only: validates the Compose project, uses `PGOPTIONS=default_transaction_read_only`, `BEGIN READ ONLY`, a parameterized call_id and `ROLLBACK`; prints only aggregates, never agent IDs, SDP or customer details. Run it only on the designated QA host. **This script does not generate synthetic calls.**
 
-## Gate C — distinct-agent concurrency
+## Gate C — dos equipos / dos agentes (evidencia manual adicional)
+
+El operador reportó una prueba con **dos máquinas y sesiones de agentes diferentes**: uno consiguió aceptar la llamada y el otro fue bloqueado. Este comportamiento es compatible con el aislamiento esperado y se registra como `PASS_UI_REPORTED`. Se dispone además de `PASS_SQL_ONLY` para la llamada `wacid.qa-8490f9f6-b72b-4dfd-bf28-941dfda9ed6f`, sin recursos pendientes, pero aún no se ha vinculado inequívocamente ese `call_id` a la prueba entre dos máquinas.
+
+Para declarar `PASS_E2E` faltan evidencias correlacionadas: identificador de la llamada del ensayo simultáneo, HTTP 200/409 por cada agente, confirmación de que el perdedor no abrió micrófono ni ejecutó `pre_accept`/`accept`, y una única señalización al Peer mock. Mientras no existan, `GATE_C=PARTIAL` y **no se autoriza producción**. Ver [gate de producción](WHATSAPP_CALLING_PROD_GATE_20261121.md).
+
+## Gate C — distinct-agent concurrency (repeatable procedure)
 
 Use two separately authenticated QA agents A and C in two independent browser profiles, the *same* conversation and one *new* incoming synthetic call.
 
