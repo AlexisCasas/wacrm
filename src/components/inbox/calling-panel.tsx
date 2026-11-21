@@ -914,8 +914,21 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
     setErrorMessage(null);
     try {
       // 3-4. Claim, and confirm we are the winner. Losers stop here (zero getUserMedia).
+      const claimRequest = runtime.post("claim", { call_id: incoming.call_id });
+      // The conversation may change while the claim POST is in flight.
+      // Promise.race aborts the UI but cannot cancel a server-side claim.
+      // Observe a late success and release only if GET still proves ownership.
+      void claimRequest.then(() => {
+        if (op.aborted) {
+          op.claimed = true;
+          op.lastRenewAt = Date.now();
+          void finalizeAcceptClaim(op);
+        }
+      }).catch(() => {
+        // An uncertain network result is handled by the request catch below.
+      });
       try {
-        await abortable(op, runtime.post("claim", { call_id: incoming.call_id }));
+        await abortable(op, claimRequest);
         op.claimed = true;
         op.lastRenewAt = Date.now();
       } catch (claimError) {
