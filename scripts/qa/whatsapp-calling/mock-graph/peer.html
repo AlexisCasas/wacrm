@@ -32,6 +32,19 @@
     <audio id="remoteAudio" autoplay playsinline controls></audio>
   </div>
   <div class="card">
+    <strong>QA: respuesta Graph incierta</strong>
+    <p>Arma un único fallo HTTP 503 <em>después</em> de aplicar una acción del mock. Requiere habilitación explícita en el servidor QA, nunca en producción.</p>
+    <label for="faultAction">Acción</label>
+    <select id="faultAction">
+      <option value="pre_accept">pre_accept</option>
+      <option value="accept">accept</option>
+      <option value="reject">reject</option>
+      <option value="terminate">terminate</option>
+    </select>
+    <button id="faultArm" class="danger" disabled>Armar fallo 503 de esta llamada</button>
+    <small>Solo llamadas sintéticas; no repetir acciones con resultado desconocido.</small>
+  </div>
+  <div class="card">
     <strong>Estado</strong>
     <div id="status">Peer no preparado.</div>
     <small>Dirección del simulador: http://127.0.0.1:38090/peer</small>
@@ -43,6 +56,8 @@
   const prepareButton = document.getElementById('prepare');
   const incomingButton = document.getElementById('incoming');
   const disconnectButton = document.getElementById('disconnect');
+  const faultArmButton = document.getElementById('faultArm');
+  const faultActionSelect = document.getElementById('faultAction');
   const remoteAudio = document.getElementById('remoteAudio');
   let localStream = null;
   let peer = null;
@@ -130,6 +145,7 @@
     const currentPeer = new RTCPeerConnection({ iceServers: [] });
     peer = currentPeer;
     activeCallId = callId;
+    faultArmButton.disabled = !callId.startsWith('wacid.qa-');
     remoteDescriptionSet = false;
     connectedNotified = false;
     localStream.getAudioTracks().forEach(track => currentPeer.addTrack(track, localStream));
@@ -217,6 +233,7 @@
         body: JSON.stringify({ offer: pc.localDescription.sdp }),
       });
       activeCallId = result.call_id;
+      faultArmButton.disabled = false;
       handled.add(result.call_id);
       say('Llamada entrante sintética ' + result.call_id + ' enviada al Inbox. Esperando que el agente acepte.');
       await watchIncomingAnswer(result.call_id);
@@ -244,6 +261,26 @@
     }
   }
 
+  async function armFault() {
+    const callId = activeCallId;
+    if (!callId || !callId.startsWith('wacid.qa-')) {
+      say('Genera primero una llamada sintética.');
+      return;
+    }
+    faultArmButton.disabled = true;
+    try {
+      const action = faultActionSelect.value;
+      await api('/qa/faults', {
+        method: 'POST',
+        body: JSON.stringify({ mode: 'after_effect_503', call_id: callId, action }),
+      });
+      say('Fallo 503 armado para ' + action + ' sobre ' + callId + ' (una sola vez, 120 segundos).');
+    } catch (error) {
+      say('No se pudo armar el fallo QA: ' + error.message);
+      faultArmButton.disabled = false;
+    }
+  }
+
   async function disconnect() {
     const callId = activeCallId;
     if (callId && !callId.startsWith('pending-')) {
@@ -268,6 +305,9 @@
 
   incomingButton.addEventListener('click', () => {
     void simulateIncoming().catch(error => say(error.message));
+  });
+  faultArmButton.addEventListener('click', () => {
+    void armFault();
   });
   disconnectButton.addEventListener('click', () => {
     void disconnect();
