@@ -211,7 +211,7 @@ export async function GET(request: Request) {
       }
       const { data: call, error } = await db
         .from('whatsapp_call_sessions')
-        .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_encrypted,session_sdp_type,session_sdp_expires_at,terminal_status')
+        .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_encrypted,session_sdp_type,session_sdp_expires_at,terminal_status,signal_status')
         .eq('account_id', accountId)
         .eq('call_id', callId)
         .maybeSingle()
@@ -228,7 +228,7 @@ export async function GET(request: Request) {
       const callIsActive = !['terminated','failed','rejected'].includes(call.state)
       const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone)
       const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED' && call.initiated_by_user_id === userId
-      const canReadSession = callIsActive && !call.terminal_status && pilotAllowed && (ownsClaim || ownsOutboundCall)
+      const canReadSession = callIsActive && !call.terminal_status && call.signal_status !== 'unknown' && pilotAllowed && (ownsClaim || ownsOutboundCall)
       const sdpIsFresh = typeof call.session_sdp_expires_at === 'string'
         && Date.parse(call.session_sdp_expires_at) > now
       let session: { sdp_type: 'offer' | 'answer'; sdp: string } | null = null
@@ -258,7 +258,7 @@ export async function GET(request: Request) {
 
     const { data, error } = await db
       .from('whatsapp_call_sessions')
-      .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_type,session_sdp_expires_at,terminal_status')
+      .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_type,session_sdp_expires_at,terminal_status,signal_status')
       .eq('account_id', accountId)
       .order('created_at', { ascending: false })
       .limit(50)
@@ -323,6 +323,7 @@ export async function GET(request: Request) {
         claim_available: pilotAllowed && call.direction === 'USER_INITIATED'
           && ['offered','ringing','connected'].includes(call.state)
           && !call.terminal_status
+          && !call.signal_status
           && !call.accepted_by_user_id
           && !call.rejected_by_user_id && !call.ended_by_user_id
           && typeof call.session_sdp_expires_at === 'string'
@@ -333,7 +334,7 @@ export async function GET(request: Request) {
             || call.claimed_by_user_id === userId
           ),
         session_available: Boolean(
-          callIsActive && !call.terminal_status && pilotAllowed && (ownsClaim || ownsOutboundCall)
+          callIsActive && !call.terminal_status && call.signal_status !== 'unknown' && pilotAllowed && (ownsClaim || ownsOutboundCall)
           && call.session_sdp_type
           && call.session_sdp_expires_at
           && Date.parse(call.session_sdp_expires_at) > now
