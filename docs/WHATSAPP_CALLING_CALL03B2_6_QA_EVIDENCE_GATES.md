@@ -11,7 +11,17 @@
 - CI and Migrations for #146 PASS. A DB race proven on the CI instance is **not** a second-agent browser race proved on the VPS.
 - A previous restore-test was explicitly waived. SHA256 and pg_restore list do not establish restorability.
 
-## Gate R — independent reject-before-answer
+## Gate R — verified after baseline (operator report)
+
+**Result: PASS_REPORTED + PASS_SQL** on 21 November 2026. The operator reported a successful reject-before-answer in WACRM/Peer QA and ran the read-only SQL verifier against the new synthetic `call_id=wacid.qa-8a8b547d-049e-4ffb-a04e-2b5811b02a9c`. Literal output:
+
+```text
+CALL03B26_QA_REJECT=PASS|sessions=27|rejected=5|active=0|claims=0|sdp=0|reserved=0|unknown=0
+```
+
+Compared with baseline, sessions increased 24 → 27 and rejected calls 3 → 5. **These are aggregate changes, not proof that all three new calls belong to the rejection scenario.** The exact-call SQL gate confirmed rejection attribution, action and cleared resources. No remote SSH or independent Peer inspection was performed by the assistant. The rejection-specific gate is closed; concurrency and unknown gates are not.
+
+## Gate R — independent reject-before-answer (repeatability)
 
 1. Keep the browser on WACRM QA via SSH tunnel (127.0.0.1:38089) and Peer QA (127.0.0.1:38090/peer). Confirm mock-only networking and disable any real-Meta path.
 2. From Peer QA create a **new** incoming synthetic call, capture its exact `wacid.*` identifier and UTC creation time. Do not reuse an accepted/terminated call.
@@ -34,6 +44,13 @@ Use two separately authenticated QA agents A and C in two independent browser pr
 - Both press Accept nearly simultaneously. Only one may claim the call (HTTP 200); the losing agent should get 409 **before requesting a microphone** and must not send pre_accept/accept.
 - Winning agent alone sends pre_accept then accept; it may end the call. Peer mock must see a single accepted call, no duplicated external actions.
 - Obtain authorized sanitized server logs for both agents and call_id. Read PostgreSQL after termination: exactly one call row, `accepted_by_user_id` equals the winner, `ended_by_user_id` the real closer, no active claim, SDP or reserved action.
+- Run the **read-only** post-call SQL checker with the new, exact Peer QA call ID:
+
+```bash
+bash scripts/qa/whatsapp-calling/verify-call03b2-6-agent-concurrency-qa.sh 'wacid.NEW_PEER_QA_CALL_ID'
+```
+
+Expected `CALL03B26_CONCURRENCY=PASS_SQL_ONLY|matched=1|valid_winner=1|claims=0|sdp=0|unsettled=0`. A PASS_SQL_ONLY means one durable accepted-and-ended call, attributed to the same agent and with acknowledged reservations. It **does not prove the second agent received HTTP 409 or that no second Graph request was sent**; only after the two browser profiles + Peer mock logs prove that, mark Gate C PASS. A failed/unknown response must not be automatically retried.
 - Repeat with deliberately staggered accept and terminate requests if the mock exposes deterministic delays; otherwise label **RACE_NOT_EXECUTED**, not PASS. Do not use `verify-signal-terminal-concurrency.sh` on shared QA: that script writes and deletes CI fixtures.
 
 ## Gate U — outcome unknown (separate synthetic call)
