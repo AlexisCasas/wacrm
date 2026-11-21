@@ -271,6 +271,12 @@ export function ConfirmedOrdersWorkspace() {
 
   const narrowed = abandonedOnly && abandonedIds ? orders.filter((o) => abandonedIds.includes(o.id)) : orders;
   const shown = narrowed;
+  // The drawer always shows the order the operator is looking at: the selected order as it is in the CURRENT list. When a search / filter /
+  // reload takes it out of the list the selection is dropped, so the drawer (and the voucher upload inside it) can never keep another order's data.
+  const current = selected ? shown.find((o) => o.id === selected.id) ?? null : null;
+  useEffect(() => {
+    if (selected && state === "ready" && !current) setSelected(null);
+  }, [selected, state, current]);
   // keep paging while the chip is on and an abandoned order is still not in the loaded list
   useEffect(() => {
     if (!abandonedOnly || !abandonedIds || state !== "ready" || !cursor || loadingMore) return;
@@ -507,7 +513,7 @@ export function ConfirmedOrdersWorkspace() {
       )}
 
       <OrderDrawer
-        order={selected}
+        order={current}
         locale={locale}
         onClose={close}
         closeRef={closeRef}
