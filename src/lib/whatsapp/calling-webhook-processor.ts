@@ -5,14 +5,48 @@ import { parseWhatsAppCallPermissionReply, parseWhatsAppCallingWebhookChange, ty
 
 type ConfigRow = { account_id: string; user_id: string; phone_number_id: string }
 
+const MAX_UNIX_SECONDS = 8_640_000_000_000
+const MAX_DURATION_SECONDS = 2_147_483_647
+
 function seconds(value: string | undefined): number | null {
   if (!value) return null
   const n = Number(value)
-  return Number.isSafeInteger(n) && n > 0 ? n : null
+  return Number.isSafeInteger(n) && n > 0 && n <= MAX_UNIX_SECONDS ? n : null
 }
 function iso(value: string | undefined): string | null {
   const n = seconds(value)
-  return n === null ? null : new Date(n * 1000).toISOString()
+  if (n === null) return null
+  const date = new Date(n * 1000)
+  return Number.isFinite(date.getTime()) ? date.toISOString() : null
+}
+function durationSeconds(value: number | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
+  const seconds = Math.floor(value)
+  return Number.isSafeInteger(seconds) && seconds <= MAX_DURATION_SECONDS ? seconds : null
+}
+function terminalTiming(event: WhatsAppCallingEvent) {
+  let startedAt = iso(event.start_time)
+  const endedAt = iso(event.end_time)
+  const reportedDuration = durationSeconds(event.duration)
+  const startMs = startedAt ? Date.parse(startedAt) : null
+  const endMs = endedAt ? Date.parse(endedAt) : null
+
+  if (startMs !== null && endMs !== null && endMs < startMs) {
+    console.warn('[calling] invalid terminate time order', { code: 'start_after_end' })
+    startedAt = null
+  }
+
+  if (reportedDuration !== null && startedAt && endedAt) {
+    const derivedDuration = Math.floor((Date.parse(endedAt) - Date.parse(startedAt)) / 1000)
+    if (derivedDuration >= 0 && derivedDuration !== reportedDuration) {
+      console.warn('[calling] terminate duration differs from timestamp delta', {
+        code: 'duration_timestamp_mismatch',
+        delta_seconds: reportedDuration - derivedDuration,
+      })
+    }
+  }
+
+  return { startedAt, endedAt, durationSeconds: reportedDuration }
 }
 function hash(parts: string[]): string {
   return createHash('sha256').update(parts.join('|')).digest('hex')
@@ -59,6 +93,7 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
   const state = terminal
     ? terminalStatus === 'FAILED' ? 'failed' : terminalStatus === 'REJECTED' ? 'rejected' : 'terminated'
     : event.event === 'connect' ? (event.direction === 'USER_INITIATED' ? 'offered' : 'connecting') : null
+  const timing = terminal ? terminalTiming(event) : { startedAt: null, endedAt: null, durationSeconds: null }
   const sdp = event.session?.sdp
   // Meta gives the business roughly 30–60 seconds to accept an inbound call.
   // Keep inbound offers for at most 60 seconds; outbound SDP keeps its
@@ -75,8 +110,8 @@ async function persistEvent(db: SupabaseClient, config: ConfigRow, event: WhatsA
     p_state: state, p_session_sdp_encrypted: encryptedSdp,
     p_session_sdp_type: sdp ? event.session?.sdp_type ?? null : null,
     p_session_sdp_expires_at: sdp ? new Date(Date.now()+sdpTtlMs).toISOString() : null,
-    p_started_at: iso(event.start_time), p_ended_at: iso(event.end_time),
-    p_duration_seconds: typeof event.duration === 'number' ? Math.floor(event.duration) : null,
+    p_started_at: timing.startedAt, p_ended_at: timing.endedAt,
+    p_duration_seconds: timing.durationSeconds,
   })
   if (error) {
     console.error('[calling] call event persistence failed', { code: error.code ?? 'unknown' })
