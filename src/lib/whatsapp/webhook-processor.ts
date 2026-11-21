@@ -29,6 +29,7 @@ import {
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
 import { processCallingWebhookChange, processCallPermissionReply } from '@/lib/whatsapp/calling-webhook-processor'
+import { isWhatsAppCallingPhoneEnabled } from '@/lib/whatsapp/calling-pilot'
 
 export interface MetaWebhookPayload { entry?: WhatsAppWebhookEntry[] }
 
@@ -139,7 +140,13 @@ export async function processWebhook(body: MetaWebhookPayload) {
       // Calling events are a separate payload family. They must never fall through
       // to message-status handling (call IDs are not message IDs).
       if (change.field === 'calls') {
-        await processCallingWebhookChange(supabaseAdmin(), { field: change.field, value: change.value })
+        // Dark release must fail closed even if a Meta subscription is
+        // mistakenly enabled. The messages webhook remains unaffected.
+        // On pilot activation, accept events only from the allowlisted
+        // business number; never trust a client-provided phone number.
+        if (isWhatsAppCallingPhoneEnabled(change.value?.metadata?.phone_number_id)) {
+          await processCallingWebhookChange(supabaseAdmin(), { field: change.field, value: change.value })
+        }
         continue
       }
 
@@ -219,7 +226,9 @@ export async function processWebhook(body: MetaWebhookPayload) {
 
         // Permission replies arrive on the existing messages webhook. Persist them
         // independently of ordinary message dispatch, using the tenant config resolved above.
-        await processCallPermissionReply(supabaseAdmin(), config, message)
+        if (isWhatsAppCallingPhoneEnabled(phoneNumberId)) {
+          await processCallPermissionReply(supabaseAdmin(), config, message)
+        }
 
         await processMessage(
           message,
