@@ -149,6 +149,7 @@ type SignalCallRow = {
   agent_sdp_encrypted: string | null
   agent_sdp_type: 'offer' | 'answer' | null
   agent_sdp_expires_at: string | null
+  terminal_status: 'reserved' | 'acknowledged' | 'unknown' | null
   state: string
 }
 
@@ -162,7 +163,7 @@ function validSdp(value: unknown): value is string {
 async function loadSignalCall(accountId: string, callId: string): Promise<SignalCallRow | null> {
   const { data, error } = await supabaseAdmin()
     .from('whatsapp_call_sessions')
-    .select('phone_number_id,call_id,direction,contact_id,conversation_id,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,claimed_by_user_id,last_claimed_by_user_id,claim_expires_at,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,biz_opaque_callback_data,agent_sdp_encrypted,agent_sdp_type,agent_sdp_expires_at,state')
+    .select('phone_number_id,call_id,direction,contact_id,conversation_id,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,claimed_by_user_id,last_claimed_by_user_id,claim_expires_at,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,biz_opaque_callback_data,agent_sdp_encrypted,agent_sdp_type,agent_sdp_expires_at,terminal_status,state')
     .eq('account_id', accountId)
     .eq('call_id', callId)
     .maybeSingle()
@@ -207,7 +208,7 @@ export async function GET(request: Request) {
       }
       const { data: call, error } = await db
         .from('whatsapp_call_sessions')
-        .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_encrypted,session_sdp_type,session_sdp_expires_at')
+        .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_encrypted,session_sdp_type,session_sdp_expires_at,terminal_status')
         .eq('account_id', accountId)
         .eq('call_id', callId)
         .maybeSingle()
@@ -224,7 +225,7 @@ export async function GET(request: Request) {
       const callIsActive = !['terminated','failed','rejected'].includes(call.state)
       const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone)
       const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED' && call.initiated_by_user_id === userId
-      const canReadSession = callIsActive && pilotAllowed && (ownsClaim || ownsOutboundCall)
+      const canReadSession = callIsActive && !call.terminal_status && pilotAllowed && (ownsClaim || ownsOutboundCall)
       const sdpIsFresh = typeof call.session_sdp_expires_at === 'string'
         && Date.parse(call.session_sdp_expires_at) > now
       let session: { sdp_type: 'offer' | 'answer'; sdp: string } | null = null
@@ -254,7 +255,7 @@ export async function GET(request: Request) {
 
     const { data, error } = await db
       .from('whatsapp_call_sessions')
-      .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_type,session_sdp_expires_at')
+      .select('id,phone_number_id,call_id,contact_id,conversation_id,initiated_by_user_id,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,direction,customer_key,customer_phone,customer_bsuid,customer_parent_bsuid,customer_name,state,claimed_by_user_id,claimed_at,claim_expires_at,started_at,ended_at,duration_seconds,created_at,updated_at,session_sdp_type,session_sdp_expires_at,terminal_status')
       .eq('account_id', accountId)
       .order('created_at', { ascending: false })
       .limit(50)
@@ -318,6 +319,7 @@ export async function GET(request: Request) {
         initiated_by_me: ownsOutboundCall,
         claim_available: pilotAllowed && call.direction === 'USER_INITIATED'
           && ['offered','ringing','connected'].includes(call.state)
+          && !call.terminal_status
           && !call.accepted_by_user_id
           && !call.rejected_by_user_id && !call.ended_by_user_id
           && typeof call.session_sdp_expires_at === 'string'
@@ -328,7 +330,7 @@ export async function GET(request: Request) {
             || call.claimed_by_user_id === userId
           ),
         session_available: Boolean(
-          callIsActive && pilotAllowed && (ownsClaim || ownsOutboundCall)
+          callIsActive && !call.terminal_status && pilotAllowed && (ownsClaim || ownsOutboundCall)
           && call.session_sdp_type
           && call.session_sdp_expires_at
           && Date.parse(call.session_sdp_expires_at) > now
@@ -606,6 +608,9 @@ export async function POST(request: Request) {
       if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, call.customer_phone)) {
         return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
       }
+      if ((action === 'pre_accept' || action === 'accept') && call.terminal_status) {
+        return NextResponse.json({ error: 'Call closure is in progress; signaling is blocked', code: 'terminal_in_progress' }, { status: 409 })
+      }
       const accessToken = await loadAccessToken(config)
       if (!accessToken) return NextResponse.json({ error: 'WhatsApp credentials are unavailable' }, { status: 503 })
 
@@ -735,76 +740,96 @@ export async function POST(request: Request) {
         return NextResponse.json({ success: true, action: 'accept', agent_attribution_recorded: true }, { status: 200 })
       }
 
-      const claimIsActive = typeof call.claim_expires_at === 'string'
-        && Date.parse(call.claim_expires_at) > Date.now()
-      if (action === 'reject') {
-        if (call.direction !== 'USER_INITIATED') {
-          return NextResponse.json({ error: 'Only incoming calls can be rejected' }, { status: 400 })
-        }
-        if (call.ended_by_user_id || (call.rejected_by_user_id && call.rejected_by_user_id !== userId)) {
-          return NextResponse.json({ error: 'This call is already terminal' }, { status: 409 })
-        }
-        if (call.claimed_by_user_id && claimIsActive && call.claimed_by_user_id !== userId) {
-          return NextResponse.json({ error: 'Another agent currently owns this call' }, { status: 409 })
-        }
-        if (call.state === 'rejected' && call.last_claimed_by_user_id === userId) {
-          const { data, error } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
-            p_account_id: accountId,
-            p_phone_number_id: call.phone_number_id,
-            p_call_id: callId,
-            p_actor_user_id: userId,
-            p_action: 'rejected',
-            p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
-          })
-          if (error || data !== true) {
-            return NextResponse.json({ success: true, action: 'reject', agent_attribution_recorded: false }, { status: 202 })
-          }
-          return NextResponse.json({ success: true, action: 'reject', already_terminal: true }, { status: 200 })
-        }
-        if (!['offered','ringing'].includes(call.state)) {
-          return NextResponse.json({ error: 'Call is no longer rejectable' }, { status: 409 })
-        }
-      } else {
-        const ownsCall = call.initiated_by_user_id === userId
-          || call.accepted_by_user_id === userId
-          || call.last_claimed_by_user_id === userId
-          || (call.claimed_by_user_id === userId && claimIsActive)
-          || role === 'owner'
-          || role === 'admin'
-        if (!ownsCall) {
-          return NextResponse.json({ error: 'Only the initiating, accepting or assigned agent can terminate this call' }, { status: 403 })
-        }
-        if (call.rejected_by_user_id && call.ended_by_user_id !== userId) {
-          return NextResponse.json({ error: 'A rejected call cannot be terminated' }, { status: 409 })
-        }
-        if (['terminated','failed','rejected'].includes(call.state)) {
-          const { data, error } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
-            p_account_id: accountId,
-            p_phone_number_id: call.phone_number_id,
-            p_call_id: callId,
-            p_actor_user_id: userId,
-            p_action: 'ended',
-            p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
-          })
-          if (error || data !== true) {
-            return NextResponse.json({ success: true, action: 'terminate', agent_attribution_recorded: false }, { status: 202 })
-          }
-          return NextResponse.json({ success: true, action: 'terminate', already_terminal: true }, { status: 200 })
-        }
+      // Reserve the terminal side effect with the same row lock used by claim.
+      // Never call Meta before this RPC commits. A failed/unconfirmed Meta
+      // response remains reserved and is not retried automatically.
+      const suppliedContext = typeof body.termination_context === 'string' ? body.termination_context : null
+      if (suppliedContext !== null
+        && !['owned_call','claim_cleanup','admin_override'].includes(suppliedContext)) {
+        return NextResponse.json({ error: 'Invalid termination context' }, { status: 400 })
+      }
+      const context = action === 'reject' ? 'reject' : (suppliedContext ?? 'owned_call')
+      const expectedClaimedAt = typeof body.claim_epoch === 'string' ? body.claim_epoch : null
+      if (context === 'claim_cleanup' && (!expectedClaimedAt || !Number.isFinite(Date.parse(expectedClaimedAt)))) {
+        return NextResponse.json({ error: 'An original claim epoch is required for cleanup', code: 'invalid_claim_epoch' }, { status: 400 })
+      }
+      const terminalRequestId = crypto.randomUUID()
+      const db = supabaseAdmin()
+      const { data: reserved, error: reserveError } = await db.rpc('whatsapp_call_terminal_reserve', {
+        p_account_id: accountId,
+        p_phone_number_id: call.phone_number_id,
+        p_call_id: callId,
+        p_actor_user_id: userId,
+        p_request_id: terminalRequestId,
+        p_action: action,
+        p_context: context,
+        p_expected_claimed_at: context === 'claim_cleanup' ? expectedClaimedAt : null,
+      })
+      if (reserveError) {
+        console.error('[calling/api] terminal reservation failed', { code: reserveError.code ?? 'unknown' })
+        return NextResponse.json({ error: 'Could not reserve call closure', code: 'terminal_reserve_failed' }, { status: 503 })
+      }
+      if (reserved === 'already_terminal') {
+        return NextResponse.json({ success: true, action, already_terminal: true }, { status: 200 })
+      }
+      if (reserved === 'not_found') return NextResponse.json({ error: 'Call not found' }, { status: 404 })
+      if (reserved === 'denied') return NextResponse.json({ error: 'Call is not owned by this agent or claim has changed', code: 'terminal_claim_conflict' }, { status: 409 })
+      if (reserved === 'in_progress') return NextResponse.json({ error: 'Call closure is already reserved; do not retry Meta', code: 'terminal_in_progress' }, { status: 409 })
+      if (reserved !== 'reserved') {
+        console.error('[calling/api] unexpected terminal reservation outcome')
+        return NextResponse.json({ error: 'Unknown terminal reservation result' }, { status: 503 })
       }
 
-      const metaAction = action === 'reject' ? 'reject' : 'terminate'
-      await callWhatsApp({
-        phoneNumberId: config.phone_number_id,
-        accessToken,
-        messagingAccountId: config.messaging_account_id,
-        action: {
-          action: metaAction,
-          callId,
-          ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
-        },
-      })
-      const { data: auditRecorded, error: auditError } = await supabaseAdmin().rpc('whatsapp_call_session_agent_action', {
+      const finishTerminal = async (outcome: 'acknowledged' | 'unknown') => {
+        const { data: finished, error: finishError } = await db.rpc('whatsapp_call_terminal_finish', {
+          p_account_id: accountId,
+          p_phone_number_id: call.phone_number_id,
+          p_call_id: callId,
+          p_actor_user_id: userId,
+          p_request_id: terminalRequestId,
+          p_outcome: outcome,
+        })
+        if (finishError || finished !== true) {
+          console.error('[calling/api] terminal reservation completion failed', {
+            code: finishError?.code ?? 'not_recorded',
+          })
+          return false
+        }
+        return true
+      }
+
+      try {
+        await callWhatsApp({
+          phoneNumberId: config.phone_number_id,
+          accessToken,
+          messagingAccountId: config.messaging_account_id,
+          action: {
+            action: action === 'reject' ? 'reject' : 'terminate',
+            callId,
+            ...(call.biz_opaque_callback_data ? { bizOpaqueCallbackData: call.biz_opaque_callback_data } : {}),
+          },
+        })
+      } catch (metaError) {
+        // Any non-confirmation remains ambiguous. Never release/resend.
+        await finishTerminal('unknown')
+        console.error('[calling/api] terminal Meta outcome unknown', {
+          status: typeof metaError === 'object' && metaError !== null && 'httpStatus' in metaError
+            ? (metaError as { httpStatus?: number }).httpStatus ?? 'unknown' : 'unknown',
+        })
+        return NextResponse.json({
+          success: false, action, terminal_status: 'unknown',
+          code: 'terminal_outcome_unknown',
+          error: 'Meta did not confirm the call closure; do not retry automatically',
+        }, { status: 202 })
+      }
+      if (!(await finishTerminal('acknowledged'))) {
+        return NextResponse.json({
+          success: false, action, terminal_status: 'reserved',
+          code: 'terminal_result_unrecorded',
+          error: 'Meta acknowledged the request but the result could not be recorded',
+        }, { status: 202 })
+      }
+      const { data: auditRecorded, error: auditError } = await db.rpc('whatsapp_call_session_agent_action', {
         p_account_id: accountId,
         p_phone_number_id: call.phone_number_id,
         p_call_id: callId,
@@ -813,10 +838,10 @@ export async function POST(request: Request) {
         p_conversation_id: typeof body.conversation_id === 'string' ? body.conversation_id : null,
       })
       if (auditError || auditRecorded !== true) {
-        console.error('[calling/api] terminal agent attribution failed', { code: auditError?.code ?? (auditRecorded === false ? 'not_recorded' : 'unknown') })
-        return NextResponse.json({ success: true, action, agent_attribution_recorded: false }, { status: 202 })
+        console.error('[calling/api] terminal agent attribution failed', { code: auditError?.code ?? 'not_recorded' })
+        return NextResponse.json({ success: true, action, terminal_status: 'acknowledged', agent_attribution_recorded: false }, { status: 202 })
       }
-      return NextResponse.json({ success: true, action, agent_attribution_recorded: true }, { status: 200 })
+      return NextResponse.json({ success: true, action, terminal_status: 'acknowledged', agent_attribution_recorded: true }, { status: 200 })
     }
 
     if (action !== 'check_permission' && action !== 'request_permission') {
