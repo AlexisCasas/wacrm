@@ -447,6 +447,59 @@ describe('CALL-02 Calling webhook persistence', () => {
     warn.mockRestore()
   })
 
+  it('derives duration from valid terminate timestamps when Meta omits duration', async () => {
+    rpc.mockResolvedValue({ data: true, error: null })
+    await processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        calls: [{
+          id: 'wacid.terminate-derived-duration',
+          event: 'terminate',
+          timestamp: '1795120065',
+          direction: 'USER_INITIATED',
+          to: '51911111111',
+          status: 'COMPLETED',
+          start_time: '1795120000',
+          end_time: '1795120065',
+        }],
+      },
+    })
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_started_at: new Date(1795120000 * 1000).toISOString(),
+      p_ended_at: new Date(1795120065 * 1000).toISOString(),
+      p_duration_seconds: 65,
+    })
+  })
+
+  it('does not derive duration from an invalid or reversed terminate timestamp pair', async () => {
+    rpc.mockResolvedValue({ data: true, error: null })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        calls: [{
+          id: 'wacid.terminate-invalid-derived-duration',
+          event: 'terminate',
+          timestamp: '1795120065',
+          direction: 'BUSINESS_INITIATED',
+          to: '51911111111',
+          status: 'COMPLETED',
+          start_time: '1795120070',
+          end_time: '1795120065',
+        }],
+      },
+    })
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_started_at: null,
+      p_ended_at: new Date(1795120065 * 1000).toISOString(),
+      p_duration_seconds: null,
+    })
+    expect(warn).toHaveBeenCalledWith('[calling] invalid terminate time order', { code: 'start_after_end' })
+    warn.mockRestore()
+  })
+
   it('drops an impossible start_time after end_time but retains a valid explicit duration', async () => {
     rpc.mockResolvedValue({ data: true, error: null })
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
