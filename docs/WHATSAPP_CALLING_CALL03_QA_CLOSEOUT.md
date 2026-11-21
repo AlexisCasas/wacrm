@@ -1,6 +1,6 @@
 # WACRM — CALL-03 QA closeout and CALL-04 entry gates
 
-**Estado consolidado:** CALL-03B2 y CALL-03B2.1 desplegados en QA; las primeras pruebas manuales de llamadas salientes y entrantes fueron satisfactorias. El cierre formal de CALL-03 sigue condicionado a cuatro pruebas finales de navegador y a resolver la brecha de presentación del historial.
+**Estado consolidado:** T1–T4 de CALL-03 ya se ejecutaron en la VPS QA. T1, T2, T3B y T4 pasaron en navegador/BD; T3A pasó como simulación. Quedan hardening previo a llamadas reales: claim antes de micrófono, fidelidad del mock para timestamps y prueba real de recuperación de red antes de ampliar el piloto.
 
 ## 1. Alcance y límites operativos
 
@@ -17,7 +17,7 @@
 |---|---|---|---|---|
 | [#140](https://github.com/AlexisCasas/wacrm/pull/140) | Cliente WebRTC e Inbox CALL-03B2 | `feat/whatsapp-calling-call03b2-webrtc-20261120` / `5f8f9d6b17dddd8aecdf7b9329969f24d7444543` | #373 PASS | #237 PASS |
 | [#141](https://github.com/AlexisCasas/wacrm/pull/141) | Simulador Graph y segundo peer WebRTC, exclusivamente QA | `qa/call03b2-webrtc-mock-20261120` / `62974616cde92e8bb0cb7e232758dd143d79e475` | #380 PASS | #244 PASS |
-| [#142](https://github.com/AlexisCasas/wacrm/pull/142) | Asociación de llamadas entrantes, expiración y protecciones de claim | `feat/whatsapp-calling-call03b2-1-inbound-association-20261120` / `35cac275fa981ac4dc1ac2def1b38ac2c5481d46` | #403 PASS | #267 PASS |
+| [#142](https://github.com/AlexisCasas/wacrm/pull/142) | Asociación de llamadas entrantes, expiración y protecciones de claim | `feat/whatsapp-calling-call03b2-1-inbound-association-20261120` / código funcional `8c4d37b90e4d2def7f7a60154ace07d36c19f4f7` | #419 PASS | #283 PASS |
 
 Los tres PR continúan abiertos como Draft y no están fusionados. #141 contiene herramientas de QA: no debe incorporarse a un artefacto de producción.
 
@@ -26,7 +26,7 @@ Los tres PR continúan abiertos como Draft y no están fusionados. #141 contiene
 - Stack: `/opt/apps/call03b2-qa-stack` (Compose project `call03b2-qa`).
 - Worktree del simulador: `/opt/apps/wacrm-call03b2-qa`, PR #141.
 - Worktree de aplicación: `/opt/apps/wacrm-call03b2-1-qa`, PR #142.
-- App: `wacrm-app:call03b2-1-8f2d4ec`.
+- App actualizada: `wacrm-app:call03b2-history-8c4d37b` (ID `d9ff178d1bcb`).
 - Mock: `wacrm-call03b2-mock-graph:62974616`.
 - WACRM QA: `http://127.0.0.1:38089`.
 - Peer QA: `http://127.0.0.1:38090/peer`.
