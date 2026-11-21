@@ -175,3 +175,20 @@ Fuera de alcance: habilitar Meta `calls`, cambiar variables/secretos, desplegar 
 Los PR de CALL-01/02/03 siguen abiertos. Integrar en orden #134 → #136 → #137 → #138 → #140 → #142 y repetir CI/Migrations/replay limpio sobre el resultado integrado. #141 es QA-only y no debe entrar en producción. #139 fue cerrado como supersedido sin merge.
 
 **CALL-04 está diseñado, no implementado.** Ver `docs/WHATSAPP_CALLING_CALL04_DESIGN.md`. La activación de settings Meta, webhook `calls`, flags de producción y llamadas reales requieren autorización operativa separada.
+
+## 12. CALL-03B2.2 — Duración del historial (21/nov/2026)
+
+Se publicaron dos ramas de seguimiento, sin PRs y sin merge:
+
+- App: `fix/whatsapp-calling-call03b2-2-duration-20261121`, commit `4122f3bd78ddc876b5177be564cd4499faeb277d`, basada en el HEAD funcional `8c4d37b90e4d2def7f7a60154ace07d36c19f4f7`.
+- Mock QA: `qa/call03b2-mock-duration-20261121`, commit `8dd898c2ab16da88d75d847fd99bd2aee65374ae`, basada en `62974616cde92e8bb0cb7e232758dd143d79e475`.
+
+El parche de app guarda el timestamp de status `ACCEPTED` como fallback de inicio, calcula duración a partir de `started_at`/`ended_at` solo para llamadas terminadas y atendidas, y prioriza la duración explícita de Meta. El mock emite `start_time`, `end_time` y `duration` para llamadas conectadas; rechazadas/no atendidas solo reciben `end_time`.
+
+Claude reportó 4,672 tests PASS (213 omitidos), TypeScript y ESLint sin errores para la app, y 13/13 pruebas del mock. GitHub confirma los commits y ramas; no existen workflows/check-runs para esos commits todavía porque no se abrieron PRs.
+
+**Despliegue QA pendiente de confirmación:** la app estaba compilándose según el último informe. La reconstrucción debe tocar solo `app`, `mock-graph` y `localproxy`; no DB/Auth/REST/Gateway.
+
+**Revisión de precisión temporal pendiente antes de merge:** Meta documenta que el status `ACCEPTED` BIC llega después de que la llamada ya está establecida. El `start_time` explícito de `terminate` debe prevalecer sobre ese fallback. La RPC actual conserva el primer `started_at` mediante `COALESCE`, por lo que hay que corregir esa precedencia y probar eventos duplicados/fuera de orden.
+
+El detalle operativo y las pruebas post-deploy están en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`. H1 (claim antes de micrófono) sigue pendiente y precede a cualquier piloto real.
