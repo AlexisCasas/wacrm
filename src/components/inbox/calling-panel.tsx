@@ -31,6 +31,10 @@ type CallSummary = {
   state: string;
   customer_name: string | null;
   customer_phone: string | null;
+  initiated_by_name?: string | null;
+  accepted_by_name?: string | null;
+  rejected_by_name?: string | null;
+  ended_by_name?: string | null;
   claim_available?: boolean;
   created_at?: string;
   started_at?: string | null;
@@ -153,6 +157,16 @@ function formatDuration(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   const remainder = seconds % 60;
   return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
+}
+
+function formatCallDate(value?: string): string {
+  if (!value) return "—";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "—";
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(date);
 }
 
 interface CallingPanelProps {
@@ -804,15 +818,35 @@ export function CallingPanel({ conversation, contact }: CallingPanelProps) {
         <span role="status" className="max-w-40 truncate text-[11px] text-red-500">{permissionError}</span>
       ) : null}
       {canUseCalling && recentCalls.length > 0 && uiState === "idle" ? (
-        <details className="max-w-52 text-xs">
+        <details className="max-w-64 text-xs">
           <summary className="cursor-pointer text-muted-foreground">{t("history")} ({recentCalls.length})</summary>
-          <ul className="mt-1 max-h-36 space-y-1 overflow-y-auto rounded-md border border-border bg-card p-2">
-            {recentCalls.slice(0, 8).map((call) => (
-              <li key={call.call_id} className="flex items-center justify-between gap-2">
-                <span className="truncate">{call.direction === "USER_INITIATED" ? t("incoming") : t("outgoing")}</span>
-                <span className="shrink-0 text-muted-foreground">{call.state.replace(/_/g, " ")}</span>
-              </li>
-            ))}
+          <ul className="mt-1 max-h-48 space-y-2 overflow-y-auto rounded-md border border-border bg-card p-2">
+            {recentCalls.slice(0, 8).map((call) => {
+              const actors = [
+                call.initiated_by_name ? `${t("initiatedBy")}: ${call.initiated_by_name}` : null,
+                call.accepted_by_name ? `${t("acceptedBy")}: ${call.accepted_by_name}` : null,
+                call.rejected_by_name ? `${t("rejectedBy")}: ${call.rejected_by_name}` : null,
+                call.ended_by_name ? `${t("endedBy")}: ${call.ended_by_name}` : null,
+              ].filter((value): value is string => Boolean(value));
+              return (
+                <li key={call.call_id} className="space-y-1 border-b border-border/60 pb-2 last:border-0 last:pb-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate font-medium">
+                      {call.direction === "USER_INITIATED" ? t("incoming") : t("outgoing")}
+                      {call.customer_name ? ` · ${call.customer_name}` : ""}
+                    </span>
+                    <span className="shrink-0 text-muted-foreground">{call.state.replace(/_/g, " ")}</span>
+                  </div>
+                  <div className="space-y-0.5 text-[11px] text-muted-foreground">
+                    {actors.length > 0 ? actors.map((actor) => <div key={actor}>{actor}</div>) : (
+                      <div>{t("unknownAgent")}</div>
+                    )}
+                    <div>{t("historyDate")}: {formatCallDate(call.created_at)}</div>
+                    <div>{t("historyDuration")}: {call.duration_seconds == null ? "—" : formatDuration(call.duration_seconds)}</div>
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         </details>
       ) : null}

@@ -372,7 +372,14 @@
       "permissionRequestSent": "Permission request sent",
       "permissionRequestUnavailable": "Call permission cannot be requested right now.",
       "requestPermission": "Request permission",
-      "sendingPermissionRequest": "Sending request..."
+      "sendingPermissionRequest": "Sending request...",
+      "initiatedBy": "Started by",
+      "acceptedBy": "Accepted by",
+      "rejectedBy": "Declined by",
+      "endedBy": "Ended by",
+      "historyDate": "Date",
+      "historyDuration": "Duration",
+      "unknownAgent": "Agent unavailable"
     },
     "flowStartPicker": {
       "title": "Start Flow",

@@ -16,6 +16,8 @@ const h = vi.hoisted(() => ({
   },
   contact: { id: 'a3000000-0000-4000-8000-000000000003', phone: '51980942247' },
   session: null as Record<string, unknown> | null,
+  listCalls: [] as Array<Record<string, unknown>>,
+  actorProfiles: [] as Array<{ account_id: string; user_id: string; full_name: string | null }>,
   attemptCreated: true,
   attemptState: 'pending',
   from: vi.fn(),
@@ -76,7 +78,9 @@ function setupDb() {
       filters: Record<string, unknown>
       select: () => typeof builder
       eq: (key: string, value: unknown) => typeof builder
+      in: (key: string, values: unknown[]) => typeof builder
       maybeSingle: () => Promise<{ data: unknown; error: null }>
+      order: (key: string, options?: Record<string, unknown>) => typeof builder
       limit: () => Promise<{ data: unknown[]; error: null }>
     } = {
       filters: {},
@@ -85,13 +89,25 @@ function setupDb() {
         builder.filters[key] = value
         return builder
       },
+      in: (key, values) => {
+        builder.filters[key] = values
+        return builder
+      },
       maybeSingle: async () => {
         if (table === 'whatsapp_config') return { data: h.config, error: null }
         if (table === 'contacts') return { data: h.contact, error: null }
         if (table === 'whatsapp_call_sessions') return { data: h.session, error: null }
         return { data: null, error: null }
       },
-      limit: async () => ({ data: [], error: null }),
+      order: () => builder,
+      limit: async () => ({
+        data: table === 'profiles'
+          ? h.actorProfiles.filter((profile) =>
+              profile.account_id === builder.filters.account_id
+              && (builder.filters.user_id as string[] | undefined)?.includes(profile.user_id))
+          : h.listCalls,
+        error: null,
+      }),
     }
     return builder
   })
@@ -122,6 +138,8 @@ function setupDb() {
 beforeEach(() => {
   vi.clearAllMocks()
   h.session = null
+  h.listCalls = []
+  h.actorProfiles = []
   h.attemptCreated = true
   h.attemptState = 'pending'
   setupDb()
@@ -147,6 +165,118 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('WhatsApp Calling signaling API', () => {
+  it('does not advertise an inbound offer without SDP expiry metadata as claimable', async () => {
+    h.listCalls = [{
+      id: 'session-missing-sdp-expiry',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-missing-sdp-expiry',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'offered',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: null,
+      ended_at: null,
+      duration_seconds: null,
+      created_at: new Date(Date.now() - 6 * 60_000).toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }]
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.calls).toHaveLength(1)
+    expect(data.calls[0].claim_available).toBe(false)
+    expect(data.calls[0].session_available).toBe(false)
+  })
+
+  it('fails closed for an expired inbound offer even when the prune RPC fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.listCalls = [{
+      id: 'session-expired-offer',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-expired-offer',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'offered',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: null,
+      ended_at: null,
+      duration_seconds: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_type: 'offer',
+      session_sdp_expires_at: new Date(Date.now() - 1_000).toISOString(),
+    }]
+    h.rpc.mockResolvedValueOnce({ data: null, error: { message: 'prune unavailable' } })
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.calls).toHaveLength(1)
+    expect(data.calls[0].claim_available).toBe(false)
+  })
+
+  it('does not advertise an already accepted inbound call as claimable while awaiting Meta status', async () => {
+    h.listCalls = [{
+      id: 'session-accepted-pending-meta',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-accepted-pending-meta',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: 'another-agent',
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'offered',
+      claimed_by_user_id: 'another-agent',
+      claimed_at: new Date(Date.now() - 120_000).toISOString(),
+      claim_expires_at: new Date(Date.now() - 1_000).toISOString(),
+      started_at: null,
+      ended_at: null,
+      duration_seconds: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }]
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.calls).toHaveLength(1)
+    expect(data.calls[0].claim_available).toBe(false)
+  })
+
+
   it('rejects a concurrent claim when another agent owns the incoming call', async () => {
     h.session = {
       phone_number_id: h.phoneNumberId,
@@ -521,3 +651,100 @@ describe('GET /api/whatsapp/calls — SDP access control', () => {
     expect(data.call.session_sdp_encrypted).toBeUndefined()
   })
 })
+
+describe('GET /api/whatsapp/calls — call history attribution', () => {
+  it('returns actor display names scoped to the authenticated account', async () => {
+    h.listCalls = [{
+      id: 'session-history-attribution',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-history-attribution',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: 'agent-a',
+      accepted_by_user_id: 'agent-b',
+      rejected_by_user_id: null,
+      ended_by_user_id: 'agent-b',
+      direction: 'BUSINESS_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'terminated',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: '2026-11-20T20:00:00.000Z',
+      ended_at: '2026-11-20T20:01:05.000Z',
+      duration_seconds: 65,
+      created_at: '2026-11-20T20:00:00.000Z',
+      updated_at: '2026-11-20T20:01:05.000Z',
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }]
+    h.actorProfiles = [
+      { account_id: h.accountId, user_id: 'agent-a', full_name: 'QA Agent A' },
+      { account_id: h.accountId, user_id: 'agent-b', full_name: 'QA Agent B' },
+      { account_id: 'another-account', user_id: 'agent-a', full_name: 'Other Tenant Agent' },
+    ]
+
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(h.from).toHaveBeenCalledWith('profiles')
+    expect(data.calls[0]).toMatchObject({
+      initiated_by_name: 'QA Agent A',
+      accepted_by_name: 'QA Agent B',
+      rejected_by_name: null,
+      ended_by_name: 'QA Agent B',
+      duration_seconds: 65,
+      created_at: '2026-11-20T20:00:00.000Z',
+    })
+    expect(JSON.stringify(data.calls[0])).not.toContain('Other Tenant Agent')
+  })
+
+  it('returns only persisted duration for completed calls and preserves Meta duration', async () => {
+    const base = {
+      phone_number_id: h.phoneNumberId,
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: 'agent-a',
+      rejected_by_user_id: null,
+      ended_by_user_id: 'agent-a',
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      created_at: '2026-11-20T20:00:00.000Z',
+      updated_at: '2026-11-20T20:01:05.000Z',
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }
+    h.listCalls = [
+      { ...base, id: 's-derived', call_id: 'wacid.qa-dur-derived', state: 'terminated', duration_seconds: 65, started_at: '2026-11-20T20:00:00.000Z', ended_at: '2026-11-20T20:01:05.000Z' },
+      { ...base, id: 's-provisional', call_id: 'wacid.qa-dur-provisional', state: 'terminated', duration_seconds: null, started_at: '2026-11-20T20:00:05.000Z', ended_at: '2026-11-20T20:01:05.000Z' },
+      { ...base, id: 's-rejected', call_id: 'wacid.qa-dur-rejected', state: 'rejected', duration_seconds: 99, started_at: '2026-11-20T20:00:00.000Z', ended_at: '2026-11-20T20:01:39.000Z' },
+      { ...base, id: 's-reported', call_id: 'wacid.qa-dur-reported', state: 'terminated', duration_seconds: 42, started_at: '2026-11-20T20:00:00.000Z', ended_at: '2026-11-20T20:09:00.000Z' },
+    ]
+    h.actorProfiles = []
+
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+
+    expect(response.status).toBe(200)
+    const byId = Object.fromEntries(data.calls.map((c: { call_id: string; duration_seconds: number | null }) => [c.call_id, c.duration_seconds]))
+    expect(byId['wacid.qa-dur-derived']).toBe(65)
+    expect(byId['wacid.qa-dur-provisional']).toBeNull()
+    expect(byId['wacid.qa-dur-rejected']).toBeNull()
+    expect(byId['wacid.qa-dur-reported']).toBe(42)
+  })
+
+})
+

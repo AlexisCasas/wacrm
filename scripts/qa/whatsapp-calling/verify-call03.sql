@@ -109,7 +109,8 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_accept,repeat('a',64),
       'connect',1795120000,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     IF public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_accept,v_user_a) IS DISTINCT FROM true THEN
       RAISE EXCEPTION 'CALL03A_INITIAL_CLAIM_FAILED';
@@ -181,7 +182,8 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_unowned,repeat('f',64),
       'connect',1795120005,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     v_unowned_accept_rejected := NOT public.whatsapp_call_session_agent_action(
       v_account_a,'740434745820831',v_call_unowned,v_user_c,'accepted',NULL
@@ -198,7 +200,8 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_reject,repeat('b',64),
       'connect',1795120001,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     IF public.whatsapp_call_session_agent_action(
       v_account_a,'740434745820831',v_call_reject,v_user_a,'rejected',v_conversation_a
@@ -241,7 +244,8 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_cross_tenant,repeat('d',64),
       'connect',1795120003,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     PERFORM public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_cross_tenant,v_user_a);
     BEGIN
@@ -249,7 +253,7 @@ BEGIN
         v_account_a,'740434745820831',v_call_cross_tenant,v_user_a,'accepted',v_conversation_b
       );
     EXCEPTION WHEN OTHERS THEN
-      IF SQLERRM='call_conversation_tenant_conflict' THEN
+      IF SQLERRM IN ('call_conversation_tenant_conflict','call_conversation_already_linked') THEN
         v_cross_tenant_rejected := true;
       ELSE
         RAISE;
@@ -264,13 +268,19 @@ BEGIN
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,'740434745820831',v_call_wrong_identity,repeat('e',64),
       'connect',1795120004,'USER_INITIATED','51911111111','51911111111',
-      NULL,NULL,'CALL03A synthetic A','offered',NULL,NULL,NULL,NULL,NULL,NULL
+      NULL,NULL,'CALL03A synthetic A','offered','encrypted:qa-offer','offer',
+      now()+interval '5 minutes',NULL,NULL,NULL
     );
     PERFORM public.whatsapp_call_claim(v_account_a,'740434745820831',v_call_wrong_identity,v_user_a);
     BEGIN
-      PERFORM public.whatsapp_call_session_agent_action(
-        v_account_a,'740434745820831',v_call_wrong_identity,v_user_a,'accepted',v_conversation_wrong
-      );
+      -- Directly exercise the database metadata guard: the webhook has
+      -- already resolved the real contact, so a different same-tenant
+      -- contact/conversation must be rejected by the trigger itself.
+      UPDATE public.whatsapp_call_sessions
+      SET contact_id=v_contact_wrong,
+          conversation_id=v_conversation_wrong
+      WHERE phone_number_id='740434745820831'
+        AND call_id=v_call_wrong_identity;
     EXCEPTION WHEN OTHERS THEN
       IF SQLERRM='call_contact_identity_mismatch' THEN
         v_wrong_identity_rejected := true;

@@ -98,6 +98,10 @@ Fuera de alcance: habilitar Meta `calls`, cambiar variables/secretos, desplegar 
 
 ## 10. Estado de cierre técnico — 20/nov/2026
 
+> **Nota histórica:** el pendiente de QA visual en Vercel descrito en esta sección fue superado mediante QA de navegador en la VPS aislada `call03b2-qa`. No se creó proyecto Vercel. El resultado final está en la sección 11 y en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`.
+
+> **Nota histórica:** este corte fue anterior al despliegue del simulador en la VPS QA y a las pruebas manuales de navegador descritas en la sección 11. El estado vigente está en la sección 11 y en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`.
+
 **Implementación y QA automatizado:** PASS en el código CALL-03B2.  
 **QA visual de navegador:** PENDIENTE por falta de un proyecto Vercel enlazado al repositorio WACRM. No se creó proyecto ni deployment.
 
@@ -134,3 +138,57 @@ Fuera de alcance: habilitar Meta `calls`, cambiar variables/secretos, desplegar 
 4. Mantener CALL-04 separado: habilitación de flags/webhook y pruebas reales requieren autorización operativa explícita.
 
 **Estado:** CALL-03B2 automatizado PASS; cierre formal bloqueado únicamente por QA visual y la integración ordenada de dependencias.
+
+## 11. Estado final — QA de navegador en VPS, 20/nov/2026
+
+**CALL-03 QA sintético: completado con hardening previo al primer piloto real.**
+
+| Prueba | Navegador | BD | Resultado |
+|---|---|---|---|
+| T1 Concurrencia A/C | PASS; un ganador, el otro 409 | PASS; una sesión, sin claims/SDP huérfanos | PASS, con micrófono solicitado antes del claim perdedor |
+| T2 Cambio de conversación | PASS; no hubo POST en el hilo alternativo | PASS; vínculo original preservado | PASS |
+| T3A Recuperación ICE | Simulada (4 s); no es pérdida real de red | PASS | PASS simulado |
+| T3B Desconexión persistente | PASS; `terminate 200`, PeerConnection cerrada y tracks detenidas | PASS; atribución correcta y cero claims | PASS |
+| T4 Historial/atribución | PASS; iniciador, aceptante, rechazante y finalizador coinciden | PASS; 41 eventos/41 claves, cero sesiones duplicadas | PASS con timestamps/duración faltantes y nombres incompletos en dos perfiles QA |
+
+### Despliegue y aislamiento
+
+- App QA: `wacrm-app:call03b2-history-8c4d37b` (ID `d9ff178d1bcb`), código funcional `8c4d37b90e4d2def7f7a60154ace07d36c19f4f7`.
+- Mock: `wacrm-call03b2-mock-graph:62974616`.
+- Se recrearon únicamente `app`, `mock-graph` y `localproxy` con `--no-deps`; `db`, `auth`, `rest` y `gw` no se tocaron.
+- Se conservó `docker-compose.yml.bak-pre-8c4d37b`.
+- `graph.facebook.com` resolvió a `127.0.0.1`; el mock fue el único receptor Graph Calling.
+- Webhook real `calls` desactivado; no se hicieron llamadas ni mensajes reales.
+- QA terminó con cero llamadas activas, cero claims huérfanos, cero SDP pendientes y cero intentos salientes con SDP.
+- Producción permaneció intacta: `wacrm-app-1`, imagen `shalom-provider-38ecdc51`, healthy, cero reinicios y `/login` HTTP 200.
+- No se fusionaron PRs ni se modificó `main`.
+
+### Hardening previo a CALL-04
+
+1. Reclamar la llamada antes de solicitar micrófono; el agente que pierde el claim no debe recibir un prompt. Revalidar/renovar lease y SDP tras el permiso.
+2. Alinear el mock con el contrato Meta de `start_time`, `end_time` y `duration` para llamadas atendidas; validar el payload real capturado. El parser/procesador ya reconoce esos campos. La revisión del código del mock encontró `end_time` incondicional, mientras el informe QA indicó que no se observó; reconciliar la captura con la imagen desplegada.
+3. Ejecutar una pérdida/recuperación real de red en QA antes de ampliar a más agentes; T3A fue simulada.
+4. Los perfiles QA A/B carecen de `full_name`; no es un fallo de código ni de aislamiento. No se modificaron perfiles existentes.
+
+### Integración
+
+Los PR de CALL-01/02/03 siguen abiertos. Integrar en orden #134 → #136 → #137 → #138 → #140 → #142 y repetir CI/Migrations/replay limpio sobre el resultado integrado. #141 es QA-only y no debe entrar en producción. #139 fue cerrado como supersedido sin merge.
+
+**CALL-04 está diseñado, no implementado.** Ver `docs/WHATSAPP_CALLING_CALL04_DESIGN.md`. La activación de settings Meta, webhook `calls`, flags de producción y llamadas reales requieren autorización operativa separada.
+
+## 12. CALL-03B2.2 — Duración del historial (21/nov/2026)
+
+Se publicaron dos ramas de seguimiento, sin PRs y sin merge:
+
+- App: `fix/whatsapp-calling-call03b2-2-duration-20261121`, commit `4122f3bd78ddc876b5177be564cd4499faeb277d`, basada en el HEAD funcional `8c4d37b90e4d2def7f7a60154ace07d36c19f4f7`.
+- Mock QA: `qa/call03b2-mock-duration-20261121`, commit `8dd898c2ab16da88d75d847fd99bd2aee65374ae`, basada en `62974616cde92e8bb0cb7e232758dd143d79e475`.
+
+El parche de app guarda el timestamp de status `ACCEPTED` como fallback de inicio, calcula duración a partir de `started_at`/`ended_at` solo para llamadas terminadas y atendidas, y prioriza la duración explícita de Meta. El mock emite `start_time`, `end_time` y `duration` para llamadas conectadas; rechazadas/no atendidas solo reciben `end_time`.
+
+Claude reportó 4,672 tests PASS (213 omitidos), TypeScript y ESLint sin errores para la app, y 13/13 pruebas del mock. GitHub confirma los commits y ramas; no existen workflows/check-runs para esos commits todavía porque no se abrieron PRs.
+
+**Despliegue QA pendiente de confirmación:** la app estaba compilándose según el último informe. La reconstrucción debe tocar solo `app`, `mock-graph` y `localproxy`; no DB/Auth/REST/Gateway.
+
+**Revisión de precisión temporal pendiente antes de merge:** Meta documenta que el status `ACCEPTED` BIC llega después de que la llamada ya está establecida. El `start_time` explícito de `terminate` debe prevalecer sobre ese fallback. La RPC actual conserva el primer `started_at` mediante `COALESCE`, por lo que hay que corregir esa precedencia y probar eventos duplicados/fuera de orden.
+
+El detalle operativo y las pruebas post-deploy están en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`. H1 (claim antes de micrófono) sigue pendiente y precede a cualquier piloto real.

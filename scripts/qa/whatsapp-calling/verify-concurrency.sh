@@ -74,7 +74,8 @@ BEGIN
     v_account, '740434745820831', 'wacid.qa-concurrency', repeat('c', 64),
     'connect', 1795120000, 'USER_INITIATED',
     'PE.qa-concurrency', '51911111111', 'PE.qa-concurrency', NULL,
-    'CALL QA synthetic contact', 'offered', NULL, NULL, NULL, NULL, NULL, NULL
+    'CALL QA synthetic contact', 'offered', 'encrypted:qa-concurrency-offer', 'offer',
+    now() + interval '5 minutes', NULL, NULL, NULL
   );
 END
 $qa$;
