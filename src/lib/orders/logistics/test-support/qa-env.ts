@@ -1,11 +1,11 @@
 // Shared setup for the PR-04 QA tests that run against the REAL local Supabase stack (never against anything else).
-// LOCAL ONLY: any host other than http://127.0.0.1:55321 is refused. Everything is synthetic and removed by `dispose`.
+// LOCAL ONLY: any host other than http://127.0.0.1:55321 (or 57321, the alternate port when Windows reserves 55269-55368) is refused. Everything is synthetic and removed by `dispose`.
 import { randomBytes } from 'node:crypto'
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
 export const QA_ENABLED = Boolean(process.env.LOCAL_URL)
-if (QA_ENABLED && process.env.LOCAL_URL !== 'http://127.0.0.1:55321') throw new Error(`refusing to run against ${process.env.LOCAL_URL}`)
+if (QA_ENABLED && !['http://127.0.0.1:55321', 'http://127.0.0.1:57321'].includes(process.env.LOCAL_URL ?? '')) throw new Error(`refusing to run against ${process.env.LOCAL_URL}`)
 
 const noSession = { auth: { persistSession: false, autoRefreshToken: false } }
 

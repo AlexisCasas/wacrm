@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { buildTemplateBodyParams, TEMPLATE_PARAM_FIELDS, type OrderForTemplate } from '@/lib/orders/logistics/template-params'
-import { computePendingBalance, formatSoles } from '@/lib/orders/payments/balance'
+import { computePendingBalance, formatSoles, balanceErrorCode, isTrusted } from '@/lib/orders/payments/balance'
 
 const order = (over: Partial<OrderForTemplate> = {}): OrderForTemplate => ({
   customer_name: 'Cliente Prueba', product_summary: 'taladro inalámbrico', quantity: 1, total: 150, destination: 'Arequipa', seller_name: 'Vendedor', dni: '12345678', ...over,
@@ -75,5 +75,30 @@ describe('template variables for the balance / payment instructions', () => {
     // ... and the DNI value is not reachable from any of them
     const out = buildTemplateBodyParams(order({ pending_balance: 'S/ 1.00', payment_instructions: 'x', shalom_number: '1', shalom_code: 'A' }), recommended.arrival_balance)
     expect(JSON.stringify(out)).not.toContain('12345678')
+  })
+})
+
+describe('balance_trusted_since (fail-closed cutoff)', () => {
+  const CUTOFF = '2026-12-10T15:00:00.000Z'
+  it('NULL / unparsable cutoff or confirmation time => NOT trusted (OFF by default)', () => {
+    expect(isTrusted(null, '2026-12-11T10:00:00Z')).toBe(false)
+    expect(isTrusted('not-a-date', '2026-12-11T10:00:00Z')).toBe(false)
+    expect(isTrusted(CUTOFF, null)).toBe(false)
+    expect(isTrusted(CUTOFF, 'garbage')).toBe(false)
+  })
+
+  it('before the cutoff => not trusted; EXACTLY at the cutoff => trusted; after => trusted', () => {
+    expect(isTrusted(CUTOFF, '2026-12-10T14:59:59.999Z')).toBe(false)
+    expect(isTrusted(CUTOFF, '2026-12-10T15:00:00.000Z')).toBe(true)
+    expect(isTrusted(CUTOFF, '2026-12-10T15:00:00.001Z')).toBe(true)
+    expect(isTrusted(CUTOFF, '2027-01-01T00:00:00Z')).toBe(true)
+    expect(isTrusted('2026-12-10T10:00:00-05:00', '2026-12-10T15:00:00Z')).toBe(true) // time zones are compared as instants
+    expect(isTrusted('2026-12-10T10:00:00-05:00', '2026-12-10T14:59:59Z')).toBe(false)
+  })
+
+  it('every unavailable reason maps to ONE stable error code (a lookup failure is internal, an untrusted order is balance_not_trusted)', () => {
+    expect(balanceErrorCode('balance_not_trusted')).toBe('balance_not_trusted')
+    expect(balanceErrorCode('lookup_failed')).toBe('internal_error')
+    for (const r of ['not_tracked', 'payments_disabled', 'order_not_found'] as const) expect(balanceErrorCode(r)).toBe('pending_balance_unavailable')
   })
 })

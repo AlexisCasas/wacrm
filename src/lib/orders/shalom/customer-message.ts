@@ -4,7 +4,7 @@ import { CONFIRMED_ITEM_COLUMNS, CONFIRMED_ORDER_COLUMNS, toOrder } from '@/lib/
 import { fail, mapRpcError, type ServiceResult } from '@/lib/orders/logistics/documents'
 import { isUuid } from '@/lib/orders/logistics/files'
 import { classifySendError } from '@/lib/orders/logistics/packaging'
-import { formatSoles, readPaymentInstructions, resolveOrderBalance, type OrderBalance } from '@/lib/orders/payments/balance'
+import { balanceErrorCode, formatSoles, readPaymentInstructions, resolveOrderBalance, type OrderBalance } from '@/lib/orders/payments/balance'
 import { buildTemplateBodyParams } from '@/lib/orders/logistics/template-params'
 import { nextMessageAttempt, type ShalomConfig } from '@/lib/orders/shalom/config'
 import { extractVariableIndices } from '@/lib/whatsapp/template-validators'
@@ -77,7 +77,7 @@ async function finish(admin: SupabaseClient, m: ClaimedMessage, deps: MessageDep
 }
 
 /** Failures a retry cannot fix by itself (configuration / data): they wait for a person instead of burning the automatic attempts. */
-const NO_AUTO_RETRY = new Set(['template_not_configured', 'template_not_found', 'template_not_approved', 'template_malformed', 'template_params_mismatch', 'invalid_params_config', 'order_without_conversation', 'pending_balance_unavailable', 'payment_instructions_not_configured'])
+const NO_AUTO_RETRY = new Set(['template_not_configured', 'template_not_found', 'template_not_approved', 'template_malformed', 'template_params_mismatch', 'invalid_params_config', 'order_without_conversation', 'pending_balance_unavailable', 'balance_not_trusted', 'payment_instructions_not_configured'])
 
 /** Sends ONE claimed message. Never throws: every problem becomes a recorded outcome. */
 export async function sendClaimedMessage(admin: SupabaseClient, m: ClaimedMessage, deps: MessageDeps): Promise<'sent' | 'failed' | 'uncertain' | 'skipped' | 'error'> {
@@ -100,7 +100,7 @@ export async function sendClaimedMessage(admin: SupabaseClient, m: ClaimedMessag
     const bv = st as { arrival_balance_template_name: string | null; arrival_balance_template_language: string | null; arrival_balance_template_params: unknown[] | null } | null
     if (bv?.arrival_balance_template_name && bv.arrival_balance_template_language) {
       balance = await resolveOrderBalance(admin, m.account_id, m.order_id)
-      if (!balance.available) return failBeforeMeta(balance.reason === 'lookup_failed' ? 'balance_lookup_failed' : 'pending_balance_unavailable')
+      if (!balance.available) return failBeforeMeta(balance.reason === 'lookup_failed' ? 'balance_lookup_failed' : balanceErrorCode(balance.reason))
       if (balance.pending > 0) {
         tName = bv.arrival_balance_template_name
         tLanguage = bv.arrival_balance_template_language
@@ -123,7 +123,10 @@ export async function sendClaimedMessage(admin: SupabaseClient, m: ClaimedMessag
   if (!orderRow) return failBeforeMeta('order_not_found')
   const { data: items } = await admin.from('order_confirmation_items').select(CONFIRMED_ITEM_COLUMNS).eq('account_id', m.account_id).eq('order_id', m.order_id).order('line_number', { ascending: true })
   const order = toOrder(orderRow as unknown as Parameters<typeof toOrder>[0], (items ?? []) as unknown as Parameters<typeof toOrder>[1])
-  if (balance === null && fields.includes('pending_balance')) balance = await resolveOrderBalance(admin, m.account_id, m.order_id)
+  if (balance === null && fields.includes('pending_balance')) {
+    balance = await resolveOrderBalance(admin, m.account_id, m.order_id)
+    if (!balance.available) return failBeforeMeta(balance.reason === 'lookup_failed' ? 'balance_lookup_failed' : balanceErrorCode(balance.reason))
+  }
   const paymentInstructions = fields.includes('payment_instructions') ? await readPaymentInstructions(admin, m.account_id) : null
   const built = buildTemplateBodyParams(
     { customer_name: order.customer_name, product_summary: order.product_summary, quantity: order.quantity, total: order.total, destination: order.destination, seller_name: order.seller_name, dni: (orderRow as { dni: string | null }).dni,

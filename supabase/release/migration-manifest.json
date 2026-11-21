@@ -398,6 +398,16 @@
       ],
       "status": "pending",
       "note": "P0 parity patch (feat/p0-parity-balance-voucher) unit 2: manual voucher notice (voucher_envio_shalom, UTILITY, header DOCUMENT) with its own ledger order_shipment_voucher_messages (one per guide), settings voucher_message_template_*, human-only retry/resolve RPCs. Additive; inert until destination_customer_message_enabled and a voucher template are configured."
+    },
+    {
+      "new_version": "20261205000004",
+      "new_file": "20261205000004_balance_trusted_since.sql",
+      "sha256": "f9bc8fb59e71e0b7ed17812a81d7c66e5f4fadf0a2519f3774a9b1f62527fde0",
+      "depends_on": [
+        "20261204000018"
+      ],
+      "status": "pending",
+      "note": "payment parity protection (feat/p0-parity-balance-voucher) unit 1: order_payment_settings.balance_trusted_since (NULL = OFF, fail-closed). Additive, one nullable column; no backfill."
     }
   ]
 }

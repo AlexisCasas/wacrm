@@ -141,14 +141,14 @@ describe.skipIf(!QA_ENABLED)('P0 parity: the PR-06 balance in the customer templ
     legacyArrival = await arrive('legacy-arrival', 100)
     // PR-06 ON from now: new orders are tracked
     await enablePayments(w, w.acc)
-    const pi = await w.admin.from('order_payment_settings').update({ customer_payment_instructions: INSTRUCTIONS }).eq('account_id', w.acc)
+    const pi = await w.admin.from('order_payment_settings').update({ customer_payment_instructions: INSTRUCTIONS, balance_trusted_since: '2000-01-01T00:00:00Z' }).eq('account_id', w.acc)
     if (pi.error) throw pi.error
   }, 570_000)
   beforeEach(async () => {
     await parkOthers()
     await setLogSettings({ packaging_balance_template_name: PKG_BAL, packaging_balance_template_language: 'es', packaging_balance_template_params: ['customer_name', 'product', 'destination', 'pending_balance'] })
     await setShipSettings({ arrival_balance_template_name: ARR_BAL, arrival_balance_template_language: 'es', arrival_balance_template_params: ['customer_name', 'product', 'destination', 'pending_balance', 'payment_instructions'] })
-    await w.admin.from('order_payment_settings').update({ order_payments_enabled: true, customer_payment_instructions: INSTRUCTIONS }).eq('account_id', w.acc)
+    await w.admin.from('order_payment_settings').update({ order_payments_enabled: true, customer_payment_instructions: INSTRUCTIONS, balance_trusted_since: '2000-01-01T00:00:00Z' }).eq('account_id', w.acc)
     meta.impl = okMeta()
   })
   afterEach(() => {
@@ -324,6 +324,85 @@ describe.skipIf(!QA_ENABLED)('P0 parity: the PR-06 balance in the customer templ
       expect(sendCalls).toHaveLength(1)
       expect(meta.calls).toHaveLength(0)
       expect(await arrivalRow(order)).toMatchObject({ status: 'sent' })
+    })
+  })
+
+  // ------------------------------------------------------------------------------------------------------------------ balance_trusted_since (payment parity protection)
+  describe('balance_trusted_since: FAIL-CLOSED cutoff, no message with a balance for an untrusted order', () => {
+    const setCutoff = async (v: string | null) => {
+      const r = await w.admin.from('order_payment_settings').update({ balance_trusted_since: v }).eq('account_id', w.acc)
+      if (r.error) throw r.error
+    }
+    const confirmedAtOf = async (order: string) => String(((await w.admin.from('order_confirmations').select('confirmed_at').eq('id', order).single()).data as { confirmed_at: string }).confirmed_at)
+    const plus = (iso: string, ms: number) => new Date(Date.parse(iso) + ms).toISOString()
+
+    it('NULL (OFF, the default): no order has a usable balance; packaging with a balance variant sends NOTHING and claims nothing', async () => {
+      await setCutoff(null)
+      const { order } = await prepare('trust-null-pkg', 150)
+      expect(await resolveOrderBalance(w.admin, w.acc, order)).toEqual({ available: false, reason: 'balance_not_trusted' })
+      const r = await sendPkg(order)
+      expect(r).toMatchObject({ ok: false, status: 409, error: 'balance_not_trusted', extra: { balance_reason: 'balance_not_trusted' } })
+      expect(meta.calls).toHaveLength(0)
+      expect((await w.admin.from('order_template_dispatches').select('id').eq('order_id', order)).data ?? []).toEqual([])
+      expect((await w.admin.from('order_logistics').select('status').eq('order_id', order).single()).data).toMatchObject({ status: 'packing' })
+    })
+
+    it('NULL: the arrival notice with a balance variant fails BEFORE Meta (balance_not_trusted), is not retried by itself and sends nothing', async () => {
+      await setCutoff(null)
+      const { order } = await arrive('trust-null-arr', 100)
+      expect(await processCustomerMessages(w.admin, deps())).toMatchObject({ claimed: 1, failed: 1, sent: 0 })
+      expect(await arrivalRow(order)).toMatchObject({ status: 'failed', error_code: 'balance_not_trusted', next_attempt_at: null })
+      expect(sendCalls).toHaveLength(0)
+      expect(meta.calls).toHaveLength(0)
+    })
+
+    it('before / at / after the cutoff: confirmed BEFORE the cutoff -> refused; EXACTLY at the cutoff -> normal; AFTER -> normal', async () => {
+      const { order } = await p.order('trust-edge', 120)
+      const at0 = await confirmedAtOf(order)
+      await setCutoff(plus(at0, 1000)) // the order was confirmed 1 s BEFORE the cutoff
+      expect(await resolveOrderBalance(w.admin, w.acc, order)).toEqual({ available: false, reason: 'balance_not_trusted' })
+      await setCutoff(at0) // equal: trusted (>=)
+      expect(await resolveOrderBalance(w.admin, w.acc, order)).toMatchObject({ available: true, total: 120, pending: 120 })
+      await setCutoff(plus(at0, -1000)) // confirmed after the cutoff
+      expect(await resolveOrderBalance(w.admin, w.acc, order)).toMatchObject({ available: true, pending: 120 })
+    })
+
+    it('before the cutoff the packaging notice is refused; after it, the balance variant works as usual', async () => {
+      const { order } = await prepare('trust-pkg', 150)
+      const at0 = await confirmedAtOf(order)
+      await setCutoff(plus(at0, 5000))
+      expect(await sendPkg(order)).toMatchObject({ ok: false, status: 409, error: 'balance_not_trusted' })
+      expect(meta.calls).toHaveLength(0)
+      await setCutoff(plus(at0, -5000))
+      expect((await sendPkg(order)).ok).toBe(true)
+      expect(meta.calls[0]).toMatchObject({ templateName: PKG_BAL })
+      expect(bodyParamsOf(meta.calls[0])[3]).toBe('S/ 150.00')
+    })
+
+    it('EVERY communication that carries pending_balance is covered, not only the balance variants: a base template whose params include pending_balance is refused too', async () => {
+      await setLogSettings({ packaging_balance_template_name: null, packaging_balance_template_language: null, packaging_balance_template_params: null, packaging_template_name: PKG_BAL, packaging_template_language: 'es', packaging_template_params: ['customer_name', 'product', 'destination', 'pending_balance'] })
+      await setCutoff(null)
+      const { order } = await prepare('trust-base-with-balance', 90)
+      expect(await sendPkg(order)).toMatchObject({ ok: false, status: 409, error: 'balance_not_trusted' })
+      expect(meta.calls).toHaveLength(0)
+      await setLogSettings({ packaging_template_name: PKG_PAID, packaging_template_language: 'es', packaging_template_params: ['customer_name', 'product', 'destination'] })
+    })
+
+    it('the cutoff gates MESSAGES only: internal reads and payment registration are untouched (panel balance, register, confirm) even with the cutoff NULL', async () => {
+      await setCutoff(null)
+      const { order } = await p.order('trust-internal', 200)
+      await p.pay(order, '60.00')
+      const fin = await p.financials(order)
+      expect(fin).toMatchObject({ financial_status: 'partially_paid' })
+      expect(Number(fin!.paid_confirmed)).toBe(60)
+      expect((await w.admin.from('order_payments').select('status').eq('order_id', order)).data).toEqual([{ status: 'confirmed' }])
+    })
+
+    it('historical order (confirmed before the cutoff, not tracked): still never a balance, still nothing is sent; the migration itself changed no order (cutoff is a settings column only)', async () => {
+      await setCutoff(new Date(Date.now() + 86_400_000).toISOString())
+      expect(await resolveOrderBalance(w.admin, w.acc, legacyPkg.order)).toEqual({ available: false, reason: 'balance_not_trusted' })
+      expect(await sendPkg(legacyPkg.order)).toMatchObject({ ok: false, error: 'balance_not_trusted' })
+      expect(meta.calls).toHaveLength(0)
     })
   })
 })

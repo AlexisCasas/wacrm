@@ -8,7 +8,7 @@ import { ORDER_DOCS_BUCKET, REQUEST_KEY_PATTERN } from '@/lib/orders/logistics/c
 import { fail, mapRpcError, type ServiceResult } from '@/lib/orders/logistics/documents'
 import { isUuid } from '@/lib/orders/logistics/files'
 import { buildTemplateBodyParams } from '@/lib/orders/logistics/template-params'
-import { formatSoles, readPaymentInstructions, resolveOrderBalance, type OrderBalance } from '@/lib/orders/payments/balance'
+import { balanceErrorCode, formatSoles, readPaymentInstructions, resolveOrderBalance, type OrderBalance } from '@/lib/orders/payments/balance'
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body'
 import { extractVariableIndices } from '@/lib/whatsapp/template-validators'
 import { SendMessageError, sendMessageToConversation, type SendMessageParams, type SendMessageResult } from '@/lib/whatsapp/send-message'
@@ -115,7 +115,7 @@ export async function sendPackagingTemplate(
   let balance: OrderBalance | null = null
   if (base.packaging_balance_template_name && base.packaging_balance_template_language) {
     balance = await resolveOrderBalance(admin, ctx.accountId, orderId)
-    if (!balance.available) return fail(409, balance.reason === 'lookup_failed' ? 'internal_error' : 'pending_balance_unavailable', { balance_reason: balance.reason })
+    if (!balance.available) return fail(409, balanceErrorCode(balance.reason), { balance_reason: balance.reason })
     if (balance.pending > 0) cfg = { packaging_template_name: base.packaging_balance_template_name, packaging_template_language: base.packaging_balance_template_language, packaging_template_params: base.packaging_balance_template_params }
   }
 
@@ -130,7 +130,10 @@ export async function sendPackagingTemplate(
   const bodyVariables = extractVariableIndices(template.body_text)
   const fields = cfg.packaging_template_params ?? []
   // A template that shows the balance / the payment instructions needs them from the PR-06 row / the account configuration, nothing else.
-  if (balance === null && fields.includes('pending_balance')) balance = await resolveOrderBalance(admin, ctx.accountId, orderId)
+  if (balance === null && fields.includes('pending_balance')) {
+    balance = await resolveOrderBalance(admin, ctx.accountId, orderId)
+    if (!balance.available) return fail(409, balanceErrorCode(balance.reason), { balance_reason: balance.reason })
+  }
   const paymentInstructions = fields.includes('payment_instructions') ? await readPaymentInstructions(admin, ctx.accountId) : null
   if (bodyVariables.length !== fields.length) return fail(409, 'template_params_mismatch')
 
