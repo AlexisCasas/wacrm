@@ -894,3 +894,139 @@ describe('CALL-03B2.5 — reserve terminal side effects before Meta', () => {
     expect(h.callWhatsApp).not.toHaveBeenCalled()
   })
 })
+
+
+describe('CALL-03B2.6 — cross-operation fencing around Meta', () => {
+  function inbound(state: 'ringing' | 'connected' = 'ringing') {
+    return {
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-signal-fencing',
+      direction: 'USER_INITIATED',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      customer_phone: '51980942247',
+      claimed_by_user_id: h.userId,
+      claimed_at: '2026-11-21T05:00:00.123456+00:00',
+      claim_expires_at: new Date(Date.now() + 60_000).toISOString(),
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      last_claimed_by_user_id: h.userId,
+      terminal_status: null,
+      signal_status: null,
+      signal_action: null,
+      biz_opaque_callback_data: null,
+      agent_sdp_encrypted: 'encrypted:v=0\r\n',
+      agent_sdp_type: 'answer',
+      agent_sdp_expires_at: new Date(Date.now() + 60_000).toISOString(),
+      state,
+    }
+  }
+
+  it('holds terminate behind an in-flight pre_accept Meta call', async () => {
+    h.session = inbound()
+    let finishMeta: ((result: { action: 'pre_accept'; success: true }) => void) | undefined
+    const metaPending = new Promise<{ action: 'pre_accept'; success: true }>((resolve) => { finishMeta = resolve })
+    const order: string[] = []
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_signal_begin') { order.push('signal_reserved'); return { data: 'reserved', error: null } }
+      if (name === 'whatsapp_call_terminal_reserve') { order.push('terminal_denied'); return { data: 'in_progress', error: null } }
+      if (name === 'whatsapp_call_signal_finish') { order.push('signal_ack'); return { data: 'acknowledged', error: null } }
+      return { data: true, error: null }
+    })
+    h.callWhatsApp.mockImplementation(async ({action}: {action: {action:string}}) => {
+      order.push(action.action)
+      if (action.action === 'pre_accept') return metaPending
+      throw new Error('terminal must never reach Meta')
+    })
+    const accepted = POST(makeRequest({
+      action: 'pre_accept', call_id: 'wacid.qa-signal-fencing',
+      session: { sdp_type: 'answer', sdp: 'v=0\r\n' },
+    }))
+    await vi.waitFor(() => expect(order).toContain('pre_accept'))
+    const termination = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-signal-fencing' }))
+    expect(termination.status).toBe(409)
+    expect((await termination.json()).code).toBe('terminal_in_progress')
+    expect(order).toEqual(['signal_reserved','pre_accept','terminal_denied'])
+    finishMeta?.({ action: 'pre_accept', success: true })
+    expect((await accepted).status).toBe(200)
+    expect(order).toEqual(['signal_reserved','pre_accept','terminal_denied','signal_ack'])
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses an accept whose terminal request already owns the row', async () => {
+    h.session = inbound()
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_signal_begin') return { data: 'terminal_in_progress', error: null }
+      return { data: true, error: null }
+    })
+    const res = await POST(makeRequest({ action: 'accept', call_id: 'wacid.qa-signal-fencing' }))
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('terminal_in_progress')
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+    expect(h.rpc).not.toHaveBeenCalledWith('whatsapp_call_signal_finish', expect.anything())
+  })
+
+  it('holds terminate behind an in-flight accept and writes attribution at finish', async () => {
+    h.session = inbound()
+    let finishMeta: ((result: { action: 'accept'; success: true }) => void) | undefined
+    const metaPending = new Promise<{ action: 'accept'; success: true }>((resolve) => { finishMeta = resolve })
+    const order: string[] = []
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_signal_begin') { order.push('signal_reserved'); return { data: 'reserved', error: null } }
+      if (name === 'whatsapp_call_terminal_reserve') { order.push('terminal_denied'); return { data: 'in_progress', error: null } }
+      if (name === 'whatsapp_call_signal_finish') { order.push('signal_ack'); return { data: 'acknowledged', error: null } }
+      throw new Error('unexpected RPC: '+name)
+    })
+    h.callWhatsApp.mockImplementation(async ({action}: {action: {action:string}}) => {
+      order.push(action.action)
+      if (action.action === 'accept') return metaPending
+      throw new Error('terminal must never reach Meta')
+    })
+    const accepted = POST(makeRequest({ action: 'accept', call_id: 'wacid.qa-signal-fencing' }))
+    await vi.waitFor(() => expect(order).toContain('accept'))
+    const terminated = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-signal-fencing' }))
+    expect(terminated.status).toBe(409)
+    finishMeta?.({ action: 'accept', success: true })
+    expect((await accepted).status).toBe(200)
+    expect(order).toEqual(['signal_reserved','accept','terminal_denied','signal_ack'])
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_finish', expect.objectContaining({
+      p_outcome:'acknowledged', p_conversation_id:null,
+    }))
+  })
+
+  it('preserves unknown Meta pre_accept and never automatically retries', async () => {
+    h.session = inbound()
+    const statuses = ['reserved','unknown']
+    h.rpc.mockImplementation(async (name:string) => {
+      if (name === 'whatsapp_call_sdp_prune') return {data:0,error:null}
+      if (name === 'whatsapp_call_signal_begin') return {data:statuses.shift() ?? 'unknown',error:null}
+      if (name === 'whatsapp_call_signal_finish') return {data:'unknown',error:null}
+      return {data:true,error:null}
+    })
+    h.callWhatsApp.mockRejectedValueOnce(new Error('Graph timeout'))
+    vi.spyOn(console,'error').mockImplementation(() => {})
+    const request = {action:'pre_accept', call_id:'wacid.qa-signal-fencing',session:{sdp_type:'answer',sdp:'v=0\r\n'}}
+    const first = await POST(makeRequest(request))
+    expect(first.status).toBe(202)
+    expect(await first.json()).toMatchObject({success:false,signal_status:'unknown'})
+    const repeated = await POST(makeRequest(request))
+    expect(repeated.status).toBe(409)
+    expect((await repeated.json()).code).toBe('signal_outcome_unknown')
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('reconciles already connected accept without a second Meta POST', async () => {
+    h.session = inbound('connected')
+    const resp = await POST(makeRequest({action:'accept',call_id:'wacid.qa-signal-fencing'}))
+    expect(resp.status).toBe(200)
+    expect(await resp.json()).toMatchObject({success:true,already_accepted:true,agent_attribution_recorded:true})
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_finish',expect.objectContaining({p_outcome:'acknowledged'}))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+})
