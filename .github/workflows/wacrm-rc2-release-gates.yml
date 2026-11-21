@@ -1,0 +1,52 @@
+name: WACRM RC2 release-evidence gates (isolated, no production)
+
+on:
+  pull_request:
+    paths:
+      - "scripts/release/rc2-proof-check.py"
+      - "scripts/release/test_rc2_proof_check.py"
+      - "scripts/release/rc2-legacy-offline-probe.sh"
+      - "supabase/ci/rc2-acl-snapshot.sql"
+      - "supabase/ci/rc2-dark-acl.sql"
+      - "docs/ops/WACRM-RC2-FINAL-GATES.md"
+      - ".github/workflows/wacrm-rc2-release-gates.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qa-only:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check Python and shell syntax
+        run: |
+          set -euo pipefail
+          python3 -m py_compile scripts/release/rc2-proof-check.py scripts/release/test_rc2_proof_check.py
+          bash -n scripts/release/rc2-legacy-offline-probe.sh
+      - name: Exercise fail-closed backup and ACL evidence checks (synthetic only)
+        run: python3 -m unittest discover -s scripts/release -p 'test_rc2_proof_check.py' -v
+      - name: Verify offline rollback probe refuses a non-isolated Docker network
+        shell: bash
+        run: |
+          set -euo pipefail
+          NET=rc2-ci-external-gate
+          docker network create "$NET" >/dev/null
+          trap 'docker network rm "$NET" >/dev/null 2>&1 || true' EXIT
+          if RC2_LEGACY_CONTAINER=rc2-ci-legacy \
+             RC2_REHEARSAL_DB_CONTAINER=rc2-ci-db \
+             RC2_INTERNAL_NETWORK="$NET" \
+             bash scripts/release/rc2-legacy-offline-probe.sh >/dev/null 2>&1; then
+            echo 'RC2_OFFLINE_GUARD=FAIL: external network was allowed' >&2
+            exit 1
+          fi
+          echo 'RC2_OFFLINE_GUARD=PASS'
+      - name: State evidence scope explicitly
+        run: |
+          echo 'RC2_GITHUB_CHECKERS=PASS_SYNTHETIC'
+          echo 'RC2_REAL_STORAGE_SNAPSHOT=PENDING_VPS_EVIDENCE'
+          echo 'RC2_REAL_RESTORE_ACL=PENDING_VPS_EVIDENCE'
+          echo 'RC2_REAL_LEGACY_ROLLBACK=PENDING_VPS_EVIDENCE'
+          echo 'RC2_PRODUCTION_DEPLOY=NOT_EXECUTED'
