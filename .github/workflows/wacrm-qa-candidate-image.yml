@@ -37,7 +37,7 @@ jobs:
           assert "if: github.event_name == 'workflow_dispatch'" in b
           assert "environment: qa-call03b2" in b
           assert "refs/heads/main" in b and "refs/heads/fix/whatsapp-calling-call03b2-5-terminal-reservation-20261121" in b
-          assert "ref: ${{ steps.gate.outputs.sha }}" in b
+          assert ("ref: " + "$" + "{{ steps.gate.outputs.sha }}") in b
           assert "docker save" in b and "sha256sum -c SHA256SUMS" in b
           assert "upload-artifact@v4" in b and "retention-days: 3" in b
           assert "docker push" not in b and "docker load" not in b
