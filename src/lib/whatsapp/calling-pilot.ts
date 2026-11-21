@@ -10,26 +10,31 @@ function normalizedDigits(value: string): string {
   return value.replace(/\D/g, '')
 }
 
+/** A webhook-level gate: no Calling writes when OFF or outside pilot number. */
+export function isWhatsAppCallingPhoneEnabled(phoneNumberId: string | null | undefined): boolean {
+  if (process.env.WHATSAPP_CALLING_ENABLED !== 'true') return false
+  if (!phoneNumberId || phoneNumberId !== CALLING_PILOT_PHONE_NUMBER_ID) return false
+  const allowed = (process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean)
+  return allowed.includes(CALLING_PILOT_PHONE_NUMBER_ID)
+}
+
 export function isWhatsAppCallingPilotAllowed(
   phoneNumberId: string,
   customerPhone: string | null | undefined,
 ): boolean {
-  if (process.env.WHATSAPP_CALLING_ENABLED !== 'true') return false
-  if (phoneNumberId !== CALLING_PILOT_PHONE_NUMBER_ID) return false
+  if (!isWhatsAppCallingPhoneEnabled(phoneNumberId)) return false
 
   const rawCustomerPhone = customerPhone?.trim() ?? ''
   if (!/^\+?\d{6,20}$/.test(rawCustomerPhone)) return false
   if (normalizedDigits(rawCustomerPhone) !== CALLING_PILOT_CUSTOMER_PHONE) return false
 
-  const configuredNumbers = (process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean)
   const configuredCustomers = (process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES ?? '')
     .split(',')
     .map(normalizedDigits)
     .filter(Boolean)
 
-  return configuredNumbers.includes(CALLING_PILOT_PHONE_NUMBER_ID)
-    && configuredCustomers.includes(CALLING_PILOT_CUSTOMER_PHONE)
+  return configuredCustomers.includes(CALLING_PILOT_CUSTOMER_PHONE)
 }
