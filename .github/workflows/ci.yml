@@ -87,11 +87,12 @@ jobs:
       - name: Fail closed on source drift or missing public production config
         shell: bash
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [ "$(git rev-parse HEAD)" = "$EXPECTED_RELEASE_SHA" ] || exit 1
-          [ "$BASE_SHA" = "$EXPECTED_RELEASE_SHA" ] || { echo 'RC2 source drift'; exit 1; }
+          LIVE_SOURCE_HEAD="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/release/wacrm-calling-rc2-prod-parity-20261121" --jq '.object.sha')"
+          [ "$LIVE_SOURCE_HEAD" = "$EXPECTED_RELEASE_SHA" ] || { echo 'RC2 source drift'; exit 1; }
           [ -n "$NEXT_PUBLIC_SUPABASE_URL" ] && [ -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ] || { echo 'Missing public production configuration'; exit 1; }
           case "$NEXT_PUBLIC_SUPABASE_URL" in https://*) ;; *) echo 'Supabase URL must be HTTPS'; exit 1 ;; esac
           case "$NEXT_PUBLIC_SUPABASE_URL:$NEXT_PUBLIC_SITE_URL" in *127.0.0.1*|*localhost*|*:38089*) echo 'QA origin forbidden'; exit 1 ;; esac
