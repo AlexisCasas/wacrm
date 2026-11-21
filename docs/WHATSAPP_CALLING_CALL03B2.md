@@ -192,3 +192,60 @@ Claude reportó 4,672 tests PASS (213 omitidos), TypeScript y ESLint sin errores
 **Revisión de precisión temporal pendiente antes de merge:** Meta documenta que el status `ACCEPTED` BIC llega después de que la llamada ya está establecida. El `start_time` explícito de `terminate` debe prevalecer sobre ese fallback. La RPC actual conserva el primer `started_at` mediante `COALESCE`, por lo que hay que corregir esa precedencia y probar eventos duplicados/fuera de orden.
 
 El detalle operativo y las pruebas post-deploy están en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`. H1 (claim antes de micrófono) sigue pendiente y precede a cualquier piloto real.
+
+## 13. CALL-03B2.4 — Claim antes del micrófono (21/nov/2026)
+
+Implementa H1 en el cliente: el agente que pierde la carrera por una llamada entrante **nunca** recibe el diálogo de micrófono. El cierre formal requiere CI y QA de concurrencia. Base `9bc35479175278d60b9cb318b2aaaf060d83eb32`; PR Draft #143. Sin migraciones ni cambios en `route.ts`, RPC, PostgreSQL, Compose o Meta.
+
+### Flujo de `acceptIncoming`
+
+1. Token de operación (`AcceptOperation`): único dueño del claim, los medios y los temporizadores del intento.
+2. Estado `claiming`.
+3. `claim`. Un 4xx definitivo (409, 403, 404…) termina sin tocar el micrófono ni liberar nada.
+4. Claim confirmado (sin heartbeat todavía).
+5. `GET` del detalle: valida la oferta SDP y `claim_owned_by_me`.
+6. Vigencia: `timeout_mic = min(30 s, expiración_SDP − ahora − 15 s)`. Si es menor de 5 s (o la expiración es desconocida) no se pide micrófono, se libera el claim y se muestra `offerExpiringSoon`.
+7. Estado `requesting-media`; un único `getUserMedia` con ese timeout.
+8. `renew_claim` inmediatamente después del permiso (un reintento ante error transitorio). Si falla, se detienen los tracks y se aborta. **Solo después arranca el heartbeat**: no existe durante la lectura de la oferta ni el diálogo de micrófono.
+9. Se revalida que la conversación no cambió.
+10. `PeerConnection`, 11. negociación WebRTC, 12. `pre_accept`.
+13. Espera de conexión (el heartbeat sigue activo).
+14. `renew_claim` antes de `accept`.
+15. `accept` y confirmación de atribución.
+
+### Heartbeat y lease
+
+El lease del servidor es de 90 s y la oferta SDP entrante vive 60 s desde el webhook. Tras la renovación posterior al permiso, el cliente renueva cada 30 s mientras dura el intento (se detiene al aceptar o abortar). El diálogo (máx. 30 s) cabe dentro de un lease sin heartbeat. Un 409/403/404 equivale a claim perdido. Los fallos transitorios (red, 429, 5xx) solo cuentan como pérdida cuando la última renovación confirmada está a 5 s de caducar.
+
+Rate limit medido: las acciones de claim/renew/release comparten el bucket `calling:<userId>` con `RATE_LIMITS.send` = **60 solicitudes/min** (no 3/min). Un accept completo usa ~7 POST y el heartbeat añade 2/min, por lo que no se separó el bucket ni se modificó `route.ts`. `route.test.ts` fija ese supuesto.
+
+### `abortAccept` (cambio de conversación, desmontaje, claim perdido)
+
+- Marca el token, detiene el heartbeat, rechaza todas las esperas en curso, detiene `PeerConnection` y tracks.
+- Claim propio y sin `pre_accept`: `release` (sin `terminate`).
+- Tras `pre_accept` y claim propio: `terminate` (cierre seguro).
+- Claim perdido: no se libera ni se termina nada (la llamada pertenece a otro agente). Tras un 409 en `pre_accept`/`accept` se lee `claim_owned_by_me`; si no es verificable se asume perdido.
+- Propiedad antes de actuar: se consulta siempre la propiedad vigente mediante GET, incluso si la última renovación fue reciente. El lease puede haber sido liberado por otro actor y reclamado inmediatamente. `release` y `terminate` solo se envían si GET confirma `claim_owned_by_me`. Un lease libre, vencido, ajeno o imposible de verificar no autoriza acciones; el SDP pendiente seguirá la expiración del servidor. Esta lectura **no es atómica** con el POST posterior.
+- Un `getUserMedia` que resuelve tarde detiene todos sus tracks de inmediato y no crea `PeerConnection`.
+- No hay actualizaciones de estado tras el desmontaje (`unmountedRef`).
+
+### Errores de red en `claim`
+
+No se pide micrófono. Se comprueba por lectura (`claim_owned_by_me`) si el servidor adquirió el claim y solo entonces se libera. Si no puede confirmarse, **el lease de 90 s es la protección residual** (nunca se emite un `release` a ciegas: la RPC permite a owner/admin liberar claims ajenos).
+
+Si el panel se desmonta o cambia la conversación mientras el POST de `claim` sigue pendiente, el navegador no puede deshacer la operación del servidor. Se observa la resolución tardía del POST: si finalmente tuvo éxito, se vuelve a comprobar la propiedad actual antes del `release`. Los tests cubren tanto la adquisición tardía como su transferencia a otro agente antes de limpiar.
+
+### Pruebas
+
+- `calling-panel.claim-order.test.tsx`: orden, timeouts, abortos, heartbeat, transferencias inmediatas de claim y guardas de propiedad.
+- `calling-panel.concurrency.test.tsx`: dos paneles con `runtime` inyectado por panel (`fetch`, `getUserMedia`, `PeerConnection`); el ganador hace claim 200, 1 `getUserMedia`, 1 `PeerConnection`, 1 `pre_accept` y 1 `accept`; el perdedor 409 y cero de todo lo demás.
+- `calling-claim-limits.test.ts`: ata las constantes del cliente a los valores reales (lease 90 s en las RPC y la ruta, SDP 60 s, 60/min).
+- `CallingPanel` acepta la prop opcional `runtime` (solo para tests; por defecto usa los globales del navegador).
+
+### Riesgos residuales
+
+- Mismo agente en dos pestañas: el claim es idempotente para el mismo usuario y ambas pueden continuar. Requiere un token de claim en servidor (migración) y queda fuera de esta fase.
+- La vigencia de la oferta usa el reloj del navegador; el margen de 15 s absorbe desfases de segundos.
+- `getUserMedia` no es cancelable: el diálogo puede seguir abierto tras abortar; sus tracks se detienen si se concede.
+- Pendiente: validación de navegador en QA (Firefox/Chromium con micrófono falso) y build de Next en un entorno con memoria suficiente antes de cualquier despliegue.
+- **BLOQUEO PARA MERGE/PILOTO:** `terminate` en servidor permite el último reclamante y roles owner/admin; una comprobación GET del cliente no es atómica con esa operación. Falta protección de servidor frente a transferencias entre GET y POST (fencing/compare-and-set o equivalente) para garantizar que el agente anterior no termina la llamada del nuevo propietario. La corrección cliente reduce el riesgo, pero no lo elimina.

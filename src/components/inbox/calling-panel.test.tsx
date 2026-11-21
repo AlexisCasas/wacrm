@@ -173,8 +173,9 @@ describe("CallingPanel", () => {
       const url = String(input);
       if (url.includes("?call_id=")) {
         return jsonResponse({
-          call: incoming,
+          call: { ...incoming, session_sdp_expires_at: new Date(Date.now() + 50_000).toISOString() },
           session: { sdp_type: "offer", sdp: "v=0\\r\\n" },
+          claim_owned_by_me: true,
         });
       }
       if (init?.method === "POST") {
@@ -204,7 +205,7 @@ describe("CallingPanel", () => {
     const postedActions = vi.mocked(global.fetch).mock.calls
       .filter(([, init]) => init?.method === "POST")
       .map(([, init]) => JSON.parse(String(init?.body)).action);
-    expect(postedActions).toEqual(["check_permission", "claim", "pre_accept", "accept"]);
+    expect(postedActions).toEqual(["check_permission", "claim", "renew_claim", "pre_accept", "renew_claim", "accept"]);
   });
 
   it("keeps audio disabled and terminates if acceptance attribution is not confirmed", async () => {
@@ -221,8 +222,9 @@ describe("CallingPanel", () => {
       const url = String(input);
       if (url.includes("?call_id=")) {
         return jsonResponse({
-          call: incoming,
+          call: { ...incoming, session_sdp_expires_at: new Date(Date.now() + 50_000).toISOString() },
           session: { sdp_type: "offer", sdp: "v=0\\r\\n" },
+          claim_owned_by_me: true,
         });
       }
       if (init?.method === "POST") {

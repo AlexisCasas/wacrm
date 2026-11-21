@@ -5,6 +5,7 @@ const h = vi.hoisted(() => ({
   rpcCalls: [] as Array<{ name: string; args: Record<string, unknown> }>,
   rpcResult: true as boolean,
   rpcError: null as { code: string } | null,
+  rateKeys: [] as string[],
 }))
 
 vi.mock('@/lib/auth/account', () => ({
@@ -35,7 +36,10 @@ vi.mock('@/lib/flows/admin-client', () => ({
 }))
 
 vi.mock('@/lib/rate-limit', () => ({
-  checkRateLimit: () => ({ success: true }),
+  checkRateLimit: (key: string) => {
+    h.rateKeys.push(key)
+    return { success: true }
+  },
   rateLimitResponse: () => Response.json({ error: 'rate limited' }, { status: 429 }),
   RATE_LIMITS: { send: {} },
 }))
@@ -61,6 +65,7 @@ beforeEach(() => {
   h.rpcCalls = []
   h.rpcResult = true
   h.rpcError = null
+  h.rateKeys = []
 })
 
 describe('POST /api/whatsapp/calls — CALL-03A agent metadata', () => {
@@ -84,12 +89,72 @@ describe('POST /api/whatsapp/calls — CALL-03A agent metadata', () => {
       },
     })
   })
+  // CALL-03B2.4 — lease isolation between agents and accounts.
+  it('never takes the actor or account of a lease action from the request body', async () => {
+    for (const action of ['claim', 'renew_claim', 'release']) {
+      h.rpcCalls = []
+      const response = await POST(request({
+        action,
+        call_id: 'wacid.qa-call0324',
+        account_id: 'attacker-account',
+        actor_user_id: 'attacker-agent',
+        p_actor_user_id: 'attacker-agent',
+      }))
+      expect(response.status, action).toBe(200)
+      const rpc = h.rpcCalls.find((call) => call.name !== 'whatsapp_call_sdp_prune')
+      expect(rpc?.args, action).toMatchObject({
+        p_account_id: 'account-from-session',
+        p_actor_user_id: 'agent-from-session',
+      })
+    }
+  })
 
+  it('answers 409 when another agent holds the lease (claim, renew and release)', async () => {
+    h.rpcResult = false
+    const expected: Record<string, string> = {
+      claim: 'Call is already claimed or no longer available',
+      renew_claim: 'Call claim has expired or is no longer owned by you',
+      release: 'Call is not claimed by you',
+    }
+    for (const action of ['claim', 'renew_claim', 'release']) {
+      const response = await POST(request({ action, call_id: 'wacid.qa-call0324' }))
+      expect(response.status, action).toBe(409)
+      expect(await response.json(), action).toMatchObject({ error: expected[action] })
+    }
+  })
 
+  it('answers 403 when the actor is not an agent of the account (RPC role check)', async () => {
+    h.rpcError = { code: '42501' }
+    for (const action of ['claim', 'renew_claim', 'release']) {
+      const response = await POST(request({ action, call_id: 'wacid.qa-call0324' }))
+      expect(response.status, action).toBe(403)
+    }
+  })
 
+  it('does not reach any lease RPC for a call that belongs to another account', async () => {
+    h.callRow = null // the lookup is scoped by the session account_id and finds nothing
+    for (const action of ['claim', 'renew_claim', 'release']) {
+      h.rpcCalls = []
+      const response = await POST(request({ action, call_id: 'wacid.qa-call0324' }))
+      expect(response.status, action).toBe(404)
+      expect(h.rpcCalls.filter((call) => call.name !== 'whatsapp_call_sdp_prune'), action).toEqual([])
+    }
+  })
 
-
-
+  it('keeps claim, renew and release in the shared per-agent 60/min budget used by the 30 s heartbeat', async () => {
+    for (const action of ['claim', 'renew_claim', 'release']) {
+      await POST(request({ action, call_id: 'wacid.qa-call0324' }))
+    }
+    expect(h.rateKeys).toEqual([
+      'calling:agent-from-session',
+      'calling:agent-from-session',
+      'calling:agent-from-session',
+    ])
+    // A full accept uses ~7 POSTs; the heartbeat adds 2/min. The real budget is 60/min.
+    const actual = await vi.importActual<typeof import('@/lib/rate-limit')>('@/lib/rate-limit')
+    expect(actual.RATE_LIMITS.send.limit).toBeGreaterThanOrEqual(60)
+    expect(actual.RATE_LIMITS.send.windowMs).toBe(60_000)
+  })
 })
 
 
