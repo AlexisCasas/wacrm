@@ -1,9 +1,9 @@
 # WACRM — CALL-03B2.5: resultado de preflight VPS y desbloqueos
 
 **Corte:** 2026-11-21T15:42Z (reporte operativo de Claude Code, solo lectura).
-**VPS:** `srv1917080`. **Resultado:** `CALL03B25_VPS_PREFLIGHT=BLOCKED`; no se ejecutaron migraciones, despliegues, builds, fetches, reinicios ni escrituras en BD.
+**VPS:** `srv1917080`. **Resultado inicial 15:42Z:** `CALL03B25_VPS_PREFLIGHT=BLOCKED`; **resultado A2 posterior:** `CALL03B25_ROOT_A2=BLOCKED` **solo por BUILD-QA**. En ambas auditorías: sin migraciones, despliegues, builds, fetches, reinicios ni escrituras en BD. Los bloqueos iniciales de respaldo, integridad y esquema están cerrados en la sección G.
 **Fuente:** reporte sanitizado del operador en el proyecto WACRM; los datos VPS aún no han sido confirmados de forma independiente desde GitHub.
-**Documento complementario:** [Estado general y matriz QA](WHATSAPP_CALLING_CALL03B2_STATUS_QA_GATE_20261121.md).
+**Documentos complementarios:** [Estado general y matriz QA](WHATSAPP_CALLING_CALL03B2_STATUS_QA_GATE_20261121.md) · [Decisión de empaquetado QA](WHATSAPP_CALLING_CALL03B2_5_QA_IMAGE_PLAN.md).
 
 ## A. Resultado por gate
 
