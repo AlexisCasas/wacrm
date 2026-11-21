@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { requireRole, toErrorResponse } from '@/lib/auth/account';
+import { assertConversationOperationalAccess } from '@/lib/conversations/operational-access';
 import { sendReactionMessage } from '@/lib/whatsapp/meta-api';
 import { decrypt } from '@/lib/whatsapp/encryption';
 import { BsuidSendBlockedError, resolveContactTarget } from '@/lib/whatsapp/recipient';
@@ -63,6 +64,9 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+
+    // Handoff gate. A message of a conversation the caller's operational area cannot work is already invisible (RLS answers 404 above).
+    await assertConversationOperationalAccess(supabase, accountId, targetMessage.conversation_id);
 
     const { data: conversation, error: convError } = await supabase
       .from('conversations')

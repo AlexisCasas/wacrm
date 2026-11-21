@@ -31,6 +31,14 @@ interface FlowStartPickerProps {
 }
 
 /**
+ * Conversations with a manual-start POST currently in flight. Module
+ * level on purpose: the request outlives the dialog (and the component
+ * instance may be reused for another conversation), so the guard cannot
+ * live in component state.
+ */
+const inFlightStarts = new Set<string>();
+
+/**
  * "Iniciar Flow" — P0 manual flow start from the Inbox. Lists every
  * ACTIVE flow for the account regardless of trigger_type (keyword,
  * manual, first_inbound_message all appear — only draft/archived are
@@ -88,54 +96,93 @@ export function FlowStartPicker({
     return activeFlows.filter((f) => f.name.toLowerCase().includes(q));
   }, [activeFlows, query]);
 
-  async function handleConfirm() {
+  function handleConfirm() {
     if (!selected || submitting) return;
+    // Double-click guard that outlives this component's state: the POST
+    // keeps running after the dialog closes (see below), so a second
+    // click / re-open for the SAME conversation must not fire a second
+    // POST while the first is still in flight. Other conversations are
+    // independent, which is what allows A, B and C to run in parallel.
+    if (inFlightStarts.has(conversationId)) return;
+    inFlightStarts.add(conversationId);
     setSubmitting(true);
+
+    // Everything the background request needs is captured NOW, at click
+    // time. A late response must never read props/state that by then
+    // belong to another conversation.
+    const flow = selected;
+    const startedFor = {
+      conversationId,
+      contactName: contactDisplayName,
+      onStarted,
+    };
+
+    // Free the UI immediately. The server owns the whole execution of
+    // the run (created and advanced inside POST /api/flows/[id]/start),
+    // so nothing here depends on this dialog, the open conversation or
+    // the browser view staying put. Outcome is reported by toast below,
+    // tagged with the contact it belongs to.
+    onOpenChange(false);
+    setSubmitting(false);
+
+    void startFlowInBackground(flow, startedFor);
+  }
+
+  async function startFlowInBackground(
+    flow: FlowListRow,
+    startedFor: {
+      conversationId: string;
+      contactName: string;
+      onStarted?: () => void;
+    },
+  ) {
+    const toastOpts = { description: startedFor.contactName };
     try {
-      const res = await fetch(`/api/flows/${selected.id}/start`, {
+      const res = await fetch(`/api/flows/${flow.id}/start`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation_id: conversationId }),
+        body: JSON.stringify({ conversation_id: startedFor.conversationId }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (data.code === "active_flow_exists") {
           toast.error(
             t("errorActiveFlow", { flowName: data.active_flow_name ?? "" }),
+            toastOpts,
           );
         } else if (data.code === "service_window_expired") {
-          toast.error(t("errorServiceWindow"));
+          toast.error(t("errorServiceWindow"), toastOpts);
         } else if (data.code === "contact_blocked") {
           // P0 contact blocking — a stale Inbox tab picked a Flow for
           // a contact that got blocked meanwhile. Never confirm as if
           // it started.
-          toast.error(t("errorContactBlocked"));
+          toast.error(t("errorContactBlocked"), toastOpts);
         } else if (data.code === "bsuid_flow_not_authorized") {
-          toast.error(t("errorBsuidFlowNotAuthorized"));
+          toast.error(t("errorBsuidFlowNotAuthorized"), toastOpts);
         } else if (data.code === "contact_recipient_unavailable") {
-          toast.error(t("errorContactRecipientUnavailable"));
+          toast.error(t("errorContactRecipientUnavailable"), toastOpts);
         } else if (data.code === "flow_failed_immediately") {
           // P1 bug #2 — the run WAS created and DID run (it's kept for
           // audit server-side), but it ended in status='failed' before
-          // ever suspending. Never show the success toast, never call
-          // onStarted(), never close the dialog — the agent stays on
-          // the confirm screen so they can see something went wrong
-          // and decide whether to retry or pick a different flow. No
-          // internal detail (end_reason, exception, Meta error) is
-          // available here — the route never sends it.
-          toast.error(t("errorFailedImmediately"));
+          // ever suspending. Never show the success toast and never
+          // call onStarted(). No internal detail (end_reason,
+          // exception, Meta error) is available here — the route never
+          // sends it.
+          toast.error(t("errorFailedImmediately"), toastOpts);
         } else {
-          toast.error(t("errorGeneric"));
+          toast.error(t("errorGeneric"), toastOpts);
         }
         return;
       }
-      toast.success(t("successToast", { flowName: data.flow_name ?? selected.name }));
-      onOpenChange(false);
-      onStarted?.();
+      toast.success(
+        t("successToast", { flowName: data.flow_name ?? flow.name }),
+        toastOpts,
+      );
+      startedFor.onStarted?.();
     } catch {
-      toast.error(t("errorGeneric"));
+      toast.error(t("errorGeneric"), toastOpts);
     } finally {
-      setSubmitting(false);
+      inFlightStarts.delete(startedFor.conversationId);
     }
   }
 

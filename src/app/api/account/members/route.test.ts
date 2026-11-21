@@ -24,13 +24,13 @@ beforeEach(() => {
 })
 
 describe('GET /api/account/members (PR-01 logistics)', () => {
-  it('flag OFF: the profiles query is the legacy one, every member has operational_role null', async () => {
+  it('flag OFF: operational areas are STILL returned (assignable before activation); the flag state is reported separately', async () => {
     flag.mockResolvedValue({ data: { logistics_mvp_enabled: false }, error: null })
     profiles.mockResolvedValue({ data: [row({ operational_role: 'supervisor' })], error: null })
     const body = await (await GET()).json()
-    expect(profilesSelect).toHaveBeenCalledWith('user_id, full_name, email, avatar_url, account_role, created_at')
+    expect(profilesSelect).toHaveBeenCalledWith('user_id, full_name, email, avatar_url, account_role, operational_role, created_at')
     expect(body.operational_roles_enabled).toBe(false)
-    expect(body.members[0]).toMatchObject({ role: 'agent', operational_role: null })
+    expect(body.members[0]).toMatchObject({ role: 'agent', operational_role: 'supervisor' })
   })
 
   it('flag lookup failure fails closed (OFF)', async () => {
@@ -38,7 +38,7 @@ describe('GET /api/account/members (PR-01 logistics)', () => {
     profiles.mockResolvedValue({ data: [row()], error: null })
     const body = await (await GET()).json()
     expect(body.operational_roles_enabled).toBe(false)
-    expect(profilesSelect).toHaveBeenCalledWith('user_id, full_name, email, avatar_url, account_role, created_at')
+    expect(profilesSelect).toHaveBeenCalledWith('user_id, full_name, email, avatar_url, account_role, operational_role, created_at')
   })
 
   it('flag ON: includes operational_role (separate from role) and operational_roles_enabled=true', async () => {

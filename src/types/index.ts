@@ -205,7 +205,7 @@ export interface Conversation {
 // Notifications (migration 027)
 // ============================================================
 
-export type NotificationType = 'conversation_assigned';
+export type NotificationType = 'conversation_assigned' | 'shipment_destination_alert';
 
 export interface Notification {
   id: string;
@@ -215,6 +215,8 @@ export interface Notification {
   type: NotificationType;
   conversation_id?: string;
   contact_id?: string;
+  /** PR-05: the order a shipment alert is about (opens Pedidos Confirmados on it). */
+  order_id?: string;
   /** Who triggered it. Null when an automation/system assigned it. */
   actor_user_id?: string;
   title: string;

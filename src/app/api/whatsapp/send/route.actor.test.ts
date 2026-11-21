@@ -10,7 +10,7 @@ vi.mock('@/lib/auth/account', async () => {
     ForbiddenError,
     requireRole: async () => {
       if (h.role === 'viewer') throw new ForbiddenError("This action requires the 'agent' role or higher")
-      return { supabase: { from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ single: async () => ({ data: { id: 'conv-1' }, error: null }) }) }) }) }) }, accountId: 'acct-1', userId: 'user-from-session', role: h.role }
+      return { supabase: { rpc: async () => ({ data: true, error: null }), from: () => ({ select: () => ({ eq: () => ({ eq: () => ({ single: async () => ({ data: { id: 'conv-1' }, error: null }) }) }) }) }) }, accountId: 'acct-1', userId: 'user-from-session', role: h.role }
     },
     toErrorResponse: (e: { status?: number; message?: string }) => new Response(JSON.stringify({ error: e.message }), { status: e.status ?? 500 }),
   }
