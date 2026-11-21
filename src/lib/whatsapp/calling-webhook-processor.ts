@@ -20,9 +20,12 @@ function iso(value: string | undefined): string | null {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null
 }
 function durationSeconds(value: number | undefined): number | null {
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return null
-  const seconds = Math.floor(value)
-  return Number.isSafeInteger(seconds) && seconds <= MAX_DURATION_SECONDS ? seconds : null
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value >= 0
+    && value <= MAX_DURATION_SECONDS
+    ? value
+    : null
 }
 function terminalTiming(event: WhatsAppCallingEvent) {
   let startedAt = iso(event.start_time)
@@ -30,23 +33,31 @@ function terminalTiming(event: WhatsAppCallingEvent) {
   const reportedDuration = durationSeconds(event.duration)
   const startMs = startedAt ? Date.parse(startedAt) : null
   const endMs = endedAt ? Date.parse(endedAt) : null
+  let derivedDuration: number | null = null
 
-  if (startMs !== null && endMs !== null && endMs < startMs) {
-    console.warn('[calling] invalid terminate time order', { code: 'start_after_end' })
-    startedAt = null
-  }
-
-  if (reportedDuration !== null && startedAt && endedAt) {
-    const derivedDuration = Math.floor((Date.parse(endedAt) - Date.parse(startedAt)) / 1000)
-    if (derivedDuration >= 0 && derivedDuration !== reportedDuration) {
-      console.warn('[calling] terminate duration differs from timestamp delta', {
-        code: 'duration_timestamp_mismatch',
-        delta_seconds: reportedDuration - derivedDuration,
-      })
+  if (startMs !== null && endMs !== null) {
+    if (endMs < startMs) {
+      console.warn('[calling] invalid terminate time order', { code: 'start_after_end' })
+      startedAt = null
+    } else {
+      const derived = Math.floor((endMs - startMs) / 1000)
+      if (Number.isSafeInteger(derived) && derived >= 0 && derived <= MAX_DURATION_SECONDS) {
+        derivedDuration = derived
+      }
     }
   }
 
-  return { startedAt, endedAt, durationSeconds: reportedDuration }
+  if (reportedDuration !== null && derivedDuration !== null && derivedDuration !== reportedDuration) {
+    console.warn('[calling] terminate duration differs from timestamp delta', {
+      code: 'duration_timestamp_mismatch',
+      delta_seconds: reportedDuration - derivedDuration,
+    })
+  }
+
+  // Derive only here, while both timestamps are known to come from this
+  // terminate webhook. Never derive from a persisted started_at that may be
+  // a provisional value written by an older application version.
+  return { startedAt, endedAt, durationSeconds: reportedDuration ?? derivedDuration }
 }
 function hash(parts: string[]): string {
   return createHash('sha256').update(parts.join('|')).digest('hex')
