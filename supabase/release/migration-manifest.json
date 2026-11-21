@@ -71,6 +71,64 @@
       "branch": "origin branch (not deployed)"
     }
   ],
+  "integrated_external": [
+    {
+      "version": "20261129000000",
+      "file": "20261129000000_whatsapp_calling_sessions_permissions.sql",
+      "sha256": "0cb6d2a88ccd58233a3887f7f10a7a4c9145e5f98e15172e0e6ba3308032dd77",
+      "source": "WhatsApp Calling RC2 / PR #151",
+      "execution_policy": "separate verified migration gate; not part of PR-02..PR-06 ledger plan"
+    },
+    {
+      "version": "20261130000000",
+      "file": "20261130000000_whatsapp_calling_agent_attribution.sql",
+      "sha256": "2cd502451d7a20eb4535625b9afc73d117161041324f9a3a9040f0bd0d10c3b6",
+      "source": "WhatsApp Calling RC2 / PR #151",
+      "execution_policy": "separate verified migration gate; not part of PR-02..PR-06 ledger plan"
+    },
+    {
+      "version": "20261130000001",
+      "file": "20261130000001_whatsapp_calling_signaling.sql",
+      "sha256": "43c02ec1e8f4af36130ea7d148055d3c7750fbecc9b3eacc6c6bda97982b2556",
+      "source": "WhatsApp Calling RC2 / PR #151",
+      "execution_policy": "separate verified migration gate; not part of PR-02..PR-06 ledger plan"
+    },
+    {
+      "version": "20261130000002",
+      "file": "20261130000002_whatsapp_call_claim_no_reclaim_after_accept.sql",
+      "sha256": "2ea69cb856baddb6579443b6121af81e550a4cab7018f5e240c72a1b1f4d4373",
+      "source": "WhatsApp Calling RC2 / PR #151",
+      "execution_policy": "separate verified migration gate; not part of PR-02..PR-06 ledger plan"
+    },
+    {
+      "version": "20261130000003",
+      "file": "20261130000003_whatsapp_calling_inbound_association_lifecycle.sql",
+      "sha256": "7b2d467ea75213587c94b0a9ce848d81c2a034f14ff3420188a19ccac2627dff",
+      "source": "WhatsApp Calling RC2 / PR #151",
+      "execution_policy": "separate verified migration gate; not part of PR-02..PR-06 ledger plan"
+    },
+    {
+      "version": "20261130000004",
+      "file": "20261130000004_whatsapp_calling_authoritative_timing.sql",
+      "sha256": "81ac02d808d132cb8835db71812031e66ccd090360258d1ea69fdcbdcd16de32",
+      "source": "WhatsApp Calling RC2 / PR #151",
+      "execution_policy": "separate verified migration gate; not part of PR-02..PR-06 ledger plan"
+    },
+    {
+      "version": "20261201000000",
+      "file": "20261201000000_whatsapp_call_terminal_reservation.sql",
+      "sha256": "770c9c65027073d1186b4518683eda484934e523b7a99c14f28b0290f23f9753",
+      "source": "WhatsApp Calling RC2 / PR #151",
+      "execution_policy": "separate verified migration gate; not part of PR-02..PR-06 ledger plan"
+    },
+    {
+      "version": "20261201000001",
+      "file": "20261201000001_whatsapp_call_signal_fencing.sql",
+      "sha256": "c26639b310af7384d61ae50194306240ad1e7a9a70fb0eb586067ee514fef861",
+      "source": "WhatsApp Calling RC2 / PR #151",
+      "execution_policy": "separate verified migration gate; not part of PR-02..PR-06 ledger plan"
+    }
+  ],
   "release_migrations": [
     {
       "order": 1,
