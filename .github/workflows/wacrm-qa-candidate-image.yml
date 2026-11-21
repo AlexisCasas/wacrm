@@ -1,0 +1,166 @@
+name: WACRM QA candidate image (manual, artifact only)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wacrm-qa-candidate-image.yml"
+      - "docs/ops/WACRM-QA-CANDIDATE-IMAGE.md"
+  workflow_dispatch:
+    inputs:
+      release_sha:
+        description: "Exact HEAD SHA of CALL-03B2.5 PR #144 (40 lowercase hex)"
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wacrm-qa-image-${{ github.event.inputs.release_sha || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify isolated, manual-only QA artifact contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          t = Path(".github/workflows/wacrm-qa-candidate-image.yml").read_text()
+          b = t.split("  build-qa:\n", 1)[1]
+          assert "workflow_dispatch:" in t
+          assert "if: github.event_name == 'workflow_dispatch'" in b
+          assert "environment: qa-call03b2" in b
+          assert "refs/heads/main" in b and "refs/heads/fix/whatsapp-calling-call03b2-5-terminal-reservation-20261121" in b
+          assert "ref: ${{ steps.gate.outputs.sha }}" in b
+          assert "docker save" in b and "sha256sum -c SHA256SUMS" in b
+          assert "upload-artifact@v4" in b and "retention-days: 3" in b
+          assert "docker push" not in b and "docker load" not in b
+          assert "WACRM_NEXT_PUBLIC_" not in b and "SUPABASE_SERVICE_ROLE_KEY" not in b
+          assert "META_APP_SECRET" not in b and "WACRM_QA_NEXT_PUBLIC_SUPABASE_ANON_KEY" in b
+          print("CALL03B25_QA_WORKFLOW_CONTRACT=PASS")
+          PY
+
+  build-qa:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: qa-call03b2
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Gate dispatch against main and exact PR #144 branch HEAD
+        shell: bash
+        id: gate
+        env:
+          RELEASE_SHA: ${{ inputs.release_sha }}
+          RUN_REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          [ "$RUN_REF" = refs/heads/main ] || { echo "Not main workflow"; exit 1; }
+          [[ "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "Invalid SHA"; exit 1; }
+          REMOTE_SHA="$(git ls-remote origin refs/heads/fix/whatsapp-calling-call03b2-5-terminal-reservation-20261121 | cut -f1)"
+          [ -n "$REMOTE_SHA" ] && [ "$RELEASE_SHA" = "$REMOTE_SHA" ] || { echo "Not current PR #144 branch HEAD"; exit 1; }
+          printf 'sha=%s\n' "$RELEASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "CALL03B25_QA_SOURCE_GATE=PASS"
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.gate.outputs.sha }}
+          persist-credentials: false
+      - name: Confirm tree and QA-only compile-time configuration
+        id: cfg
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ steps.gate.outputs.sha }}
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.WACRM_QA_NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SITE_URL: ${{ vars.WACRM_QA_NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_APP_LOCALE: ${{ vars.WACRM_QA_NEXT_PUBLIC_APP_LOCALE }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.WACRM_QA_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          [ "$(git rev-parse HEAD)" = "$EXPECTED_SHA" ] || exit 1
+          [ "$NEXT_PUBLIC_SUPABASE_URL" = "http://127.0.0.1:38089" ] || { echo "Invalid QA URL"; exit 1; }
+          [ "$NEXT_PUBLIC_SITE_URL" = "http://127.0.0.1:38089" ] || { echo "Invalid QA site"; exit 1; }
+          [ "$NEXT_PUBLIC_APP_LOCALE" = "en" ] || { echo "Invalid locale"; exit 1; }
+          [ -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY" ] || { echo "QA key absent"; exit 1; }
+          ANON_SHA="$(printf %s "$NEXT_PUBLIC_SUPABASE_ANON_KEY" | sha256sum | cut -d ' ' -f1)"
+          [ "$ANON_SHA" = "5f9a3ca08fa5dce7de6d6687647689c7fa2b8ffff33b6c99f98cf09cace8b00f" ] || { echo "QA key fingerprint mismatch"; exit 1; }
+          CONFIG_SHA="$({ printf '%s\0' "$NEXT_PUBLIC_SUPABASE_URL" "$NEXT_PUBLIC_SUPABASE_ANON_KEY" "$NEXT_PUBLIC_SITE_URL" "$NEXT_PUBLIC_APP_LOCALE"; } | sha256sum | cut -d ' ' -f1)"
+          TREE="$(git rev-parse HEAD^{tree})"
+          TAG="wacrm-app:call03b25-qa-${EXPECTED_SHA:0:12}"
+          {
+            printf 'tree=%s\n' "$TREE"
+            printf 'tag=%s\n' "$TAG"
+            printf 'anon_sha=%s\n' "$ANON_SHA"
+            printf 'config_sha=%s\n' "$CONFIG_SHA"
+          } >> "$GITHUB_OUTPUT"
+          echo "CALL03B25_QA_CONFIG_GATE=PASS"
+      - name: Build isolated QA image (no deployment)
+        shell: bash
+        env:
+          NEXT_PUBLIC_SUPABASE_URL: ${{ vars.WACRM_QA_NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SITE_URL: ${{ vars.WACRM_QA_NEXT_PUBLIC_SITE_URL }}
+          NEXT_PUBLIC_APP_LOCALE: ${{ vars.WACRM_QA_NEXT_PUBLIC_APP_LOCALE }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.WACRM_QA_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          SOURCE_SHA: ${{ steps.gate.outputs.sha }}
+          SOURCE_TREE: ${{ steps.cfg.outputs.tree }}
+          TAG: ${{ steps.cfg.outputs.tag }}
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 --pull \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY \
+            --build-arg NEXT_PUBLIC_SITE_URL --build-arg NEXT_PUBLIC_APP_LOCALE \
+            --label "org.opencontainers.image.revision=$SOURCE_SHA" \
+            --label "io.wacrm.source-tree=$SOURCE_TREE" \
+            --label "io.wacrm.environment=qa-call03b2" -t "$TAG" .
+          [ "$(docker image inspect -f '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$TAG")" = "$SOURCE_SHA" ]
+          [ "$(docker image inspect -f '{{ index .Config.Labels "io.wacrm.source-tree" }}' "$TAG")" = "$SOURCE_TREE" ]
+          [ "$(docker image inspect -f '{{ .Os }}/{{ .Architecture }}' "$TAG")" = linux/amd64 ]
+          echo "CALL03B25_QA_IMAGE_BUILD=PASS"
+      - name: Export archive, manifest, SHA256 checksums
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.gate.outputs.sha }}
+          SOURCE_TREE: ${{ steps.cfg.outputs.tree }}
+          TAG: ${{ steps.cfg.outputs.tag }}
+          ANON_SHA: ${{ steps.cfg.outputs.anon_sha }}
+          CONFIG_SHA: ${{ steps.cfg.outputs.config_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          docker save "$TAG" | gzip -1 > release/image.tar.gz
+          export IMAGE_ID="$(docker image inspect -f '{{ .Id }}' "$TAG")"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          data = {
+            "source_sha": os.environ["SOURCE_SHA"],
+            "source_tree": os.environ["SOURCE_TREE"],
+            "image_id": os.environ["IMAGE_ID"],
+            "tag": os.environ["TAG"],
+            "platform": "linux/amd64",
+            "environment": "qa-call03b2",
+            "build_arg_names": [
+              "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+              "NEXT_PUBLIC_SITE_URL", "NEXT_PUBLIC_APP_LOCALE"
+            ],
+            "qa_anon_sha256": os.environ["ANON_SHA"],
+            "qa_build_config_sha256": os.environ["CONFIG_SHA"],
+            "locale": "en", "deployed": False
+          }
+          Path("release/manifest.json").write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+          PY
+          (cd release && sha256sum image.tar.gz manifest.json > SHA256SUMS && sha256sum -c SHA256SUMS)
+          echo "CALL03B25_QA_ARTIFACT=PASS"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: call03b25-qa-${{ steps.gate.outputs.sha }}
+          path: release/
+          retention-days: 3
+          if-no-files-found: error
