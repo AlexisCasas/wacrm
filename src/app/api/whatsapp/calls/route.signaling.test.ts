@@ -1,0 +1,1089 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { GET, POST } from './route'
+
+const h = vi.hoisted(() => ({
+  accountId: 'a3000000-0000-4000-8000-000000000001',
+  userId: 'a3000000-0000-4000-8000-000000000002',
+  contactId: 'a3000000-0000-4000-8000-000000000003',
+  conversationId: 'a3000000-0000-4000-8000-000000000004',
+  requestId: 'a3000000-0000-4000-8000-000000000005',
+  phoneNumberId: '740434745820831',
+  config: {
+    phone_number_id: '740434745820831',
+    access_token: 'encrypted-token',
+    messaging_account_id: null,
+    status: 'connected',
+  },
+  contact: { id: 'a3000000-0000-4000-8000-000000000003', phone: '51980942247' },
+  session: null as Record<string, unknown> | null,
+  listCalls: [] as Array<Record<string, unknown>>,
+  actorProfiles: [] as Array<{ account_id: string; user_id: string; full_name: string | null }>,
+  attemptCreated: true,
+  attemptState: 'pending',
+  from: vi.fn(),
+  rpc: vi.fn(),
+  callWhatsApp: vi.fn(),
+  getPermission: vi.fn(),
+  sendPermission: vi.fn(),
+  encrypt: vi.fn(),
+  decrypt: vi.fn(),
+  pilotAllowed: vi.fn(),
+}))
+
+vi.mock('@/lib/auth/account', () => ({
+  requireRole: vi.fn(async () => ({
+    accountId: h.accountId,
+    userId: h.userId,
+    role: 'agent',
+  })),
+  toErrorResponse: vi.fn(() => Response.json({ error: 'unexpected' }, { status: 500 })),
+}))
+
+vi.mock('@/lib/flows/admin-client', () => ({
+  supabaseAdmin: () => ({ from: h.from, rpc: h.rpc }),
+}))
+
+vi.mock('@/lib/rate-limit', () => ({
+  checkRateLimit: vi.fn(() => ({ success: true })),
+  rateLimitResponse: vi.fn(() => Response.json({ error: 'rate limited' }, { status: 429 })),
+  RATE_LIMITS: { send: { limit: 10, windowMs: 60000 } },
+}))
+
+vi.mock('@/lib/whatsapp/encryption', () => ({
+  encrypt: h.encrypt,
+  decrypt: h.decrypt,
+}))
+
+vi.mock('@/lib/whatsapp/calling-api', () => ({
+  callWhatsApp: h.callWhatsApp,
+  getWhatsAppCallPermission: h.getPermission,
+  sendWhatsAppCallPermissionRequest: h.sendPermission,
+}))
+
+vi.mock('@/lib/whatsapp/calling-pilot', () => ({
+  isWhatsAppCallingPilotAllowed: h.pilotAllowed,
+}))
+
+function makeRequest(body: Record<string, unknown>) {
+  return new Request('http://localhost/api/whatsapp/calls', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+}
+
+function setupDb() {
+  h.from.mockImplementation((table: string) => {
+    const builder: Record<string, unknown> & {
+      filters: Record<string, unknown>
+      select: () => typeof builder
+      eq: (key: string, value: unknown) => typeof builder
+      in: (key: string, values: unknown[]) => typeof builder
+      maybeSingle: () => Promise<{ data: unknown; error: null }>
+      order: (key: string, options?: Record<string, unknown>) => typeof builder
+      limit: () => Promise<{ data: unknown[]; error: null }>
+    } = {
+      filters: {},
+      select: () => builder,
+      eq: (key, value) => {
+        builder.filters[key] = value
+        return builder
+      },
+      in: (key, values) => {
+        builder.filters[key] = values
+        return builder
+      },
+      maybeSingle: async () => {
+        if (table === 'whatsapp_config') return { data: h.config, error: null }
+        if (table === 'contacts') return { data: h.contact, error: null }
+        if (table === 'whatsapp_call_sessions') return { data: h.session, error: null }
+        return { data: null, error: null }
+      },
+      order: () => builder,
+      limit: async () => ({
+        data: table === 'profiles'
+          ? h.actorProfiles.filter((profile) =>
+              profile.account_id === builder.filters.account_id
+              && (builder.filters.user_id as string[] | undefined)?.includes(profile.user_id))
+          : h.listCalls,
+        error: null,
+      }),
+    }
+    return builder
+  })
+
+  h.rpc.mockImplementation(async (name: string, args: Record<string, unknown>) => {
+    if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+    if (name === 'whatsapp_call_signal_begin') return { data: 'reserved', error: null }
+    if (name === 'whatsapp_call_signal_finish') return { data: 'acknowledged', error: null }
+    if (name === 'whatsapp_call_terminal_reserve') return { data: 'reserved', error: null }
+    if (name === 'whatsapp_call_terminal_finish') return { data: true, error: null }
+    if (name === 'whatsapp_call_outbound_attempt_begin') {
+      return {
+        data: {
+          attempt_id: 'a3000000-0000-4000-8000-000000000006',
+          state: h.attemptState,
+          call_id: null,
+          callback_data: h.requestId,
+          created: h.attemptCreated,
+        },
+        error: null,
+      }
+    }
+    if (name === 'whatsapp_call_outbound_attempt_complete'
+      || name === 'whatsapp_call_session_agent_sdp_store'
+      || name === 'whatsapp_call_session_agent_action') {
+      return { data: true, error: null }
+    }
+    return { data: null, error: null }
+  })
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  h.session = null
+  h.listCalls = []
+  h.actorProfiles = []
+  h.attemptCreated = true
+  h.attemptState = 'pending'
+  setupDb()
+  h.pilotAllowed.mockReturnValue(true)
+  h.decrypt.mockImplementation((value: string) => {
+    if (value === 'encrypted-token') return 'meta-access-token'
+    if (value.startsWith('encrypted:')) return value.slice('encrypted:'.length)
+    return value
+  })
+  h.encrypt.mockImplementation((value: string) => `encrypted:${value}`)
+  h.getPermission.mockResolvedValue({
+    status: 'permanent',
+    canStartCall: true,
+    canRequestPermission: true,
+    actions: [],
+  })
+  h.callWhatsApp.mockImplementation(async ({ action }: { action: { action: string } }) => {
+    if (action.action === 'connect') return { action: 'connect', callId: 'wacid.qa-outbound' }
+    return { action: action.action, success: true }
+  })
+})
+
+afterEach(() => vi.restoreAllMocks())
+
+describe('WhatsApp Calling signaling API', () => {
+  it('does not advertise an inbound offer without SDP expiry metadata as claimable', async () => {
+    h.listCalls = [{
+      id: 'session-missing-sdp-expiry',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-missing-sdp-expiry',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'offered',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: null,
+      ended_at: null,
+      duration_seconds: null,
+      created_at: new Date(Date.now() - 6 * 60_000).toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }]
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.calls).toHaveLength(1)
+    expect(data.calls[0].claim_available).toBe(false)
+    expect(data.calls[0].session_available).toBe(false)
+  })
+
+  it('fails closed for an expired inbound offer even when the prune RPC fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    h.listCalls = [{
+      id: 'session-expired-offer',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-expired-offer',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'offered',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: null,
+      ended_at: null,
+      duration_seconds: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_type: 'offer',
+      session_sdp_expires_at: new Date(Date.now() - 1_000).toISOString(),
+    }]
+    h.rpc.mockResolvedValueOnce({ data: null, error: { message: 'prune unavailable' } })
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.calls).toHaveLength(1)
+    expect(data.calls[0].claim_available).toBe(false)
+  })
+
+  it('does not advertise an already accepted inbound call as claimable while awaiting Meta status', async () => {
+    h.listCalls = [{
+      id: 'session-accepted-pending-meta',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-accepted-pending-meta',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: 'another-agent',
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'offered',
+      claimed_by_user_id: 'another-agent',
+      claimed_at: new Date(Date.now() - 120_000).toISOString(),
+      claim_expires_at: new Date(Date.now() - 1_000).toISOString(),
+      started_at: null,
+      ended_at: null,
+      duration_seconds: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }]
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.calls).toHaveLength(1)
+    expect(data.calls[0].claim_available).toBe(false)
+  })
+
+
+  it('rejects a concurrent claim when another agent owns the incoming call', async () => {
+    h.session = {
+      phone_number_id: h.phoneNumberId,
+      customer_phone: '51980942247',
+      call_id: 'wacid.qa-concurrent-claim',
+    }
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_claim') return { data: false, error: null }
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      return { data: true, error: null }
+    })
+
+    const response = await POST(makeRequest({
+      action: 'claim',
+      call_id: 'wacid.qa-concurrent-claim',
+    }))
+    const data = await response.json()
+
+    expect(response.status).toBe(409)
+    expect(data.error).toContain('already claimed')
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_claim', expect.objectContaining({
+      p_account_id: h.accountId,
+      p_phone_number_id: h.phoneNumberId,
+      p_call_id: 'wacid.qa-concurrent-claim',
+      p_actor_user_id: h.userId,
+    }))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when the pilot gate is disabled', async () => {
+    h.pilotAllowed.mockReturnValue(false)
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    expect(response.status).toBe(403)
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+    expect(h.rpc).not.toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.anything())
+  })
+
+  it('requires a current Meta permission before sending the outbound connect', async () => {
+    h.getPermission.mockResolvedValue({
+      status: 'no_permission',
+      canStartCall: false,
+      canRequestPermission: true,
+      actions: [],
+    })
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    expect(response.status).toBe(409)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.anything())
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
+      p_state: 'failed',
+      p_failure_code: 'call_permission_not_current',
+    }))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('marks a permission lookup failure as failed before any Meta connect request', async () => {
+    h.getPermission.mockRejectedValueOnce({ httpStatus: 503 })
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    expect(response.status).toBe(503)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
+      p_state: 'failed',
+      p_failure_code: 'permission_lookup_failed',
+    }))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('does not reuse a failed idempotency key as if it were pending', async () => {
+    h.attemptCreated = false
+    h.attemptState = 'failed'
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    const data = await response.json()
+    expect(response.status).toBe(409)
+    expect(data.code).toBe('call_attempt_failed')
+    expect(h.getPermission).not.toHaveBeenCalled()
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+
+
+  it('fails closed for a contact outside the Keyler Calling pilot allowlist', async () => {
+    h.pilotAllowed.mockReturnValue(false)
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    expect(response.status).toBe(403)
+    expect(h.pilotAllowed).toHaveBeenCalledWith(h.phoneNumberId, '51980942247')
+    expect(h.rpc).not.toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.anything())
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('starts one outbound call and persists the returned call_id and encrypted offer', async () => {
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    const data = await response.json()
+    expect(response.status).toBe(201)
+    expect(h.pilotAllowed).toHaveBeenCalledWith(h.phoneNumberId, '51980942247')
+    expect(data).toMatchObject({
+      success: true,
+      call_id: 'wacid.qa-outbound',
+      session_persisted: true,
+    })
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_begin', expect.objectContaining({
+      p_request_id: h.requestId,
+      p_agent_sdp_encrypted: 'encrypted:v=0\r\n',
+    }))
+    expect(h.callWhatsApp).toHaveBeenCalledWith(expect.objectContaining({
+      phoneNumberId: h.phoneNumberId,
+      action: expect.objectContaining({
+        action: 'connect',
+        to: '51980942247',
+        bizOpaqueCallbackData: h.requestId,
+        session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+      }),
+    }))
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_complete', expect.objectContaining({
+      p_request_id: h.requestId,
+      p_call_id: 'wacid.qa-outbound',
+      p_agent_sdp_encrypted: 'encrypted:v=0\r\n',
+    }))
+  })
+
+  it('reuses a stored inbound SDP answer for accept instead of accepting a new SDP', async () => {
+    h.session = {
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-inbound',
+      direction: 'USER_INITIATED',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      customer_phone: '51980942247',
+      claimed_by_user_id: h.userId,
+      claimed_at: '2026-11-21T05:00:00.123456+00:00',
+      claim_expires_at: new Date(Date.now() + 60000).toISOString(),
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      biz_opaque_callback_data: null,
+      agent_sdp_encrypted: 'encrypted:stored-answer',
+      agent_sdp_type: 'answer',
+      agent_sdp_expires_at: new Date(Date.now() + 60000).toISOString(),
+      state: 'ringing',
+    }
+    const response = await POST(makeRequest({
+      action: 'accept',
+      call_id: 'wacid.qa-inbound',
+      session: { sdp_type: 'answer', sdp: 'different-client-answer' },
+      conversation_id: h.conversationId,
+    }))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data).toMatchObject({ success: true, action: 'accept', agent_attribution_recorded: true })
+    expect(h.callWhatsApp).toHaveBeenCalledWith(expect.objectContaining({
+      action: {
+        action: 'accept',
+        callId: 'wacid.qa-inbound',
+        session: { sdp_type: 'answer', sdp: 'stored-answer' },
+      },
+    }))
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_begin', expect.objectContaining({
+      p_action: 'accept',
+      p_actor_user_id: h.userId,
+    }))
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_finish', expect.objectContaining({
+      p_outcome: 'acknowledged',
+      p_actor_user_id: h.userId,
+    }))
+  })
+
+  it('does not resend a request whose idempotency key is already pending', async () => {
+    h.attemptCreated = false
+    h.attemptState = 'pending'
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    expect(response.status).toBe(409)
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('marks a definite Meta 4xx rejection as failed, not unknown', async () => {
+    h.callWhatsApp.mockRejectedValueOnce({ httpStatus: 400 })
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    expect(response.status).toBe(502)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
+      p_request_id: h.requestId,
+      p_state: 'failed',
+      p_failure_code: 'meta_request_rejected',
+    }))
+  })
+
+  it('keeps a network-uncertain Meta outcome blocked from automatic retry', async () => {
+    h.callWhatsApp.mockRejectedValueOnce(new Error('network timeout'))
+    const response = await POST(makeRequest({
+      action: 'connect',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      request_id: h.requestId,
+      session: { sdp_type: 'offer', sdp: 'v=0\r\n' },
+    }))
+    expect(response.status).toBe(202)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_outbound_attempt_fail', expect.objectContaining({
+      p_request_id: h.requestId,
+      p_state: 'unknown',
+      p_failure_code: 'meta_request_outcome_unknown',
+    }))
+  })
+
+  it('does not send a second accept after Meta has already connected the call', async () => {
+    h.session = {
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-inbound',
+      direction: 'USER_INITIATED',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      customer_phone: '51980942247',
+      claimed_by_user_id: h.userId,
+      claimed_at: '2026-11-21T05:00:00.123456+00:00',
+      claim_expires_at: new Date(Date.now() + 60000).toISOString(),
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      biz_opaque_callback_data: null,
+      agent_sdp_encrypted: 'encrypted:stored-answer',
+      agent_sdp_type: 'answer',
+      agent_sdp_expires_at: new Date(Date.now() + 60000).toISOString(),
+      state: 'connected',
+    }
+    const response = await POST(makeRequest({
+      action: 'accept',
+      call_id: 'wacid.qa-inbound',
+      conversation_id: h.conversationId,
+    }))
+    expect(response.status).toBe(200)
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_finish', expect.objectContaining({
+      p_outcome: 'acknowledged',
+      p_actor_user_id: h.userId,
+    }))
+  })
+
+})
+
+
+describe('WhatsApp Calling API trust boundary', () => {
+  it('does not expose raw agent attribution writes to the browser', async () => {
+    const response = await POST(makeRequest({
+      action: 'agent_action',
+      call_id: 'wacid.qa-inbound',
+      agent_action: 'ended',
+    }))
+    expect(response.status).toBe(400)
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('GET /api/whatsapp/calls — SDP access control', () => {
+  it('does not disclose SDP for a terminal outbound call', async () => {
+    h.session = {
+      id: 'a3000000-0000-4000-8000-000000000007',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-terminal',
+      direction: 'BUSINESS_INITIATED',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: h.userId,
+      accepted_by_user_id: h.userId,
+      rejected_by_user_id: null,
+      ended_by_user_id: h.userId,
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'Synthetic',
+      state: 'terminated',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: null,
+      ended_at: null,
+      duration_seconds: 0,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_encrypted: 'encrypted:terminal-answer',
+      session_sdp_type: 'answer',
+      session_sdp_expires_at: new Date(Date.now() + 60000).toISOString(),
+    }
+    const response = await GET(new Request(
+      'http://localhost/api/whatsapp/calls?call_id=wacid.qa-terminal',
+    ))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.session).toBeNull()
+    expect(data.session_available).toBe(false)
+    expect(data.call.session_sdp_encrypted).toBeUndefined()
+    expect(h.decrypt).not.toHaveBeenCalled()
+  })
+
+  it('allows the outbound initiator to retrieve the remote answer while the call is active', async () => {
+    h.session = {
+      id: 'a3000000-0000-4000-8000-000000000008',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-active-outbound',
+      direction: 'BUSINESS_INITIATED',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: h.userId,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'Synthetic',
+      state: 'connected',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: new Date().toISOString(),
+      ended_at: null,
+      duration_seconds: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      session_sdp_encrypted: 'encrypted:remote-answer',
+      session_sdp_type: 'answer',
+      session_sdp_expires_at: new Date(Date.now() + 60000).toISOString(),
+    }
+    const response = await GET(new Request(
+      'http://localhost/api/whatsapp/calls?call_id=wacid.qa-active-outbound',
+    ))
+    const data = await response.json()
+    expect(response.status).toBe(200)
+    expect(data.session).toEqual({ sdp_type: 'answer', sdp: 'remote-answer' })
+    expect(data.initiated_by_me).toBe(true)
+    expect(data.call.session_sdp_encrypted).toBeUndefined()
+  })
+})
+
+describe('GET /api/whatsapp/calls — call history attribution', () => {
+  it('returns actor display names scoped to the authenticated account', async () => {
+    h.listCalls = [{
+      id: 'session-history-attribution',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-history-attribution',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: 'agent-a',
+      accepted_by_user_id: 'agent-b',
+      rejected_by_user_id: null,
+      ended_by_user_id: 'agent-b',
+      direction: 'BUSINESS_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      state: 'terminated',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      started_at: '2026-11-20T20:00:00.000Z',
+      ended_at: '2026-11-20T20:01:05.000Z',
+      duration_seconds: 65,
+      created_at: '2026-11-20T20:00:00.000Z',
+      updated_at: '2026-11-20T20:01:05.000Z',
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }]
+    h.actorProfiles = [
+      { account_id: h.accountId, user_id: 'agent-a', full_name: 'QA Agent A' },
+      { account_id: h.accountId, user_id: 'agent-b', full_name: 'QA Agent B' },
+      { account_id: 'another-account', user_id: 'agent-a', full_name: 'Other Tenant Agent' },
+    ]
+
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+
+    expect(response.status).toBe(200)
+    expect(h.from).toHaveBeenCalledWith('profiles')
+    expect(data.calls[0]).toMatchObject({
+      initiated_by_name: 'QA Agent A',
+      accepted_by_name: 'QA Agent B',
+      rejected_by_name: null,
+      ended_by_name: 'QA Agent B',
+      duration_seconds: 65,
+      created_at: '2026-11-20T20:00:00.000Z',
+    })
+    expect(JSON.stringify(data.calls[0])).not.toContain('Other Tenant Agent')
+  })
+
+  it('returns only persisted duration for completed calls and preserves Meta duration', async () => {
+    const base = {
+      phone_number_id: h.phoneNumberId,
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      initiated_by_user_id: null,
+      accepted_by_user_id: 'agent-a',
+      rejected_by_user_id: null,
+      ended_by_user_id: 'agent-a',
+      direction: 'USER_INITIATED',
+      customer_key: '51980942247',
+      customer_phone: '51980942247',
+      customer_bsuid: null,
+      customer_parent_bsuid: null,
+      customer_name: 'QA contact',
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      created_at: '2026-11-20T20:00:00.000Z',
+      updated_at: '2026-11-20T20:01:05.000Z',
+      session_sdp_type: null,
+      session_sdp_expires_at: null,
+    }
+    h.listCalls = [
+      { ...base, id: 's-derived', call_id: 'wacid.qa-dur-derived', state: 'terminated', duration_seconds: 65, started_at: '2026-11-20T20:00:00.000Z', ended_at: '2026-11-20T20:01:05.000Z' },
+      { ...base, id: 's-provisional', call_id: 'wacid.qa-dur-provisional', state: 'terminated', duration_seconds: null, started_at: '2026-11-20T20:00:05.000Z', ended_at: '2026-11-20T20:01:05.000Z' },
+      { ...base, id: 's-rejected', call_id: 'wacid.qa-dur-rejected', state: 'rejected', duration_seconds: 99, started_at: '2026-11-20T20:00:00.000Z', ended_at: '2026-11-20T20:01:39.000Z' },
+      { ...base, id: 's-reported', call_id: 'wacid.qa-dur-reported', state: 'terminated', duration_seconds: 42, started_at: '2026-11-20T20:00:00.000Z', ended_at: '2026-11-20T20:09:00.000Z' },
+    ]
+    h.actorProfiles = []
+
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    const data = await response.json()
+
+    expect(response.status).toBe(200)
+    const byId = Object.fromEntries(data.calls.map((c: { call_id: string; duration_seconds: number | null }) => [c.call_id, c.duration_seconds]))
+    expect(byId['wacid.qa-dur-derived']).toBe(65)
+    expect(byId['wacid.qa-dur-provisional']).toBeNull()
+    expect(byId['wacid.qa-dur-rejected']).toBeNull()
+    expect(byId['wacid.qa-dur-reported']).toBe(42)
+  })
+
+})
+
+
+
+describe('CALL-03B2.5 — reserve terminal side effects before Meta', () => {
+  function activeCall(direction: 'USER_INITIATED' | 'BUSINESS_INITIATED' = 'USER_INITIATED') {
+    return {
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-terminal035',
+      direction,
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      customer_phone: '51980942247',
+      claimed_by_user_id: direction === 'USER_INITIATED' ? h.userId : null,
+      claimed_at: '2026-11-21T05:00:00.123456+00:00',
+      claim_expires_at: new Date(Date.now() + 60000).toISOString(),
+      initiated_by_user_id: direction === 'BUSINESS_INITIATED' ? h.userId : null,
+      accepted_by_user_id: direction === 'USER_INITIATED' ? h.userId : null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      last_claimed_by_user_id: h.userId,
+      terminal_status: null,
+      biz_opaque_callback_data: null,
+      agent_sdp_encrypted: null,
+      agent_sdp_type: null,
+      agent_sdp_expires_at: null,
+      state: 'connected',
+    }
+  }
+
+  it('reserves atomically before sending terminate to Meta and audits only after acknowledgement', async () => {
+    h.session = activeCall('BUSINESS_INITIATED')
+    const order: string[] = []
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') { order.push('reserve'); return { data: 'reserved', error: null } }
+      if (name === 'whatsapp_call_terminal_finish') { order.push('finish'); return { data: true, error: null } }
+      if (name === 'whatsapp_call_session_agent_action') { order.push('audit'); return { data: true, error: null } }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    h.callWhatsApp.mockImplementationOnce(async () => {
+      order.push('Meta')
+      return { action: 'terminate', success: true }
+    })
+    const response = await POST(makeRequest({
+      action: 'terminate', call_id: 'wacid.qa-terminal035',
+      account_id: 'attacker-account', actor_user_id: 'attacker-user',
+    }))
+    expect(response.status).toBe(200)
+    expect(order).toEqual(['reserve','Meta','finish','audit'])
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_terminal_reserve', expect.objectContaining({
+      p_account_id: h.accountId, p_actor_user_id: h.userId, p_action: 'terminate',
+      p_context: 'owned_call', p_expected_claimed_at: null,
+    }))
+  })
+
+  it('refuses a stale agent cleanup reservation before Meta, even with a syntactically valid epoch', async () => {
+    h.session = activeCall()
+    h.session.accepted_by_user_id = null
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') return { data: 'denied', error: null }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    const res = await POST(makeRequest({
+      action: 'terminate', call_id: 'wacid.qa-terminal035',
+      termination_context: 'claim_cleanup',
+      claim_epoch: '2026-11-21T05:00:00.123456+00:00',
+    }))
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('terminal_claim_conflict')
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_terminal_reserve', expect.objectContaining({
+      p_context: 'claim_cleanup',
+      p_expected_claimed_at: '2026-11-21T05:00:00.123456+00:00',
+    }))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('never calls Meta if another terminal operation is already reserved', async () => {
+    h.session = activeCall()
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') return { data: 'in_progress', error: null }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    const res = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-terminal035' }))
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('terminal_in_progress')
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('records Meta timeout as unknown and never confirms or retries automatically', async () => {
+    h.session = activeCall()
+    h.callWhatsApp.mockRejectedValueOnce(new Error('Graph network timeout'))
+    const res = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-terminal035' }))
+    expect(res.status).toBe(202)
+    expect(await res.json()).toMatchObject({
+      success: false, code: 'terminal_outcome_unknown', terminal_status: 'unknown',
+    })
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_terminal_finish', expect.objectContaining({
+      p_outcome: 'unknown', p_actor_user_id: h.userId,
+    }))
+    expect(h.rpc).not.toHaveBeenCalledWith('whatsapp_call_session_agent_action', expect.anything())
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('reserves reject before Meta and never calls Meta on an already-terminal session', async () => {
+    h.session = { ...activeCall(), state: 'offered', accepted_by_user_id: null, claimed_by_user_id: null }
+    const rejected = await POST(makeRequest({ action: 'reject', call_id: 'wacid.qa-terminal035' }))
+    expect(rejected.status).toBe(200)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_terminal_reserve', expect.objectContaining({
+      p_action: 'reject', p_context: 'reject',
+    }))
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') return { data: 'already_terminal', error: null }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    const already = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-terminal035' }))
+    expect(already.status).toBe(200)
+    expect((await already.json()).already_terminal).toBe(true)
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails closed on SQL reservation errors before any Meta action', async () => {
+    h.session = activeCall()
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') return { data: null, error: { code: 'XX000' } }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    const response = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-terminal035' }))
+    expect(response.status).toBe(503)
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('CALL-03B2.6 — cross-operation fencing around Meta', () => {
+  function inbound(state: 'ringing' | 'connected' = 'ringing') {
+    return {
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-signal-fencing',
+      direction: 'USER_INITIATED',
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      customer_phone: '51980942247',
+      claimed_by_user_id: h.userId,
+      claimed_at: '2026-11-21T05:00:00.123456+00:00',
+      claim_expires_at: new Date(Date.now() + 60_000).toISOString(),
+      initiated_by_user_id: null,
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      last_claimed_by_user_id: h.userId,
+      terminal_status: null,
+      signal_status: null,
+      signal_action: null,
+      biz_opaque_callback_data: null,
+      agent_sdp_encrypted: 'encrypted:v=0\r\n',
+      agent_sdp_type: 'answer',
+      agent_sdp_expires_at: new Date(Date.now() + 60_000).toISOString(),
+      state,
+    }
+  }
+
+  it('holds terminate behind an in-flight pre_accept Meta call', async () => {
+    h.session = inbound()
+    let finishMeta: ((result: { action: 'pre_accept'; success: true }) => void) | undefined
+    const metaPending = new Promise<{ action: 'pre_accept'; success: true }>((resolve) => { finishMeta = resolve })
+    const order: string[] = []
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_signal_begin') { order.push('signal_reserved'); return { data: 'reserved', error: null } }
+      if (name === 'whatsapp_call_terminal_reserve') { order.push('terminal_denied'); return { data: 'in_progress', error: null } }
+      if (name === 'whatsapp_call_signal_finish') { order.push('signal_ack'); return { data: 'acknowledged', error: null } }
+      return { data: true, error: null }
+    })
+    h.callWhatsApp.mockImplementation(async ({action}: {action: {action:string}}) => {
+      order.push(action.action)
+      if (action.action === 'pre_accept') return metaPending
+      throw new Error('terminal must never reach Meta')
+    })
+    const accepted = POST(makeRequest({
+      action: 'pre_accept', call_id: 'wacid.qa-signal-fencing',
+      session: { sdp_type: 'answer', sdp: 'v=0\r\n' },
+    }))
+    await vi.waitFor(() => expect(order).toContain('pre_accept'))
+    const termination = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-signal-fencing' }))
+    expect(termination.status).toBe(409)
+    expect((await termination.json()).code).toBe('terminal_in_progress')
+    expect(order).toEqual(['signal_reserved','pre_accept','terminal_denied'])
+    finishMeta?.({ action: 'pre_accept', success: true })
+    expect((await accepted).status).toBe(200)
+    expect(order).toEqual(['signal_reserved','pre_accept','terminal_denied','signal_ack'])
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses an accept whose terminal request already owns the row', async () => {
+    h.session = inbound()
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_signal_begin') return { data: 'terminal_in_progress', error: null }
+      return { data: true, error: null }
+    })
+    const res = await POST(makeRequest({ action: 'accept', call_id: 'wacid.qa-signal-fencing' }))
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('terminal_in_progress')
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+    expect(h.rpc).not.toHaveBeenCalledWith('whatsapp_call_signal_finish', expect.anything())
+  })
+
+  it('holds terminate behind an in-flight accept and writes attribution at finish', async () => {
+    h.session = inbound()
+    let finishMeta: ((result: { action: 'accept'; success: true }) => void) | undefined
+    const metaPending = new Promise<{ action: 'accept'; success: true }>((resolve) => { finishMeta = resolve })
+    const order: string[] = []
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_signal_begin') { order.push('signal_reserved'); return { data: 'reserved', error: null } }
+      if (name === 'whatsapp_call_terminal_reserve') { order.push('terminal_denied'); return { data: 'in_progress', error: null } }
+      if (name === 'whatsapp_call_signal_finish') { order.push('signal_ack'); return { data: 'acknowledged', error: null } }
+      throw new Error('unexpected RPC: '+name)
+    })
+    h.callWhatsApp.mockImplementation(async ({action}: {action: {action:string}}) => {
+      order.push(action.action)
+      if (action.action === 'accept') return metaPending
+      throw new Error('terminal must never reach Meta')
+    })
+    const accepted = POST(makeRequest({ action: 'accept', call_id: 'wacid.qa-signal-fencing' }))
+    await vi.waitFor(() => expect(order).toContain('accept'))
+    const terminated = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-signal-fencing' }))
+    expect(terminated.status).toBe(409)
+    finishMeta?.({ action: 'accept', success: true })
+    expect((await accepted).status).toBe(200)
+    expect(order).toEqual(['signal_reserved','accept','terminal_denied','signal_ack'])
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_finish', expect.objectContaining({
+      p_outcome:'acknowledged', p_conversation_id:null,
+    }))
+  })
+
+  it('preserves unknown Meta pre_accept and never automatically retries', async () => {
+    h.session = inbound()
+    const statuses = ['reserved','unknown']
+    h.rpc.mockImplementation(async (name:string) => {
+      if (name === 'whatsapp_call_sdp_prune') return {data:0,error:null}
+      if (name === 'whatsapp_call_signal_begin') return {data:statuses.shift() ?? 'unknown',error:null}
+      if (name === 'whatsapp_call_signal_finish') return {data:'unknown',error:null}
+      return {data:true,error:null}
+    })
+    h.callWhatsApp.mockRejectedValueOnce(new Error('Graph timeout'))
+    vi.spyOn(console,'error').mockImplementation(() => {})
+    const request = {action:'pre_accept', call_id:'wacid.qa-signal-fencing',session:{sdp_type:'answer',sdp:'v=0\r\n'}}
+    const first = await POST(makeRequest(request))
+    expect(first.status).toBe(202)
+    expect(await first.json()).toMatchObject({success:false,signal_status:'unknown'})
+    const repeated = await POST(makeRequest(request))
+    expect(repeated.status).toBe(409)
+    expect((await repeated.json()).code).toBe('signal_outcome_unknown')
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('reconciles already connected accept without a second Meta POST', async () => {
+    h.session = inbound('connected')
+    const resp = await POST(makeRequest({action:'accept',call_id:'wacid.qa-signal-fencing'}))
+    expect(resp.status).toBe(200)
+    expect(await resp.json()).toMatchObject({success:true,already_accepted:true,agent_attribution_recorded:true})
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_finish',expect.objectContaining({p_outcome:'acknowledged'}))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+})
+
+
+describe('CALL-03B2.6 — signaling visibility in GET', () => {
+  it('does not advertise a reserved signal as available for another claim', async () => {
+    h.listCalls = [{
+      id: 'signal-reserved-session',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-signal-reserved',
+      direction: 'USER_INITIATED',
+      customer_phone: '51980942247',
+      state: 'ringing',
+      terminal_status: null,
+      signal_status: 'reserved',
+      accepted_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      initiated_by_user_id: null,
+      claimed_by_user_id: null,
+      claimed_at: null,
+      claim_expires_at: null,
+      session_sdp_type: 'offer',
+      session_sdp_expires_at: new Date(Date.now() + 50000).toISOString(),
+    }]
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls'))
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.calls[0].claim_available).toBe(false)
+  })
+
+  it('does not return decrypted SDP when the Meta signaling outcome is unknown', async () => {
+    h.session = {
+      id: 'signal-unknown-session',
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-signal-unknown',
+      direction: 'USER_INITIATED',
+      customer_phone: '51980942247',
+      state: 'ringing',
+      terminal_status: null,
+      signal_status: 'unknown',
+      accepted_by_user_id: null,
+      initiated_by_user_id: null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      claimed_by_user_id: h.userId,
+      claim_expires_at: new Date(Date.now() + 50000).toISOString(),
+      session_sdp_encrypted: 'encrypted:v=0\r\n',
+      session_sdp_type: 'offer',
+      session_sdp_expires_at: new Date(Date.now() + 50000).toISOString(),
+    }
+    const response = await GET(new Request('http://localhost/api/whatsapp/calls?call_id=wacid.qa-signal-unknown'))
+    expect(response.status).toBe(200)
+    const body = await response.json()
+    expect(body.session).toBeNull()
+    expect(body.session_available).toBe(false)
+    expect(h.decrypt).not.toHaveBeenCalled()
+  })
+})
