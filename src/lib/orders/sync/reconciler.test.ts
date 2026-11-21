@@ -8,8 +8,21 @@ import { describe, expect, it } from 'vitest'
 type Snapshot = Record<string, unknown>
 
 const script = resolve(process.cwd(), 'scripts/qa/order-sync/reconcile.cjs')
+const allCoverage = {
+  customer: true,
+  product: true,
+  total: true,
+  payments: true,
+  balance: true,
+  voucher: true,
+  packing: true,
+  shalom: true,
+  tracking: true,
+  messages: true,
+}
 const base = (id: string, over: Snapshot = {}): Snapshot => ({
   canonical_order_id: id,
+  coverage: allCoverage,
   customer: { has_name: true, has_phone: true, has_dni: false, has_destination: true },
   product_key: 'producto',
   total: 100,
@@ -36,8 +49,8 @@ function run(w: Snapshot[], i: Snapshot[]) {
   })
   return JSON.parse(readFileSync(out, 'utf8')) as {
     counts: Record<string, number>
-    orders: Array<{ canonical_order_id: string | null; status: string; domains: Record<string, string> }>
-    duplicate_vouchers: { inkaclick: { groups: number } }
+    orders: Array<{ canonical_order_id: string | null; status: string; domains: Record<string, string>; coverage_complete: boolean }>
+    duplicate_vouchers: { inkaclick: { groups: number; covered_orders: number } }
   }
 }
 
@@ -46,9 +59,19 @@ describe('SYNC-00/01 read-only reconciler', () => {
     expect(run([base(A)], [base(A, { source: 'wacrm' })]).orders[0].status).toBe('MATCH')
   })
 
-  it('WACRM_AHEAD: a voucher exists only in WACRM', () => {
+  it('WACRM_AHEAD: a voucher exists only in WACRM when both snapshots cover vouchers', () => {
     const r = run([base(A, { vouchers: [{ shalom_number: '10', shalom_code: 'AA' }] })], [base(A, { source: 'wacrm' })])
     expect(r.orders[0]).toMatchObject({ status: 'WACRM_AHEAD', domains: { voucher: 'WACRM_AHEAD' } })
+  })
+
+  it('UNKNOWN: missing InkaClick voucher coverage is not misreported as an empty voucher state', () => {
+    const coreCoverage = { ...allCoverage, voucher: false, shalom: false, tracking: false, messages: false }
+    const r = run(
+      [base(A, { vouchers: [{ shalom_number: '10', shalom_code: 'AA' }] })],
+      [base(A, { source: 'wacrm', coverage: coreCoverage })],
+    )
+    expect(r.orders[0]).toMatchObject({ status: 'MATCH', coverage_complete: false, domains: { voucher: 'UNKNOWN', shalom: 'UNKNOWN', tracking: 'UNKNOWN', messages: 'UNKNOWN' } })
+    expect(r.counts.INCOMPLETE_COVERAGE).toBe(1)
   })
 
   it('INKACLICK_AHEAD: legacy initial payment exists only in InkaClick', () => {
@@ -73,10 +96,15 @@ describe('SYNC-00/01 read-only reconciler', () => {
     expect(r.counts.canonical_orders).toBe(0)
   })
 
-  it('detects duplicate voucher rows without mutating or collapsing source data', () => {
+  it('detects duplicate voucher rows only when voucher coverage is real', () => {
     const voucher = { shalom_number: '104873189', shalom_code: 'D3K9' }
-    const r = run([base(A)], [base(A, { source: 'wacrm', vouchers: [voucher, voucher] })])
-    expect(r.duplicate_vouchers.inkaclick.groups).toBe(1)
+    const covered = run([base(A)], [base(A, { source: 'wacrm', vouchers: [voucher, voucher] })])
+    expect(covered.duplicate_vouchers.inkaclick.groups).toBe(1)
+
+    const coreCoverage = { ...allCoverage, voucher: false }
+    const unknown = run([base(A)], [base(A, { source: 'wacrm', coverage: coreCoverage, vouchers: [voucher, voucher] })])
+    expect(unknown.duplicate_vouchers.inkaclick.groups).toBe(0)
+    expect(unknown.duplicate_vouchers.inkaclick.covered_orders).toBe(0)
   })
 
   it('reports payment divergence per domain', () => {

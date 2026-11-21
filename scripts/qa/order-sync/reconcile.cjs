@@ -5,6 +5,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const STATUSES = new Set(['MATCH', 'WACRM_AHEAD', 'INKACLICK_AHEAD', 'CONFLICT', 'MISSING_IN_WACRM', 'MISSING_IN_INKACLICK', 'LEGACY'])
+const DOMAIN_STATES = ['MATCH', 'WACRM_AHEAD', 'INKACLICK_AHEAD', 'CONFLICT', 'UNKNOWN']
+const DOMAINS = ['customer', 'product', 'total', 'payments', 'balance', 'voucher', 'packing', 'shalom', 'tracking', 'messages']
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
 function die(message) {
@@ -26,6 +28,10 @@ function normalizeText(value) {
   return typeof value === 'string' && value.trim() ? value.trim().toLowerCase() : null
 }
 
+function covered(order, domain) {
+  return order?.coverage?.[domain] !== false
+}
+
 function voucherKeys(order) {
   const rows = Array.isArray(order.vouchers) ? order.vouchers : []
   return rows
@@ -39,7 +45,7 @@ function unique(values) {
 
 function messageSet(order) {
   const m = order.messages && typeof order.messages === 'object' ? order.messages : {}
-  return ['packaging', 'shipment_voucher', 'arrival', 'reminder', 'balance'].filter((k) => bool(m[k]))
+  return ['packaging', 'shipment_voucher', 'arrival', 'reminder'].filter((k) => bool(m[k]))
 }
 
 function facts(order) {
@@ -111,33 +117,40 @@ function comparePaid(wPaid, iPaid) {
   return 'CONFLICT'
 }
 
+function compareCovered(w, i, domain, fn) {
+  if (!covered(w, domain) || !covered(i, domain)) return 'UNKNOWN'
+  return fn()
+}
+
 function classify(w, i) {
-  if (!w && i?.source !== 'wacrm') return { status: 'LEGACY', domains: {} }
-  if (!w) return { status: 'MISSING_IN_WACRM', domains: {} }
-  if (!i) return { status: 'MISSING_IN_INKACLICK', domains: {} }
+  if (!w && i?.source !== 'wacrm') return { status: 'LEGACY', domains: {}, coverage_complete: false }
+  if (!w) return { status: 'MISSING_IN_WACRM', domains: {}, coverage_complete: false }
+  if (!i) return { status: 'MISSING_IN_INKACLICK', domains: {}, coverage_complete: false }
 
   const wf = facts(w)
   const inf = facts(i)
   const domains = {
-    customer: compareCustomer(wf.customer, inf.customer),
-    product: compareDomain(wf.product, inf.product),
-    total: compareDomain(wf.total, inf.total),
-    payments: comparePaid(wf.paid, inf.paid),
-    balance: compareDomain(wf.balance, inf.balance),
-    voucher: compareSet(wf.vouchers, inf.vouchers),
-    packing: compareDomain(wf.packing, inf.packing),
-    shalom: compareDomain(wf.shipment?.key ?? null, inf.shipment?.key ?? null),
-    tracking: compareDomain(wf.shipment?.status ?? null, inf.shipment?.status ?? null),
-    messages: compareSet(wf.messages, inf.messages),
+    customer: compareCovered(w, i, 'customer', () => compareCustomer(wf.customer, inf.customer)),
+    product: compareCovered(w, i, 'product', () => compareDomain(wf.product, inf.product)),
+    total: compareCovered(w, i, 'total', () => compareDomain(wf.total, inf.total)),
+    payments: compareCovered(w, i, 'payments', () => comparePaid(wf.paid, inf.paid)),
+    balance: compareCovered(w, i, 'balance', () => compareDomain(wf.balance, inf.balance)),
+    voucher: compareCovered(w, i, 'voucher', () => compareSet(wf.vouchers, inf.vouchers)),
+    packing: compareCovered(w, i, 'packing', () => compareDomain(wf.packing, inf.packing)),
+    shalom: compareCovered(w, i, 'shalom', () => compareDomain(wf.shipment?.key ?? null, inf.shipment?.key ?? null)),
+    tracking: compareCovered(w, i, 'tracking', () => compareDomain(wf.shipment?.status ?? null, inf.shipment?.status ?? null)),
+    messages: compareCovered(w, i, 'messages', () => compareSet(wf.messages, inf.messages)),
   }
-  if (domains.total === 'MATCH' && domains.payments === 'INKACLICK_AHEAD' && !equal(wf.balance, inf.balance)) domains.balance = 'INKACLICK_AHEAD'
-  if (domains.total === 'MATCH' && domains.payments === 'WACRM_AHEAD' && !equal(wf.balance, inf.balance)) domains.balance = 'WACRM_AHEAD'
-  const states = new Set(Object.values(domains))
+
+  if (domains.total === 'MATCH' && domains.payments === 'INKACLICK_AHEAD' && domains.balance !== 'UNKNOWN' && !equal(wf.balance, inf.balance)) domains.balance = 'INKACLICK_AHEAD'
+  if (domains.total === 'MATCH' && domains.payments === 'WACRM_AHEAD' && domains.balance !== 'UNKNOWN' && !equal(wf.balance, inf.balance)) domains.balance = 'WACRM_AHEAD'
+
+  const states = new Set(Object.values(domains).filter((x) => x !== 'UNKNOWN'))
   let status = 'MATCH'
   if (states.has('CONFLICT') || (states.has('WACRM_AHEAD') && states.has('INKACLICK_AHEAD'))) status = 'CONFLICT'
   else if (states.has('WACRM_AHEAD')) status = 'WACRM_AHEAD'
   else if (states.has('INKACLICK_AHEAD')) status = 'INKACLICK_AHEAD'
-  return { status, domains }
+  return { status, domains, coverage_complete: !Object.values(domains).includes('UNKNOWN') }
 }
 
 function indexByCanonical(rows, side) {
@@ -164,7 +177,10 @@ function indexByCanonical(rows, side) {
 function countDuplicateVouchers(rows) {
   let groups = 0
   let excessRows = 0
+  let coveredOrders = 0
   for (const row of rows) {
+    if (!covered(row, 'voucher')) continue
+    coveredOrders += 1
     const keys = voucherKeys(row)
     const counts = new Map()
     for (const k of keys) counts.set(k, (counts.get(k) ?? 0) + 1)
@@ -175,7 +191,7 @@ function countDuplicateVouchers(rows) {
       }
     }
   }
-  return { groups, excess_rows: excessRows }
+  return { groups, excess_rows: excessRows, covered_orders: coveredOrders }
 }
 
 function reconcile(wacrmRows, inkaclickRows) {
@@ -193,30 +209,30 @@ function reconcile(wacrmRows, inkaclickRows) {
       legacy_inkaclick_id: ir?.legacy_inkaclick_id ?? null,
       status: result.status,
       domains: result.domains,
+      coverage_complete: result.coverage_complete,
       held_not_delivered: wr?.delivery_status === 'held',
     })
   }
 
   for (const row of inkaclickRows) {
     if (!row.canonical_order_id && row.source !== 'wacrm') {
-      orders.push({ canonical_order_id: null, legacy_inkaclick_id: row.legacy_inkaclick_id ?? null, status: 'LEGACY', domains: {}, held_not_delivered: false })
+      orders.push({ canonical_order_id: null, legacy_inkaclick_id: row.legacy_inkaclick_id ?? null, status: 'LEGACY', domains: {}, coverage_complete: false, held_not_delivered: false })
     }
   }
 
   const summary = Object.fromEntries([...STATUSES].map((s) => [s, 0]))
-  const domainSummary = {}
+  const domainSummary = Object.fromEntries(DOMAINS.map((d) => [d, Object.fromEntries(DOMAIN_STATES.map((s) => [s, 0]))]))
   let held = 0
+  let incomplete = 0
   for (const o of orders) {
     summary[o.status] = (summary[o.status] ?? 0) + 1
     if (o.held_not_delivered) held += 1
-    for (const [domain, state] of Object.entries(o.domains)) {
-      domainSummary[domain] ??= { MATCH: 0, WACRM_AHEAD: 0, INKACLICK_AHEAD: 0, CONFLICT: 0 }
-      domainSummary[domain][state] += 1
-    }
+    if (!o.coverage_complete && o.canonical_order_id) incomplete += 1
+    for (const [domain, state] of Object.entries(o.domains)) domainSummary[domain][state] += 1
   }
 
   return {
-    schema_version: 1,
+    schema_version: 2,
     generated_at: new Date().toISOString(),
     read_only: true,
     canonical_id: 'wacrm.order_confirmations.id',
@@ -225,6 +241,7 @@ function reconcile(wacrmRows, inkaclickRows) {
       inkaclick_snapshot: inkaclickRows.length,
       canonical_orders: ids.length,
       ...summary,
+      INCOMPLETE_COVERAGE: incomplete,
       HELD_NOT_DELIVERED: held,
       INVALID_WACRM_IDS: w.invalid.length,
       INVALID_INKACLICK_IDS: i.invalid.length,
@@ -280,7 +297,7 @@ function human(report) {
     `canonical orders: ${c.canonical_orders}`,
     `MATCH=${c.MATCH} WACRM_AHEAD=${c.WACRM_AHEAD} INKACLICK_AHEAD=${c.INKACLICK_AHEAD} CONFLICT=${c.CONFLICT}`,
     `MISSING_IN_WACRM=${c.MISSING_IN_WACRM} MISSING_IN_INKACLICK=${c.MISSING_IN_INKACLICK} LEGACY=${c.LEGACY}`,
-    `HELD_NOT_DELIVERED=${c.HELD_NOT_DELIVERED}`,
+    `INCOMPLETE_COVERAGE=${c.INCOMPLETE_COVERAGE} HELD_NOT_DELIVERED=${c.HELD_NOT_DELIVERED}`,
     `duplicate voucher groups: WACRM=${report.duplicate_vouchers.wacrm.groups} InkaClick=${report.duplicate_vouchers.inkaclick.groups}`,
   ].join('\n')
 }
