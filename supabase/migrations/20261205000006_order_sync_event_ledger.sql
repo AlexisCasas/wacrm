@@ -117,7 +117,7 @@ BEGIN
   ) VALUES (
     p_canonical_order, p_origin_system, p_origin_event, p_event_type, p_event_version, btrim(p_idempotency_key), p_occurred_at, p_payload
   )
-  ON CONFLICT (origin_system, origin_event_id) DO NOTHING
+  ON CONFLICT DO NOTHING
   RETURNING * INTO v_row;
 
   IF v_row.id IS NOT NULL THEN
