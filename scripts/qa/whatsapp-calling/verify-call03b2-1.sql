@@ -387,7 +387,7 @@ BEGIN
       'connected',NULL,NULL,NULL,NULL,NULL,NULL
     );
     UPDATE public.whatsapp_call_sessions
-    SET started_at='2026-11-20T20:00:05Z'::timestamptz
+    SET started_at=to_timestamp(1795120005)
     WHERE phone_number_id=v_phone_number_id
       AND call_id='wacid.qa-call0321-time-order';
 
@@ -395,16 +395,16 @@ BEGIN
       v_account_a,v_phone_number_id,'wacid.qa-call0321-time-order',repeat('8',64),
       'terminate',1795120065,NULL,'51980942247','51980942247',NULL,NULL,NULL,
       'terminated',NULL,NULL,NULL,
-      '2026-11-20T20:00:00Z'::timestamptz,
-      '2026-11-20T20:01:05Z'::timestamptz,65
+      to_timestamp(1795120000),
+      to_timestamp(1795120065),65
     );
     IF NOT EXISTS (
       SELECT 1 FROM public.whatsapp_call_sessions
       WHERE phone_number_id=v_phone_number_id
         AND call_id='wacid.qa-call0321-time-order'
         AND state='terminated'
-        AND started_at='2026-11-20T20:00:00Z'::timestamptz
-        AND ended_at='2026-11-20T20:01:05Z'::timestamptz
+        AND started_at=to_timestamp(1795120000)
+        AND ended_at=to_timestamp(1795120065)
         AND duration_seconds=65
     ) THEN
       RAISE EXCEPTION 'CALL0321_TERMINATE_TIMING_NOT_AUTHORITATIVE';
@@ -422,8 +422,8 @@ BEGIN
       WHERE phone_number_id=v_phone_number_id
         AND call_id='wacid.qa-call0321-time-order'
         AND state='terminated'
-        AND started_at='2026-11-20T20:00:00Z'::timestamptz
-        AND ended_at='2026-11-20T20:01:05Z'::timestamptz
+        AND started_at=to_timestamp(1795120000)
+        AND ended_at=to_timestamp(1795120065)
         AND duration_seconds=65
     ) THEN
       RAISE EXCEPTION 'CALL0321_OUT_OF_ORDER_STATUS_CHANGED_TERMINATE_TIMING';
@@ -439,8 +439,8 @@ BEGIN
       v_account_a,v_phone_number_id,'wacid.qa-call0321-stale-terminate',repeat('c',63)||'2',
       'terminate',1795120090,NULL,'51980942247','51980942247',NULL,NULL,NULL,
       'terminated',NULL,NULL,NULL,
-      '2026-11-20T20:01:00Z'::timestamptz,
-      '2026-11-20T20:01:30Z'::timestamptz,30
+      to_timestamp(1795120060),
+      to_timestamp(1795120090),30
     );
     IF NOT EXISTS (
       SELECT 1 FROM public.whatsapp_call_sessions
