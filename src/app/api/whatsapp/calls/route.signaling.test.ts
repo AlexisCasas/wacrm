@@ -114,6 +114,8 @@ function setupDb() {
 
   h.rpc.mockImplementation(async (name: string, args: Record<string, unknown>) => {
     if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+    if (name === 'whatsapp_call_signal_begin') return { data: 'reserved', error: null }
+    if (name === 'whatsapp_call_signal_finish') return { data: 'acknowledged', error: null }
     if (name === 'whatsapp_call_terminal_reserve') return { data: 'reserved', error: null }
     if (name === 'whatsapp_call_terminal_finish') return { data: true, error: null }
     if (name === 'whatsapp_call_outbound_attempt_begin') {
@@ -441,6 +443,7 @@ describe('WhatsApp Calling signaling API', () => {
       conversation_id: h.conversationId,
       customer_phone: '51980942247',
       claimed_by_user_id: h.userId,
+      claimed_at: '2026-11-21T05:00:00.123456+00:00',
       claim_expires_at: new Date(Date.now() + 60000).toISOString(),
       initiated_by_user_id: null,
       accepted_by_user_id: null,
@@ -468,8 +471,12 @@ describe('WhatsApp Calling signaling API', () => {
         session: { sdp_type: 'answer', sdp: 'stored-answer' },
       },
     }))
-    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_session_agent_action', expect.objectContaining({
-      p_action: 'accepted',
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_begin', expect.objectContaining({
+      p_action: 'accept',
+      p_actor_user_id: h.userId,
+    }))
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_finish', expect.objectContaining({
+      p_outcome: 'acknowledged',
       p_actor_user_id: h.userId,
     }))
   })
@@ -531,6 +538,7 @@ describe('WhatsApp Calling signaling API', () => {
       conversation_id: h.conversationId,
       customer_phone: '51980942247',
       claimed_by_user_id: h.userId,
+      claimed_at: '2026-11-21T05:00:00.123456+00:00',
       claim_expires_at: new Date(Date.now() + 60000).toISOString(),
       initiated_by_user_id: null,
       accepted_by_user_id: null,
@@ -549,8 +557,8 @@ describe('WhatsApp Calling signaling API', () => {
     }))
     expect(response.status).toBe(200)
     expect(h.callWhatsApp).not.toHaveBeenCalled()
-    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_session_agent_action', expect.objectContaining({
-      p_action: 'accepted',
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_signal_finish', expect.objectContaining({
+      p_outcome: 'acknowledged',
       p_actor_user_id: h.userId,
     }))
   })
