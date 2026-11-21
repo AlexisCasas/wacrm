@@ -241,15 +241,7 @@ BEGIN
       WHEN EXCLUDED.session_sdp_encrypted IS NOT NULL THEN EXCLUDED.session_sdp_expires_at
       ELSE whatsapp_call_sessions.session_sdp_expires_at
     END,
-    -- terminate.start_time is authoritative over any provisional value,
-    -- but only when this terminate event is not older than the last Meta event.
-    started_at=CASE
-      WHEN EXCLUDED.last_meta_event='terminate'
-        AND EXCLUDED.started_at IS NOT NULL
-        AND EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
-      THEN EXCLUDED.started_at
-      ELSE whatsapp_call_sessions.started_at
-    END,
+    started_at=COALESCE(whatsapp_call_sessions.started_at,EXCLUDED.started_at),
     ended_at=CASE
       WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
       THEN COALESCE(EXCLUDED.ended_at,whatsapp_call_sessions.ended_at)
