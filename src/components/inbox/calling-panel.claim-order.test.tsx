@@ -225,6 +225,27 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     Object.defineProperty(window, "isSecureContext", { configurable: true, value: originalSecureContext });
   });
 
+  it("stops local media and does not send accept when pre_accept returns an uncertain 202", async () => {
+    const harness = installHarness({
+      post: {
+        pre_accept: () => json({
+          success: false,
+          action: "pre_accept",
+          signal_status: "unknown",
+          error: "Meta did not confirm signaling; do not retry",
+        }, 202),
+        terminate: () => conflict("terminal_in_progress"),
+      },
+    });
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+    fireEvent.click(await acceptButton());
+    await waitFor(() => expect(harness.count("pre_accept")).toBe(1));
+    await waitFor(() => expect(harness.count("terminate")).toBe(1));
+    expect(harness.count("accept")).toBe(0);
+    expect(mediaTrack.stop).toHaveBeenCalled();
+    expect(harness.gumCount()).toBe(1);
+  });
+
   it("claims first, asks for the microphone once, renews after the dialog and again before accept", async () => {
     const harness = installHarness();
     render(<CallingPanel conversation={conversation} contact={contact} />);
