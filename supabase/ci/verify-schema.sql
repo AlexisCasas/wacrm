@@ -329,6 +329,24 @@ BEGIN
     RAISE EXCEPTION 'the 7 selection functions must exist, be SECURITY INVOKER and be executable by service_role only — migration 076';
   END IF;
 
+  -- CALL-03B2.1: inbound call association and explicit ambiguity diagnostics.
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='whatsapp_call_sessions'
+      AND column_name='association_error_code' AND data_type='text'
+  ) THEN
+    RAISE EXCEPTION 'whatsapp_call_sessions.association_error_code is missing — CALL-03B2.1';
+  END IF;
+  IF to_regprocedure('public.whatsapp_call_resolve_inbound_association(uuid,text,text,text)') IS NULL THEN
+    RAISE EXCEPTION 'whatsapp_call_resolve_inbound_association(...) is missing — CALL-03B2.1';
+  END IF;
+  IF has_function_privilege('anon','public.whatsapp_call_resolve_inbound_association(uuid,text,text,text)','EXECUTE')
+    OR has_function_privilege('authenticated','public.whatsapp_call_resolve_inbound_association(uuid,text,text,text)','EXECUTE')
+    OR NOT has_function_privilege('service_role','public.whatsapp_call_resolve_inbound_association(uuid,text,text,text)','EXECUTE')
+  THEN
+    RAISE EXCEPTION 'whatsapp_call_resolve_inbound_association(...) must be service_role only — CALL-03B2.1';
+  END IF;
+
   RAISE NOTICE 'schema verification passed';
 END
 $$;

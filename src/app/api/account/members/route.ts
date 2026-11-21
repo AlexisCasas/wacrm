@@ -34,8 +34,8 @@ export async function GET() {
   try {
     const ctx = await getCurrentAccount();
 
-    // PR-01 logistics: the account flag comes from the session's account (never from the browser). Fail-closed: any error / missing column
-    // = OFF, in which case the query below is exactly the legacy one.
+    // The account flag is still reported (the UI shows whether logistics is active), but each member's operational area is ALWAYS returned so an
+    // owner/admin can assign areas BEFORE logistics_mvp_enabled is activated. Fail-closed on the flag read: any error = OFF.
     const { data: flagRow } = await supabaseAdmin()
       .from("order_integration_settings")
       .select("logistics_mvp_enabled")
@@ -47,11 +47,7 @@ export async function GET() {
     // the caller's, so this query is naturally account-scoped.
     const { data, error } = await ctx.supabase
       .from("profiles")
-      .select(
-        operationalRolesEnabled
-          ? "user_id, full_name, email, avatar_url, account_role, operational_role, created_at"
-          : "user_id, full_name, email, avatar_url, account_role, created_at",
-      )
+      .select("user_id, full_name, email, avatar_url, account_role, operational_role, created_at")
       .eq("account_id", ctx.accountId)
       .order("created_at", { ascending: true });
 
@@ -77,7 +73,7 @@ export async function GET() {
           email: canSeeEmails ? row.email : null,
           avatar_url: row.avatar_url,
           role: row.account_role,
-          operational_role: operationalRolesEnabled && isOperationalRole(row.operational_role) ? row.operational_role : null,
+          operational_role: isOperationalRole(row.operational_role) ? row.operational_role : null,
           joined_at: row.created_at,
         },
       ];

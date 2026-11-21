@@ -68,7 +68,7 @@ import { RequireRole } from '@/components/auth/require-role';
 import { useAuth } from '@/hooks/use-auth';
 import { usePresence } from '@/hooks/use-presence';
 import type { AccountRole } from '@/lib/auth/roles';
-import type { OperationalRole } from '@/lib/auth/operational-role';
+import { assignableOperationalRoles, type OperationalRole } from '@/lib/auth/operational-role';
 import { presenceLabel, summarize } from '@/lib/presence';
 import {
   PRESENCE_DOT_CLASS,
@@ -128,7 +128,6 @@ function fmtExpiresIn(iso: string, t: (key: string, values?: Record<string, stri
 
 // Sentinel: the Select cannot hold a null item.
 const OPERATIONAL_NONE = '__none__';
-const OPERATIONAL_OPTIONS: OperationalRole[] = ['commercial', 'logistics', 'supervisor'];
 
 export function MembersTab() {
   const t = useTranslations('Settings.members');
@@ -138,8 +137,6 @@ export function MembersTab() {
   const { getPresence, getRow, now } = usePresence();
 
   const [members, setMembers] = useState<Member[]>([]);
-  // PR-01 logistics: false (the default, and what the API says for every account without logistics_mvp_enabled) renders the tab exactly as before.
-  const [operationalRolesEnabled, setOperationalRolesEnabled] = useState(false);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -148,6 +145,10 @@ export function MembersTab() {
   const [pendingMemberAction, setPendingMemberAction] = useState<string | null>(
     null,
   );
+
+  // Operational-area administration (mirrors the RPC, which is the real authority): owner/admin assign any area; an operational supervisor
+  // that is not owner/admin assigns commercial/logistics/none to non-supervisors only. The caller's own area comes from the roster.
+  const callerOperationalRole = members.find((m) => m.user_id === user?.id)?.operational_role ?? null;
 
   async function handleOperationalRoleChange(member: Member, next: OperationalRole | null) {
     if ((member.operational_role ?? null) === next) return;
@@ -164,6 +165,8 @@ export function MembersTab() {
         const payload = await res.json().catch(() => ({}));
         setMembers((prev) => prev.map((m) => (m.user_id === member.user_id ? { ...m, operational_role: previous } : m)));
         toast.error(payload.error || 'Failed to update operational area');
+      } else {
+        toast.success(t('operationalAreaUpdated'));
       }
     } catch (err) {
       console.error('[MembersTab] operational role error:', err);
@@ -188,9 +191,8 @@ export function MembersTab() {
         toast.error(payload.error || 'Failed to load members');
         return;
       }
-      const mdata = (await mres.json()) as { members: Member[]; operational_roles_enabled?: boolean };
+      const mdata = (await mres.json()) as { members: Member[] };
       setMembers(mdata.members);
-      setOperationalRolesEnabled(mdata.operational_roles_enabled === true);
 
       if (ires) {
         if (!ires.ok) {
@@ -366,6 +368,10 @@ export function MembersTab() {
               const isSelf = member.user_id === user?.id;
               const isOwnerRow = member.role === 'owner';
               const isBusy = pendingMemberAction === member.user_id;
+              const assignable = assignableOperationalRoles(
+                { isAdmin: canManageMembers, operationalRole: callerOperationalRole },
+                { operationalRole: member.operational_role ?? null, accountRole: member.role },
+              );
               const presence = getPresence(member.user_id);
               const presenceRow = getRow(member.user_id);
               const presenceText = presenceLabel(
@@ -448,8 +454,8 @@ export function MembersTab() {
                     {/* Role display / editor. Inline Select is admin+
                         only AND not allowed on the owner row (owner
                         changes go through transfer, which lands later). */}
-                    {operationalRolesEnabled ? (
-                      canManageMembers ? (
+                    {(
+                      assignable.length > 0 ? (
                         <Select
                           value={member.operational_role ?? OPERATIONAL_NONE}
                           onValueChange={(v) =>
@@ -465,7 +471,7 @@ export function MembersTab() {
                           </SelectTrigger>
                           <SelectContent>
                             <SelectItem value={OPERATIONAL_NONE}>{t('operational.none')}</SelectItem>
-                            {OPERATIONAL_OPTIONS.map((r) => (
+                            {assignable.map((r) => (
                               <SelectItem key={r} value={r}>
                                 {t(`operational.${r}`)}
                               </SelectItem>
@@ -477,7 +483,7 @@ export function MembersTab() {
                           {t('operationalArea')}: {t(`operational.${member.operational_role ?? 'none'}`)}
                         </span>
                       )
-                    ) : null}
+                    )}
                     {canManageMembers && !isOwnerRow && !isSelf ? (
                       <Select
                         value={member.role}
