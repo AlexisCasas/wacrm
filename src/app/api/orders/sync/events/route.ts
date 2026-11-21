@@ -82,6 +82,19 @@ export async function POST(request: Request) {
     if (Object.keys(p).length !== 1 || typeof p.customer_message_sent !== 'boolean') {
       return NextResponse.json({ code: 'invalid_packaging_payload' }, { status: 422 })
     }
+  } else if (eventType === 'shipment.snapshot') {
+    const p = payload as Record<string, unknown>
+    const allowed = new Set(['tracking_number','tracking_code','status'])
+    if (
+      Object.keys(p).some((k) => !allowed.has(k)) ||
+      typeof p.tracking_number !== 'string' ||
+      !/^[0-9]{6,12}$/.test(p.tracking_number) ||
+      typeof p.tracking_code !== 'string' ||
+      !/^[A-Za-z0-9]{3,6}$/.test(p.tracking_code) ||
+      (p.status !== null && p.status !== undefined && !['at_origin','in_transit','at_destination','delivered'].includes(String(p.status)))
+    ) {
+      return NextResponse.json({ code: 'invalid_shipment_payload' }, { status: 422 })
+    }
   } else {
     return NextResponse.json({ code: 'unsupported_event_type' }, { status: 422 })
   }
@@ -124,7 +137,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ status: 'applied', changed: voucher.changed })
   }
 
-  const { data, error } = await admin.rpc('apply_inkaclick_packaging_completed', { p_origin_event: originEvent })
+  if (eventType === 'packing.completed') {
+    const { data, error } = await admin.rpc('apply_inkaclick_packaging_completed', { p_origin_event: originEvent })
+    if (error) return NextResponse.json({ code: codeFromError(error) }, { status: 500 })
+    const result = data as { ok?: boolean; status?: string; reason?: string; changed?: boolean } | null
+    if (result?.ok !== true) {
+      const code = typeof result?.reason === 'string' && /^[a-z0-9_]{1,64}$/.test(result.reason) ? result.reason : 'sync_conflict'
+      return NextResponse.json({ code }, { status: 409 })
+    }
+    return NextResponse.json({ status: 'applied', changed: result.changed === true })
+  }
+
+  const { data, error } = await admin.rpc('apply_inkaclick_shipment_snapshot', { p_origin_event: originEvent })
   if (error) return NextResponse.json({ code: codeFromError(error) }, { status: 500 })
   const result = data as { ok?: boolean; status?: string; reason?: string; changed?: boolean } | null
   if (result?.ok !== true) {
