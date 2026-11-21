@@ -160,6 +160,28 @@ describe('PaymentsSection · actions by role', () => {
     expect(posted(f).at(-1).request_key).toBeTruthy()
   })
 
+  it('only a Supervisor sees the one-off total correction; it requires a reason and explicit confirmation', async () => {
+    const f = stubFetch((_u, init) => (init?.method === 'POST' ? { body: { changed: true, total: 120, pending_balance: 90 } } : { body: panel({ is_supervisor: true, paid_confirmed: 30, pending_balance: 70 }) }))
+    render(<PaymentsSection orderId={ORDER} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'correctTotal' }))
+    expect(screen.getByText(/correctTotalHint/)).toBeTruthy()
+    const save = screen.getByRole('button', { name: 'saveCorrection' })
+    fireEvent.click(save)
+    expect(posted(f)).toEqual([])
+    fireEvent.change(screen.getByLabelText('correctTotalAmount'), { target: { value: '120.00' } })
+    fireEvent.change(screen.getByLabelText('correctReason'), { target: { value: 'precio confirmado' } })
+    ;(window.confirm as ReturnType<typeof vi.fn>).mockReturnValueOnce(false)
+    fireEvent.click(save)
+    expect(posted(f)).toEqual([])
+    fireEvent.click(save)
+    await waitFor(() => expect(posted(f)).toEqual([{ action: 'correct_total', new_total: '120.00', reason: 'precio confirmado' }]))
+    cleanup()
+    stubFetch(() => ({ body: panel({ is_supervisor: false }) }))
+    render(<PaymentsSection orderId={ORDER} />)
+    await screen.findByText('status.unpaid')
+    expect(screen.queryByRole('button', { name: 'correctTotal' })).toBeNull()
+  })
+
   it('a validated PR-04 voucher is offered as a CANDIDATE: it pre-fills the amount and links as evidence, but nothing is sent until a person saves', async () => {
     const f = stubFetch((_u, init) => (init?.method === 'POST' ? { status: 201, body: { payment_id: PAY } } : { body: panel({ voucher_candidate: { id: '99999999-9999-4999-8999-999999999999', filename: 'yape.pdf', amount_hint: 30 } }) }))
     render(<PaymentsSection orderId={ORDER} />)

@@ -16,11 +16,11 @@ export type FinancialStatus = 'unpaid' | 'partially_paid' | 'paid'
 
 const REASON_STATUS: Record<string, number> = {
   not_tracked: 409, stale: 409, exceeds_balance: 409, overpayment_reason_required: 422, duplicate_evidence: 409, duplicate_operation: 409, invalid_evidence: 422,
-  not_confirmable: 409, not_rejectable: 409, not_voidable: 409, not_correctable: 409, shalom_tracking_active: 409, not_ready_for_dispatch: 409,
+  not_confirmable: 409, not_rejectable: 409, not_voidable: 409, not_correctable: 409, shalom_tracking_active: 409, not_ready_for_dispatch: 409, order_closed: 409, below_paid: 409,
 }
 const MESSAGE_STATUS: Record<string, [number, string]> = {
   invalid_amount: [400, 'invalid_amount'], invalid_request: [400, 'invalid_request'], reason_required: [422, 'reason_required'], request_key_conflict: [409, 'request_key_conflict'],
-  overpayment_reason_required: [422, 'overpayment_reason_required'], duplicate_evidence: [409, 'duplicate_evidence'], duplicate_operation: [409, 'duplicate_operation'],
+  overpayment_reason_required: [422, 'overpayment_reason_required'], duplicate_evidence: [409, 'duplicate_evidence'], duplicate_operation: [409, 'duplicate_operation'], invalid_total: [400, 'invalid_total'],
 }
 
 /** Maps a database exception to an HTTP verdict. 42501 is "not found" (cross-account and unknown ids are indistinguishable) or feature_disabled. */
@@ -124,6 +124,19 @@ export async function markDeliveredManual(ctx: Pick<PaymentCaller, 'userId' | 'a
   if (!isUuid(orderId)) return fail(400, 'invalid_order_id')
   const { data, error } = await admin.rpc('mark_order_delivered_manual', { p_account: ctx.accountId, p_actor: ctx.userId, p_order: orderId, p_note: text(note, 300), p_now: now.toISOString() })
   return settle(data, error, (o) => ({ changed: o.changed === true, delivered_at: String(o.delivered_at) }))
+}
+
+/** A supervisor-only, audited exception to the frozen order total.  Payment rows are never changed. */
+export async function correctOrderTotal(ctx: Pick<PaymentCaller, 'userId' | 'accountId'>, admin: SupabaseClient, orderId: string, input: { newTotal?: unknown; reason?: unknown }, now: Date = new Date()) {
+  if (!isUuid(orderId)) return fail(400, 'invalid_order_id')
+  const total = normalizePrice(input.newTotal)
+  const reason = text(input.reason, 300)
+  if (!total) return fail(400, 'invalid_total')
+  if (!reason) return fail(422, 'reason_required')
+  const { data, error } = await admin.rpc('correct_order_total', {
+    p_account: ctx.accountId, p_actor: ctx.userId, p_order: orderId, p_new_total: total, p_reason: reason, p_now: now.toISOString(),
+  })
+  return settle(data, error, (o) => ({ changed: o.changed === true, old_total: Number(o.old_total ?? o.total), total: Number(o.total), paid_confirmed: Number(o.paid_confirmed), pending_balance: Number(o.pending_balance), financial_status: (o.financial_status as FinancialStatus | undefined) ?? null }))
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------

@@ -46,6 +46,7 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
   const [acting, setActing] = useState<null | { kind: "void" | "reject" | "confirm-over"; payment: PaymentView }>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [deliveryNote, setDeliveryNote] = useState("");
+  const [totalCorrection, setTotalCorrection] = useState<null | { total: string; reason: string }>(null);
 
   const fetchPanel = useCallback(async (): Promise<View> => {
     const r = await api<PaymentsPanelData>(`/api/orders/payments/orders/${orderId}`);
@@ -157,6 +158,24 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
         <dt className="text-muted-foreground">{t("balance")}</dt>
         <dd className={`font-semibold ${panel.pending_balance > 0 ? "text-amber-300" : "text-emerald-400"}`}>{soles(panel.pending_balance)}</dd>
       </dl>
+
+      {panel.is_supervisor && !panel.delivery.delivered && !panel.finalization ? (
+        totalCorrection ? (
+          <form className="space-y-2 rounded-lg border border-amber-500/30 p-3" aria-label={t("correctTotalTitle")} onSubmit={(e) => {
+            e.preventDefault();
+            if (!totalCorrection.total.trim() || !totalCorrection.reason.trim()) return;
+            if (window.confirm(t("correctTotalConfirm", { total: soles(Number(totalCorrection.total.replace(",", ".")) || 0) }))) {
+              void run({ action: "correct_total", new_total: totalCorrection.total.trim(), reason: totalCorrection.reason.trim() }, t("correctTotalToast")).then((ok) => { if (ok) setTotalCorrection(null); });
+            }
+          }}>
+            <p className="text-xs font-semibold text-foreground">{t("correctTotalTitle")}</p>
+            <p className="text-[11px] text-muted-foreground">{t("correctTotalHint", { current: soles(panel.total), balance: soles(panel.pending_balance) })}</p>
+            <Input value={totalCorrection.total} onChange={(e) => setTotalCorrection({ ...totalCorrection, total: e.target.value })} inputMode="decimal" aria-label={t("correctTotalAmount")} maxLength={10} className="h-8 text-xs" />
+            <Input value={totalCorrection.reason} onChange={(e) => setTotalCorrection({ ...totalCorrection, reason: e.target.value })} aria-label={t("correctReason")} maxLength={300} className="h-8 text-xs" />
+            <div className="flex gap-2"><Button type="submit" size="sm" className="h-8 text-xs" disabled={busy}>{t("saveCorrection")}</Button><Button type="button" size="sm" variant="outline" className="h-8 text-xs" onClick={() => setTotalCorrection(null)}>{t("cancel")}</Button></div>
+          </form>
+        ) : <Button type="button" size="sm" variant="outline" className="h-8 text-xs" disabled={busy} onClick={() => setTotalCorrection({ total: panel.total.toFixed(2), reason: "" })}>{t("correctTotal")}</Button>
+      ) : null}
 
       {panel.finalization ? (
         <p className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-400">

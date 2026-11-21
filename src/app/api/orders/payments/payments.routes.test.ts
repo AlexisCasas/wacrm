@@ -4,7 +4,7 @@ const getCurrentAccount = vi.fn()
 const resolveAccess = vi.fn()
 const rpc = vi.fn()
 const svc = {
-  getPaymentsPanel: vi.fn(), registerPayment: vi.fn(), confirmPayment: vi.fn(), rejectPayment: vi.fn(), voidPayment: vi.fn(), correctPayment: vi.fn(), markDeliveredManual: vi.fn(),
+  getPaymentsPanel: vi.fn(), registerPayment: vi.fn(), confirmPayment: vi.fn(), rejectPayment: vi.fn(), voidPayment: vi.fn(), correctPayment: vi.fn(), correctOrderTotal: vi.fn(), markDeliveredManual: vi.fn(),
   getPaymentsSummary: vi.fn(), listOrdersWithBalance: vi.fn(), getConversationFinancials: vi.fn(),
 }
 const evidence = { uploadPaymentProof: vi.fn(), paymentDocumentSignedUrl: vi.fn() }
@@ -17,7 +17,7 @@ vi.mock('@/lib/orders/confirmed-orders', () => ({ resolveConfirmedOrdersAccess: 
 vi.mock('@/lib/flows/admin-client', () => ({ supabaseAdmin: () => ({ admin: true }) }))
 vi.mock('@/lib/orders/payments/service', () => ({
   getPaymentsPanel: (...a: unknown[]) => svc.getPaymentsPanel(...a), registerPayment: (...a: unknown[]) => svc.registerPayment(...a), confirmPayment: (...a: unknown[]) => svc.confirmPayment(...a),
-  rejectPayment: (...a: unknown[]) => svc.rejectPayment(...a), voidPayment: (...a: unknown[]) => svc.voidPayment(...a), correctPayment: (...a: unknown[]) => svc.correctPayment(...a),
+  rejectPayment: (...a: unknown[]) => svc.rejectPayment(...a), voidPayment: (...a: unknown[]) => svc.voidPayment(...a), correctPayment: (...a: unknown[]) => svc.correctPayment(...a), correctOrderTotal: (...a: unknown[]) => svc.correctOrderTotal(...a),
   markDeliveredManual: (...a: unknown[]) => svc.markDeliveredManual(...a), getPaymentsSummary: (...a: unknown[]) => svc.getPaymentsSummary(...a),
   listOrdersWithBalance: (...a: unknown[]) => svc.listOrdersWithBalance(...a), getConversationFinancials: (...a: unknown[]) => svc.getConversationFinancials(...a), MAX_SUMMARY_IDS: 50,
 }))
@@ -95,18 +95,21 @@ describe('actions', () => {
   })
 
   it('void and correct are SUPERVISOR only: a logistics operator gets 403 and the service is never called', async () => {
-    for (const action of ['void', 'correct']) {
+    for (const action of ['void', 'correct', 'correct_total']) {
       const r = await ACTION(post({ action, payment_id: PAYMENT, reason: 'x' }), params)
       expect(r.status).toBe(403)
       expect(await r.json()).toEqual({ error: 'supervisor_required' })
     }
     expect(svc.voidPayment).not.toHaveBeenCalled()
     expect(svc.correctPayment).not.toHaveBeenCalled()
+    expect(svc.correctOrderTotal).not.toHaveBeenCalled()
     resolveAccess.mockResolvedValue({ kind: 'ok', operationalRole: 'supervisor' })
     expect((await ACTION(post({ action: 'void', payment_id: PAYMENT, reason: 'x' }), params)).status).toBe(200)
     expect((await ACTION(post({ action: 'correct', payment_id: PAYMENT, reason: 'x', request_key: 'fix1', amount: '40.00', kind: 'advance', paid_at: '2027-01-01T00:00:00Z' }), params)).status).toBe(200)
     expect(svc.voidPayment).toHaveBeenCalled()
     expect(svc.correctPayment).toHaveBeenCalled()
+    expect((await ACTION(post({ action: 'correct_total', new_total: '120.00', reason: 'precio confirmado' }), params)).status).toBe(200)
+    expect(svc.correctOrderTotal).toHaveBeenCalledWith(expect.objectContaining({ accountId: ACCOUNT }), { admin: true }, ORDER, { newTotal: '120.00', reason: 'precio confirmado' })
   })
 
   it('invalid body / action are 400; GET panel is wired to the session and never cached', async () => {
