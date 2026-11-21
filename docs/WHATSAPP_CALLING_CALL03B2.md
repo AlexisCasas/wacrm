@@ -195,7 +195,7 @@ El detalle operativo y las pruebas post-deploy están en `docs/WHATSAPP_CALLING_
 
 ## 13. CALL-03B2.4 — Claim antes del micrófono (21/nov/2026)
 
-Cierra H1: el agente que pierde la carrera por una llamada entrante **nunca** recibe el diálogo de micrófono. Base `9bc35479175278d60b9cb318b2aaaf060d83eb32`; rama local `feat/whatsapp-calling-call03b2-4-claim-order-20261121`. Sin migraciones ni cambios en `route.ts`, RPC, PostgreSQL, Compose o Meta.
+Implementa H1 en el cliente: el agente que pierde la carrera por una llamada entrante **nunca** recibe el diálogo de micrófono. El cierre formal requiere CI y QA de concurrencia. Base `9bc35479175278d60b9cb318b2aaaf060d83eb32`; PR Draft #143. Sin migraciones ni cambios en `route.ts`, RPC, PostgreSQL, Compose o Meta.
 
 ### Flujo de `acceptIncoming`
 
@@ -225,7 +225,7 @@ Rate limit medido: las acciones de claim/renew/release comparten el bucket `call
 - Claim propio y sin `pre_accept`: `release` (sin `terminate`).
 - Tras `pre_accept` y claim propio: `terminate` (cierre seguro).
 - Claim perdido: no se libera ni se termina nada (la llamada pertenece a otro agente). Tras un 409 en `pre_accept`/`accept` se lee `claim_owned_by_me`; si no es verificable se asume perdido.
-- Propiedad antes de actuar: un lease confirmado hace menos de 80 s solo puede ser propio. Si es más antiguo se lee la llamada: `release` solo si sigue siendo mío; `terminate` (tras `pre_accept`) solo si no lo tiene otro agente. Con propiedad no verificable no se hace ninguna de las dos (el servidor permite a owner/admin actuar sobre cualquier llamada, así que no puede ser la última línea de defensa).
+- Propiedad antes de actuar: se consulta siempre la propiedad vigente mediante GET, incluso si la última renovación fue reciente. El lease puede haber sido liberado por otro actor y reclamado inmediatamente. `release` y `terminate` solo se envían si GET confirma `claim_owned_by_me`. Un lease libre, vencido, ajeno o imposible de verificar no autoriza acciones; el SDP pendiente seguirá la expiración del servidor. Esta lectura **no es atómica** con el POST posterior.
 - Un `getUserMedia` que resuelve tarde detiene todos sus tracks de inmediato y no crea `PeerConnection`.
 - No hay actualizaciones de estado tras el desmontaje (`unmountedRef`).
 
@@ -235,7 +235,7 @@ No se pide micrófono. Se comprueba por lectura (`claim_owned_by_me`) si el serv
 
 ### Pruebas
 
-- `calling-panel.claim-order.test.tsx` (25): orden, timeouts, abortos, heartbeat y guardas de propiedad.
+- `calling-panel.claim-order.test.tsx`: orden, timeouts, abortos, heartbeat, transferencias inmediatas de claim y guardas de propiedad.
 - `calling-panel.concurrency.test.tsx`: dos paneles con `runtime` inyectado por panel (`fetch`, `getUserMedia`, `PeerConnection`); el ganador hace claim 200, 1 `getUserMedia`, 1 `PeerConnection`, 1 `pre_accept` y 1 `accept`; el perdedor 409 y cero de todo lo demás.
 - `calling-claim-limits.test.ts`: ata las constantes del cliente a los valores reales (lease 90 s en las RPC y la ruta, SDP 60 s, 60/min).
 - `CallingPanel` acepta la prop opcional `runtime` (solo para tests; por defecto usa los globales del navegador).
@@ -246,4 +246,4 @@ No se pide micrófono. Se comprueba por lectura (`claim_owned_by_me`) si el serv
 - La vigencia de la oferta usa el reloj del navegador; el margen de 15 s absorbe desfases de segundos.
 - `getUserMedia` no es cancelable: el diálogo puede seguir abierto tras abortar; sus tracks se detienen si se concede.
 - Pendiente: validación de navegador en QA (Firefox/Chromium con micrófono falso) y build de Next en un entorno con memoria suficiente antes de cualquier despliegue.
-- Un owner/admin puede terminar o liberar cualquier llamada en el servidor; el cliente ya no lo hace sobre llamadas ajenas, pero la ruta no lo impide (sin cambios por restricción de alcance).
+- **BLOQUEO PARA MERGE/PILOTO:** `terminate` en servidor permite el último reclamante y roles owner/admin; una comprobación GET del cliente no es atómica con esa operación. Falta protección de servidor frente a transferencias entre GET y POST (fencing/compare-and-set o equivalente) para garantizar que el agente anterior no termina la llamada del nuevo propietario. La corrección cliente reduce el riesgo, pero no lo elimina.
