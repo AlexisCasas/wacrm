@@ -233,6 +233,8 @@ Rate limit medido: las acciones de claim/renew/release comparten el bucket `call
 
 No se pide micrófono. Se comprueba por lectura (`claim_owned_by_me`) si el servidor adquirió el claim y solo entonces se libera. Si no puede confirmarse, **el lease de 90 s es la protección residual** (nunca se emite un `release` a ciegas: la RPC permite a owner/admin liberar claims ajenos).
 
+Si el panel se desmonta o cambia la conversación mientras el POST de `claim` sigue pendiente, el navegador no puede deshacer la operación del servidor. Se observa la resolución tardía del POST: si finalmente tuvo éxito, se vuelve a comprobar la propiedad actual antes del `release`. Los tests cubren tanto la adquisición tardía como su transferencia a otro agente antes de limpiar.
+
 ### Pruebas
 
 - `calling-panel.claim-order.test.tsx`: orden, timeouts, abortos, heartbeat, transferencias inmediatas de claim y guardas de propiedad.
