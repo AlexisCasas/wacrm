@@ -73,6 +73,7 @@ export interface OrderEventView {
 
 export interface PanelData {
   logistics: { status: LogisticsStatus; version: number; evidence_document_id: string | null }
+  remote_packaging: { status: 'completed'; source_system: 'inkaclick'; customer_message_sent: boolean; completed_at: string } | null
   vouchers: DocumentView[]
   evidence: DocumentView | null
   dispatches: DispatchView[]

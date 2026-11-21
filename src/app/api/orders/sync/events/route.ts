@@ -77,6 +77,11 @@ export async function POST(request: Request) {
   } else if (eventType === 'voucher.validated') {
     voucherPayload = parseVoucherValidatedPayload(payload)
     if (!voucherPayload) return NextResponse.json({ code: 'invalid_voucher_payload' }, { status: 422 })
+  } else if (eventType === 'packing.completed') {
+    const p = payload as Record<string, unknown>
+    if (Object.keys(p).length !== 1 || typeof p.customer_message_sent !== 'boolean') {
+      return NextResponse.json({ code: 'invalid_packaging_payload' }, { status: 422 })
+    }
   } else {
     return NextResponse.json({ code: 'unsupported_event_type' }, { status: 422 })
   }
@@ -108,12 +113,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ status: 'applied', changed: result?.changed === true })
   }
 
-  const voucher = await applyInkaclickVoucherEvent(admin, {
-    origin_event_id: originEvent,
-    canonical_order_id: canonicalOrder,
-    occurred_at: occurredAt,
-    payload: voucherPayload!,
-  })
-  if (!voucher.ok) return NextResponse.json({ code: voucher.code }, { status: voucher.status })
-  return NextResponse.json({ status: 'applied', changed: voucher.changed })
+  if (eventType === 'voucher.validated') {
+    const voucher = await applyInkaclickVoucherEvent(admin, {
+      origin_event_id: originEvent,
+      canonical_order_id: canonicalOrder,
+      occurred_at: occurredAt,
+      payload: voucherPayload!,
+    })
+    if (!voucher.ok) return NextResponse.json({ code: voucher.code }, { status: voucher.status })
+    return NextResponse.json({ status: 'applied', changed: voucher.changed })
+  }
+
+  const { data, error } = await admin.rpc('apply_inkaclick_packaging_completed', { p_origin_event: originEvent })
+  if (error) return NextResponse.json({ code: codeFromError(error) }, { status: 500 })
+  const result = data as { ok?: boolean; status?: string; reason?: string; changed?: boolean } | null
+  if (result?.ok !== true) {
+    const code = typeof result?.reason === 'string' && /^[a-z0-9_]{1,64}$/.test(result.reason) ? result.reason : 'sync_conflict'
+    return NextResponse.json({ code }, { status: 409 })
+  }
+  return NextResponse.json({ status: 'applied', changed: result.changed === true })
 }

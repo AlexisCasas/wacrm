@@ -59,6 +59,7 @@ export function mapRpcError(error: { code?: string; message?: string }): Service
   if (error.code === '42501') return message.includes('feature_disabled') ? fail(403, 'feature_disabled') : fail(404, 'not_found')
   if (error.code === '22023') {
     if (message.includes('request_key_conflict')) return fail(409, 'request_key_conflict')
+    if (message.includes('packaging_completed_elsewhere')) return fail(409, 'packaging_completed_elsewhere')
     return fail(400, 'invalid_request')
   }
   console.error('[logistics] rpc failed:', error.code)

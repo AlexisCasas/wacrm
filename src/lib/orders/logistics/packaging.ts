@@ -48,12 +48,29 @@ export function classifySendError(error: unknown): { outcome: 'failed' | 'uncert
   return { outcome: 'uncertain', code: 'send_unknown_error' }
 }
 
+async function isPackagingCompletedElsewhere(admin: SupabaseClient, accountId: string, orderId: string): Promise<boolean> {
+  const { data, error } = await admin
+    .from('order_packaging_sync_state')
+    .select('order_id')
+    .eq('account_id', accountId)
+    .eq('order_id', orderId)
+    .eq('status', 'completed')
+    .maybeSingle()
+  if (error) throw new Error('packaging sync state lookup failed')
+  return data !== null
+}
+
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 // start packaging
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 
 export async function startPackaging(ctx: Pick<LogisticsCaller, 'userId' | 'accountId'>, admin: SupabaseClient, orderId: string): Promise<ServiceResult<{ status: string; changed: boolean }>> {
   if (!isUuid(orderId)) return fail(400, 'invalid_order_id')
+  try {
+    if (await isPackagingCompletedElsewhere(admin, ctx.accountId, orderId)) return fail(409, 'packaging_completed_elsewhere')
+  } catch {
+    return fail(500, 'internal_error')
+  }
   const { data, error } = await admin.rpc('start_order_packaging', { p_account: ctx.accountId, p_actor: ctx.userId, p_order: orderId })
   if (error) return mapRpcError(error)
   const out = (data ?? {}) as { ok?: boolean; changed?: boolean; status?: string; reason?: string }
@@ -94,6 +111,11 @@ export async function sendPackagingTemplate(
   if (!isUuid(orderId)) return fail(400, 'invalid_order_id')
   if (typeof requestKey !== 'string' || !REQUEST_KEY_PATTERN.test(requestKey)) return fail(400, 'invalid_request_key')
   const sendMessage = deps.sendMessage ?? sendMessageToConversation
+  try {
+    if (await isPackagingCompletedElsewhere(admin, ctx.accountId, orderId)) return fail(409, 'packaging_completed_elsewhere')
+  } catch {
+    return fail(500, 'internal_error')
+  }
 
   // ---- 1. configuration (nothing is claimed while the template is not configured / not usable) ----
   const { data: settings, error: settingsError } = await admin
