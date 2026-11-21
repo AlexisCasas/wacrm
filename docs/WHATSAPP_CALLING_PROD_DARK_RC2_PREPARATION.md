@@ -2,6 +2,18 @@
 
 **Estado:** `INTEGRATION_PREPARED` exclusivamente en rama de revisión, `PROD_DARK_DEPLOY=NO_GO_PENDING_PREFLIGHT`, `META_CALLING_LIVE=NOT_AUTHORIZED`.
 
+## BLOQUEO CRÍTICO: producción diverge de main (PROD_BASELINE_DRIFT)
+
+La última imagen productiva **reportada y verificada en QA por el operador** antes de este RC2 es `wacrm-app:p0-total-correction-300284e6` (SHA origen GitHub `300284e671aa358fc392273d639746f91c1e4219`; imagen `sha256:270792f2…`). **Ese commit NO es ancestro de `main` ni del RC2.** GitHub `compare` registra `300284e6 → main: ahead=2, behind=64, diverged`, y `300284e6 → RC2: ahead=395, behind=64, diverged`.
+
+Diferencia base `main → prod` incluye cambios de pagos, pedidos, Shalom, controles operativos, traducciones y migraciones de producción (`20261205000005_supervised_order_total_correction.sql` entre ellas), que **no forman parte de este RC2**. No inferir que todos son funciones faltantes: una comparación de árboles/diffs y esquemas debe determinar las diferencias reales.
+
+**Prioridad absoluta:** primero reconciliar producción → `main` mediante PR independiente con revisión y CI; luego reconstruir/actualizar el candidato Calling desde esa línea reconciliada. No reemplazar la imagen viva con RC2 actual: podría perder funcionalidad de pedidos y pagos ya desplegada.
+
+Antes de cualquier merge o build productivo: reconfirmar la fuente/digest del contenedor `wacrm-app-1` y si la imagen viva cambió desde las 19:47Z; ante cambios posteriores, actualizar la base y repetir la auditoría. No hacer fast-forward forzado, `reset`, `push --force`, ni migraciones irreversibles como atajo.
+
+**Gate:** `PROD_BASELINE_PARITY=BLOCKED` y `CALLING_DARK_RELEASE_GO=NO` hasta obtener diffs compatibles, migraciones ordenadas y SHA de integración definitivo.
+
 ## Decisiones aprobadas y límites
 
 - Se autoriza la **preparación de integración** en GitHub. No equivale a permiso para merger, migrar Supabase productivo, desplegar Docker ni habilitar suscripción real de llamadas.
@@ -65,7 +77,7 @@ Solo tras publicación dark PASS y nueva autorización:
 | QA race `accept`/`terminate` | PENDING (no ejecutar en tráfico real) |
 | QA reconciliación 6 unknown + offered | PENDING; fixtures SOLO QA |
 | INT diff + CI de nuevo SHA | PENDING, ejecutar en PR |
-| Convergencia con `main` | PENDING (2 commits detrás) |
+| Convergencia con `main` y producción viva | BLOCKED (producción 64 commits por delante de main; RC2 no incorpora sus cambios) |
 | Preflight + restore de producción | PENDING |
 | Merge a `main` | NOT_AUTHORIZED |
 | Migraciones productivas / Docker deploy | NOT_AUTHORIZED |
