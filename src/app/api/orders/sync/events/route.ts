@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto'
 import { NextResponse } from 'next/server'
 
 import { supabaseAdmin } from '@/lib/flows/admin-client'
+import { applyInkaclickVoucherEvent, parseVoucherValidatedPayload } from '@/lib/orders/sync/voucher-transport'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const EVENT = /^[a-z][a-z0-9_]{0,31}\.[a-z][a-z0-9_]{0,63}$/
@@ -23,7 +24,9 @@ function codeFromError(error: { code?: string } | null | undefined): string {
 }
 
 export async function POST(request: Request) {
-  if (process.env.ORDER_SYNC_ENABLED !== 'true' || !process.env.ORDER_SYNC_TOKEN?.trim()) return NextResponse.json({ code: 'not_configured' }, { status: 503 })
+  if (process.env.ORDER_SYNC_ENABLED !== 'true' || !process.env.ORDER_SYNC_TOKEN?.trim()) {
+    return NextResponse.json({ code: 'not_configured' }, { status: 503 })
+  }
   if (!authorized(request)) return NextResponse.json({ code: 'unauthorized' }, { status: 401 })
 
   let body: Record<string, unknown>
@@ -63,13 +66,19 @@ export async function POST(request: Request) {
   if (request.headers.get('idempotency-key') !== originEvent) {
     return NextResponse.json({ code: 'invalid_idempotency_key' }, { status: 400 })
   }
+  if (version !== 1) return NextResponse.json({ code: 'unsupported_event_version' }, { status: 422 })
 
-  if (eventType !== 'payment.snapshot' || version !== 1) {
+  let voucherPayload = null
+  if (eventType === 'payment.snapshot') {
+    const keys = Object.keys(payload as Record<string, unknown>)
+    if (keys.some((k) => !PAYMENT_KEYS.has(k))) {
+      return NextResponse.json({ code: 'invalid_payment_payload' }, { status: 422 })
+    }
+  } else if (eventType === 'voucher.validated') {
+    voucherPayload = parseVoucherValidatedPayload(payload)
+    if (!voucherPayload) return NextResponse.json({ code: 'invalid_voucher_payload' }, { status: 422 })
+  } else {
     return NextResponse.json({ code: 'unsupported_event_type' }, { status: 422 })
-  }
-  const keys = Object.keys(payload as Record<string, unknown>)
-  if (keys.some((k) => !PAYMENT_KEYS.has(k))) {
-    return NextResponse.json({ code: 'invalid_payment_payload' }, { status: 422 })
   }
 
   const admin = supabaseAdmin()
@@ -88,12 +97,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ code }, { status: code === 'sync_event_identity_conflict' ? 409 : 500 })
   }
 
-  const { data, error } = await admin.rpc('apply_inkaclick_payment_snapshot', { p_origin_event: originEvent })
-  if (error) return NextResponse.json({ code: codeFromError(error) }, { status: 500 })
-  const result = data as { status?: string; reason?: string; changed?: boolean } | null
-  if (result?.status === 'conflict') {
-    const code = typeof result.reason === 'string' && /^[a-z0-9_]{1,64}$/.test(result.reason) ? result.reason : 'sync_conflict'
-    return NextResponse.json({ code }, { status: 409 })
+  if (eventType === 'payment.snapshot') {
+    const { data, error } = await admin.rpc('apply_inkaclick_payment_snapshot', { p_origin_event: originEvent })
+    if (error) return NextResponse.json({ code: codeFromError(error) }, { status: 500 })
+    const result = data as { status?: string; reason?: string; changed?: boolean } | null
+    if (result?.status === 'conflict') {
+      const code = typeof result.reason === 'string' && /^[a-z0-9_]{1,64}$/.test(result.reason) ? result.reason : 'sync_conflict'
+      return NextResponse.json({ code }, { status: 409 })
+    }
+    return NextResponse.json({ status: 'applied', changed: result?.changed === true })
   }
-  return NextResponse.json({ status: 'applied', changed: result?.changed === true })
+
+  const voucher = await applyInkaclickVoucherEvent(admin, {
+    origin_event_id: originEvent,
+    canonical_order_id: canonicalOrder,
+    occurred_at: occurredAt,
+    payload: voucherPayload!,
+  })
+  if (!voucher.ok) return NextResponse.json({ code: voucher.code }, { status: voucher.status })
+  return NextResponse.json({ status: 'applied', changed: voucher.changed })
 }
