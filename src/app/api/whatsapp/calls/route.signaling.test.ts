@@ -114,6 +114,8 @@ function setupDb() {
 
   h.rpc.mockImplementation(async (name: string, args: Record<string, unknown>) => {
     if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+    if (name === 'whatsapp_call_terminal_reserve') return { data: 'reserved', error: null }
+    if (name === 'whatsapp_call_terminal_finish') return { data: true, error: null }
     if (name === 'whatsapp_call_outbound_attempt_begin') {
       return {
         data: {
@@ -748,3 +750,139 @@ describe('GET /api/whatsapp/calls — call history attribution', () => {
 
 })
 
+
+
+describe('CALL-03B2.5 — reserve terminal side effects before Meta', () => {
+  function activeCall(direction: 'USER_INITIATED' | 'BUSINESS_INITIATED' = 'USER_INITIATED') {
+    return {
+      phone_number_id: h.phoneNumberId,
+      call_id: 'wacid.qa-terminal035',
+      direction,
+      contact_id: h.contactId,
+      conversation_id: h.conversationId,
+      customer_phone: '51980942247',
+      claimed_by_user_id: direction === 'USER_INITIATED' ? h.userId : null,
+      claimed_at: '2026-11-21T05:00:00.123456+00:00',
+      claim_expires_at: new Date(Date.now() + 60000).toISOString(),
+      initiated_by_user_id: direction === 'BUSINESS_INITIATED' ? h.userId : null,
+      accepted_by_user_id: direction === 'USER_INITIATED' ? h.userId : null,
+      rejected_by_user_id: null,
+      ended_by_user_id: null,
+      last_claimed_by_user_id: h.userId,
+      terminal_status: null,
+      biz_opaque_callback_data: null,
+      agent_sdp_encrypted: null,
+      agent_sdp_type: null,
+      agent_sdp_expires_at: null,
+      state: 'connected',
+    }
+  }
+
+  it('reserves atomically before sending terminate to Meta and audits only after acknowledgement', async () => {
+    h.session = activeCall('BUSINESS_INITIATED')
+    const order: string[] = []
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') { order.push('reserve'); return { data: 'reserved', error: null } }
+      if (name === 'whatsapp_call_terminal_finish') { order.push('finish'); return { data: true, error: null } }
+      if (name === 'whatsapp_call_session_agent_action') { order.push('audit'); return { data: true, error: null } }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    h.callWhatsApp.mockImplementationOnce(async () => {
+      order.push('Meta')
+      return { action: 'terminate', success: true }
+    })
+    const response = await POST(makeRequest({
+      action: 'terminate', call_id: 'wacid.qa-terminal035',
+      account_id: 'attacker-account', actor_user_id: 'attacker-user',
+    }))
+    expect(response.status).toBe(200)
+    expect(order).toEqual(['reserve','Meta','finish','audit'])
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_terminal_reserve', expect.objectContaining({
+      p_account_id: h.accountId, p_actor_user_id: h.userId, p_action: 'terminate',
+      p_context: 'owned_call', p_expected_claimed_at: null,
+    }))
+  })
+
+  it('refuses a stale agent cleanup reservation before Meta, even with a syntactically valid epoch', async () => {
+    h.session = activeCall()
+    h.session.accepted_by_user_id = null
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') return { data: 'denied', error: null }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    const res = await POST(makeRequest({
+      action: 'terminate', call_id: 'wacid.qa-terminal035',
+      termination_context: 'claim_cleanup',
+      claim_epoch: '2026-11-21T05:00:00.123456+00:00',
+    }))
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('terminal_claim_conflict')
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_terminal_reserve', expect.objectContaining({
+      p_context: 'claim_cleanup',
+      p_expected_claimed_at: '2026-11-21T05:00:00.123456+00:00',
+    }))
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('never calls Meta if another terminal operation is already reserved', async () => {
+    h.session = activeCall()
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') return { data: 'in_progress', error: null }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    const res = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-terminal035' }))
+    expect(res.status).toBe(409)
+    expect((await res.json()).code).toBe('terminal_in_progress')
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+
+  it('records Meta timeout as unknown and never confirms or retries automatically', async () => {
+    h.session = activeCall()
+    h.callWhatsApp.mockRejectedValueOnce(new Error('Graph network timeout'))
+    const res = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-terminal035' }))
+    expect(res.status).toBe(202)
+    expect(await res.json()).toMatchObject({
+      success: false, code: 'terminal_outcome_unknown', terminal_status: 'unknown',
+    })
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_terminal_finish', expect.objectContaining({
+      p_outcome: 'unknown', p_actor_user_id: h.userId,
+    }))
+    expect(h.rpc).not.toHaveBeenCalledWith('whatsapp_call_session_agent_action', expect.anything())
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('reserves reject before Meta and never calls Meta on an already-terminal session', async () => {
+    h.session = { ...activeCall(), state: 'offered', accepted_by_user_id: null, claimed_by_user_id: null }
+    const rejected = await POST(makeRequest({ action: 'reject', call_id: 'wacid.qa-terminal035' }))
+    expect(rejected.status).toBe(200)
+    expect(h.rpc).toHaveBeenCalledWith('whatsapp_call_terminal_reserve', expect.objectContaining({
+      p_action: 'reject', p_context: 'reject',
+    }))
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') return { data: 'already_terminal', error: null }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    const already = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-terminal035' }))
+    expect(already.status).toBe(200)
+    expect((await already.json()).already_terminal).toBe(true)
+    expect(h.callWhatsApp).toHaveBeenCalledTimes(1)
+  })
+
+  it('fails closed on SQL reservation errors before any Meta action', async () => {
+    h.session = activeCall()
+    h.rpc.mockImplementation(async (name: string) => {
+      if (name === 'whatsapp_call_sdp_prune') return { data: 0, error: null }
+      if (name === 'whatsapp_call_terminal_reserve') return { data: null, error: { code: 'XX000' } }
+      throw new Error('unexpected RPC: ' + name)
+    })
+    const response = await POST(makeRequest({ action: 'terminate', call_id: 'wacid.qa-terminal035' }))
+    expect(response.status).toBe(503)
+    expect(h.callWhatsApp).not.toHaveBeenCalled()
+  })
+})
