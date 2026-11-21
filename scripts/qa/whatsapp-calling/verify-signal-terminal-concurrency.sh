@@ -86,7 +86,9 @@ race() {
     exit 1
   fi
   local db_signal db_terminal
-  db_signal="$(psql "$db_url" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT (signal_request_id IS NOT NULL)::text FROM public.whatsapp_call_sessions WHERE call_id='$call'")"
+  # An acknowledged pre_accept is a legitimate historical signal for the
+  # accept race. Count only the *current reserved action*, not any old UUID.
+  db_signal="$(psql "$db_url" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT (signal_action='$action' AND signal_status='reserved')::text FROM public.whatsapp_call_sessions WHERE call_id='$call'")"
   db_terminal="$(psql "$db_url" -X -qAt -v ON_ERROR_STOP=1 -c "SELECT (terminal_request_id IS NOT NULL)::text FROM public.whatsapp_call_sessions WHERE call_id='$call'")"
   if [[ "$db_signal" == "$db_terminal" ]]; then
     echo "CALL036_RACE=FAIL ($name both/none reserved)" >&2
