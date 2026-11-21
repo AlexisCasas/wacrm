@@ -1,6 +1,8 @@
 /* Release tooling (LOCAL, read-only on production: it never connects to anything). Production has NO supabase_migrations.schema_migrations: its ledger is one
  * `<version>_<name>.applied` file per migration under /opt/backups/wacrm/migrations-applied. This tool knows the 22 PR-02..PR-06 migrations of the integrated release
  * (supabase/release/migration-manifest.json) and prepares / checks that ledger WITHOUT touching it.
+ * The Calling RC2 migrations are verified independently as integrated_external;
+ * they are NOT part of this historical PR-02..PR-06 apply/record plan.
  *
  *   node scripts/release/migration-ledger.cjs verify                      the files of the working tree == the manifest (names, order, sha256 of the LF content, contiguous block,
  *                                                                          unique versions, strictly after every production / reserved version)
@@ -34,7 +36,8 @@ function verify() {
   const dup = versions.filter((v, i) => versions.indexOf(v) !== i)
   if (dup.length) problems.push(`duplicate versions: ${[...new Set(dup)].join(', ')}`)
 
-  const maxExternal = [...m.production_baseline.map((p) => p.version), ...m.reserved_external.map((r) => r.version)].sort().at(-1)
+  const integrated = m.integrated_external || []
+  const maxExternal = [...m.production_baseline.map((p) => p.version), ...m.reserved_external.map((r) => r.version), ...integrated.map((r) => r.version)].sort().at(-1)
   let prev = null
   for (const r of m.release_migrations) {
     const p = path.join(MIG, r.new_file)
@@ -51,6 +54,21 @@ function verify() {
     if (!f) problems.push(`production migration ${b.version} is not in the tree`)
     else if (b.sha256 && sha(path.join(MIG, f)) !== b.sha256) problems.push(`production migration ${f} differs from the version production applied`)
   }
+  // Calling RC2 is present in this source tree but has its OWN deployment
+  // gate and immutable SHA256 inventory. Never silently treat it as one
+  // of the 22 orders migrations or as applied in production.
+  const integratedVersions = new Set()
+  for (const r of integrated) {
+    const p = path.join(MIG, r.file)
+    if (!/^\d{14}$/.test(r.version) || versionOf(r.file) !== r.version) problems.push(`invalid integrated external version/name: ${r.file}`)
+    if (integratedVersions.has(r.version)) problems.push(`duplicate integrated external version: ${r.version}`)
+    integratedVersions.add(r.version)
+    if (!fs.existsSync(p)) problems.push(`missing integrated external migration: ${r.file}`)
+    else if (sha(p) !== r.sha256) problems.push(`checksum differs: ${r.file}`)
+  }
+  if (integrated.length > 0 && integrated.some((r, i) => i > 0 && r.version <= integrated[i - 1].version)) {
+    problems.push('integrated external migrations not strictly sorted by version')
+  }
   const patches = m.patch_migrations || []
   for (const r of patches) {
     const p = path.join(MIG, r.new_file)
@@ -58,7 +76,7 @@ function verify() {
     else if (sha(p) !== r.sha256) problems.push(`checksum differs: ${r.new_file}`)
     if (r.new_version <= m.release_migrations.at(-1).new_version) problems.push(`patch ${r.new_file} is not after the release block`)
   }
-  const known = new Set([...m.production_baseline.map((p) => p.version), ...m.release_migrations.map((r) => r.new_version), ...patches.map((r) => r.new_version)])
+  const known = new Set([...m.production_baseline.map((p) => p.version), ...integrated.map((r) => r.version), ...m.release_migrations.map((r) => r.new_version), ...patches.map((r) => r.new_version)])
   const unknownAfterBaseline = files.filter((f) => versionOf(f) > m.historical_main_max && !known.has(versionOf(f)))
   if (unknownAfterBaseline.length) problems.push(`migrations not described by the manifest: ${unknownAfterBaseline.join(', ')}`)
   if (problems.length) fail(`VERIFY FAILED\n - ${problems.join('\n - ')}`, 2)
@@ -124,6 +142,7 @@ function generate() {
   // Maintainers only: rebuilds the checksums of the release block from the current tree, keeping the OLD -> NEW map already in the manifest.
   const m = loadManifest()
   for (const r of m.release_migrations) r.sha256 = sha(path.join(MIG, r.new_file))
+  for (const r of m.integrated_external || []) r.sha256 = sha(path.join(MIG, r.file))
   for (const b of m.production_baseline) {
     const f = fs.readdirSync(MIG).find((x) => versionOf(x) === b.version)
     if (f) b.sha256 = sha(path.join(MIG, f))
