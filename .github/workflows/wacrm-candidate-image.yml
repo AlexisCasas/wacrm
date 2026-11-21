@@ -159,10 +159,10 @@ jobs:
     timeout-minutes: 60
     env:
       EXPECTED_RELEASE_SHA: 14c5f3c8c1ab41db76841a0c7680efbc577ddd9f
-      NEXT_PUBLIC_SUPABASE_URL: \${{ vars.WACRM_NEXT_PUBLIC_SUPABASE_URL }}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: \${{ secrets.WACRM_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
-      NEXT_PUBLIC_SITE_URL: \${{ vars.WACRM_NEXT_PUBLIC_SITE_URL }}
-      NEXT_PUBLIC_APP_LOCALE: \${{ vars.WACRM_NEXT_PUBLIC_APP_LOCALE || 'en' }}
+      NEXT_PUBLIC_SUPABASE_URL: ${{ vars.WACRM_NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.WACRM_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      NEXT_PUBLIC_SITE_URL: ${{ vars.WACRM_NEXT_PUBLIC_SITE_URL }}
+      NEXT_PUBLIC_APP_LOCALE: ${{ vars.WACRM_NEXT_PUBLIC_APP_LOCALE || 'en' }}
     steps:
       - name: Checkout pinned release source instead of QA branch
         uses: actions/checkout@v7
@@ -186,7 +186,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="wacrm-app:rc2-\${EXPECTED_RELEASE_SHA:0:8}"
+          TAG="wacrm-app:rc2-${EXPECTED_RELEASE_SHA:0:8}"
           TREE="$(git rev-parse HEAD^{tree})"
           docker build --platform linux/amd64 --pull \
             --build-arg NEXT_PUBLIC_SUPABASE_URL \
