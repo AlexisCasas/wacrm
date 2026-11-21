@@ -1230,11 +1230,10 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride, 
     setMuted(nextMuted);
   }, [muted]);
 
-  const isPilotActiveCall = Boolean(
-    activeCall?.customer_phone
-    && activeCall.customer_phone.replace(/[^0-9]/g, "") === "51980942247",
-  );
-  const hasCallingIdentity = Boolean(contact?.id && contact.phone && isPilotContact && permission?.canStartCall);
+  // Keep termination controls available for an active call even if the
+  // operator navigates away from its conversation.
+  const isPilotActiveCall = Boolean(activeCall);
+  const hasCallingIdentity = Boolean(contact?.id && isPilotContact && permission?.canStartCall);
   const busy = !["idle", "incoming", "connected", "failed"].includes(uiState);
 
   return (
