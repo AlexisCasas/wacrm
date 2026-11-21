@@ -359,6 +359,7 @@
       "incomingOfferMissing": "La oferta de la llamada entrante no está disponible. Intenta nuevamente.",
       "rejectFailed": "No se pudo rechazar la llamada entrante.",
       "endCallFailed": "No se pudo finalizar la llamada.",
+      "callTerminationUnconfirmed": "Meta no confirmó el cierre. No reintentes; se debe conciliar el estado.",
       "agent": "Agente",
       "callAcceptanceNotRecorded": "No se pudo confirmar el registro del agente que aceptó la llamada.",
       "conversationChanged": "La conversación cambió durante la llamada. Inténtalo de nuevo.",

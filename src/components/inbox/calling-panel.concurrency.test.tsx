@@ -32,6 +32,7 @@ const incoming = {
   customer_name: "Keyler",
   customer_phone: "51980942247",
   claim_available: true,
+  claimed_at: "2026-11-21T05:00:00.123456+00:00",
 };
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify(data), {

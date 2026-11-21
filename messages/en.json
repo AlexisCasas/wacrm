@@ -359,6 +359,7 @@
       "incomingOfferMissing": "The incoming call offer is not available. Try again.",
       "rejectFailed": "The incoming call could not be declined.",
       "endCallFailed": "The call could not be ended.",
+      "callTerminationUnconfirmed": "Meta has not confirmed the call closure. Do not retry; the status is being reconciled.",
       "agent": "Agent",
       "callAcceptanceNotRecorded": "The agent who accepted the call could not be recorded.",
       "conversationChanged": "The conversation changed during the call. Please try again.",

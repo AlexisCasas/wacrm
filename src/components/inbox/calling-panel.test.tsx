@@ -173,7 +173,7 @@ describe("CallingPanel", () => {
       const url = String(input);
       if (url.includes("?call_id=")) {
         return jsonResponse({
-          call: { ...incoming, session_sdp_expires_at: new Date(Date.now() + 50_000).toISOString() },
+          call: { ...incoming, session_sdp_expires_at: new Date(Date.now() + 50_000).toISOString(), claimed_at: "2026-11-21T05:00:00.123456+00:00" },
           session: { sdp_type: "offer", sdp: "v=0\\r\\n" },
           claim_owned_by_me: true,
         });
@@ -222,7 +222,7 @@ describe("CallingPanel", () => {
       const url = String(input);
       if (url.includes("?call_id=")) {
         return jsonResponse({
-          call: { ...incoming, session_sdp_expires_at: new Date(Date.now() + 50_000).toISOString() },
+          call: { ...incoming, session_sdp_expires_at: new Date(Date.now() + 50_000).toISOString(), claimed_at: "2026-11-21T05:00:00.123456+00:00" },
           session: { sdp_type: "offer", sdp: "v=0\\r\\n" },
           claim_owned_by_me: true,
         });
