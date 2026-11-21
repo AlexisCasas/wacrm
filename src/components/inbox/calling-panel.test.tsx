@@ -141,6 +141,38 @@ describe("CallingPanel", () => {
     expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
   });
 
+  it("shows the button only after the server approves this real pilot contact", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("pilot_contact_id=")) return jsonResponse({ pilot_allowed: true });
+      if (init?.method === "POST") {
+        return jsonResponse({ permission: { status: "permanent", canStartCall: true, canRequestPermission: false } });
+      }
+      return jsonResponse({ calls: [] });
+    });
+
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+
+    expect(await screen.findByRole("button", { name: "call" })).toBeTruthy();
+  });
+
+  it("does not render Calling for a server-denied contact of the same business", async () => {
+    let resolved = false;
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("pilot_contact_id=")) {
+        resolved = true;
+        return jsonResponse({ pilot_allowed: false });
+      }
+      if (init?.method === "POST") throw new Error("permission POST must not happen for denied contacts");
+      return jsonResponse({ calls: [] });
+    });
+
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+
+    await waitFor(() => expect(resolved).toBe(true));
+    expect(screen.queryByRole("button", { name: "call" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "requestPermission" })).toBeNull();
+  });
+
   it("does not request microphone access while the Inbox thread is merely open", async () => {
     const getUserMedia = vi.mocked(navigator.mediaDevices.getUserMedia);
     global.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
