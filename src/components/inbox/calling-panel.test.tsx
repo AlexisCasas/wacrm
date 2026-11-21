@@ -131,7 +131,7 @@ describe("CallingPanel", () => {
     const fetchMock = vi.fn();
     global.fetch = fetchMock;
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
 
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: "call" })).toBeNull();
@@ -139,6 +139,38 @@ describe("CallingPanel", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
     expect(navigator.mediaDevices.getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("shows the button only after the server approves this real pilot contact", async () => {
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("pilot_contact_id=")) return jsonResponse({ pilot_allowed: true });
+      if (init?.method === "POST") {
+        return jsonResponse({ permission: { status: "permanent", canStartCall: true, canRequestPermission: false } });
+      }
+      return jsonResponse({ calls: [] });
+    });
+
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+
+    expect(await screen.findByRole("button", { name: "call" })).toBeTruthy();
+  });
+
+  it("does not render Calling for a server-denied contact of the same business", async () => {
+    let resolved = false;
+    global.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("pilot_contact_id=")) {
+        resolved = true;
+        return jsonResponse({ pilot_allowed: false });
+      }
+      if (init?.method === "POST") throw new Error("permission POST must not happen for denied contacts");
+      return jsonResponse({ calls: [] });
+    });
+
+    render(<CallingPanel conversation={conversation} contact={contact} />);
+
+    await waitFor(() => expect(resolved).toBe(true));
+    expect(screen.queryByRole("button", { name: "call" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "requestPermission" })).toBeNull();
   });
 
   it("does not request microphone access while the Inbox thread is merely open", async () => {
@@ -152,7 +184,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
 
     expect(await screen.findByRole("button", { name: "call" })).toBeTruthy();
     expect(getUserMedia).not.toHaveBeenCalled();
@@ -189,7 +221,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [incoming] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
 
     expect(await screen.findByText("Keyler")).toBeTruthy();
     expect(getUserMedia).not.toHaveBeenCalled();
@@ -240,7 +272,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [incoming] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await screen.findByRole("button", { name: "accept" }));
 
     await waitFor(() => {
@@ -285,7 +317,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     const button = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
@@ -313,7 +345,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     const requestButton = await screen.findByRole("button", { name: "requestPermission" });
     fireEvent.click(requestButton);
 
@@ -342,7 +374,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     const button = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
@@ -370,7 +402,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [incoming] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await screen.findByRole("button", { name: "reject" }));
 
     await waitFor(() => {
@@ -403,7 +435,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [incoming] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await screen.findByRole("button", { name: "accept" }));
 
     await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
@@ -437,7 +469,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await screen.findByRole("button", { name: "call" }));
     await screen.findByText("00:00");
 
@@ -478,7 +510,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     const button = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
@@ -519,14 +551,14 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     const button = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(button).toHaveProperty("disabled", false));
     fireEvent.click(button);
     await screen.findByText("00:00");
 
     const nextConversation = { ...conversation, id: "a3000000-0000-4000-8000-000000000099" } as Conversation;
-    view.rerender(<CallingPanel conversation={nextConversation} contact={contact} />);
+    view.rerender(<CallingPanel pilotEligibleForTests={true} conversation={nextConversation} contact={contact} />);
 
     await waitFor(() => {
       const actions = vi.mocked(global.fetch).mock.calls
@@ -567,7 +599,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     const callButton = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(callButton).toHaveProperty("disabled", false));
     fireEvent.click(callButton);
@@ -578,7 +610,7 @@ describe("CallingPanel", () => {
       id: "a3000000-0000-4000-8000-000000000099",
     } as Conversation;
     const otherContact = { ...contact, phone: "51999999999" } as Contact;
-    view.rerender(<CallingPanel conversation={nextConversation} contact={otherContact} />);
+    view.rerender(<CallingPanel pilotEligibleForTests={true} conversation={nextConversation} contact={otherContact} />);
 
     expect(await screen.findByText("Switch termination failed")).toBeTruthy();
     expect(screen.getByRole("button", { name: "endCall" })).toBeTruthy();
@@ -624,7 +656,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     const callButton = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(callButton).toHaveProperty("disabled", false));
     fireEvent.click(callButton);
@@ -675,7 +707,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     const callButton = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(callButton).toHaveProperty("disabled", false));
     fireEvent.click(callButton);
@@ -712,7 +744,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [] });
     });
 
-    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     const callButton = await screen.findByRole("button", { name: "call" });
     await waitFor(() => expect(callButton).toHaveProperty("disabled", false));
     fireEvent.click(callButton);
@@ -756,7 +788,7 @@ describe("CallingPanel", () => {
       return jsonResponse({ calls: [historyCall] })
     })
 
-    render(<CallingPanel conversation={conversation} contact={contact} />)
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />)
 
     fireEvent.click(await screen.findByText(/history \(1\)/i))
 

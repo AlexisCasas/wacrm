@@ -154,8 +154,8 @@ describe("two agents race for one incoming call (per-panel instrumentation)", ()
   ] as Array<[AgentName, AgentName]>)("agent %s clicks first: %s loses without any microphone or WebRTC resource", async (first, second) => {
     const race = createRace();
     const panels = {
-      A: render(<CallingPanel conversation={conversation} contact={contact} runtime={race.agents.A.runtime} />),
-      B: render(<CallingPanel conversation={conversation} contact={contact} runtime={race.agents.B.runtime} />),
+      A: render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} runtime={race.agents.A.runtime} />),
+      B: render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} runtime={race.agents.B.runtime} />),
     };
     await waitFor(() => {
       expect(within(panels.A.container).getByRole("button", { name: "accept" })).toBeTruthy();
@@ -209,8 +209,8 @@ describe("two agents race for one incoming call (per-panel instrumentation)", ()
 
   it("a loser that retries is refused again and still never opens the microphone", async () => {
     const race = createRace();
-    const panelA = render(<CallingPanel conversation={conversation} contact={contact} runtime={race.agents.A.runtime} />);
-    const panelB = render(<CallingPanel conversation={conversation} contact={contact} runtime={race.agents.B.runtime} />);
+    const panelA = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} runtime={race.agents.A.runtime} />);
+    const panelB = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} runtime={race.agents.B.runtime} />);
     await waitFor(() => {
       expect(within(panelA.container).getByRole("button", { name: "accept" })).toBeTruthy();
       expect(within(panelB.container).getByRole("button", { name: "accept" })).toBeTruthy();

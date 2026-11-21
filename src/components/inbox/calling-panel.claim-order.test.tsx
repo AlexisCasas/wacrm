@@ -237,7 +237,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
         terminate: () => conflict("terminal_in_progress"),
       },
     });
-    const { unmount } = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const { unmount } = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
     await waitFor(() => expect(harness.count("pre_accept")).toBe(1));
     await waitFor(() => expect(harness.count("terminate")).toBe(1));
@@ -253,7 +253,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
 
   it("claims first, asks for the microphone once, renews after the dialog and again before accept", async () => {
     const harness = installHarness();
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(screen.getByText("00:00")).toBeTruthy());
@@ -268,7 +268,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
 
   it("never asks the loser for the microphone when the claim is rejected (409)", async () => {
     const harness = installHarness({ post: { claim: () => conflict("Call is already claimed") } });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("callNoLongerAvailable"));
@@ -286,8 +286,8 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     const harness = installHarness({
       post: { claim: (_body, nth) => (nth === 1 ? json({ success: true, lease_seconds: 90 }) : conflict("Call is already claimed")) },
     });
-    const first = render(<CallingPanel conversation={conversation} contact={contact} />);
-    const second = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const first = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
+    const second = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     await waitFor(() => expect(screen.getAllByRole("button", { name: "accept" })).toHaveLength(2));
     const buttons = screen.getAllByRole("button", { name: "accept" });
 
@@ -310,7 +310,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     const harness = installHarness({
       gum: () => Promise.reject(new DOMException("Permission denied", "NotAllowedError")),
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("microphoneDenied"));
@@ -323,7 +323,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
 
   it("does not ask for the microphone when the offer has too little validity left, and releases", async () => {
     const harness = installHarness({ offerMs: 18_000 }); // 18 s - 15 s margin = 3 s < 5 s minimum
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("offerExpiringSoon"));
@@ -341,7 +341,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
         claim_owned_by_me: true,
       }),
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("offerExpiringSoon"));
@@ -356,7 +356,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
       offerMs: 120_000,
       gum: () => new Promise<MediaStream>((resolve) => { grant = resolve; }),
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButtonFake());
     await flush();
     expect(harness.gumCount()).toBe(1);
@@ -385,7 +385,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
       offerMs: 40_000, // timeout = min(30 s, 40 s - 15 s) = 25 s
       gum: () => new Promise<MediaStream>(() => {}),
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButtonFake());
     await flush();
 
@@ -400,11 +400,11 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
   it("aborts on a conversation change during the dialog: releases, no PeerConnection, late stream stopped", async () => {
     let grant: (stream: MediaStream) => void = () => {};
     const harness = installHarness({ gum: () => new Promise<MediaStream>((resolve) => { grant = resolve; }) });
-    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
     await waitFor(() => expect(harness.gumCount()).toBe(1));
 
-    view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+    view.rerender(<CallingPanel pilotEligibleForTests={true} conversation={otherConversation} contact={contact} />);
     await waitFor(() => expect(harness.count("release")).toBe(1));
     expect(harness.count("terminate")).toBe(0);
 
@@ -418,7 +418,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     let grant: (stream: MediaStream) => void = () => {};
     const harness = installHarness({ gum: () => new Promise<MediaStream>((resolve) => { grant = resolve; }) });
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
     await waitFor(() => expect(harness.gumCount()).toBe(1));
 
@@ -437,11 +437,11 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     const harness = installHarness({
       post: { claim: () => new Promise<Response>((resolve) => { finishClaim = resolve; }) },
     });
-    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
     await waitFor(() => expect(harness.count("claim")).toBe(1));
 
-    view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+    view.rerender(<CallingPanel pilotEligibleForTests={true} conversation={otherConversation} contact={contact} />);
     await act(async () => { finishClaim(json({ success: true, lease_seconds: 90 })); });
     await waitFor(() => expect(harness.count("release")).toBe(1));
     expect(harness.gumCount()).toBe(0);
@@ -459,7 +459,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
         claim_owned_by_me: false,
       }),
     });
-    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
     await waitFor(() => expect(harness.count("claim")).toBe(1));
     view.unmount();
@@ -474,7 +474,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     const harness = installHarness({
       post: { claim: () => { throw new TypeError("Failed to fetch"); } },
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(harness.count("release")).toBe(1));
@@ -489,7 +489,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
       post: { claim: () => { throw new TypeError("Failed to fetch"); } },
       detail: () => { throw new TypeError("Failed to fetch"); },
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
@@ -503,7 +503,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     const harness = installHarness({
       post: { renew_claim: () => conflict("Call claim has expired or is no longer owned by you") },
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("claimLost"));
@@ -525,7 +525,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
       offerMs: 120_000,
       gum: () => new Promise<MediaStream>((resolve) => { grant = resolve; }),
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButtonFake());
     const t0 = Date.now();
     await flush();
@@ -571,7 +571,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
         renew_claim: (_body, nth) => (nth === 1 ? json({ success: true }) : conflict("Call claim has expired or is no longer owned by you")),
       },
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButtonFake());
     await flush();
     await advance(20_000);
@@ -603,7 +603,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
         })
         : json({ call: { ...incoming, state: "rejected" }, session: null, claim_owned_by_me: false })),
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("claimLost"));
@@ -618,7 +618,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     const harness = installHarness({
       post: { pre_accept: () => conflict("This incoming call is no longer awaiting acceptance") },
     });
-    render(<CallingPanel conversation={conversation} contact={contact} />);
+    render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
 
     await waitFor(() => expect(harness.count("terminate")).toBe(1));
@@ -630,11 +630,11 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
   it("closes the call safely with terminate when the conversation changes after pre_accept", async () => {
     FakePeerConnection.autoConnect = false;
     const harness = installHarness();
-    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
     fireEvent.click(await acceptButton());
     await waitFor(() => expect(harness.count("pre_accept")).toBe(1));
 
-    view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+    view.rerender(<CallingPanel pilotEligibleForTests={true} conversation={otherConversation} contact={contact} />);
     await waitFor(() => expect(harness.count("terminate")).toBe(1));
     expect(harness.count("release")).toBe(0);
     expect(harness.count("accept")).toBe(0);
@@ -653,7 +653,7 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
       cleanup();
       FakePeerConnection.instances = [];
       const harness = installHarness(options);
-      render(<CallingPanel conversation={conversation} contact={contact} />);
+      render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
       fireEvent.click(await acceptButton());
       await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
       expect(harness.count("pre_accept"), name).toBe(0);
@@ -690,11 +690,11 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
         gum: () => new Promise<MediaStream>((resolve) => { grant = resolve; }),
         detail: (nth) => (nth === 1 ? firstDetail() : claimedByOther()),
       });
-      const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+      const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
       fireEvent.click(await acceptButton());
       await waitFor(() => expect(harness.gumCount()).toBe(1));
       // No clock jump: the client must not trust a newly confirmed 90 s lease.
-      view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+      view.rerender(<CallingPanel pilotEligibleForTests={true} conversation={otherConversation} contact={contact} />);
       await waitFor(() => expect(harness.events.filter((event) => event === "detail")).toHaveLength(2));
       expect(harness.count("release")).toBe(0);
       expect(harness.count("terminate")).toBe(0);
@@ -705,10 +705,10 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     it("does not terminate a recently acquired claim transferred after pre_accept", async () => {
       FakePeerConnection.autoConnect = false;
       const harness = installHarness({ detail: (nth) => (nth === 1 ? firstDetail() : claimedByOther()) });
-      const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+      const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
       fireEvent.click(await acceptButton());
       await waitFor(() => expect(harness.count("pre_accept")).toBe(1));
-      view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+      view.rerender(<CallingPanel pilotEligibleForTests={true} conversation={otherConversation} contact={contact} />);
       await waitFor(() => expect(harness.events.filter((event) => event === "detail")).toHaveLength(2));
       await waitFor(() => expect(FakePeerConnection.instances[0].closed).toBe(true));
       expect(harness.count("terminate")).toBe(0);
@@ -722,11 +722,11 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
         gum: () => new Promise<MediaStream>((resolve) => { grant = resolve; }),
         detail: (nth) => (nth === 1 ? firstDetail() : later()),
       });
-      const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+      const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
       fireEvent.click(await acceptButton());
       await waitFor(() => expect(harness.gumCount()).toBe(1));
       vi.setSystemTime(Date.now() + 100_000); // the 90 s lease lapsed while the dialog sat open
-      view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+      view.rerender(<CallingPanel pilotEligibleForTests={true} conversation={otherConversation} contact={contact} />);
       return { harness, grant: () => act(async () => { grant(mediaStream); }) };
     }
 
@@ -755,11 +755,11 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       FakePeerConnection.autoConnect = false;
       const harness = installHarness({ detail: (nth) => (nth === 1 ? firstDetail() : later()) });
-      const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+      const view = render(<CallingPanel pilotEligibleForTests={true} conversation={conversation} contact={contact} />);
       fireEvent.click(await acceptButton());
       await waitFor(() => expect(harness.count("pre_accept")).toBe(1));
       vi.setSystemTime(Date.now() + 100_000);
-      view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+      view.rerender(<CallingPanel pilotEligibleForTests={true} conversation={otherConversation} contact={contact} />);
       return harness;
     }
 

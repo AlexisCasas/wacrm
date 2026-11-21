@@ -201,9 +201,27 @@ async function pruneExpiredSdp(): Promise<void> {
 export async function GET(request: Request) {
   try {
     const { accountId, userId } = await requireRole('agent')
+    const url = new URL(request.url)
+    const pilotContactId = url.searchParams.get('pilot_contact_id')
+    if (pilotContactId !== null) {
+      if (!UUID_PATTERN.test(pilotContactId)) {
+        return NextResponse.json({ error: 'Invalid pilot_contact_id' }, { status: 400 })
+      }
+      // Eligibility is evaluated on the server against the tenant's actual
+      // business number and a private, single-customer allowlist. Never expose
+      // the list, and do not call Meta merely to decide whether to show the UI.
+      const config = await loadConfig(accountId)
+      if (!config || config.status !== 'connected') {
+        return NextResponse.json({ pilot_allowed: false }, { headers: { 'Cache-Control': 'no-store' } })
+      }
+      const target = await loadCallTarget(accountId, null, pilotContactId)
+      return NextResponse.json({
+        pilot_allowed: Boolean(target && isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone)),
+      }, { headers: { 'Cache-Control': 'no-store' } })
+    }
     await pruneExpiredSdp()
     const db = supabaseAdmin()
-    const callId = new URL(request.url).searchParams.get('call_id')
+    const callId = url.searchParams.get('call_id')
 
     if (callId) {
       if (!CALL_ID_PATTERN.test(callId)) {
