@@ -213,6 +213,9 @@ Los tests locales reportados por Claude están verdes; GitHub todavía no tiene 
 
 **Caveat de precisión:** Meta documenta que el status `ACCEPTED` de BIC llega después de establecerse la llamada y es un evento de auditoría. El `start_time` del webhook `terminate` es el dato autoritativo. La RPC existente conserva el primer `started_at` con `COALESCE`, por lo que el parche actual podría preservar el timestamp provisional de `ACCEPTED` en lugar del `start_time` de `terminate`. Corregir esta precedencia, respetando eventos fuera de orden e idempotencia, antes de fusionar o usar duración derivada como dato exacto.
 
+**Fidelidad UIC del mock:** el simulador actual también emite `statuses[ACCEPTED]` cuando se acepta una llamada entrante sintética. La documentación oficial UIC revisada no muestra ese status separado; el evento terminal UIC sí contiene `start_time`, `end_time` y `duration`. No usar ese status artificial como evidencia de contrato Meta. Eliminarlo del mock UIC o etiquetarlo como extensión de simulación y hacer que la prueba de duración UIC valide los campos del `terminate`.
+
+
 ### H1 — Claim antes del micrófono
 
 Sigue pendiente. Debe implementarse en una rama posterior: `claim` atómico antes de `getUserMedia`; si claim responde 409 no debe solicitar micrófono; tras permiso, renovar/revalidar claim y SDP; si el usuario deniega el permiso, liberar el lease. Añadir pruebas de orden de llamadas y de liberación.
