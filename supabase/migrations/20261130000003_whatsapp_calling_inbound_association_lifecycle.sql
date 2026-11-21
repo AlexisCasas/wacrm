@@ -241,7 +241,14 @@ BEGIN
       WHEN EXCLUDED.session_sdp_encrypted IS NOT NULL THEN EXCLUDED.session_sdp_expires_at
       ELSE whatsapp_call_sessions.session_sdp_expires_at
     END,
-    started_at=COALESCE(whatsapp_call_sessions.started_at,EXCLUDED.started_at),
+    -- terminate.start_time is authoritative even when the ACCEPTED status
+    -- webhook was delivered first and has a later Meta timestamp.
+    started_at=CASE
+      WHEN EXCLUDED.last_meta_event='terminate'
+        AND EXCLUDED.started_at IS NOT NULL
+      THEN EXCLUDED.started_at
+      ELSE whatsapp_call_sessions.started_at
+    END,
     ended_at=CASE
       WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
       THEN COALESCE(EXCLUDED.ended_at,whatsapp_call_sessions.ended_at)
