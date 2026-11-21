@@ -53,6 +53,7 @@ Confirmar sin afectar servicio:
 - Quién inició la rotación (registro de herramienta/operador, journal o artefactos operativos disponibles).
 - SHA/digest/labels de imagen actual y anterior, health, 0 reinicios/OOM.
 - Si el cambio fue autorizado en otro trabajo de WACRM y si impacta algún plan de despliegue futuro.
+- El prefijo `4e1b7b8` coincide en GitHub con el commit [`4e1b7b8bc1173363a3f9832c8d6aab0e81883d35`](https://github.com/AlexisCasas/wacrm/commit/4e1b7b8bc1173363a3f9832c8d6aab0e81883d35), cuyo asunto es una corrección de **OCR de Destino e importes**, no de Calling. Esta coincidencia de tag **no prueba** el contenido de la imagen ni quién ordenó el deploy; verificar OCI label/digest en VPS.
 - No inferir que el despliegue fue originado por este PR ni revertirlo sin autorización.
 
 ## E. Artefacto QA: diseño provisional, **no ejecutar**
