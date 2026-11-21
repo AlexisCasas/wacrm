@@ -4,14 +4,12 @@ import { resolve } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
-// PR-04 <-> PR-03 COMPATIBILITY. This test belongs to PR-04 and replaces nothing: the frozen PR-03 test (src/lib/orders/migration-conversation-routing.test.ts)
-// is left byte-for-byte intact.
-//
-// EXPECTED HISTORICAL TEST FAILURE AFTER ADDITIVE MIGRATIONS
-//   The frozen test asserts `all.indexOf('20261204000002_conversation_routing.sql') === all.length - 1` ("PR-03's migration is the LAST file"). That was true when
-//   PR-03 closed and stops being true, legitimately, the moment ANY later additive migration exists. It is a historical invariant of PR-03, not a functional
-//   check: its other 9 assertions pass, and the functional routing suites (supabase/ci/conversation-routing-test.sql, conversation-handoff-test.sql and
-//   pr04-pr03-compat-test.sql) pass with the PR-04 migrations applied. The test below proves, with the same inputs, that the ONLY reason is the later files.
+// PR-04 <-> PR-03 COMPATIBILITY. The PR-03 SQL remains frozen byte-for-byte.
+// The combined Calling/Orders release changes exactly ONE test assertion:
+// PR-03 cannot remain the last migration in a repo with PR-04, PR-05,
+// PR-06 and Calling migrations. We prove that reversing this one line
+// recreates the exact historical test SHA-256; other assertions stay frozen.
+// Independent SQL compatibility is validated by the PR-03/PR-04 suites.
 //
 // Behaviour against a real database is proven by supabase/ci/pr04-pr03-compat-test.sql (+ the PR-03 suites themselves).
 
@@ -87,11 +85,14 @@ describe('the frozen PR-03 test: what its failure is and is not', () => {
     expect(all.indexOf(PR03)).toBeGreaterThan(all.indexOf('20261204000001_conversation_handoff_rls.sql'))
   })
 
-  it('the frozen test file itself is untouched', () => {
-    const frozen = readFileSync(resolve(process.cwd(), 'src/lib/orders/migration-conversation-routing.test.ts'), 'utf8').replace(/\r\n/g, '\n')
-    expect(frozen).toContain("expect(all.indexOf(name)).toBe(all.length - 1)")
-    // acd92efa… was the hash when PR-03 froze it. The integration release only renamed the PR-03 migration file (20261128000000 -> 20261204000002) and the frozen test
-    // names it in exactly TWO lines (the `name` constant and the PR-02 neighbour); nothing else of it changed. 965ccbfd… is its hash after that rename.
-    expect(createHash('sha256').update(frozen).digest('hex')).toBe('965ccbfd741c6e26f4c2d2780169b9b96059edc1b515dcf50347e1104151a3e5')
+  it('changes only the obsolete last-file assertion; all other historical test bytes are preserved', () => {
+    const amended = readFileSync(resolve(process.cwd(), 'src/lib/orders/migration-conversation-routing.test.ts'), 'utf8').replace(/\r\n/g, '\n')
+    const corrected = "    expect(all[all.indexOf(name) + 1]).toBe('20261204000003_order_logistics_model.sql')"
+    const historical = "    expect(all.indexOf(name)).toBe(all.length - 1)"
+    expect(amended).toContain(corrected)
+    expect(amended).not.toContain(historical)
+    const reconstructedHistorical = amended.replace(corrected, historical)
+    // This hash is the exact frozen PR-03 test after its original SQL-file rename.
+    expect(createHash('sha256').update(reconstructedHistorical).digest('hex')).toBe('965ccbfd741c6e26f4c2d2780169b9b96059edc1b515dcf50347e1104151a3e5')
   })
 })
