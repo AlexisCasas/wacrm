@@ -45,6 +45,7 @@ type CallDetail = {
   call: CallSummary & {
     claimed_by_user_id?: string | null;
     claim_expires_at?: string | null;
+    claimed_at?: string | null;
     session_sdp_expires_at?: string | null;
   };
   session: CallSession | null;
@@ -165,6 +166,7 @@ type AcceptOperation = {
   aborted: boolean;
   abortReason: AcceptAbortReason | null;
   claimed: boolean;
+  claimedAt: string | null;
   claimLost: boolean;
   released: boolean;
   preAccept: boolean;
@@ -192,6 +194,7 @@ function createAcceptOperation(callId: string, conversationId: string | null): A
     aborted: false,
     abortReason: null,
     claimed: false,
+    claimedAt: null,
     claimLost: false,
     released: false,
     preAccept: false,
@@ -539,9 +542,17 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
           op.claimLost = true;
           return;
         }
+        if (!op.claimedAt) {
+          op.terminationError = "original_claim_epoch_missing";
+          return;
+        }
         op.terminateSent = true;
         try {
-          await runtime.post("terminate", { call_id: op.callId });
+          await runtime.post("terminate", {
+            call_id: op.callId,
+            termination_context: "claim_cleanup",
+            claim_epoch: op.claimedAt,
+          });
         } catch (terminateError) {
           op.terminationError = terminateError instanceof Error ? terminateError.message : t("endCallFailed");
         }
@@ -950,10 +961,13 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
       // 5-6. Offer SDP and enough validity left to ask for the microphone.
       const detail = await abortable(op, runtime.detail(incoming.call_id));
       assertAcceptActive(op);
-      if (detail.claim_owned_by_me === false) {
+      if (detail.claim_owned_by_me === false || typeof detail.call.claimed_at !== "string") {
         op.claimLost = true;
         throw new AcceptStepError("claim-lost");
       }
+      // Original server timestamp, never Date-parsed or overwritten by a
+      // later claim. SQL checks the epoch under the terminal row lock.
+      op.claimedAt = detail.call.claimed_at;
       if (detail.session?.sdp_type !== "offer" || !detail.session.sdp) {
         throw new Error(t("incomingOfferMissing"));
       }
@@ -1064,12 +1078,15 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
     operationRef.current = true;
     setUiState("ending");
     try {
-      await runtime.post("reject", {
+      const result = await runtime.post("reject", {
         call_id: incomingCall.call_id,
         conversation_id: conversation?.id,
       });
       setIncomingCall(null);
       setUiState("idle");
+      if (result.terminal_status === "unknown" || result.terminal_status === "reserved") {
+        setErrorMessage(t("callTerminationUnconfirmed"));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : t("rejectFailed");
       setErrorMessage(message);
@@ -1087,8 +1104,11 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
     setUiState("ending");
     setErrorMessage(null);
     try {
-      await runtime.post("terminate", { call_id: call.call_id });
+      const result = await runtime.post("terminate", { call_id: call.call_id });
       resetCall();
+      if (result.terminal_status === "unknown" || result.terminal_status === "reserved") {
+        setErrorMessage(t("callTerminationUnconfirmed"));
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : t("endCallFailed");
       // Keep the active call and its controls available so the agent can retry.
