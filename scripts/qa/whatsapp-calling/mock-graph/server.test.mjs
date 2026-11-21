@@ -5,6 +5,7 @@ import {
   assertQaEnvironment,
   buildCallWebhook,
   createCallStore,
+  createFaultStore,
   createCallEvent,
   terminateTiming,
   createGraphHandler,
@@ -373,4 +374,84 @@ test('terminate reports start_time and duration only for connected calls', async
   assert.equal(Number(withStart.end_time) - Number(withStart.start_time), withStart.duration)
   assert.equal(withoutStart.start_time, undefined)
   assert.equal(withoutStart.duration, undefined)
+})
+
+
+test('one-shot QA faults are disabled by default, token protected, exact-call only', async () => {
+  const calls = createCallStore()
+  const call = calls.create({ direction: 'USER_INITIATED', offer })
+  const faults = createFaultStore()
+  const peer = createPeerHandler({ env, calls, faults, peerHtml: '<html></html>', log: () => {} })
+  const body = { mode: 'after_effect_503', action: 'pre_accept', call_id: call.id }
+  const route = '/qa/faults'
+
+  assert.equal((await invoke(peer, { method: 'POST', url: route, body })).statusCode, 401)
+  assert.equal((await invoke(peer, {
+    method: 'POST', url: route, body,
+    headers: { 'x-qa-mock-token': env.MOCK_CONTROL_TOKEN },
+  })).statusCode, 403)
+
+  const enabled = createPeerHandler({
+    env: { ...env, MOCK_FAULT_INJECTION_ENABLED: 'true' },
+    calls, faults, peerHtml: '<html></html>', log: () => {},
+  })
+  const headers = { 'x-qa-mock-token': env.MOCK_CONTROL_TOKEN }
+  assert.equal((await invoke(enabled, {
+    method: 'POST', url: route, headers,
+    body: { ...body, call_id: 'wacid.qa-00000000-0000-0000-0000-000000000000' },
+  })).statusCode, 404)
+  assert.equal((await invoke(enabled, {
+    method: 'POST', url: route, headers, body: { ...body, action: 'connect' },
+  })).statusCode, 400)
+  assert.equal((await invoke(enabled, { method: 'POST', url: route, headers, body })).statusCode, 201)
+  assert.equal((await invoke(enabled, { method: 'POST', url: route, headers, body })).statusCode, 409)
+})
+
+test('post-effect pre_accept HTTP 503 leaves only one Graph action for inspection', async () => {
+  const calls = createCallStore()
+  const call = calls.create({ direction: 'USER_INITIATED', offer })
+  const faults = createFaultStore()
+  assert.equal(faults.arm(call.id, 'pre_accept'), true)
+  const graph = createGraphHandler({ env, calls, faults, log: () => {} })
+  const body = { action: 'pre_accept', call_id: call.id, session: { sdp_type: 'answer', sdp: answer } }
+  const first = await invoke(graph, {
+    method: 'POST', url: '/v27.0/740434745820831/calls', body,
+  })
+  assert.equal(first.statusCode, 503)
+  assert.equal(call.state, 'preaccepted')
+  assert.equal(call.agentAnswer, answer)
+  assert.equal(call.graphActionCounts.pre_accept, 1)
+  const secondCall = calls.create({ direction: 'USER_INITIATED', offer })
+  const healthy = await invoke(graph, {
+    method: 'POST', url: '/v27.0/740434745820831/calls',
+    body: { ...body, call_id: secondCall.id },
+  })
+  assert.equal(healthy.statusCode, 200)
+  assert.equal(secondCall.graphActionCounts.pre_accept, 1)
+  // WACRM is responsible for NOT repeating first call: Graph never retries.
+  assert.equal(call.graphActionCounts.pre_accept, 1)
+})
+
+test('post-effect reject 503 still delivers the signed webhook exactly once', async () => {
+  const calls = createCallStore()
+  const call = calls.create({ direction: 'USER_INITIATED', offer })
+  const faults = createFaultStore()
+  faults.arm(call.id, 'reject')
+  const delivered = []
+  const graph = createGraphHandler({
+    env, calls, faults, log: () => {},
+    fetchImpl: async (_url, init) => {
+      delivered.push(JSON.parse(init.body))
+      return { ok: true, status: 200 }
+    },
+  })
+  const result = await invoke(graph, {
+    method: 'POST', url: '/v27.0/740434745820831/calls',
+    body: { action: 'reject', call_id: call.id },
+  })
+  assert.equal(result.statusCode, 503)
+  assert.equal(call.state, 'rejected')
+  assert.equal(call.graphActionCounts.reject, 1)
+  assert.equal(delivered.length, 1)
+  assert.equal(delivered[0].entry[0].changes[0].value.calls[0].status, 'REJECTED')
 })

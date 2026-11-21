@@ -109,6 +109,7 @@ export function createCallStore() {
         createdAt: new Date().toISOString(),
         acceptedAt: null,
         endedAt: null,
+        graphActionCounts: { pre_accept: 0, accept: 0, reject: 0, terminate: 0 },
       }
       calls.set(id, call)
       return call
@@ -118,6 +119,34 @@ export function createCallStore() {
     },
     list() {
       return [...calls.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    },
+  }
+}
+
+/**
+ * One-shot, per-call QA fault. There is no global failure mode and it never
+ * affects other synthetic calls. State expires after 120 seconds; disabled
+ * unless the operator enables MOCK_FAULT_INJECTION_ENABLED on QA only.
+ */
+export function createFaultStore() {
+  const armed = new Map()
+  return {
+    arm(callId, action) {
+      const existing = armed.get(callId)
+      if (existing && existing.expiresAt > Date.now()) return false
+      armed.set(callId, { action, expiresAt: Date.now() + 120_000 })
+      return true
+    },
+    consume(callId, action) {
+      const fault = armed.get(callId)
+      if (!fault) return false
+      if (fault.expiresAt <= Date.now()) {
+        armed.delete(callId)
+        return false
+      }
+      if (fault.action !== action) return false
+      armed.delete(callId)
+      return true
     },
   }
 }
@@ -174,6 +203,7 @@ function safeCall(call) {
     createdAt: call.createdAt,
     acceptedAt: call.acceptedAt,
     endedAt: call.endedAt,
+    graphActionCounts: { ...call.graphActionCounts },
   }
 }
 
@@ -214,8 +244,17 @@ function createStatus(call, env, status) {
   }
 }
 
-export function createGraphHandler({ env, calls, fetchImpl = fetch, log = console.log }) {
+export function createGraphHandler({ env, calls, faults = createFaultStore(), fetchImpl = fetch, log = console.log }) {
   const sendWebhook = createWebhookSender({ env, fetchImpl })
+  const respondAfterEffect = (res, call, action) => {
+    // A committed Graph effect followed by an HTTP 503 is intentionally
+    // ambiguous for WACRM: it must persist unknown and NEVER retry blindly.
+    if (faults.consume(call.id, action)) {
+      log('[mock-graph] QA one-shot post-effect 503 for ' + action)
+      return json(res, 503, { error: { message: 'QA simulated uncertain Graph result', code: 1 } })
+    }
+    return json(res, 200, { success: true })
+  }
 
   return async (req, res) => {
     const url = new URL(req.url ?? '/', 'https://graph.facebook.com')
@@ -269,7 +308,8 @@ export function createGraphHandler({ env, calls, fetchImpl = fetch, log = consol
         }
         call.agentAnswer = body.session.sdp
         call.state = 'preaccepted'
-        return json(res, 200, { success: true })
+        call.graphActionCounts.pre_accept++
+        return respondAfterEffect(res, call, 'pre_accept')
       }
 
       if (action === 'accept') {
@@ -278,15 +318,17 @@ export function createGraphHandler({ env, calls, fetchImpl = fetch, log = consol
         }
         call.state = 'connected'
         call.acceptedAt = new Date().toISOString()
+        call.graphActionCounts.accept++
         // UIC acceptance is represented by the terminate timing fields.
         // Do not synthesize a separate ACCEPTED status absent from the UIC contract.
-        return json(res, 200, { success: true })
+        return respondAfterEffect(res, call, 'accept')
       }
 
       if (action === 'reject' || action === 'terminate') {
         const rejected = action === 'reject'
         call.state = rejected ? 'rejected' : 'terminated'
         call.endedAt = new Date().toISOString()
+        call.graphActionCounts[action]++
         try {
           await sendWebhook(buildCallWebhook({
             phoneNumberId: env.MOCK_PHONE_NUMBER_ID,
@@ -301,7 +343,7 @@ export function createGraphHandler({ env, calls, fetchImpl = fetch, log = consol
         } catch {
           return json(res, 502, { error: { message: 'QA webhook delivery failed', code: 1 } })
         }
-        return json(res, 200, { success: true })
+        return respondAfterEffect(res, call, action)
       }
 
       return json(res, 400, { error: { message: 'Unsupported synthetic Calling action', code: 100 } })
@@ -321,7 +363,7 @@ export function createGraphHandler({ env, calls, fetchImpl = fetch, log = consol
   }
 }
 
-export function createPeerHandler({ env, calls, fetchImpl = fetch, peerHtml, log = console.log }) {
+export function createPeerHandler({ env, calls, faults = createFaultStore(), fetchImpl = fetch, peerHtml, log = console.log }) {
   const sendWebhook = createWebhookSender({ env, fetchImpl })
   const authorized = (req) => isControlTokenValid(req.headers['x-qa-mock-token'], env.MOCK_CONTROL_TOKEN)
 
@@ -336,6 +378,32 @@ export function createPeerHandler({ env, calls, fetchImpl = fetch, peerHtml, log
       return html(res, peerHtml.replaceAll('__QA_CONTROL_TOKEN__', env.MOCK_CONTROL_TOKEN))
     }
     if (!authorized(req)) return json(res, 401, { error: 'Unauthorized QA peer control' })
+
+    // Fault control is off by default, token protected, per-existing-call and
+    // one-shot. It never exposes any production Meta endpoint.
+    if (req.method === 'POST' && url.pathname === '/qa/faults') {
+      if (env.MOCK_FAULT_INJECTION_ENABLED !== 'true') {
+        return json(res, 403, { error: 'QA fault injection disabled' })
+      }
+      let body
+      try { body = await readJson(req) } catch {
+        return json(res, 400, { error: 'Invalid QA fault payload' })
+      }
+      if (body.mode !== 'after_effect_503'
+        || !['pre_accept','accept','reject','terminate'].includes(body.action)
+        || typeof body.call_id !== 'string'
+        || !/^wacid\.qa-[a-f0-9-]{36}$/.test(body.call_id)) {
+        return json(res, 400, { error: 'Invalid synthetic fault request' })
+      }
+      if (!calls.get(body.call_id)) return json(res, 404, { error: 'Synthetic call not found' })
+      if (!faults.arm(body.call_id, body.action)) {
+        return json(res, 409, { error: 'A one-shot fault is already armed for this synthetic call' })
+      }
+      return json(res, 201, {
+        armed: true, call_id: body.call_id, action: body.action,
+        mode: 'after_effect_503', expires_in_seconds: 120,
+      })
+    }
 
     if (req.method === 'GET' && url.pathname === '/qa/calls') {
       return json(res, 200, { calls: calls.list().map(safeCall) })
@@ -437,9 +505,10 @@ async function main() {
   const cert = await readFile(process.env.MOCK_TLS_CERT_FILE)
   const key = await readFile(process.env.MOCK_TLS_KEY_FILE)
   const calls = createCallStore()
+  const faults = createFaultStore()
   const peerHtml = await readFile(join(HERE, 'peer.html'), 'utf8')
-  const graphHandler = createGraphHandler({ env: process.env, calls })
-  const peerHandler = createPeerHandler({ env: process.env, calls, peerHtml })
+  const graphHandler = createGraphHandler({ env: process.env, calls, faults })
+  const peerHandler = createPeerHandler({ env: process.env, calls, faults, peerHtml })
 
   const graphServer = createHttpsServer({ cert, key }, (req, res) => {
     void graphHandler(req, res).catch(() => json(res, 500, { error: { message: 'QA mock internal error', code: 1 } }))
