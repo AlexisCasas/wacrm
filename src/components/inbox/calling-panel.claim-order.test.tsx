@@ -405,6 +405,44 @@ describe("CallingPanel — claim before microphone (CALL-03B2.4)", () => {
     expect(errorSpy).not.toHaveBeenCalled();
   });
 
+  it("releases a claim that succeeds after conversation change aborted its pending POST", async () => {
+    let finishClaim: (response: Response) => void = () => {};
+    const harness = installHarness({
+      post: { claim: () => new Promise<Response>((resolve) => { finishClaim = resolve; }) },
+    });
+    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    fireEvent.click(await acceptButton());
+    await waitFor(() => expect(harness.count("claim")).toBe(1));
+
+    view.rerender(<CallingPanel conversation={otherConversation} contact={contact} />);
+    await act(async () => { finishClaim(json({ success: true, lease_seconds: 90 })); });
+    await waitFor(() => expect(harness.count("release")).toBe(1));
+    expect(harness.gumCount()).toBe(0);
+    expect(harness.count("terminate")).toBe(0);
+    expect(harness.events.indexOf("release")).toBeGreaterThan(harness.events.indexOf("detail"));
+  });
+
+  it("does not release a late claim when another agent now owns it", async () => {
+    let finishClaim: (response: Response) => void = () => {};
+    const harness = installHarness({
+      post: { claim: () => new Promise<Response>((resolve) => { finishClaim = resolve; }) },
+      detail: () => json({
+        call: { ...incoming, claimed_by_user_id: "agent-b", claim_expires_at: new Date(Date.now() + 50_000).toISOString() },
+        session: null,
+        claim_owned_by_me: false,
+      }),
+    });
+    const view = render(<CallingPanel conversation={conversation} contact={contact} />);
+    fireEvent.click(await acceptButton());
+    await waitFor(() => expect(harness.count("claim")).toBe(1));
+    view.unmount();
+    await act(async () => { finishClaim(json({ success: true, lease_seconds: 90 })); });
+    await waitFor(() => expect(harness.events).toContain("detail"));
+    expect(harness.count("release")).toBe(0);
+    expect(harness.count("terminate")).toBe(0);
+    expect(harness.gumCount()).toBe(0);
+  });
+
   it("does not ask for the microphone after a network error on claim, and releases a claim the server did acquire", async () => {
     const harness = installHarness({
       post: { claim: () => { throw new TypeError("Failed to fetch"); } },
