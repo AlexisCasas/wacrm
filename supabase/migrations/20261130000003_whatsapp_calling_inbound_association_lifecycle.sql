@@ -197,16 +197,12 @@ BEGIN
     customer_parent_bsuid=COALESCE(EXCLUDED.customer_parent_bsuid,whatsapp_call_sessions.customer_parent_bsuid),
     customer_name=COALESCE(EXCLUDED.customer_name,whatsapp_call_sessions.customer_name),
     state=CASE
-      WHEN EXCLUDED.last_meta_event='terminate'
-        AND EXCLUDED.state IN ('terminated','failed','rejected')
-      THEN EXCLUDED.state
       WHEN EXCLUDED.last_meta_timestamp < COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
         OR whatsapp_call_sessions.state IN ('terminated','failed','rejected')
       THEN whatsapp_call_sessions.state
       ELSE COALESCE(EXCLUDED.state,whatsapp_call_sessions.state)
     END,
     session_sdp_encrypted=CASE
-      WHEN EXCLUDED.last_meta_event='terminate' AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       WHEN EXCLUDED.last_meta_timestamp < COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
         THEN CASE
           WHEN whatsapp_call_sessions.session_sdp_encrypted IS NULL
@@ -220,7 +216,6 @@ BEGIN
       ELSE whatsapp_call_sessions.session_sdp_encrypted
     END,
     session_sdp_type=CASE
-      WHEN EXCLUDED.last_meta_event='terminate' AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       WHEN EXCLUDED.last_meta_timestamp < COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
         THEN CASE
           WHEN whatsapp_call_sessions.session_sdp_encrypted IS NULL
@@ -234,7 +229,6 @@ BEGIN
       ELSE whatsapp_call_sessions.session_sdp_type
     END,
     session_sdp_expires_at=CASE
-      WHEN EXCLUDED.last_meta_event='terminate' AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       WHEN EXCLUDED.last_meta_timestamp < COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
         THEN CASE
           WHEN whatsapp_call_sessions.session_sdp_encrypted IS NULL
@@ -247,45 +241,36 @@ BEGIN
       WHEN EXCLUDED.session_sdp_encrypted IS NOT NULL THEN EXCLUDED.session_sdp_expires_at
       ELSE whatsapp_call_sessions.session_sdp_expires_at
     END,
-    -- terminate.start_time is authoritative even when the ACCEPTED status
-    -- webhook was delivered first and has a later Meta timestamp.
+    -- terminate.start_time is authoritative over any provisional value,
+    -- but only when this terminate event is not older than the last Meta event.
     started_at=CASE
       WHEN EXCLUDED.last_meta_event='terminate'
         AND EXCLUDED.started_at IS NOT NULL
+        AND EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
       THEN EXCLUDED.started_at
       ELSE whatsapp_call_sessions.started_at
     END,
     ended_at=CASE
-      WHEN EXCLUDED.last_meta_event='terminate' AND EXCLUDED.ended_at IS NOT NULL
-      THEN EXCLUDED.ended_at
       WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
       THEN COALESCE(EXCLUDED.ended_at,whatsapp_call_sessions.ended_at)
       ELSE whatsapp_call_sessions.ended_at
     END,
     duration_seconds=CASE
-      WHEN EXCLUDED.last_meta_event='terminate' AND EXCLUDED.duration_seconds IS NOT NULL
-      THEN EXCLUDED.duration_seconds
       WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
       THEN COALESCE(EXCLUDED.duration_seconds,whatsapp_call_sessions.duration_seconds)
       ELSE whatsapp_call_sessions.duration_seconds
     END,
     claimed_by_user_id=CASE
-      WHEN EXCLUDED.last_meta_event='terminate'
-        AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
         AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       ELSE whatsapp_call_sessions.claimed_by_user_id
     END,
     claimed_at=CASE
-      WHEN EXCLUDED.last_meta_event='terminate'
-        AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
         AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       ELSE whatsapp_call_sessions.claimed_at
     END,
     claim_expires_at=CASE
-      WHEN EXCLUDED.last_meta_event='terminate'
-        AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       WHEN EXCLUDED.last_meta_timestamp >= COALESCE(whatsapp_call_sessions.last_meta_timestamp,0)
         AND EXCLUDED.state IN ('terminated','failed','rejected') THEN NULL
       ELSE whatsapp_call_sessions.claim_expires_at
