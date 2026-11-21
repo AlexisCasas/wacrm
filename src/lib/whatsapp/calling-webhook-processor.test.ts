@@ -388,4 +388,92 @@ describe('CALL-02 Calling webhook persistence', () => {
     })).rejects.toThrow('calling_config_unavailable')
     expect(rpc).not.toHaveBeenCalled()
   })
+
+  it('uses ACCEPTED only as a state transition, never as the authoritative call start', async () => {
+    rpc.mockResolvedValue({ data: true, error: null })
+    await processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        statuses: [{
+          id: 'wacid.status-accepted-timing',
+          status: 'ACCEPTED',
+          timestamp: '1795120005',
+          recipient_id: '51911111111',
+          type: 'call',
+        }],
+      },
+    })
+    expect(rpc).toHaveBeenCalledTimes(1)
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_event_name: 'status',
+      p_state: 'connected',
+      p_started_at: null,
+      p_ended_at: null,
+      p_duration_seconds: null,
+    })
+  })
+
+  it('persists terminate timing from Meta and keeps the explicit duration when timestamps disagree', async () => {
+    rpc.mockResolvedValue({ data: true, error: null })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        calls: [{
+          id: 'wacid.terminate-timing',
+          event: 'terminate',
+          timestamp: '1795120065',
+          direction: 'BUSINESS_INITIATED',
+          to: '51911111111',
+          status: 'COMPLETED',
+          start_time: '1795120000',
+          end_time: '1795120065',
+          duration: 60,
+        }],
+      },
+    })
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_event_name: 'terminate',
+      p_started_at: new Date(1795120000 * 1000).toISOString(),
+      p_ended_at: new Date(1795120065 * 1000).toISOString(),
+      p_duration_seconds: 60,
+    })
+    expect(warn).toHaveBeenCalledWith(
+      '[calling] terminate duration differs from timestamp delta',
+      expect.objectContaining({ code: 'duration_timestamp_mismatch', delta_seconds: -5 }),
+    )
+    warn.mockRestore()
+  })
+
+  it('drops an impossible start_time after end_time but retains a valid explicit duration', async () => {
+    rpc.mockResolvedValue({ data: true, error: null })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await processCallingWebhookChange(db, {
+      field: 'calls',
+      value: {
+        metadata: { phone_number_id: config.phone_number_id },
+        calls: [{
+          id: 'wacid.terminate-clock-skew',
+          event: 'terminate',
+          timestamp: '1795120065',
+          direction: 'USER_INITIATED',
+          to: '51911111111',
+          status: 'COMPLETED',
+          start_time: '1795120070',
+          end_time: '1795120065',
+          duration: 0,
+        }],
+      },
+    })
+    expect(rpc.mock.calls[0][1]).toMatchObject({
+      p_started_at: null,
+      p_ended_at: new Date(1795120065 * 1000).toISOString(),
+      p_duration_seconds: 0,
+    })
+    expect(warn).toHaveBeenCalledWith('[calling] invalid terminate time order', { code: 'start_after_end' })
+    warn.mockRestore()
+  })
+
 })
