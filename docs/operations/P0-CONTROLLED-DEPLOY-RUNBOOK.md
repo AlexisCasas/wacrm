@@ -73,13 +73,30 @@ Verificación posterior: las 3 entradas `.applied`; `\d order_shipment_voucher_m
 
 ## J. Rollback
 - **App**: `ops/deploy/rollback.sh` (DRY-RUN y luego `--execute`): vuelve al contenedor anterior (`shalom-provider-38ecdc51`) sin downtime. El esquema nuevo es aditivo y compatible con la app anterior (columnas nullable, tabla vacía, trigger inerte), por lo que **no hace falta revertir la BD** para volver atrás.
-- **BD (solo si hay que quitar lo nuevo; sin datos en las tablas nuevas)**, en una transacción, en este orden:
-  - `DROP TRIGGER IF EXISTS order_shipments_arrival ON public.order_shipments; DROP FUNCTION IF EXISTS public.order_shipments_arrival_message();`
-  - `DROP TABLE IF EXISTS public.order_shipment_voucher_messages CASCADE;` y `DROP FUNCTION IF EXISTS public.{begin,mark_sending→mark_shipment_voucher_sending,finish,retry,resolve}_shipment_voucher_message(...)`.
-  - `ALTER TABLE public.order_shipment_settings DROP COLUMN IF EXISTS arrival_message_template_*, arrival_balance_template_*, voucher_message_template_*;`
-  - `ALTER TABLE public.order_logistics_settings DROP COLUMN IF EXISTS packaging_balance_template_*;` y `ALTER TABLE public.order_payment_settings DROP COLUMN IF EXISTS customer_payment_instructions;`
-  - Los CHECK ampliados (`order_shipment_messages_kind_check`, `order_shipment_events_type_check`) se pueden dejar: son más permisivos y no afectan a la app anterior.
-  - Retirar las entradas `.applied` correspondientes. Este SQL debe **probarse en la BD local** antes de la ventana.
+- **BD (solo si hay que quitar lo nuevo; las tablas nuevas están vacías)**. Los CHECK ampliados (`order_shipment_messages_kind_check`, `order_shipment_events_type_check`) se dejan: son más permisivos y no afectan a la app anterior. Después retirar las 3 entradas `.applied`. SQL **ya probado en la BD local** (dentro de una transacción con ROLLBACK):
+
+```sql
+BEGIN;
+DROP TRIGGER IF EXISTS order_shipments_arrival ON public.order_shipments;
+DROP FUNCTION IF EXISTS public.order_shipments_arrival_message();
+DROP TABLE IF EXISTS public.order_shipment_voucher_messages CASCADE;
+DROP FUNCTION IF EXISTS public.begin_shipment_voucher_message(UUID, UUID, UUID, INTEGER, TIMESTAMPTZ);
+DROP FUNCTION IF EXISTS public.mark_shipment_voucher_sending(UUID, UUID, UUID, INTEGER, TIMESTAMPTZ);
+DROP FUNCTION IF EXISTS public.retry_shipment_voucher_message(UUID, UUID, UUID, INTEGER, TIMESTAMPTZ);
+DROP FUNCTION IF EXISTS public.resolve_shipment_voucher_message(UUID, UUID, UUID, TEXT, TIMESTAMPTZ);
+DROP FUNCTION IF EXISTS public.finish_shipment_voucher_message CASCADE;
+ALTER TABLE public.order_shipment_settings
+  DROP COLUMN IF EXISTS arrival_message_template_name, DROP COLUMN IF EXISTS arrival_message_template_language, DROP COLUMN IF EXISTS arrival_message_template_params,
+  DROP COLUMN IF EXISTS arrival_balance_template_name, DROP COLUMN IF EXISTS arrival_balance_template_language, DROP COLUMN IF EXISTS arrival_balance_template_params,
+  DROP COLUMN IF EXISTS voucher_message_template_name, DROP COLUMN IF EXISTS voucher_message_template_language, DROP COLUMN IF EXISTS voucher_message_template_params;
+ALTER TABLE public.order_logistics_settings
+  DROP COLUMN IF EXISTS packaging_balance_template_name, DROP COLUMN IF EXISTS packaging_balance_template_language, DROP COLUMN IF EXISTS packaging_balance_template_params;
+ALTER TABLE public.order_payment_settings DROP COLUMN IF EXISTS customer_payment_instructions;
+SELECT 'objects_after' AS k, (SELECT count(*) FROM information_schema.tables WHERE table_name='order_shipment_voucher_messages') AS voucher_table,
+  (SELECT count(*) FROM information_schema.columns WHERE table_name IN ('order_shipment_settings','order_logistics_settings','order_payment_settings') AND column_name ~ '(arrival_|voucher_message_|packaging_balance_|customer_payment_instructions)') AS new_cols;
+COMMIT; -- (la prueba local terminó en ROLLBACK)
+```
+
 - **Configuración**: volver a vaciar las filas de settings de plantillas; `ORDER_OCR_*` fuera del `.env.local` y reinicio.
 - **Restauración completa**: solo con el dump del paso A, como último recurso.
 
