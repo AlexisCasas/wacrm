@@ -28,6 +28,8 @@ import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
+import { processCallingWebhookChange, processCallPermissionReply } from '@/lib/whatsapp/calling-webhook-processor'
+import { isWhatsAppCallingPhoneEnabled } from '@/lib/whatsapp/calling-pilot'
 
 export interface MetaWebhookPayload { entry?: WhatsAppWebhookEntry[] }
 
@@ -135,6 +137,19 @@ export async function processWebhook(body: MetaWebhookPayload) {
 
   for (const entry of body.entry) {
     for (const change of entry.changes) {
+      // Calling events are a separate payload family. They must never fall through
+      // to message-status handling (call IDs are not message IDs).
+      if (change.field === 'calls') {
+        // Dark release must fail closed even if a Meta subscription is
+        // mistakenly enabled. The messages webhook remains unaffected.
+        // On pilot activation, accept events only from the allowlisted
+        // business number; never trust a client-provided phone number.
+        if (isWhatsAppCallingPhoneEnabled(change.value?.metadata?.phone_number_id)) {
+          await processCallingWebhookChange(supabaseAdmin(), { field: change.field, value: change.value })
+        }
+        continue
+      }
+
       // Template-lifecycle events (status / quality / components
       // updates from Meta) come in on a different change.field and
       // have a different value shape — route them through the
@@ -208,6 +223,12 @@ export async function processWebhook(body: MetaWebhookPayload) {
       for (let i = 0; i < value.messages.length; i++) {
         const message = value.messages[i]
         const contact = pairContact(message, contacts, i)
+
+        // Permission replies arrive on the existing messages webhook. Persist them
+        // independently of ordinary message dispatch, using the tenant config resolved above.
+        if (isWhatsAppCallingPhoneEnabled(phoneNumberId)) {
+          await processCallPermissionReply(supabaseAdmin(), config, message)
+        }
 
         await processMessage(
           message,

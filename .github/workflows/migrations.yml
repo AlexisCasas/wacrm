@@ -25,6 +25,7 @@ on:
     paths:
       - 'supabase/**'
       - '.github/workflows/migrations.yml'
+      - 'scripts/qa/whatsapp-calling/**'
   push:
     branches: [main]
     paths:
@@ -62,6 +63,13 @@ jobs:
           fi
           echo "MIGRATION_VERSION_UNIQUENESS=PASS"
 
+      - name: Ensure PostgreSQL client is available
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-client
+          fi
+
       - name: Start Postgres
         run: supabase db start
 
@@ -81,6 +89,33 @@ jobs:
       # just the absence of an error.
       - name: Verify the resulting schema
         run: supabase db query --local --file supabase/ci/verify-schema.sql
+
+      - name: Verify WhatsApp Calling sessions, permissions, deduplication and tenant isolation
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify.sql
+
+      - name: Verify concurrent WhatsApp Calling agent claims and lease release
+        run: bash scripts/qa/whatsapp-calling/verify-concurrency.sh
+
+      - name: Verify CALL-03 agent attribution, conversation linkage and lease renewal
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03.sql
+
+      - name: Verify CALL-03B outbound signaling idempotency and callback recovery
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03b.sql
+
+      - name: Verify CALL-03B2.1 inbound association, ambiguity and offer expiry
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03b2-1.sql
+
+      - name: Verify CALL-03B2.5 atomic terminal reservation and Meta uncertainty
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03b2-5.sql
+
+      - name: Race terminal reservation and claim in independent PostgreSQL sessions
+        run: bash scripts/qa/whatsapp-calling/verify-terminal-concurrency.sh
+
+      - name: Verify CALL-03B2.6 signaling fencing and atomic accept attribution
+        run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03b2-6.sql
+
+      - name: Race accept/pre_accept and terminal reservations across PostgreSQL sessions
+        run: bash scripts/qa/whatsapp-calling/verify-signal-terminal-concurrency.sh
 
       - name: Verify durable webhook inbox leases, deduplication and RLS
         run: supabase db query --local --file supabase/ci/webhook-inbox-test.sql

@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # Run CI for stacked feature PRs as well as PRs targeting main.
+  # Restricting pull_request to main silently skipped validation when a
+  # dependent increment targeted another feature branch.
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 
@@ -47,6 +49,9 @@ jobs:
           done
           bash ops/deploy/test-compose-overlays.sh
           bash ops/deploy/test-guard-public-proxy.sh
+
+      - name: CALL-03 dark release contract (static only)
+        run: bash scripts/qa/whatsapp-calling/verify-calling-dark-release.sh
 
       - name: Lint
         run: npm run lint
