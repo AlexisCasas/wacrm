@@ -278,17 +278,8 @@ export function createGraphHandler({ env, calls, fetchImpl = fetch, log = consol
         }
         call.state = 'connected'
         call.acceptedAt = new Date().toISOString()
-        try {
-          await sendWebhook(buildCallWebhook({
-            phoneNumberId: env.MOCK_PHONE_NUMBER_ID,
-            wabaId: env.MOCK_WABA_ID,
-            displayPhone: env.MOCK_DISPLAY_PHONE ?? '+51 980 000 000',
-            customerPhone: env.MOCK_CUSTOMER_PHONE,
-            statuses: [createStatus(call, env, 'ACCEPTED')],
-          }))
-        } catch {
-          return json(res, 502, { error: { message: 'QA webhook delivery failed', code: 1 } })
-        }
+        // UIC acceptance is represented by the terminate timing fields.
+        // Do not synthesize a separate ACCEPTED status absent from the UIC contract.
         return json(res, 200, { success: true })
       }
 
