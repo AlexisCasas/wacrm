@@ -98,6 +98,8 @@ Fuera de alcance: habilitar Meta `calls`, cambiar variables/secretos, desplegar 
 
 ## 10. Estado de cierre técnico — 20/nov/2026
 
+> **Nota histórica:** el pendiente de QA visual en Vercel descrito en esta sección fue superado mediante QA de navegador en la VPS aislada `call03b2-qa`. No se creó proyecto Vercel. El resultado final está en la sección 11 y en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`.
+
 > **Nota histórica:** este corte fue anterior al despliegue del simulador en la VPS QA y a las pruebas manuales de navegador descritas en la sección 11. El estado vigente está en la sección 11 y en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`.
 
 **Implementación y QA automatizado:** PASS en el código CALL-03B2.  
@@ -137,65 +139,39 @@ Fuera de alcance: habilitar Meta `calls`, cambiar variables/secretos, desplegar 
 
 **Estado:** CALL-03B2 automatizado PASS; cierre formal bloqueado únicamente por QA visual y la integración ordenada de dependencias.
 
-## 11. Estado actualizado — QA en VPS y llamadas manuales
+## 11. Estado final — QA de navegador en VPS, 20/nov/2026
 
-**Estado:** CALL-03B2 y CALL-03B2.1 desplegados en QA. Las primeras pruebas manuales salientes y entrantes fueron satisfactorias; el cierre formal de CALL-03 permanece condicionado a cuatro pruebas finales.
+**CALL-03 QA sintético: completado con hardening previo al primer piloto real.**
 
-### Ramas y PRs
-
-| PR | Alcance | HEAD | Gates |
+| Prueba | Navegador | BD | Resultado |
 |---|---|---|---|
-| #140 | Cliente WebRTC e Inbox | `5f8f9d6b17dddd8aecdf7b9329969f24d7444543` | CI #373 PASS; Migrations #237 PASS |
-| #141 | Simulador Graph/peer, solo QA | `62974616cde92e8bb0cb7e232758dd143d79e475` | CI #380 PASS; Migrations #244 PASS |
-| #142 | Asociación entrante y lifecycle | `35cac275fa981ac4dc1ac2def1b38ac2c5481d46` | CI #403 PASS; Migrations #267 PASS |
+| T1 Concurrencia A/C | PASS; un ganador, el otro 409 | PASS; una sesión, sin claims/SDP huérfanos | PASS, con micrófono solicitado antes del claim perdedor |
+| T2 Cambio de conversación | PASS; no hubo POST en el hilo alternativo | PASS; vínculo original preservado | PASS |
+| T3A Recuperación ICE | Simulada (4 s); no es pérdida real de red | PASS | PASS simulado |
+| T3B Desconexión persistente | PASS; `terminate 200`, PeerConnection cerrada y tracks detenidas | PASS; atribución correcta y cero claims | PASS |
+| T4 Historial/atribución | PASS; iniciador, aceptante, rechazante y finalizador coinciden | PASS; 41 eventos/41 claves, cero sesiones duplicadas | PASS con timestamps/duración faltantes y nombres incompletos en dos perfiles QA |
 
-Los tres PR permanecen abiertos como Draft. PR #141 contiene herramientas exclusivas de QA y no debe desplegarse a producción.
+### Despliegue y aislamiento
 
-### Despliegue QA
-
-- Worktree del mock: `/opt/apps/wacrm-call03b2-qa`.
-- Worktree de aplicación: `/opt/apps/wacrm-call03b2-1-qa`.
-- Stack: `/opt/apps/call03b2-qa-stack`.
-- App QA: `wacrm-app:call03b2-1-8f2d4ec`.
+- App QA: `wacrm-app:call03b2-history-8c4d37b` (ID `d9ff178d1bcb`), código funcional `8c4d37b90e4d2def7f7a60154ace07d36c19f4f7`.
 - Mock: `wacrm-call03b2-mock-graph:62974616`.
-- WACRM: `http://127.0.0.1:38089`.
-- Peer: `http://127.0.0.1:38090/peer`.
+- Se recrearon únicamente `app`, `mock-graph` y `localproxy` con `--no-deps`; `db`, `auth`, `rest` y `gw` no se tocaron.
+- Se conservó `docker-compose.yml.bak-pre-8c4d37b`.
+- `graph.facebook.com` resolvió a `127.0.0.1`; el mock fue el único receptor Graph Calling.
+- Webhook real `calls` desactivado; no se hicieron llamadas ni mensajes reales.
+- QA terminó con cero llamadas activas, cero claims huérfanos, cero SDP pendientes y cero intentos salientes con SDP.
+- Producción permaneció intacta: `wacrm-app-1`, imagen `shalom-provider-38ecdc51`, healthy, cero reinicios y `/login` HTTP 200.
+- No se fusionaron PRs ni se modificó `main`.
 
-PostgreSQL QA, Auth, REST y Gateway permanecieron en marcha. El mock Graph está aislado en el namespace de la app, `graph.facebook.com` resuelve a loopback y los puertos publicados son loopback-only.
+### Hardening previo a CALL-04
 
-### Resultados manuales reportados
+1. Reclamar la llamada antes de solicitar micrófono; el agente que pierde el claim no debe recibir un prompt. Revalidar/renovar lease y SDP tras el permiso.
+2. Alinear el mock con el contrato Meta de `start_time`, `end_time` y `duration` para llamadas atendidas; validar el payload real capturado. El parser/procesador ya reconoce esos campos. La revisión del código del mock encontró `end_time` incondicional, mientras el informe QA indicó que no se observó; reconciliar la captura con la imagen desplegada.
+3. Ejecutar una pérdida/recuperación real de red en QA antes de ampliar a más agentes; T3A fue simulada.
+4. Los perfiles QA A/B carecen de `full_name`; no es un fallo de código ni de aislamiento. No se modificaron perfiles existentes.
 
-- **Saliente:** llamada establecida; voz y sonido de teclado audibles con buena calidad; desconexión completada.
-- **Entrante:** la llamada sintética apareció en el Inbox con Aceptar/Rechazar.
-- **Aceptación:** el usuario aceptó la llamada y confirmó recepción de audio.
-- **Rechazo:** el rechazo finalizó correctamente y el peer confirmó liberación del micrófono.
+### Integración
 
-La comprobación explícita de audio en ambos sentidos y las pruebas de concurrencia/cambio de conversación/ICE/historial siguen pendientes de evidencia formal.
+Los PR de CALL-01/02/03 siguen abiertos. Integrar en orden #134 → #136 → #137 → #138 → #140 → #142 y repetir CI/Migrations/replay limpio sobre el resultado integrado. #141 es QA-only y no debe entrar en producción. #139 fue cerrado como supersedido sin merge.
 
-### CALL-03B2.1 y base QA
-
-- Se asocia una llamada entrante con un contacto/conversación existentes dentro de la cuenta correcta.
-- BSUID y parent BSUID se soportan; las identidades ambiguas y los cruces de tenant fallan de forma segura.
-- Ofertas entrantes reciben TTL de 60 segundos; ofertas antiguas sin SDP/expiry metadata se terminan después de cinco minutos.
-- La migración `20261130000003_whatsapp_calling_inbound_association_lifecycle.sql` está aplicada en `call03b2-qa-db`.
-- La función `whatsapp_call_sdp_prune(integer)` se actualizó desde el commit #142. `whatsapp_call_sdp_prune(100)` devolvió `0`.
-- La actualización de la función no modificó ninguna de las ocho sesiones existentes. Las tres llamadas históricas ya habían sido terminadas antes de esa operación.
-- QA no tiene tabla `supabase_migrations.schema_migrations`; las migraciones históricas fueron aplicadas manualmente y no se creó un historial artificial.
-
-### Seguridad y producción
-
-- Webhook real de Meta `calls`: desactivado.
-- Tráfico real hacia Meta: bloqueado por la resolución loopback del mock.
-- Secretos del simulador: solo en `.env` QA, fuera de Git.
-- Producción: sin cambios; `wacrm-app-1` se mantuvo healthy, sin reinicios ni cambio de imagen.
-
-### Pruebas finales pendientes
-
-1. Concurrencia de dos agentes A/B intentando aceptar la misma llamada.
-2. Cambio de conversación mientras una llamada entrante está pendiente.
-3. Desconexión ICE persistente y recuperación transitoria dentro de ocho segundos.
-4. Historial y atribución por agente. La punta actual de PR #142 añade presentación de agente, fecha y duración con nombres resueltos dentro de la misma cuenta; CI y QA manual T4 pendientes.
-
-El runbook y los criterios de aceptación están en `docs/WHATSAPP_CALLING_CALL03_QA_CLOSEOUT.md`.
-
-**CALL-04 no comienza hasta que estas cuatro pruebas estén cerradas.** La activación real del webhook `calls`, flags de producción y piloto real requieren diseño separado y autorización operativa explícita.
+**CALL-04 está diseñado, no implementado.** Ver `docs/WHATSAPP_CALLING_CALL04_DESIGN.md`. La activación de settings Meta, webhook `calls`, flags de producción y llamadas reales requieren autorización operativa separada.
