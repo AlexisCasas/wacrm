@@ -150,6 +150,9 @@ describe('PaymentsSection · actions by role', () => {
     fireEvent.click(screen.getByRole('button', { name: 'accept' }))
     await waitFor(() => expect(posted(f)[1]).toMatchObject({ action: 'confirm', payment_id: PAY, overpayment_reason: 'cliente pagó de más' }))
     // correct: pre-filled, reason required, new request key
+    // POST acknowledgement can precede the final UI busy=false state.
+    // Do not click an inert disabled button while the panel is refreshing.
+    await waitFor(() => expect((screen.getAllByRole('button', { name: 'correct' })[0] as HTMLButtonElement).disabled).toBe(false))
     fireEvent.click(screen.getAllByRole('button', { name: 'correct' })[0])
     const save = (await screen.findByRole('button', { name: 'saveCorrection' })) as HTMLButtonElement
     expect(save.disabled).toBe(true)
