@@ -108,6 +108,9 @@ jobs:
       - name: Verify CALL-03B2.5 atomic terminal reservation and Meta uncertainty
         run: supabase db query --local --file scripts/qa/whatsapp-calling/verify-call03b2-5.sql
 
+      - name: Race terminal reservation and claim in independent PostgreSQL sessions
+        run: bash scripts/qa/whatsapp-calling/verify-terminal-concurrency.sh
+
       - name: Verify durable webhook inbox leases, deduplication and RLS
         run: supabase db query --local --file supabase/ci/webhook-inbox-test.sql
 
