@@ -431,12 +431,12 @@ BEGIN
 
     -- A stale terminate must not override a newer event's state, timing or SDP.
     PERFORM public.whatsapp_call_event_apply(
-      v_account_a,v_phone_number_id,'wacid.qa-call0321-stale-terminate',repeat('a',64),
+      v_account_a,v_phone_number_id,'wacid.qa-call0321-stale-terminate',repeat('c',63)||'1',
       'status',1795120100,NULL,'51980942247','51980942247',NULL,NULL,NULL,
       'connected',NULL,NULL,NULL,NULL,NULL,NULL
     );
     PERFORM public.whatsapp_call_event_apply(
-      v_account_a,v_phone_number_id,'wacid.qa-call0321-stale-terminate',repeat('b',64),
+      v_account_a,v_phone_number_id,'wacid.qa-call0321-stale-terminate',repeat('c',63)||'2',
       'terminate',1795120090,NULL,'51980942247','51980942247',NULL,NULL,NULL,
       'terminated',NULL,NULL,NULL,
       '2026-11-20T20:01:00Z'::timestamptz,
