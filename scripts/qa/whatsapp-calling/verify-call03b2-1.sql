@@ -379,36 +379,42 @@ BEGIN
     END IF;
 
 
-    -- Authoritative terminate timing replaces a later provisional status
-    -- timestamp, even when terminate is delivered after ACCEPTED.
+    -- Simulate a legacy provisional ACCEPTED timestamp, then prove that a
+    -- chronologically newer terminate replaces it with Meta's exact start_time.
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,v_phone_number_id,'wacid.qa-call0321-time-order',repeat('7',64),
-      'status',1795120065,NULL,'51980942247','51980942247',NULL,NULL,NULL,
+      'status',1795120005,NULL,'51980942247','51980942247',NULL,NULL,NULL,
       'connected',NULL,NULL,NULL,NULL,NULL,NULL
     );
+    UPDATE public.whatsapp_call_sessions
+    SET started_at='2026-11-20T20:00:05Z'::timestamptz
+    WHERE phone_number_id=v_phone_number_id
+      AND call_id='wacid.qa-call0321-time-order';
+
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,v_phone_number_id,'wacid.qa-call0321-time-order',repeat('8',64),
-      'terminate',1795120060,NULL,'51980942247','51980942247',NULL,NULL,NULL,
+      'terminate',1795120065,NULL,'51980942247','51980942247',NULL,NULL,NULL,
       'terminated',NULL,NULL,NULL,
       '2026-11-20T20:00:00Z'::timestamptz,
-      '2026-11-20T20:01:00Z'::timestamptz,60
+      '2026-11-20T20:01:05Z'::timestamptz,65
     );
     IF NOT EXISTS (
       SELECT 1 FROM public.whatsapp_call_sessions
       WHERE phone_number_id=v_phone_number_id
         AND call_id='wacid.qa-call0321-time-order'
+        AND state='terminated'
         AND started_at='2026-11-20T20:00:00Z'::timestamptz
-        AND ended_at='2026-11-20T20:01:00Z'::timestamptz
-        AND duration_seconds=60
-      ) THEN
+        AND ended_at='2026-11-20T20:01:05Z'::timestamptz
+        AND duration_seconds=65
+    ) THEN
       RAISE EXCEPTION 'CALL0321_TERMINATE_TIMING_NOT_AUTHORITATIVE';
     END IF;
 
-    -- A duplicate terminate is idempotent and an older non-terminal status
-    -- must not replace authoritative timing or terminal state.
+    -- An older ACCEPTED/status event delivered after terminate must not
+    -- reopen the terminal session or overwrite authoritative timing.
     PERFORM public.whatsapp_call_event_apply(
       v_account_a,v_phone_number_id,'wacid.qa-call0321-time-order',repeat('9',64),
-      'status',1795120005,NULL,'51980942247','51980942247',NULL,NULL,NULL,
+      'status',1795120006,NULL,'51980942247','51980942247',NULL,NULL,NULL,
       'connected',NULL,NULL,NULL,NULL,NULL,NULL
     );
     IF NOT EXISTS (
@@ -417,9 +423,35 @@ BEGIN
         AND call_id='wacid.qa-call0321-time-order'
         AND state='terminated'
         AND started_at='2026-11-20T20:00:00Z'::timestamptz
-        AND duration_seconds=60
+        AND ended_at='2026-11-20T20:01:05Z'::timestamptz
+        AND duration_seconds=65
     ) THEN
       RAISE EXCEPTION 'CALL0321_OUT_OF_ORDER_STATUS_CHANGED_TERMINATE_TIMING';
+    END IF;
+
+    -- A stale terminate must not override a newer event's state, timing or SDP.
+    PERFORM public.whatsapp_call_event_apply(
+      v_account_a,v_phone_number_id,'wacid.qa-call0321-stale-terminate',repeat('a',64),
+      'status',1795120100,NULL,'51980942247','51980942247',NULL,NULL,NULL,
+      'connected',NULL,NULL,NULL,NULL,NULL,NULL
+    );
+    PERFORM public.whatsapp_call_event_apply(
+      v_account_a,v_phone_number_id,'wacid.qa-call0321-stale-terminate',repeat('b',64),
+      'terminate',1795120090,NULL,'51980942247','51980942247',NULL,NULL,NULL,
+      'terminated',NULL,NULL,NULL,
+      '2026-11-20T20:01:00Z'::timestamptz,
+      '2026-11-20T20:01:30Z'::timestamptz,30
+    );
+    IF NOT EXISTS (
+      SELECT 1 FROM public.whatsapp_call_sessions
+      WHERE phone_number_id=v_phone_number_id
+        AND call_id='wacid.qa-call0321-stale-terminate'
+        AND state='connected'
+        AND started_at IS NULL
+        AND ended_at IS NULL
+        AND duration_seconds IS NULL
+    ) THEN
+      RAISE EXCEPTION 'CALL0321_STALE_TERMINATE_OVERWROTE_NEWER_EVENT';
     END IF;
 
     RAISE EXCEPTION '__CALL0321_QA_ROLLBACK__';
