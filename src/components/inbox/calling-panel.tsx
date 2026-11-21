@@ -335,9 +335,11 @@ interface CallingPanelProps {
   contact: Contact | null;
   /** Test seam: per-panel fetch / microphone / PeerConnection. Defaults to the browser globals. */
   runtime?: Partial<CallingPanelRuntime>;
+  /** Test-only seam: does not bypass the API's independent server-side guard. */
+  pilotEligibleForTests?: boolean;
 }
 
-export function CallingPanel({ conversation, contact, runtime: runtimeOverride }: CallingPanelProps) {
+export function CallingPanel({ conversation, contact, runtime: runtimeOverride, pilotEligibleForTests }: CallingPanelProps) {
   const t = useTranslations("Inbox.calling");
   const [runtime] = useState(() => resolveRuntime(runtimeOverride));
   const { profile } = useAuth();
@@ -370,7 +372,31 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride }
   const connectedAtRef = useRef<number | null>(null);
   const disconnectTimerRef = useRef<number | null>(null);
 
-  const isPilotContact = Boolean(contact?.phone && contact.phone.replace(/[^0-9]/g, "") === "51980942247");
+  const pilotContactId = contact?.id ?? null;
+  const [pilotEligibility, setPilotEligibility] = useState<{ contactId: string; allowed: boolean } | null>(null);
+  const isPilotContact = pilotEligibleForTests ?? (
+    pilotEligibility?.contactId === pilotContactId && pilotEligibility?.allowed === true
+  );
+
+  // Server decides which contact of the Keyler business number may use Calling.
+  // The client never contains the private test-recipient allowlist.
+  useEffect(() => {
+    let live = true;
+    setPilotEligibility(null);
+    if (pilotEligibleForTests !== undefined || !canUseCalling || !pilotContactId) return;
+    void runtime.fetch(`/api/whatsapp/calls?pilot_contact_id=${encodeURIComponent(pilotContactId)}`, {
+      cache: "no-store",
+      credentials: "same-origin",
+    })
+      .then(readJson)
+      .then((response) => {
+        if (live) setPilotEligibility({ contactId: pilotContactId, allowed: response.pilot_allowed === true });
+      })
+      .catch(() => {
+        if (live) setPilotEligibility({ contactId: pilotContactId, allowed: false });
+      });
+    return () => { live = false; };
+  }, [runtime, canUseCalling, pilotContactId, pilotEligibleForTests]);
 
   const refreshPermission = useCallback(async () => {
     if (!canUseCalling || !contact?.id || !isPilotContact) {
