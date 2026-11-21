@@ -143,11 +143,18 @@ describe('PaymentsSection · actions by role', () => {
     fireEvent.change(screen.getByLabelText('reasonPlaceholder'), { target: { value: 'devuelto por el banco' } })
     fireEvent.click(accept)
     await waitFor(() => expect(posted(f)).toEqual([{ action: 'void', payment_id: 'c1', expected_version: 2, reason: 'devuelto por el banco' }]))
+    // The POST being recorded is not the same as the UI finishing its reload.
+    // Wait for the void action to close and the next action to become enabled.
+    await waitFor(() => {
+      expect(screen.queryByRole('group', { name: 'acting.void' })).toBeNull()
+      expect((screen.getByRole('button', { name: 'confirm' }) as HTMLButtonElement).disabled).toBe(false)
+    })
     // the 50 > balance 20: the supervisor is asked for a reason BEFORE anything is sent
-    fireEvent.click(screen.getAllByRole('button', { name: 'confirm' })[0])
+    fireEvent.click(screen.getByRole('button', { name: 'confirm' }))
     expect(posted(f)).toHaveLength(1)
+    const overpaymentAccept = await screen.findByRole('button', { name: 'accept' })
     fireEvent.change(screen.getByLabelText('reasonPlaceholder'), { target: { value: 'cliente pagó de más' } })
-    fireEvent.click(screen.getByRole('button', { name: 'accept' }))
+    fireEvent.click(overpaymentAccept)
     await waitFor(() => expect(posted(f)[1]).toMatchObject({ action: 'confirm', payment_id: PAY, overpayment_reason: 'cliente pagó de más' }))
     // correct: pre-filled, reason required, new request key
     // POST acknowledgement can precede the final UI busy=false state.
