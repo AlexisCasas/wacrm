@@ -44,7 +44,7 @@ Los scripts SQL dejan la base de CI sin datos (transacción de rollback/limpieza
 3. Tomar respaldo nuevo de QA, verificar checksum y demostrar procedimiento de rollback **antes** de aplicar migraciones.
 4. Aplicar **ambas** migraciones en secuencia `20261201000000` (terminal) y `20261201000001` (signal), solo en PostgreSQL QA. Nunca arrancar la nueva app sin ambas.
 5. Ejecutar QA SQL/HMAC/WebRTC con Graph mock, imagen construida externamente usando el Environment `qa-call03b2`, puertos 127.0.0.1:38089/38090 y túnel SSH del navegador.
-6. Verificar *post* las 18 sesiones históricas con `hist.sql` y MD5 `2c0040780134cab5a7c807b6063ee090`, y mantener cero reclamaciones/SDP/reservas en las sesiones sintéticas finalizadas.
+6. Verificar *antes y después* las 18 sesiones históricas con [`verify-call03b2-6-history-projection.sql`](../scripts/qa/whatsapp-calling/verify-call03b2-6-history-projection.sql), contrastando con `phase2b/hist.sql` original. **No comparar el MD5 sobre todas las columnas después de la migración**: `to_jsonb(s)` incluiría 13 columnas `terminal_*`/`signal_*` nuevas aunque todas estén NULL, alterando el hash. El script retira únicamente esas claves, usa el mismo orden y espera MD5 `2c0040780134cab5a7c807b6063ee090`. Si no coincide, bloquear y cotejar exactamente el SQL histórico antes de interpretar daño de datos. Mantener cero reclamaciones/SDP/reservas en sesiones sintéticas finalizadas.
 7. Documentar incidencias y detenerse antes de cualquier merge productivo. No activar Meta `calls`.
 
 ## Dependencias
