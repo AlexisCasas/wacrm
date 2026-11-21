@@ -132,7 +132,8 @@ export function createFaultStore() {
   const armed = new Map()
   return {
     arm(callId, action) {
-      if (armed.has(callId)) return false
+      const existing = armed.get(callId)
+      if (existing && existing.expiresAt > Date.now()) return false
       armed.set(callId, { action, expiresAt: Date.now() + 120_000 })
       return true
     },
