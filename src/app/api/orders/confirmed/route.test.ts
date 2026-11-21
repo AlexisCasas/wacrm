@@ -257,6 +257,47 @@ describe('GET /api/orders/confirmed: filters and pagination', () => {
     expect(listCall().or[0]).not.toContain('seller_user_id')
   })
 
+  it('customer / product / seller search is unchanged (and a plain word adds no id filter)', async () => {
+    await get('?q=' + encodeURIComponent('taladro'))
+    expect(listCall().or).toEqual(['customer_name.ilike.*taladro*,product.ilike.*taladro*,seller_name.ilike.*taladro*'])
+    for (const col of ['customer_name', 'product', 'seller_name']) expect(listCall().or[0]).toContain(`${col}.ilike.`)
+    expect(listCall().or[0]).not.toContain('id.gte')
+  })
+
+  it('a full UUID is also matched against the order id (still scoped to the session account)', async () => {
+    await get('?q=' + encodeURIComponent('B5479C55-78D8-4507-8BA5-D9C9923D9199'))
+    expect(listCall().or).toHaveLength(1)
+    expect(listCall().or[0]).toContain('customer_name.ilike.*B5479C55-78D8-4507-8BA5-D9C9923D9199*')
+    expect(listCall().or[0]).toMatch(/,and\(id\.gte\.b5479c55-78d8-4507-8ba5-d9c9923d9199,id\.lte\.b5479c55-78d8-4507-8ba5-d9c9923d9199\)$/)
+    expect(listCall().eq).toContainEqual(['account_id', 'acc-1'])
+  })
+
+  it('an id prefix (b5479c55) becomes an inclusive uuid range', async () => {
+    await get('?q=b5479c55')
+    expect(listCall().or[0]).toMatch(/,and\(id\.gte\.b5479c55-0000-0000-0000-000000000000,id\.lte\.b5479c55-ffff-ffff-ffff-ffffffffffff\)$/)
+  })
+
+  it('the id search is combined with a cursor (two ANDed or() groups) and with the status filter', async () => {
+    data.orders = [row(), row({ id: ORDER_B })]
+    const first = await (await get('?limit=1')).json()
+    calls.length = 0
+    await get(`?limit=1&q=b5479c55&status=held&cursor=${encodeURIComponent(first.next_cursor)}`)
+    expect(listCall().or).toHaveLength(2)
+    expect(listCall().eq).toContainEqual(['delivery_status', 'held'])
+  })
+
+  it('too short or non-hex text never adds an id filter (and nothing else changes: permissions are untouched)', async () => {
+    for (const q of ['b5479c5', 'xyz12345', 'b5479c55x']) {
+      calls.length = 0
+      await get('?q=' + q)
+      expect(listCall().or[0]).not.toContain('id.gte')
+    }
+    data.profileRole = 'commercial'
+    calls.length = 0
+    expect((await get('?q=b5479c55')).status).toBe(403)
+    expect(calls.some((c) => c.table === 'order_confirmations')).toBe(false)
+  })
+
   it.each(['?limit=0', '?limit=51', '?limit=abc', '?cursor=not-a-cursor'])('rejects %s with 400 and reads nothing', async (qs) => {
     expect((await get(qs)).status).toBe(400)
     expect(calls.some((c) => c.table === 'order_confirmations')).toBe(false)

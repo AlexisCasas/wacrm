@@ -7,6 +7,7 @@ import {
   DELIVERY_STATUSES,
   decodeCursor,
   encodeCursor,
+  idPrefixRange,
   parseLimit,
   resolveConfirmedOrdersAccess,
   sanitizeSearch,
@@ -23,6 +24,7 @@ import {
 //   4. the caller's operational_role: supervisor / logistics -> every confirmed order of the account; commercial (it hands the order over and
 //      has no access to this stage) and no area -> 403. account_role alone grants nothing (an owner/admin that is also supervisor acts as supervisor).
 // Orders are read with the CALLER's client, so the row-level policy (agent+ members of the account) applies on top of the explicit filters.
+// The free-text search `q` matches customer / product / seller, and also the order id (a full UUID or a prefix of at least 8 hex characters).
 // Keyset pagination over (confirmed_at DESC, id DESC); items are fetched in a second query and grouped, so a multi-product order is one row.
 // DNI and phone are never selected.
 export async function GET(request: Request) {
@@ -51,7 +53,11 @@ export async function GET(request: Request) {
 
     let query = ctx.supabase.from('order_confirmations').select(CONFIRMED_ORDER_COLUMNS).eq('account_id', ctx.accountId)
     if (status) query = query.eq('delivery_status', status)
-    if (q) query = query.or(`customer_name.ilike.*${q}*,product.ilike.*${q}*,seller_name.ilike.*${q}*`)
+    if (q) {
+      const idRange = idPrefixRange(q)
+      const idFilter = idRange ? `,and(id.gte.${idRange.lo},id.lte.${idRange.hi})` : ''
+      query = query.or(`customer_name.ilike.*${q}*,product.ilike.*${q}*,seller_name.ilike.*${q}*${idFilter}`)
+    }
     if (cursor) query = query.or(`confirmed_at.lt.${cursor.t},and(confirmed_at.eq.${cursor.t},id.lt.${cursor.id})`)
 
     const { data, error } = await query
