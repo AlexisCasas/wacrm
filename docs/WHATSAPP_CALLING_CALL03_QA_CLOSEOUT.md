@@ -237,3 +237,62 @@ Según el informe de ejecución de Claude Code:
 
 El diseño de CALL-04 se encuentra en `docs/WHATSAPP_CALLING_CALL04_DESIGN.md`. El diseño no autoriza activar settings de Meta, suscribir el webhook real ni iniciar llamadas reales.
 
+
+## 11. CALL-03B2.2 — Duración del historial: parches publicados, QA pendiente
+
+**Estado al 21/nov/2026:** los dos commits están publicados en GitHub y sus ramas se verificaron. Claude reportó build de la app en curso y posterior recreación de `app`, `mock-graph` y `localproxy`; el despliegue final aún no está confirmado por esta auditoría de GitHub.
+
+### Ramas y commits verificados
+
+| Componente | Rama | Commit | Base verificada | Cambios |
+|---|---|---|---|---|
+| Aplicación | `fix/whatsapp-calling-call03b2-2-duration-20261121` | [`4122f3bd78ddc876b5177be564cd4499faeb277d`](https://github.com/AlexisCasas/wacrm/commit/4122f3bd78ddc876b5177be564cd4499faeb277d) | `8c4d37b90e4d2def7f7a60154ace07d36c19f4f7` (1 commit ahead) | 6 archivos: `ACCEPTED` registra inicio provisional; helper de duración; GET lista/detalle calcula duración derivada; pruebas |
+| Simulador QA | `qa/call03b2-mock-duration-20261121` | [`8dd898c2ab16da88d75d847fd99bd2aee65374ae`](https://github.com/AlexisCasas/wacrm/commit/8dd898c2ab16da88d75d847fd99bd2aee65374ae) | `62974616cde92e8bb0cb7e232758dd143d79e475` (1 commit ahead) | 2 archivos: `terminate` envía `start_time`, `end_time`, `duration` solo si la llamada se conectó |
+
+Las dos ramas existen en el repositorio remoto. No se abrieron PRs, no se fusionaron cambios y no se modificó `main`.
+
+### Validación local reportada por Claude
+
+- App: 346 archivos de prueba; 4,672 tests PASS, 213 omitidos; `tsc --noEmit` PASS; ESLint sin errores (un warning preexistente en `route.signaling.test.ts:115`).
+- Mock: 13/13 pruebas PASS.
+- Estos son resultados locales reportados por Claude. Los endpoints de GitHub Actions no muestran workflows ni check-runs para esos dos commits; al no abrir PRs, no hay CI/Migrations PASS atribuible a estos commits.
+
+### Estado del despliegue QA
+
+- Claude reportó que la imagen de la app estaba compilándose y que después construiría el mock y recrearía `app`, `mock-graph` y `localproxy`.
+- No hay aún en esta auditoría un tag/ID de imagen final, hora de recreación ni comprobación HTTP posterior. Mantener estado `DEPLOYMENT_PENDING_VERIFICATION` hasta recibir esos datos.
+- La recreación autorizada debe limitarse a `app`, `mock-graph` y `localproxy` con `--no-deps`. No recrear `db`, `auth`, `rest`, `gw`; no aplicar migraciones ni tocar volúmenes.
+- Mantener `graph.facebook.com -> 127.0.0.1`, certificados del mock, puertos loopback, webhook real `calls` apagado y producción intacta.
+
+### QA funcional requerido después del despliegue
+
+1. Verificar imagen/commit exactos en `app` y mock; contenedores sin reinicios y `/login` HTTP 200.
+2. Verificar `POST /api/whatsapp/calls` sin sesión = 401, peer `/qa/health` = 200 y Auth health = 200.
+3. Verificar dentro del contenedor que `graph.facebook.com` resuelve a `127.0.0.1`; el mock es el único receptor y no hay salida real a Meta.
+4. Ejecutar una llamada BIC sintética conectada, terminarla y verificar `started_at`, `ended_at`, `duration_seconds` y la duración mostrada en el Inbox.
+5. Ejecutar una llamada UIC sintética conectada, terminarla y verificar los mismos campos. No asumir que el status `ACCEPTED` se emite para UIC; comprobar el payload real del mock y el contrato específico.
+6. Ejecutar una llamada rechazada y otra no atendida: ambas deben conservar duración NULL y no mostrar una duración inventada.
+7. Verificar que las 17 sesiones históricas no se modificaron automáticamente; seguirán con duración `—` salvo una migración/backfill explícito que no forma parte de este parche.
+8. Cerrar las llamadas sintéticas y verificar cero llamadas activas, claims huérfanos y SDP pendiente.
+
+### Revisión adicional del contrato Meta: precedencia de `started_at`
+
+Hay una sutileza que debe resolverse antes de fusionar el parche de aplicación:
+
+- La documentación oficial de Meta indica que el status `ACCEPTED` para BIC llega **después de que la llamada ya está establecida** y sirve para auditoría. No es necesariamente el instante exacto de inicio del audio.
+- El webhook `terminate` proporciona `start_time`, `end_time` y `duration` para llamadas atendidas. `duration` es la fuente preferida para duración; `start_time` del `terminate` debe ser la fuente autoritativa para `started_at` cuando venga presente.
+- El parche actual escribe `started_at` desde `ACCEPTED`, mientras la función SQL existente usa `COALESCE(existing.started_at, EXCLUDED.started_at)`. Por tanto, el timestamp provisional de `ACCEPTED` podría impedir que el `start_time` exacto del `terminate` lo reemplace.
+
+**Corrección requerida antes del merge:** ajustar la RPC/contrato de persistencia para que un `start_time` explícito del evento `terminate` prevalezca sobre el timestamp provisional de `ACCEPTED`, respetando el guard de orden temporal e idempotencia. Si Meta no envía `start_time`, el timestamp de `ACCEPTED` puede utilizarse como fallback aproximado, pero no debe presentarse como la hora exacta de inicio. Añadir prueba de ambos eventos y de llegada fuera de orden. Confirmar si el fallback aplica solo a BIC, que es donde Meta documenta el status `ACCEPTED`.
+
+Referencias Meta:
+
+- BIC: `ACCEPTED` llega después de establecerse la llamada: https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/business-initiated-calls
+- UIC: el webhook `terminate` muestra `start_time`, `end_time` y `duration`; ventana de aceptación de 30–60 segundos: https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/user-initiated-calls
+
+### Estado de CALL-03 y siguiente trabajo
+
+- H2 (semántica del mock y cálculo de duración): código publicado; despliegue y QA aún pendientes; además queda resolver la precedencia de `started_at` antes de fusionar.
+- H1 (claim antes de micrófono): sigue pendiente y es el siguiente parche de aplicación prioritario. El agente que pierde el claim no debe recibir el prompt de micrófono.
+- T3A: sigue siendo PASS simulado; la prueba de pérdida/recuperación real de red en QA sigue pendiente antes de ampliar el piloto.
+- CALL-04 permanece en diseño. No activar Meta, el webhook real `calls` ni llamadas reales.
