@@ -88,9 +88,18 @@ export interface VoucherMessageView {
   finished_at: string | null
 }
 
+export interface RemoteShipmentView {
+  tracking_number: string
+  tracking_code: string
+  logistic_status: ShipmentStatus | null
+  source_system: 'inkaclick'
+  source_updated_at: string
+}
+
 export interface ShipmentPanelData {
   eligible: boolean
   shipment: ShipmentView | null
+  remote_shipment: RemoteShipmentView | null
   events: ShipmentEventView[]
   alerts: ShipmentAlertView[]
   polls: ShipmentPollView[]

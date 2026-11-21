@@ -3087,6 +3087,9 @@
   },
   "OrderShipments": {
     "title": "Shalom tracking",
+    "remoteTitle": "Tracking mirrored from InkaClick",
+    "remoteSource": "Source: InkaClick. This status does not replace WACRM's local tracker.",
+    "remoteReadOnly": "Read-only in WACRM: another guide will not be registered while this remote mirror exists.",
     "guideTitle": "Shalom guide",
     "registerHint": "The order is ready for dispatch. Enter the Shalom guide order number and code so it is followed automatically.",
     "formHint": "Order number: 6 to 12 digits. Code: 3 to 6 letters or digits.",

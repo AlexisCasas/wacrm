@@ -211,10 +211,19 @@ export interface ShipmentPollView {
   ignored_reason: string | null
 }
 
+export interface RemoteShipmentView {
+  tracking_number: string
+  tracking_code: string
+  logistic_status: ShipmentView['logistic_status']
+  source_system: 'inkaclick'
+  source_updated_at: string
+}
+
 export interface ShipmentPanel {
   /** The order is ready_for_dispatch in PR-04: only then can a guide be registered. */
   eligible: boolean
   shipment: ShipmentView | null
+  remote_shipment: RemoteShipmentView | null
   events: ShipmentEventView[]
   alerts: ShipmentAlertView[]
   polls: ShipmentPollView[]
@@ -244,16 +253,17 @@ export async function getShipmentPanel(ctx: LogisticsCaller, orderId: string, ca
   if (orderError) return fail(500, 'internal_error')
   if (!order) return fail(404, 'not_found')
 
-  const [logistics, shipment, events, alerts, polls, messages, voucherMessages] = await Promise.all([
+  const [logistics, shipment, remoteShipment, events, alerts, polls, messages, voucherMessages] = await Promise.all([
     ctx.supabase.from('order_logistics').select('status').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_shipments').select(SHIPMENT_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
+    ctx.supabase.from('order_shipment_sync_state').select('tracking_number, tracking_code, logistic_status, source_system, source_updated_at').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_shipment_events').select('id, event_type, from_status, to_status, source, actor_name, detail, created_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(40),
     ctx.supabase.from('order_shipment_alerts').select('id, destination_episode, status, due_date, created_at, acknowledged_at, resolved_at, resolved_reason').eq('account_id', ctx.accountId).eq('order_id', orderId).order('destination_episode', { ascending: false }).limit(10),
     ctx.supabase.from('order_shipment_polls').select('id, trigger, started_at, outcome, http_status, latency_ms, applied, ignored_reason').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(8),
     ctx.supabase.from('order_shipment_messages').select('id, destination_episode, kind, status, attempt, error_code, next_attempt_at, resolution, created_at, finished_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('destination_episode', { ascending: false }).limit(10),
     ctx.supabase.from('order_shipment_voucher_messages').select('id, identifier_version, status, attempt, error_code, resolution, created_at, finished_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('identifier_version', { ascending: false }).limit(5),
   ])
-  if (logistics.error || shipment.error || events.error || alerts.error || polls.error || messages.error || voucherMessages.error) {
+  if (logistics.error || shipment.error || remoteShipment.error || events.error || alerts.error || polls.error || messages.error || voucherMessages.error) {
     console.error('[shalom] panel read failed')
     return fail(500, 'internal_error')
   }
@@ -265,6 +275,7 @@ export async function getShipmentPanel(ctx: LogisticsCaller, orderId: string, ca
     body: {
       eligible: status === 'ready_for_dispatch',
       shipment: (shipment.data as ShipmentView | null) ?? null,
+      remote_shipment: (remoteShipment.data as RemoteShipmentView | null) ?? null,
       events: (events.data ?? []) as ShipmentEventView[],
       alerts: (alerts.data ?? []) as ShipmentAlertView[],
       polls: (polls.data ?? []) as ShipmentPollView[],
@@ -293,15 +304,28 @@ export async function getShipmentSummary(ctx: LogisticsCaller, ids: string[]): P
   if (unique.length === 0 || unique.length > MAX_SUMMARY_IDS || !unique.every(isUuid)) return fail(400, 'invalid_ids')
   const denied = await denyUnlessShipments(ctx)
   if (denied) return denied
-  const [shipments, alerts] = await Promise.all([
+  const [shipments, remoteShipments, alerts] = await Promise.all([
     ctx.supabase.from('order_shipments').select('order_id, logistic_status, tracking_state, last_error_kind, pickup_state, destination_entered_at').eq('account_id', ctx.accountId).in('order_id', unique),
+    ctx.supabase.from('order_shipment_sync_state').select('order_id, logistic_status').eq('account_id', ctx.accountId).in('order_id', unique),
     ctx.supabase.from('order_shipment_alerts').select('order_id').eq('account_id', ctx.accountId).in('order_id', unique).neq('status', 'resolved'),
   ])
-  if (shipments.error || alerts.error) return fail(500, 'internal_error')
+  if (shipments.error || remoteShipments.error || alerts.error) return fail(500, 'internal_error')
   const open = new Set(((alerts.data ?? []) as Array<{ order_id: string }>).map((a) => a.order_id))
   const summaries: Record<string, ShipmentSummary> = {}
   for (const s of (shipments.data ?? []) as Array<{ order_id: string; logistic_status: ShipmentSummary['logistic_status']; tracking_state: ShipmentSummary['tracking_state']; last_error_kind: string | null; pickup_state: PickupState; destination_entered_at: string | null }>) {
     summaries[s.order_id] = { logistic_status: s.logistic_status, tracking_state: s.tracking_state, alert_open: open.has(s.order_id), needs_attention: s.tracking_state === 'requires_attention' || s.last_error_kind === 'exception', pickup_state: s.pickup_state, days_at_destination: s.logistic_status === 'at_destination' ? daysAtDestination(s.destination_entered_at) : null }
+  }
+  for (const s of (remoteShipments.data ?? []) as Array<{ order_id: string; logistic_status: ShipmentSummary['logistic_status'] }>) {
+    if (!summaries[s.order_id]) {
+      summaries[s.order_id] = {
+        logistic_status: s.logistic_status,
+        tracking_state: s.logistic_status === 'delivered' ? 'delivered' : 'active',
+        alert_open: false,
+        needs_attention: false,
+        pickup_state: 'none',
+        days_at_destination: null,
+      }
+    }
   }
   return { ok: true, status: 200, body: { summaries } }
 }
