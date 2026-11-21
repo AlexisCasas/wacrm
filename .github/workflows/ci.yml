@@ -50,6 +50,9 @@ jobs:
           bash ops/deploy/test-compose-overlays.sh
           bash ops/deploy/test-guard-public-proxy.sh
 
+      - name: CALL-03 dark release contract (static only)
+        run: bash scripts/qa/whatsapp-calling/verify-calling-dark-release.sh
+
       - name: Lint
         run: npm run lint
 
