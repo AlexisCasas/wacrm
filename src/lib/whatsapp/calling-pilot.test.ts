@@ -3,6 +3,7 @@ import {
   CALLING_PILOT_CUSTOMER_PHONE,
   CALLING_PILOT_PHONE_NUMBER_ID,
   isWhatsAppCallingPilotAllowed,
+  isWhatsAppCallingPhoneEnabled,
 } from './calling-pilot'
 
 const originalEnabled = process.env.WHATSAPP_CALLING_ENABLED
@@ -28,6 +29,22 @@ function enablePilot() {
 }
 
 describe('WhatsApp Calling pilot guard', () => {
+  it('blocks webhook-side Calling events by default without affecting normal messages', () => {
+    delete process.env.WHATSAPP_CALLING_ENABLED
+    process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS = CALLING_PILOT_PHONE_NUMBER_ID
+    expect(isWhatsAppCallingPhoneEnabled(CALLING_PILOT_PHONE_NUMBER_ID)).toBe(false)
+  })
+
+  it('requires an exact allowlisted business number for the Calling webhook', () => {
+    enablePilot()
+    expect(isWhatsAppCallingPhoneEnabled(CALLING_PILOT_PHONE_NUMBER_ID)).toBe(true)
+    expect(isWhatsAppCallingPhoneEnabled('999999999999999')).toBe(false)
+    expect(isWhatsAppCallingPhoneEnabled(null)).toBe(false)
+    expect(isWhatsAppCallingPhoneEnabled(undefined)).toBe(false)
+    process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS = ''
+    expect(isWhatsAppCallingPhoneEnabled(CALLING_PILOT_PHONE_NUMBER_ID)).toBe(false)
+  })
+
   it('fails closed when the feature flag is absent', () => {
     delete process.env.WHATSAPP_CALLING_ENABLED
     process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS = CALLING_PILOT_PHONE_NUMBER_ID
