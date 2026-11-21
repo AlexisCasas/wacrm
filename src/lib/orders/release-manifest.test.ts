@@ -61,7 +61,7 @@ describe('release migration block', () => {
     expect([...olds].sort()).toEqual(olds)
     const news = manifest.release_migrations.map((m) => m.new_version)
     expect(news).toHaveLength(22)
-    const maxExternal = [...manifest.production_baseline.map((p) => p.version), ...manifest.reserved_external.map((r) => r.version)].sort().at(-1)!
+    const maxExternal = [...manifest.production_baseline.map((p) => p.version), ...manifest.reserved_external.map((r) => r.version), ...manifest.integrated_external.map((r) => r.version)].sort().at(-1)!
     for (const v of news) expect(v > maxExternal).toBe(true)
     // nothing in between; the only files after the block are the declared post-release patches
     const patches = ((manifest as { patch_migrations?: { new_file: string }[] }).patch_migrations ?? []).map((p) => p.new_file)
