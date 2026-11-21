@@ -199,3 +199,26 @@ Crear alertas para firma inválida sostenida, cola retrasada, errores de Meta, s
 - Call Settings, habilitación, horario, iconos y permission mode: https://developers.facebook.com/documentation/business-messaging/whatsapp/calling/call-settings
 
 **Estado final:** CALL-04 está diseñado, pero no implementado. No activar `calls`, no habilitar Calling en Meta, no enviar solicitudes de permiso ni realizar llamadas reales hasta que CALL-04A–D tengan autorización separada.
+
+## 14. Actualización de dependencias CALL-03 — 21/nov/2026
+
+### H2 — Duración e historial
+
+Se publicaron, sin abrir PRs, las siguientes ramas:
+
+- App: `fix/whatsapp-calling-call03b2-2-duration-20261121` (`4122f3bd78ddc876b5177be564cd4499faeb277d`).
+- Mock QA: `qa/call03b2-mock-duration-20261121` (`8dd898c2ab16da88d75d847fd99bd2aee65374ae`).
+
+Los tests locales reportados por Claude están verdes; GitHub todavía no tiene workflows/check-runs para estos commits. El despliegue QA de las imágenes estaba en curso y requiere evidencia de cierre antes de considerar H2 validado.
+
+**Caveat de precisión:** Meta documenta que el status `ACCEPTED` de BIC llega después de establecerse la llamada y es un evento de auditoría. El `start_time` del webhook `terminate` es el dato autoritativo. La RPC existente conserva el primer `started_at` con `COALESCE`, por lo que el parche actual podría preservar el timestamp provisional de `ACCEPTED` en lugar del `start_time` de `terminate`. Corregir esta precedencia, respetando eventos fuera de orden e idempotencia, antes de fusionar o usar duración derivada como dato exacto.
+
+### H1 — Claim antes del micrófono
+
+Sigue pendiente. Debe implementarse en una rama posterior: `claim` atómico antes de `getUserMedia`; si claim responde 409 no debe solicitar micrófono; tras permiso, renovar/revalidar claim y SDP; si el usuario deniega el permiso, liberar el lease. Añadir pruebas de orden de llamadas y de liberación.
+
+### Estado de los PRs de duración
+
+Las ramas de duración no tienen PRs todavía por decisión operativa. Antes de abrirlos, actualizar/rebasar la rama de app sobre el HEAD actual de PR #142 para incorporar sus últimos commits documentales y conservar la pila correcta. No abrir ni fusionar PR sin indicación del responsable.
+
+**Gate actualizado:** CALL-04B no puede cerrarse hasta que H1 esté corregido, H2 tenga la precedencia de timestamps corregida y QA post-despliegue PASS. La activación Meta y el piloto real siguen bloqueados.
