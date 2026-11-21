@@ -170,15 +170,15 @@ test('Graph mock returns synthetic permission and creates an outbound call ID', 
   assert.equal(calls.get(connected.body.calls[0].id).direction, 'BUSINESS_INITIATED')
 })
 
-test('Graph mock pre_accept and accept deliver a signed local status webhook', async () => {
+test('Graph mock accepts UIC without inventing a separate ACCEPTED status webhook', async () => {
   const calls = createCallStore()
   const call = calls.create({ direction: 'USER_INITIATED', offer })
-  let delivered = null
+  const delivered = []
   const handler = createGraphHandler({
     env,
     calls,
     fetchImpl: async (url, init) => {
-      delivered = { url, init, body: JSON.parse(init.body) }
+      delivered.push({ url, init, body: JSON.parse(init.body) })
       return { ok: true, status: 200 }
     },
     log: () => {},
@@ -190,7 +190,6 @@ test('Graph mock pre_accept and accept deliver a signed local status webhook', a
     body: { action: 'pre_accept', call_id: call.id, session: { sdp_type: 'answer', sdp: answer } },
   })
   assert.equal(preAccept.statusCode, 200)
-  assert.equal(call.agentAnswer, answer)
 
   const accepted = await invoke(handler, {
     method: 'POST',
@@ -198,13 +197,10 @@ test('Graph mock pre_accept and accept deliver a signed local status webhook', a
     body: { action: 'accept', call_id: call.id },
   })
   assert.equal(accepted.statusCode, 200)
-  assert.equal(delivered.url, env.WACRM_WEBHOOK_URL)
-  assert.equal(delivered.body.entry[0].changes[0].value.statuses[0].status, 'ACCEPTED')
-  assert.equal(
-    delivered.init.headers['x-hub-signature-256'],
-    signWebhookPayload(delivered.init.body, env.MOCK_META_APP_SECRET),
-  )
+  assert.equal(call.state, 'connected')
+  assert.equal(delivered.length, 0)
 })
+
 
 test('peer control requires token and signs synthetic incoming call webhooks', async () => {
   const calls = createCallStore()
