@@ -18,7 +18,10 @@ describe(name, () => {
   it('sorts after the PR-02 migrations and edits none of them', () => {
     const all = readdirSync(dir).filter((f) => f.endsWith('.sql')).sort()
     expect(all.indexOf(name)).toBeGreaterThan(all.indexOf('20261204000001_conversation_handoff_rls.sql'))
-    expect(all.indexOf(name)).toBe(all.length - 1)
+    // More PR-04..PR-06 and Calling migrations now coexist in the unified tree.
+    // This migration must stay immediately after PR-02 and before PR-04,
+    // not at the end of the entire repository.
+    expect(all[all.indexOf(name) + 1]).toBe('20261204000003_order_logistics_model.sql')
   })
 
   it('documents the model rule: no row means commercial, rows only for conversations that left the commercial stage', () => {
