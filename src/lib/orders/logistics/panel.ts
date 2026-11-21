@@ -42,9 +42,17 @@ export interface DispatchView {
   finished_at: string | null
 }
 
+export interface RemotePackagingState {
+  status: 'completed'
+  source_system: 'inkaclick'
+  customer_message_sent: boolean
+  completed_at: string
+}
+
 export interface OrderPanel {
   order: ConfirmedOrder
   logistics: LogisticsState
+  remote_packaging: RemotePackagingState | null
   vouchers: DocumentView[]
   /** The active packaging evidence (private snapshot of a chat media), or null. */
   evidence: DocumentView | null
@@ -81,11 +89,17 @@ export async function getOrderPanel(ctx: LogisticsCaller, orderId: string): Prom
   }
   if (!orderRow) return fail(404, 'not_found')
 
-  const [items, logistics, vouchers, evidence, dispatches, events] = await Promise.all([
+  const [items, logistics, remotePackaging, vouchers, evidence, dispatches, events] = await Promise.all([
     ctx.supabase.from('order_confirmation_items').select(CONFIRMED_ITEM_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).order('line_number', { ascending: true }),
     ctx.supabase
       .from('order_logistics')
       .select('status, version, voucher_document_id, validated_at, evidence_document_id, packaging_started_at, packaging_completed_at')
+      .eq('account_id', ctx.accountId)
+      .eq('order_id', orderId)
+      .maybeSingle(),
+    ctx.supabase
+      .from('order_packaging_sync_state')
+      .select('status, source_system, customer_message_sent, completed_at')
       .eq('account_id', ctx.accountId)
       .eq('order_id', orderId)
       .maybeSingle(),
@@ -94,7 +108,7 @@ export async function getOrderPanel(ctx: LogisticsCaller, orderId: string): Prom
     ctx.supabase.from('order_template_dispatches').select('id, status, attempt, error_code, resolution, claimed_at, finished_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(20),
     ctx.supabase.from('order_logistics_events').select(EVENT_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(EVENT_LIMIT),
   ])
-  const failed = [items, logistics, vouchers, evidence, dispatches, events].find((r) => r.error)
+  const failed = [items, logistics, remotePackaging, vouchers, evidence, dispatches, events].find((r) => r.error)
   if (failed?.error) {
     console.error('[logistics] panel read failed:', failed.error.code)
     return fail(500, 'internal_error')
@@ -106,6 +120,7 @@ export async function getOrderPanel(ctx: LogisticsCaller, orderId: string): Prom
     body: {
       order: toOrder(orderRow as unknown as Parameters<typeof toOrder>[0], (items.data ?? []) as unknown as Parameters<typeof toOrder>[1]),
       logistics: (logistics.data as LogisticsState | null) ?? EMPTY_STATE,
+      remote_packaging: (remotePackaging.data as RemotePackagingState | null) ?? null,
       vouchers: (vouchers.data ?? []) as unknown as DocumentView[],
       evidence: (evidence.data as unknown as DocumentView | null) ?? null,
       dispatches: (dispatches.data ?? []) as unknown as DispatchView[],

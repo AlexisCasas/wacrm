@@ -26,12 +26,14 @@ interface ChatMedia {
 export function PackagingSection({
   orderId,
   status,
+  remotePackaging,
   evidence,
   dispatches,
   onChanged,
 }: {
   orderId: string
   status: LogisticsStatus
+  remotePackaging: { status: 'completed'; source_system: 'inkaclick'; customer_message_sent: boolean; completed_at: string } | null
   evidence: DocumentView | null
   dispatches: DispatchView[]
   onChanged: () => void
@@ -49,6 +51,7 @@ export function PackagingSection({
   const evidenceUrl = evidence && resolvedUrl?.id === evidence.id ? resolvedUrl.url : null;
 
   const uncertain = dispatches.find((d) => d.status === "uncertain");
+  const completedElsewhere = remotePackaging?.status === "completed";
   const done = () => {
     onChanged();
     notifyLogisticsChanged(orderId);
@@ -144,16 +147,23 @@ export function PackagingSection({
         {t("packagingTitle")}
       </h4>
 
-      {status === "pending_voucher" ? <p className="text-xs text-muted-foreground">{t("packagingNeedsVoucher")}</p> : null}
+      {completedElsewhere ? (
+        <p className="flex items-center gap-1.5 rounded-lg bg-emerald-500/10 px-3 py-2 text-xs font-medium text-emerald-400">
+          <CircleCheck className="size-4" aria-hidden />
+          {t("remotePackagingBanner")}
+        </p>
+      ) : null}
 
-      {status === "voucher_validated" ? (
+      {!completedElsewhere && status === "pending_voucher" ? <p className="text-xs text-muted-foreground">{t("packagingNeedsVoucher")}</p> : null}
+
+      {!completedElsewhere && status === "voucher_validated" ? (
         <Button type="button" size="sm" className="h-8 gap-1.5" disabled={busy !== null} onClick={() => void start()}>
           {busy === "start" ? <Loader2 className="size-3.5 animate-spin" /> : <PackageOpen className="size-3.5" aria-hidden />}
           {t("startPackaging")}
         </Button>
       ) : null}
 
-      {status === "packing" || status === "ready_for_dispatch" ? (
+      {!completedElsewhere && (status === "packing" || status === "ready_for_dispatch") ? (
         <div className="space-y-3">
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">

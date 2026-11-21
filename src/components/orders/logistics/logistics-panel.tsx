@@ -74,7 +74,7 @@ export function LogisticsPanel({ orderId }: { orderId: string }) {
           <div className="space-y-5">
             <StatusStepper status={data.logistics.status} />
             <VoucherSection orderId={orderId} status={data.logistics.status} vouchers={data.vouchers} onChanged={() => void load()} />
-            <PackagingSection orderId={orderId} status={data.logistics.status} evidence={data.evidence} dispatches={data.dispatches} onChanged={() => void load()} />
+            <PackagingSection orderId={orderId} status={data.logistics.status} remotePackaging={data.remote_packaging} evidence={data.evidence} dispatches={data.dispatches} onChanged={() => void load()} />
             <Trace events={data.events} />
           </div>
         ) : null}
