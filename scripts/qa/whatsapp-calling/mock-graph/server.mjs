@@ -391,7 +391,7 @@ export function createPeerHandler({ env, calls, faults = createFaultStore(), fet
       if (body.mode !== 'after_effect_503'
         || !['pre_accept','accept','reject','terminate'].includes(body.action)
         || typeof body.call_id !== 'string'
-        || !/^wacid\\.qa-[a-f0-9-]{36}$/.test(body.call_id)) {
+        || !/^wacid\.qa-[a-f0-9-]{36}$/.test(body.call_id)) {
         return json(res, 400, { error: 'Invalid synthetic fault request' })
       }
       if (!calls.get(body.call_id)) return json(res, 404, { error: 'Synthetic call not found' })
