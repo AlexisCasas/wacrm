@@ -1,9 +1,8 @@
 import { createCipheriv, randomBytes } from "node:crypto";
-import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
+import callbackOps from "../../../scripts/ops/calling-callback-permission-inkaclick.cjs";
 
-const require = createRequire(import.meta.url);
-const ops = require("../../../scripts/ops/calling-callback-permission-inkaclick.cjs") as {
+const ops = callbackOps as {
   PHONE_NUMBER_ID: string;
   safeCallingSettings: (response: unknown) => Record<string, string>;
   assertSafeCallingMode: (response: Record<string, string>) => void;
