@@ -27,6 +27,22 @@ BEGIN
     RAISE EXCEPTION 'CALLING_TRIGGER_ACL_PRECHECK=FAIL_FUNCTION_MISMATCH';
   END IF;
 
+  -- Postgres in this self-hosted instance is NO-SUPERUSER and not a member
+  -- of supabase_admin, the function owner. It has only EXECUTE without
+  -- GRANT OPTION, so REVOKE/GRANT appeared to run but changed nothing.
+  -- Require the exact current execution role to be the function owner.
+  -- Refuse to attempt any ACL mutation under postgres or another role.
+  IF current_user <> (SELECT pg_get_userbyid(p.proowner)
+                      FROM pg_proc p WHERE p.oid = v_oid) THEN
+    RAISE EXCEPTION 'CALLING_TRIGGER_ACL_PRECHECK=FAIL_EXECUTOR_NOT_OWNER';
+  END IF;
+
+  IF current_user <> 'supabase_admin' THEN
+    RAISE EXCEPTION 'CALLING_TRIGGER_ACL_PRECHECK=FAIL_UNEXPECTED_OWNER';
+  END IF;
+
+  RAISE NOTICE 'CALLING_TRIGGER_ACL_EXECUTOR=OWNER_CONFIRMED';
+
   SELECT COUNT(*) INTO v_triggers
   FROM pg_trigger t
   WHERE t.tgfoid = v_oid
