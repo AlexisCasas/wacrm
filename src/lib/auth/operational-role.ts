@@ -29,3 +29,16 @@ export function assignableOperationalRoles(
   if (target.operationalRole === "supervisor") return [];
   return OPERATIONAL_ROLES.filter((r) => r !== "supervisor");
 }
+
+/**
+ * WhatsApp Calling is distinct from messaging privileges. An account owner
+ * or admin assigned to Commercial is NOT exempt from the operational area.
+ * Missing or unknown roles always fail closed.
+ */
+export function canOperateWhatsAppCalling(
+  accountRole: import('./roles').AccountRole | null | undefined,
+  operationalRole: OperationalRole | null | undefined,
+): boolean {
+  return (accountRole === 'owner' || accountRole === 'admin' || accountRole === 'agent')
+    && (operationalRole === 'logistics' || operationalRole === 'supervisor');
+}
