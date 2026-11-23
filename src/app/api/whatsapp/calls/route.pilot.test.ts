@@ -6,7 +6,9 @@ const CUSTOMER_ID = 'a3000000-0000-4000-8000-000000000003'
 const h = vi.hoisted(() => ({
   configPhone: '740434745820831',
   configStatus: 'connected',
-  contactPhone: '51911122233',
+  contactPhone: '51911122233' as string | null,
+  contactBsuid: null as string | null,
+  contactParentBsuid: null as string | null,
   contactFound: true,
 }))
 
@@ -42,7 +44,9 @@ vi.mock('@/lib/flows/admin-client', () => ({
         },
         limit: async () => {
           if (table !== 'contact_identities') throw new Error('unexpected limit table')
-          return { data: [], error: null }
+          const value = filters.kind === 'bsuid' ? h.contactBsuid
+            : filters.kind === 'parent_bsuid' ? h.contactParentBsuid : null
+          return { data: value ? [{ value }] : [], error: null }
         },
       }
       return q
@@ -57,13 +61,17 @@ const old = {
   flag: process.env.WHATSAPP_CALLING_ENABLED,
   business: process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS,
   customer: process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES,
+  allContacts: process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS,
 }
 
 beforeEach(() => {
   h.configPhone = BUSINESS_ID
   h.configStatus = 'connected'
   h.contactPhone = TEST_CUSTOMER
+  h.contactBsuid = null
+  h.contactParentBsuid = null
   h.contactFound = true
+  delete process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS
   process.env.WHATSAPP_CALLING_ENABLED = 'true'
   process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS = BUSINESS_ID
   process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES = TEST_CUSTOMER
@@ -74,6 +82,7 @@ afterEach(() => {
     ['WHATSAPP_CALLING_ENABLED', old.flag],
     ['WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS', old.business],
     ['WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES', old.customer],
+    ['WHATSAPP_CALLING_KEYLER_ALL_CONTACTS', old.allContacts],
   ] as const) {
     if (name === undefined) delete process.env[key]
     else process.env[key] = name
@@ -118,4 +127,27 @@ describe('GET /api/whatsapp/calls?pilot_contact_id — read-only eligibility', (
     const response = await GET(new Request('https://wacrm.test/api/whatsapp/calls?pilot_contact_id=invalid'))
     expect(response.status).toBe(400)
   })
+  it('allows different Keyler contacts including BSUID-only identity in all-contacts mode', async () => {
+    process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS = 'true'
+    delete process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES
+    h.contactPhone = '51955544433'
+    expect(await (await GET(url())).json()).toEqual({ pilot_allowed: true })
+    h.contactPhone = null
+    h.contactBsuid = 'bsuid_test_2'
+    expect(await (await GET(url())).json()).toEqual({ pilot_allowed: true })
+  })
+
+  it('still rejects other businesses, self-calls, and identity-less contacts', async () => {
+    process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS = 'true'
+    h.configPhone = '999999999999999'
+    expect(await (await GET(url())).json()).toEqual({ pilot_allowed: false })
+    h.configPhone = BUSINESS_ID
+    h.contactPhone = '51980942247'
+    h.contactBsuid = 'bsuid_test_2'
+    expect(await (await GET(url())).json()).toEqual({ pilot_allowed: false })
+    h.contactPhone = null
+    h.contactBsuid = null
+    expect(await (await GET(url())).json()).toEqual({ pilot_allowed: false })
+  })
+
 })

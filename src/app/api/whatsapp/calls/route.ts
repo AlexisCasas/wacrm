@@ -216,7 +216,7 @@ export async function GET(request: Request) {
       }
       const target = await loadCallTarget(accountId, null, pilotContactId)
       return NextResponse.json({
-        pilot_allowed: Boolean(target && isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone)),
+        pilot_allowed: Boolean(target && isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone, target.bsuid, target.parentBsuid)),
       }, { headers: { 'Cache-Control': 'no-store' } })
     }
     await pruneExpiredSdp()
@@ -244,7 +244,7 @@ export async function GET(request: Request) {
         && typeof call.claim_expires_at === 'string'
         && Date.parse(call.claim_expires_at) > now
       const callIsActive = !['terminated','failed','rejected'].includes(call.state)
-      const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone)
+      const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone, call.customer_bsuid, call.customer_parent_bsuid)
       const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED' && call.initiated_by_user_id === userId
       const canReadSession = callIsActive && !call.terminal_status && call.signal_status !== 'unknown' && pilotAllowed && (ownsClaim || ownsOutboundCall)
       const sdpIsFresh = typeof call.session_sdp_expires_at === 'string'
@@ -320,7 +320,7 @@ export async function GET(request: Request) {
       const ownsOutboundCall = call.direction === 'BUSINESS_INITIATED'
         && call.initiated_by_user_id === userId
       const callIsActive = !['terminated','failed','rejected'].includes(call.state)
-      const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone)
+      const pilotAllowed = isWhatsAppCallingPilotAllowed(call.phone_number_id, call.customer_phone, call.customer_bsuid, call.customer_parent_bsuid)
       return {
         ...call,
         duration_seconds: effectiveCallDuration(call),
@@ -394,7 +394,7 @@ export async function POST(request: Request) {
       const db = supabaseAdmin()
       const { data: callRow, error: callLookupError } = await db
         .from('whatsapp_call_sessions')
-        .select('phone_number_id,customer_phone')
+        .select('phone_number_id,customer_phone,customer_bsuid,customer_parent_bsuid')
         .eq('account_id', accountId)
         .eq('call_id', callId)
         .maybeSingle()
@@ -404,7 +404,7 @@ export async function POST(request: Request) {
       }
       if (!callRow) return NextResponse.json({ error: 'Call not found' }, { status: 404 })
       if (action !== 'release'
-        && !isWhatsAppCallingPilotAllowed(callRow.phone_number_id, callRow.customer_phone)) {
+        && !isWhatsAppCallingPilotAllowed(callRow.phone_number_id, callRow.customer_phone, callRow.customer_bsuid, callRow.customer_parent_bsuid)) {
         return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
       }
 
@@ -453,7 +453,7 @@ export async function POST(request: Request) {
       }
       const target = await loadCallTarget(accountId, null, contactId)
       if (!target) return NextResponse.json({ error: 'WhatsApp contact not found' }, { status: 404 })
-      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone)) {
+      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone, target.bsuid, target.parentBsuid)) {
         return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
       }
       const targetArgs = metaTarget(target)
@@ -627,7 +627,7 @@ export async function POST(request: Request) {
       if (!call || call.phone_number_id !== config.phone_number_id) {
         return NextResponse.json({ error: 'Call not found' }, { status: 404 })
       }
-      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, call.customer_phone)) {
+      if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, call.customer_phone, call.customer_bsuid, call.customer_parent_bsuid)) {
         return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
       }
       if ((action === 'pre_accept' || action === 'accept') && call.terminal_status) {
@@ -959,7 +959,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'WhatsApp credentials are unavailable' }, { status: 503 })
     }
 
-    if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone)) {
+    if (!isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone, target.bsuid, target.parentBsuid)) {
       return NextResponse.json({ error: 'WhatsApp Calling is disabled for this customer' }, { status: 403 })
     }
 

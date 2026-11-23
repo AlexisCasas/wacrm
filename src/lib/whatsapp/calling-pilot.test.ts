@@ -11,6 +11,7 @@ const TEST_CUSTOMER_PHONE = '51911122233' // synthetic real-format test recipien
 const originalEnabled = process.env.WHATSAPP_CALLING_ENABLED
 const originalNumberAllowlist = process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS
 const originalCustomerAllowlist = process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES
+const originalAllContacts = process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS
 
 afterEach(() => {
   if (originalEnabled === undefined) delete process.env.WHATSAPP_CALLING_ENABLED
@@ -21,10 +22,13 @@ afterEach(() => {
 
   if (originalCustomerAllowlist === undefined) delete process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES
   else process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES = originalCustomerAllowlist
+  if (originalAllContacts === undefined) delete process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS
+  else process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS = originalAllContacts
   vi.restoreAllMocks()
 })
 
 function enablePilot() {
+  delete process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS
   process.env.WHATSAPP_CALLING_ENABLED = 'true'
   process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS = CALLING_PILOT_PHONE_NUMBER_ID
   process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES = TEST_CUSTOMER_PHONE
@@ -85,4 +89,28 @@ describe('WhatsApp Calling pilot guard', () => {
     process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES = `${TEST_CUSTOMER_PHONE},51900099999`
     expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, TEST_CUSTOMER_PHONE)).toBe(false)
   })
+  it('allows all Keyler contacts only with the private all-contacts switch', () => {
+    enablePilot()
+    process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS = 'true'
+    delete process.env.WHATSAPP_CALLING_PILOT_CUSTOMER_PHONES
+    expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, '51911122233')).toBe(true)
+    expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, '51933344455')).toBe(true)
+    expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, null, 'bsuid_test_1')).toBe(true)
+    expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, null, null, 'parent_bsuid_1')).toBe(true)
+    expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, null)).toBe(false)
+    expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, 'abc')).toBe(false)
+    expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, CALLING_PILOT_BUSINESS_PHONE, 'bsuid_test_1')).toBe(false)
+    expect(isWhatsAppCallingPilotAllowed('999999999999999', '51911122233')).toBe(false)
+  })
+
+  it('fails closed when either global or business switch is OFF', () => {
+    enablePilot()
+    process.env.WHATSAPP_CALLING_KEYLER_ALL_CONTACTS = 'true'
+    delete process.env.WHATSAPP_CALLING_ENABLED
+    expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, '51911122233')).toBe(false)
+    process.env.WHATSAPP_CALLING_ENABLED = 'true'
+    delete process.env.WHATSAPP_CALLING_PILOT_PHONE_NUMBER_IDS
+    expect(isWhatsAppCallingPilotAllowed(CALLING_PILOT_PHONE_NUMBER_ID, '51911122233')).toBe(false)
+  })
+
 })
