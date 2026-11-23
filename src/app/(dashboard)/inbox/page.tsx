@@ -24,6 +24,7 @@ import type { Conversation, Message, Contact, ConversationStatus, Tag } from "@/
 import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
+import { GlobalIncomingCallAlert } from "@/components/inbox/global-incoming-call-alert";
 import { ContactSidebar } from "@/components/inbox/contact-sidebar";
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
@@ -46,6 +47,7 @@ export default function InboxPage() {
 
 function InboxPageInner() {
   const t = useTranslations("Inbox.page");
+  const tCalling = useTranslations("Inbox.calling");
   const router = useRouter();
   const searchParams = useSearchParams();
   /**
@@ -559,6 +561,42 @@ function InboxPageInner() {
     [activeConversation?.id, router]
   );
 
+  // The global ring banner stays mounted regardless of the selected thread.
+  // Reuse normal selection, including its URL/unread handling; never call
+  // Meta or claim the offer until the agent presses Accept in that thread.
+  const handleOpenIncomingConversation = useCallback(async (conversationId: string) => {
+    const loaded = conversations.find((candidate) => candidate.id === conversationId);
+    if (loaded) {
+      handleSelectConversation(loaded);
+      return;
+    }
+    // A call can arrive from a conversation outside the list's current
+    // search/page. Resolve through normal RLS and blocked-contact filtering.
+    const supabase = createClient();
+    const { data, error } = await supabase
+      .from("conversations")
+      .select(INBOX_CONVERSATION_SELECT)
+      .eq("id", conversationId)
+      .eq("contact.blocked", false)
+      .maybeSingle();
+    if (error || !data) {
+      toast.error(tCalling("callNoLongerAvailable"));
+      return;
+    }
+    const fetched = normalizeConversation(data);
+    if (!fetched.contact) {
+      toast.error(tCalling("callNoLongerAvailable"));
+      return;
+    }
+    rememberConversationActivity(fetched);
+    setConversations((prev) =>
+      prev.some((candidate) => candidate.id === fetched.id)
+        ? prev
+        : sortConversationsByActivity([...prev, fetched])
+    );
+    handleSelectConversation(fetched);
+  }, [conversations, handleSelectConversation, rememberConversationActivity, tCalling]);
+
   // Mobile "back" — deselect the conversation so the list pane comes
   // back. Also clears the ?c= param so a refresh lands on the list
   // instead of re-opening the thread the user just backed out of.
@@ -776,6 +814,11 @@ function InboxPageInner() {
           </p>
         </div>
       )}
+
+      <GlobalIncomingCallAlert
+        activeConversationId={activeConversation?.id ?? null}
+        onOpenConversation={handleOpenIncomingConversation}
+      />
 
       <div className="flex flex-1 overflow-hidden">
         {/* Left panel: Conversation list.

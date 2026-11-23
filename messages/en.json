@@ -574,6 +574,7 @@
       "startCall": "Start WhatsApp call",
       "connecting": "Connecting...",
       "incomingCall": "Incoming call",
+      "openIncomingConversation": "View and answer",
       "accept": "Accept",
       "reject": "Decline",
       "mute": "Mute microphone",

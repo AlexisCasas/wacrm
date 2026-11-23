@@ -574,6 +574,7 @@
       "startCall": "Iniciar llamada de WhatsApp",
       "connecting": "Conectando...",
       "incomingCall": "Llamada entrante",
+      "openIncomingConversation": "Ver y contestar",
       "accept": "Aceptar",
       "reject": "Rechazar",
       "mute": "Silenciar micrófono",
