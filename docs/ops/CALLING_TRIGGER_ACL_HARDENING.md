@@ -11,6 +11,45 @@ Production operator's read-only audit (23-Nov-2026, Lima):
 - GitHub source: `supabase/migrations/20261130000001_whatsapp_calling_signaling.sql` lines ~679-700 defines a zero-argument **RETURNS trigger**, `SECURITY INVOKER` (default) `BEFORE UPDATE OF state` handler on `public.whatsapp_call_sessions`; removes transient agent SDP when state is terminal. No explicit REVOKE on this trigger function in the original migration.
 - PostgreSQL default function EXECUTE grants to PUBLIC, which `anon`/`authenticated` inherit. This is an ACL hygiene gap. Since it is a trigger function, public EXECUTE alone is **not** evidence that a user can invoke this routine as a normal RPC or extract call data.
 
+## Failure analysis after first SQL attempt — VERIFIED
+
+The first operator attempt returned `CALLING_TRIGGER_ACL_PRECHECK=PASS`, warnings that no function privileges could be revoked or granted, and `CALLING_TRIGGER_ACL_VERIFY=FAIL_TARGET_PRIVILEGE`. It failed **before COMMIT**; psql `ON_ERROR_STOP=1` closed the connection, rolling back the transaction. A separate **READ ONLY** catalog audit then confirmed all 19 functions and one still exposed.
+
+The live database ownership audit establishes the root cause:
+- `current_user=postgres`, `rolsuper=false`;
+- function owner `supabase_admin`, and `postgres` is neither member nor able to SET this role;
+- PUBLIC, anon, authenticated, postgres, service_role and supabase_admin each had direct EXECUTE grants recorded from `supabase_admin`, with `is_grantable=false` for recipients other than owner;
+- hence `postgres` can execute the trigger but **cannot revoke grants made by supabase_admin**.
+
+The repaired script now fails **before any REVOKE** unless `current_user=supabase_admin` AND that same role is the verified actual function owner. Do not `ALTER OWNER`, `GRANT supabase_admin TO postgres`, change role passwords, dump secrets or bypass the gate.
+
+### Preflight for an authorized owner connection (READ ONLY)
+
+```bash
+# Verify whether the owner role is allowed to log in (this does not expose credentials).
+docker exec -i supabase-db psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 -Atc \
+  "SELECT rolname || '|login=' || rolcanlogin::text FROM pg_roles WHERE rolname='supabase_admin';"
+
+# Try existing local authentication, without asking for or printing any passwords.
+# STOP if the owner connection is unavailable; do not retry with invented secrets.
+docker exec -i supabase-db psql -X -w -U supabase_admin -d postgres \
+  -v ON_ERROR_STOP=1 -Atc \
+  "SELECT current_user, session_user, current_database();"
+```
+
+Expected identity: `supabase_admin|supabase_admin|postgres` in unaligned output. If the owner role is `NOLOGIN`, if local `pg_hba` rejects it, or if the command needs a password unavailable in an existing secured connection: **STOP**, document the reason, and design a separately authorized existing admin access path; never force role membership or reset a password for this script. The failed owner connection changes nothing.
+
+### Owner-authorized correction ONLY after identity/health/backup gates
+
+Execute the same verified `ops/security/calling-trigger-execute-acl.sql` under an **already authenticated `supabase_admin`** connection, not `postgres`:
+
+```bash
+docker exec -i supabase-db psql -X -w -U supabase_admin -d postgres \
+  -v ON_ERROR_STOP=1 < ops/security/calling-trigger-execute-acl.sql
+```
+
+The script itself checks the real current user/owner, correct trigger binding, service_role existence, and zero exposure before `COMMIT`. A separate read-only postcheck under `postgres` is still mandatory; no app deploy until it reports 19/0.
+
 ## Operator-safe remediation
 
 The correction consists of two reviewed repository files:
