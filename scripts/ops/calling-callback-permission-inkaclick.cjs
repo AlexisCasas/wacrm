@@ -7,6 +7,7 @@
 // via HTTPS Authorization headers sent directly to Meta.
 // Modes: audit (GET only), enable (single narrow POST), verify (GET only),
 // rollback (single narrow POST). No calls/messages/webhooks are sent.
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- stdin runner is intentionally CommonJS, with no build dependencies.
 const crypto = require("node:crypto");
 
 const PHONE_NUMBER_ID = "740434745820831";
