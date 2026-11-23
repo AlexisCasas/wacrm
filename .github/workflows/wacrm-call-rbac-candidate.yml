@@ -1,0 +1,106 @@
+name: WACRM CALL-RBAC-01 candidate artifact (no deployment)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/wacrm-call-rbac-candidate.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wacrm-rbac01-candidate-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build-candidate:
+    # Internal, single-PR gate: do not expose repository build secrets to forks.
+    if: ${{ github.event.pull_request.number == 170 && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: ${{ vars.WACRM_NEXT_PUBLIC_SUPABASE_URL }}
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.WACRM_NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+      NEXT_PUBLIC_SITE_URL: ${{ vars.WACRM_NEXT_PUBLIC_SITE_URL }}
+      NEXT_PUBLIC_APP_LOCALE: ${{ vars.WACRM_NEXT_PUBLIC_APP_LOCALE || 'en' }}
+      EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
+      EXPECTED_REPO: AlexisCasas/wacrm
+      EXPECTED_BRANCH: feat/whatsapp-calling-rbac-01-20261123
+    steps:
+      - name: Checkout exact internal PR HEAD
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Gate trusted source and public-only build configuration
+        id: gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${{ github.repository }}" = "$EXPECTED_REPO"
+          test "${{ github.event.pull_request.head.ref }}" = "$EXPECTED_BRANCH"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test -n "$NEXT_PUBLIC_SUPABASE_URL"
+          test -n "$NEXT_PUBLIC_SUPABASE_ANON_KEY"
+          case "$NEXT_PUBLIC_SUPABASE_URL" in https://*) ;; *) echo "BLOCKED_PUBLIC_URL"; exit 1 ;; esac
+          TAG="wacrm-app:call-rbac-${EXPECTED_SHA:0:12}"
+          TREE="$(git rev-parse HEAD^{tree})"
+          {
+            echo "sha=$EXPECTED_SHA"
+            echo "tree=$TREE"
+            echo "tag=$TAG"
+          } >> "$GITHUB_OUTPUT"
+          {
+            printf '%s\0' "$NEXT_PUBLIC_SUPABASE_URL"
+            printf '%s\0' "$NEXT_PUBLIC_SUPABASE_ANON_KEY"
+            printf '%s\0' "$NEXT_PUBLIC_SITE_URL"
+            printf '%s\0' "$NEXT_PUBLIC_APP_LOCALE"
+          } | sha256sum | cut -d ' ' -f1 > /tmp/call-rbac-public-build.sha256
+          echo "CALL_RBAC_SOURCE_CONFIG_GATE=PASS"
+
+      - name: Build immutable runtime image off VPS
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 --pull \
+            --build-arg NEXT_PUBLIC_SUPABASE_URL \
+            --build-arg NEXT_PUBLIC_SUPABASE_ANON_KEY \
+            --build-arg NEXT_PUBLIC_SITE_URL \
+            --build-arg NEXT_PUBLIC_APP_LOCALE \
+            --label "org.opencontainers.image.revision=${{ steps.gate.outputs.sha }}" \
+            --label "org.opencontainers.image.source=https://github.com/AlexisCasas/wacrm" \
+            --label "io.wacrm.source-tree=${{ steps.gate.outputs.tree }}" \
+            --label "io.wacrm.release=CALL-RBAC-01" \
+            -t "${{ steps.gate.outputs.tag }}" .
+          test "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' '${{ steps.gate.outputs.tag }}')" = "linux/amd64"
+          test "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' '${{ steps.gate.outputs.tag }}')" = "${{ steps.gate.outputs.sha }}"
+          echo "CALL_RBAC_IMAGE_BUILD=PASS"
+
+      - name: Export candidate image with integrity manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          docker save '${{ steps.gate.outputs.tag }}' | gzip -1 > release/image.tar.gz
+          IMAGE_ID="$(docker image inspect -f '{{.Id}}' '${{ steps.gate.outputs.tag }}')"
+          {
+            printf 'SOURCE_SHA=%s\n' '${{ steps.gate.outputs.sha }}'
+            printf 'SOURCE_TREE=%s\n' '${{ steps.gate.outputs.tree }}'
+            printf 'IMAGE_TAG=%s\n' '${{ steps.gate.outputs.tag }}'
+            printf 'IMAGE_ID=%s\n' "$IMAGE_ID"
+            printf 'PLATFORM=linux/amd64\n'
+            printf 'PUBLIC_BUILD_CONFIG_SHA256=%s\n' "$(cat /tmp/call-rbac-public-build.sha256)"
+            printf 'DEPLOYED=false\n'
+          } > release/manifest.txt
+          ( cd release && sha256sum image.tar.gz manifest.txt > SHA256SUMS && sha256sum -c SHA256SUMS )
+          echo "CALL_RBAC_IMAGE_ARTIFACT=PASS"
+
+      - name: Upload artifact for separately authorized VPS transfer
+        uses: actions/upload-artifact@v4
+        with:
+          name: call-rbac-image-${{ steps.gate.outputs.sha }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 7
