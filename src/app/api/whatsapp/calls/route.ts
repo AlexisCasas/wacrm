@@ -3,7 +3,7 @@ import { requireRole, toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { decrypt, encrypt } from '@/lib/whatsapp/encryption'
-import { isWhatsAppCallingPilotAllowed } from '@/lib/whatsapp/calling-pilot'
+import { isWhatsAppCallingPhoneEnabled, isWhatsAppCallingPilotAllowed } from '@/lib/whatsapp/calling-pilot'
 import { effectiveCallDuration } from '@/lib/whatsapp/calling-duration'
 import {
   callWhatsApp,
@@ -19,6 +19,41 @@ type CallConfig = {
   access_token: string
   messaging_account_id: string | null
   status: string
+}
+
+type IncomingClaimRow = {
+  phone_number_id: string
+  customer_phone: string | null
+  customer_bsuid: string | null
+  customer_parent_bsuid: string | null
+  direction: string | null
+  state: string
+  terminal_status: string | null
+  signal_status: string | null
+  accepted_by_user_id: string | null
+  rejected_by_user_id: string | null
+  ended_by_user_id: string | null
+  session_sdp_expires_at: string | null
+  claimed_by_user_id: string | null
+  claim_expires_at: string | null
+}
+
+/** The same server-side gate is used by the thread controls and global alert.
+ * Never allow the notification to advertise a call that cannot be claimed. */
+function incomingClaimAvailable(call: IncomingClaimRow, userId: string, now: number): boolean {
+  return isWhatsAppCallingPilotAllowed(
+    call.phone_number_id, call.customer_phone, call.customer_bsuid, call.customer_parent_bsuid,
+  ) && call.direction === 'USER_INITIATED'
+    && ['offered', 'ringing', 'connected'].includes(call.state)
+    && !call.terminal_status && !call.signal_status
+    && !call.accepted_by_user_id && !call.rejected_by_user_id && !call.ended_by_user_id
+    && typeof call.session_sdp_expires_at === 'string'
+    && Date.parse(call.session_sdp_expires_at) > now
+    && (
+      !call.claimed_by_user_id
+      || (typeof call.claim_expires_at === 'string' && Date.parse(call.claim_expires_at) <= now)
+      || call.claimed_by_user_id === userId
+    )
 }
 
 type CallTarget = {
@@ -219,6 +254,45 @@ export async function GET(request: Request) {
         pilot_allowed: Boolean(target && isWhatsAppCallingPilotAllowed(config.phone_number_id, target.phone, target.bsuid, target.parentBsuid)),
       }, { headers: { 'Cache-Control': 'no-store' } })
     }
+    // The Inbox-wide ring banner needs only eligible, active offers. Restrict
+    // this endpoint to the already-enabled single business pilot, and never
+    // return SDP, customer numbers, BSUIDs or claims to the banner.
+    const alertQuery = url.searchParams.get('inbox_alerts')
+    if (alertQuery !== null) {
+      if (alertQuery !== '1') {
+        return NextResponse.json({ error: 'Invalid inbox_alerts' }, { status: 400 })
+      }
+      const config = await loadConfig(accountId)
+      if (!config || config.status !== 'connected' || !isWhatsAppCallingPhoneEnabled(config.phone_number_id)) {
+        return NextResponse.json({ calls: [] }, { headers: { 'Cache-Control': 'no-store' } })
+      }
+      const { data, error } = await supabaseAdmin()
+        .from('whatsapp_call_sessions')
+        .select('phone_number_id,customer_phone,customer_bsuid,customer_parent_bsuid,conversation_id,customer_name,created_at,direction,state,terminal_status,signal_status,accepted_by_user_id,rejected_by_user_id,ended_by_user_id,session_sdp_expires_at,claimed_by_user_id,claim_expires_at')
+        .eq('account_id', accountId)
+        .eq('phone_number_id', config.phone_number_id)
+        .eq('direction', 'USER_INITIATED')
+        .in('state', ['offered', 'ringing'])
+        .order('created_at', { ascending: false })
+        .limit(50)
+      if (error) {
+        console.error('[calling/api] inbox alert lookup failed', { code: error.code ?? 'unknown' })
+        return NextResponse.json({ error: 'Failed to load incoming calls' }, { status: 500 })
+      }
+      const now = Date.now()
+      const calls = (data ?? [])
+        .filter((call) => Boolean(call.conversation_id) && incomingClaimAvailable(call, userId, now))
+        .map((call) => ({
+          conversation_id: call.conversation_id,
+          customer_name: call.customer_name,
+          created_at: call.created_at,
+          expires_at: call.session_sdp_expires_at,
+        }))
+        // Show the longest-waiting eligible caller first if several ring.
+        .reverse()
+      return NextResponse.json({ calls }, { headers: { 'Cache-Control': 'no-store' } })
+    }
+
     await pruneExpiredSdp()
     const db = supabaseAdmin()
     const callId = url.searchParams.get('call_id')
@@ -338,19 +412,7 @@ export async function GET(request: Request) {
           : null,
         claim_owned_by_me: ownsClaim,
         initiated_by_me: ownsOutboundCall,
-        claim_available: pilotAllowed && call.direction === 'USER_INITIATED'
-          && ['offered','ringing','connected'].includes(call.state)
-          && !call.terminal_status
-          && !call.signal_status
-          && !call.accepted_by_user_id
-          && !call.rejected_by_user_id && !call.ended_by_user_id
-          && typeof call.session_sdp_expires_at === 'string'
-          && Date.parse(call.session_sdp_expires_at) > now
-          && (
-            !call.claimed_by_user_id
-            || (typeof call.claim_expires_at === 'string' && Date.parse(call.claim_expires_at) <= now)
-            || call.claimed_by_user_id === userId
-          ),
+        claim_available: incomingClaimAvailable(call, userId, now),
         session_available: Boolean(
           callIsActive && !call.terminal_status && call.signal_status !== 'unknown' && pilotAllowed && (ownsClaim || ownsOutboundCall)
           && call.session_sdp_type
