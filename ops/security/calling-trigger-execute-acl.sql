@@ -1,8 +1,9 @@
 -- SEC-CALL-ACL-01: narrowly harden the internal Call SDP cleanup trigger
 -- WACRM/InkaClick only; does not alter call rows or replace trigger definitions.
 -- Requires the read-only audit in docs/ops/CALLING_TRIGGER_ACL_HARDENING.md.
--- Run once with: docker exec -i supabase-db psql -X -U postgres
---   -d postgres -v ON_ERROR_STOP=1 < ops/security/calling-trigger-execute-acl.sql
+-- Run once AS FUNCTION OWNER with: docker exec -i supabase-db
+--   psql -X -w -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \\
+--   < ops/security/calling-trigger-execute-acl.sql
 -- A single transaction prevents partial changes if a guard fails.
 BEGIN;
 SET LOCAL lock_timeout = '5s';
