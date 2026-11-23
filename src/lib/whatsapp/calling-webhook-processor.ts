@@ -75,11 +75,12 @@ function customerIdentity(call: WhatsAppCallingEvent, contact?: CallingContact) 
   if (!userInitiated && !businessInitiated) {
     return { key: '', phone: null, bsuid: null, parentBsuid: null }
   }
-  // Meta's Calling webhook uses "to" for the WhatsApp user in both directions.
-  // The caller-side BSUID field depends on direction: from_user_id for UIC,
-  // to_user_id for BIC. The official webhook may omit the phone when a BSUID
-  // is used, in which case contacts.wa_id is the fallback.
-  const rawPhone = call.to ?? contact?.wa_id
+  // Meta's from/to fields describe caller/callee. For USER_INITIATED,
+  // the WhatsApp customer is the caller (from) and "to" is our business.
+  // For BUSINESS_INITIATED, the customer is the callee (to).
+  // A phone may be absent for BSUID-only users: contacts.wa_id is a fallback.
+  // Never store the business's own phone as an incoming customer's identity.
+  const rawPhone = (userInitiated ? call.from : call.to) ?? contact?.wa_id
   const rawBsuid = (userInitiated ? call.from_user_id : call.to_user_id) ?? contact?.user_id
   const rawParentBsuid = (userInitiated ? call.from_parent_user_id : call.to_parent_user_id) ?? contact?.parent_user_id
   const phoneValue = typeof rawPhone === 'string' ? rawPhone.trim() : ''
