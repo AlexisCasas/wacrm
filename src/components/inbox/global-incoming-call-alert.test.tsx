@@ -67,7 +67,8 @@ describe("GlobalIncomingCallAlert", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "openIncomingConversation" }));
-    expect(onOpenConversation).toHaveBeenCalledExactlyOnceWith(otherConversation);
+    expect(onOpenConversation).toHaveBeenCalledTimes(1);
+    expect(onOpenConversation).toHaveBeenCalledWith(otherConversation);
     expect(fetchCalls).toHaveBeenCalledTimes(1);
   });
 
