@@ -31,7 +31,7 @@ export function GlobalIncomingCallAlert({
   fetchCalls,
 }: GlobalIncomingCallAlertProps) {
   const t = useTranslations("Inbox.calling");
-  const canUseCalling = useCan("send-messages");
+  const canUseCalling = useCan("use-calling");
   const [calls, setCalls] = useState<IncomingAlert[]>([]);
   const [checkedAt, setCheckedAt] = useState(0);
 
