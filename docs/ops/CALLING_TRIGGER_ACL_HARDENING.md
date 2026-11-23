@@ -74,12 +74,12 @@ docker exec -i supabase-db psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 \
 
 Expected function signature `public.whatsapp_call_agent_sdp_terminal_clear()`, `return_type=trigger`, `security_mode=INVOKER`, exactly one enabled trigger on `public.whatsapp_call_sessions`, and 19 routines, one publicly executable.
 
-### Phase B — corrective transaction (separately, after Phase A PASS)
+### Phase B — corrective transaction as verified owner (separately, after Phase A PASS)
 
-Precondition: no active calls, backups verified, GitHub CI passed, live baseline healthy. Run only:
+Precondition: no active calls, backups verified, GitHub CI passed, live baseline healthy, and `OWNER_CONNECTION=PASS`. Run **as supabase_admin, never postgres**:
 
 ```bash
-docker exec -i supabase-db psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 \
+docker exec -i supabase-db psql -X -w -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
   < ops/security/calling-trigger-execute-acl.sql
 ```
 
