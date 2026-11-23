@@ -1,6 +1,7 @@
 "use client";
 
 import { useAuth } from "@/hooks/use-auth";
+import { canOperateWhatsAppCalling } from "@/lib/auth/operational-role";
 import {
   canDeleteAccount,
   canEditSettings,
@@ -20,6 +21,7 @@ export type CanAction =
   | "manage-members"
   | "edit-settings"
   | "send-messages"
+  | "use-calling"
   | "view-only"
   | "delete-account"
   | "transfer-ownership";
@@ -38,7 +40,7 @@ export type CanAction =
  *   <Button disabled={!canEdit} title={canEdit ? "Save" : "Read-only"} />
  */
 export function useCan(action: CanAction): boolean {
-  const { profileLoading, accountRole } = useAuth();
+  const { profileLoading, accountRole, profile } = useAuth();
   if (profileLoading || !accountRole) return false;
 
   switch (action) {
@@ -48,6 +50,8 @@ export function useCan(action: CanAction): boolean {
       return canEditSettings(accountRole);
     case "send-messages":
       return canSendMessages(accountRole);
+    case "use-calling":
+      return canOperateWhatsAppCalling(accountRole, profile?.operational_role);
     case "view-only":
       return canViewOnly(accountRole);
     case "delete-account":
