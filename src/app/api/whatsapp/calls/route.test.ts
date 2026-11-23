@@ -8,6 +8,12 @@ const h = vi.hoisted(() => ({
   rateKeys: [] as string[],
 }))
 
+// This suite exercises Calling signaling and pilot behaviour. Operator role
+// checks have separate policy/route regression suites.
+vi.mock("@/lib/whatsapp/calling-operator-access", () => ({
+  assertCallingOperator: vi.fn(async () => undefined),
+}));
+
 vi.mock('@/lib/auth/account', () => ({
   requireRole: vi.fn(async () => ({ accountId: 'account-from-session', userId: 'agent-from-session' })),
   toErrorResponse: vi.fn(() => Response.json({ error: 'Internal server error' }, { status: 500 })),

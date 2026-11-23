@@ -21,6 +21,7 @@ import {
   type AccountRole,
 } from "@/lib/auth/roles";
 import { normalizeLocale, type AppLocale } from "@/i18n/config";
+import { isOperationalRole, type OperationalRole } from "@/lib/auth/operational-role";
 
 interface Profile {
   id: string;
@@ -36,6 +37,7 @@ interface Profile {
   beta_features: string[];
   account_id: string | null;
   account_role: AccountRole | null;
+  operational_role: OperationalRole | null;
   /**
    * Per-user interface language (migration 045) — 'es' or 'en',
    * always normalized defensively even though the DB CHECK constraint
@@ -163,6 +165,7 @@ interface ProfileRow {
   beta_features: string[] | null;
   account_id: string | null;
   account_role: string | null;
+  operational_role: string | null;
   locale: string | null;
 }
 
@@ -204,7 +207,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const result = await supabase
           .from("profiles")
           .select(
-            "id, full_name, email, avatar_url, role, beta_features, account_id, account_role, locale",
+            "id, full_name, email, avatar_url, role, beta_features, account_id, account_role, operational_role, locale",
           )
           .eq("user_id", userId)
           .maybeSingle();
@@ -292,6 +295,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           beta_features: data.beta_features ?? [],
           account_id: data.account_id ?? null,
           account_role: accountRole,
+          operational_role: isOperationalRole(data.operational_role) ? data.operational_role : null,
           locale: normalizeLocale(data.locale),
         });
         setAccount(accountRow);

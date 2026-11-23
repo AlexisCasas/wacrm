@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { requireRole, toErrorResponse } from '@/lib/auth/account'
+import { assertCallingOperator } from '@/lib/whatsapp/calling-operator-access'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { checkRateLimit, rateLimitResponse, RATE_LIMITS } from '@/lib/rate-limit'
 import { decrypt, encrypt } from '@/lib/whatsapp/encryption'
@@ -235,7 +236,9 @@ async function pruneExpiredSdp(): Promise<void> {
  */
 export async function GET(request: Request) {
   try {
-    const { accountId, userId } = await requireRole('agent')
+    const actor = await requireRole('agent')
+    const { accountId, userId } = actor
+    await assertCallingOperator(actor)
     const url = new URL(request.url)
     const pilotContactId = url.searchParams.get('pilot_contact_id')
     if (pilotContactId !== null) {
@@ -435,8 +438,8 @@ export async function GET(request: Request) {
  */
 export async function POST(request: Request) {
   try {
-    const { accountId, userId } = await requireRole('agent')
-    await pruneExpiredSdp()
+    const actor = await requireRole('agent')
+    const { accountId, userId } = actor
     const limit = checkRateLimit(`calling:${userId}`, RATE_LIMITS.send)
     if (!limit.success) return rateLimitResponse(limit)
 
@@ -448,6 +451,11 @@ export async function POST(request: Request) {
     const action = typeof body.action === 'string' ? body.action : ''
     const callId = typeof body.call_id === 'string' ? body.call_id.trim() : ''
     const contactId = typeof body.contact_id === 'string' ? body.contact_id.trim() : ''
+
+    // Must precede pruning, SDP lookup, claim RPCs and Meta side effects.
+    // The only possible exception after demotion is owned-call cleanup.
+    await assertCallingOperator(actor, { action, callId })
+    await pruneExpiredSdp()
 
     if (['claim','release','renew_claim'].includes(action)) {
       if (!CALL_ID_PATTERN.test(callId)) {

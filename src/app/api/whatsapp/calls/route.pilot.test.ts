@@ -12,6 +12,12 @@ const h = vi.hoisted(() => ({
   contactFound: true,
 }))
 
+// This suite exercises Calling signaling and pilot behaviour. Operator role
+// checks have separate policy/route regression suites.
+vi.mock("@/lib/whatsapp/calling-operator-access", () => ({
+  assertCallingOperator: vi.fn(async () => undefined),
+}));
+
 vi.mock('@/lib/auth/account', () => ({
   requireRole: vi.fn(async () => ({ accountId: 'keyler-account', userId: 'pilot-agent' })),
   toErrorResponse: vi.fn(() => Response.json({ error: 'server error' }, { status: 500 })),

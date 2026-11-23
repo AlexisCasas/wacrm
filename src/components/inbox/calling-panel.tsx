@@ -343,7 +343,7 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride, 
   const t = useTranslations("Inbox.calling");
   const [runtime] = useState(() => resolveRuntime(runtimeOverride));
   const { profile } = useAuth();
-  const canUseCalling = useCan("send-messages");
+  const canUseCalling = useCan("use-calling");
   const [uiState, setUiState] = useState<UiState>("idle");
   const [incomingCall, setIncomingCall] = useState<CallSummary | null>(null);
   const [activeCall, setActiveCall] = useState<CallSummary | null>(null);
@@ -1261,7 +1261,7 @@ export function CallingPanel({ conversation, contact, runtime: runtimeOverride, 
           </button>
         </div>
       ) : null}
-      {canUseCalling && (isPilotContact || isPilotActiveCall) && ["connected", "failed"].includes(uiState) && activeCall ? (
+      {(canUseCalling || isPilotActiveCall) && (isPilotContact || isPilotActiveCall) && ["connected", "failed"].includes(uiState) && activeCall ? (
         <div className="flex items-center gap-2 rounded-lg border border-border bg-background px-2 py-1.5">
           <span className={cn("text-xs font-medium", uiState === "connected" ? "text-emerald-500" : "text-red-500")}>
             {uiState === "connected" ? formatDuration(elapsedSeconds) : t("endCallFailed")}
