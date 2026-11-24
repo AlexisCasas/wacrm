@@ -89,6 +89,7 @@ const getVersion = () => version;
 
 export function PaymentChip({ orderId }: { orderId: string }) {
   const t = useTranslations("OrderPayments");
+  const tAdmin = useTranslations("OrderAdmin");
   const mark = useRef<HTMLSpanElement | null>(null);
   const visible = useRef(false);
   useSyncExternalStore(subscribe, getVersion, getVersion);
@@ -124,6 +125,7 @@ export function PaymentChip({ orderId }: { orderId: string }) {
       <span ref={mark} aria-hidden className="block h-0" />
       {summary ? (
         <span className="mt-1 flex items-center gap-1 text-[11px] text-muted-foreground">
+          {summary.cancelled ? <span className="rounded bg-red-500/15 px-1 font-semibold text-red-300">{tAdmin("chipCancelled")}</span> : null}
           <span className={summary.financial_status === "paid" ? "font-medium text-emerald-400" : summary.financial_status === "partially_paid" ? "font-medium text-amber-300" : "font-medium text-foreground"}>{t(`chip.${summary.financial_status}`)}</span>
           {summary.financial_status !== "paid" ? <span>· {t("chipBalance", { balance: soles(summary.pending_balance) })}</span> : null}
         </span>

@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { api, newRequestKey, postJson } from "@/components/orders/logistics/api";
 import { limaDateTime } from "@/components/orders/logistics/shared";
 import { notifyShipmentChanged } from "@/components/orders/shalom/api";
+import { OrderAdminSection } from "@/components/orders/payments/order-admin-section";
 import { notifyPaymentsChanged, PAYMENT_KINDS, soles, type PaymentKind, type PaymentsPanelData, type PaymentView } from "@/components/orders/payments/api";
 
 // "Pagos" of one order, inside the Pedidos Confirmados detail (PR-06). Total / Pagado / Saldo / Estado, the payments, the audit, the manual delivery and the finalization.
@@ -141,6 +142,7 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
   const statusTone = panel.financial_status === "paid" ? "text-emerald-400" : panel.financial_status === "partially_paid" ? "text-amber-300" : "text-foreground";
 
   return (
+    <>
     <section className="space-y-3 rounded-xl border border-border p-4" aria-labelledby={`payments-${orderId}`}>
       <div className="flex items-center justify-between gap-2">
         <h4 id={`payments-${orderId}`} className="flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -316,5 +318,7 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
         ) : null}
       </div>
     </section>
+      <OrderAdminSection orderId={orderId} panel={panel} onChanged={async () => { await load(); notifyPaymentsChanged(orderId); notifyShipmentChanged(orderId); }} />
+    </>
   );
 }

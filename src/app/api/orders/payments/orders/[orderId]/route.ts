@@ -3,7 +3,7 @@ import { NextResponse } from 'next/server'
 import { toErrorResponse } from '@/lib/auth/account'
 import { supabaseAdmin } from '@/lib/flows/admin-client'
 import { authorizePayments, readJsonObject, respondPayment } from '@/lib/orders/payments/http'
-import { confirmPayment, correctOrderTotal, correctPayment, getPaymentsPanel, markDeliveredManual, registerPayment, rejectPayment, voidPayment } from '@/lib/orders/payments/service'
+import { cancelOrder, confirmPayment, correctOrderTotal, editOrder, correctPayment, getPaymentsPanel, markDeliveredManual, registerPayment, rejectPayment, voidPayment } from '@/lib/orders/payments/service'
 import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
 
 // PR-06 · the PAYMENTS of ONE order (the same order_id as Pedidos Confirmados / PR-04 / PR-05).
@@ -15,6 +15,8 @@ import { checkRateLimit, rateLimitResponse } from '@/lib/rate-limit'
 //        reject         { payment_id, expected_version?, reason }                    Logistica / Supervisor.
 //        void           { payment_id, expected_version?, reason }                    SUPERVISOR only.
 //        correct        { payment_id, expected_version?, reason, request_key, ...payment }   SUPERVISOR only (void + a new confirmed payment, one transaction).
+//        edit_order     { fields: {customer_name?, dni?, phone?, order_description?, agency?, destination?, department?, seller_user_id?, product?, quantity?, items?[]}, reason }   Logistica / Supervisor.
+//        cancel_order   { reason, acknowledge_paid? }   Logistica / Supervisor; with confirmed payments: Supervisor + acknowledge_paid (flags a refund, deletes nothing).
 //        mark_delivered { note? }                                                    Logistica / Supervisor. For orders WITHOUT an active Shalom shipment (e.g. Olva).
 // The total is order_confirmations.price and the balance is computed by the database: nothing about money is taken from the browser except the amount of a NEW payment.
 // The account and the actor come from the session; the database re-validates both flags, area, role and ownership. Commercial / viewers / no area: 403.
@@ -58,6 +60,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ ord
       case 'correct_total':
         if (!auth.isSupervisor) return NextResponse.json({ error: 'supervisor_required' }, { status: 403 })
         return respondPayment(await correctOrderTotal(who, admin, orderId, { newTotal: body.new_total, reason: body.reason }))
+      case 'edit_order':
+        return respondPayment(await editOrder(who, admin, orderId, { fields: body.fields, reason: body.reason }))
+      case 'cancel_order':
+        return respondPayment(await cancelOrder(who, admin, orderId, { reason: body.reason, acknowledgePaid: body.acknowledge_paid }))
       case 'mark_delivered':
         return respondPayment(await markDeliveredManual(who, admin, orderId, body.note))
       default:
