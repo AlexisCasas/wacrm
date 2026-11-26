@@ -53,7 +53,7 @@ export interface PaymentsPanelData {
   voucher_candidate: { id: string; filename: string; amount_hint: number | null } | null
   is_supervisor: boolean
   order?: { customer_name: string; dni: string | null; phone: string; product: string; quantity: number; order_description: string | null; agency: string; destination: string; department: string | null; seller_name: string; seller_user_id: string | null }
-  items?: Array<{ line_number: number; product_name: string; quantity: number; unit_price: number; catalog_product_id: string | null }>
+  items?: Array<{ line_number: number; product_name: string; quantity: number; unit_price: number; catalog_product_id: string | null; item_type: 'product' | 'accessory' }>
   cancellation?: { reason: string; actor_name: string; paid_confirmed: number | string; refund_required: boolean; shipment_stopped: boolean; customer_notice: string; cancelled_at: string } | null
   edits?: Array<{ id: string; actor_name: string; reason: string; changes: Record<string, { old: unknown; new: unknown }>; created_at: string }>
 }

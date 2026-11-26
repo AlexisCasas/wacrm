@@ -25,7 +25,7 @@ import { useRealtime } from "@/hooks/use-realtime";
 import { ConversationList } from "@/components/inbox/conversation-list";
 import { MessageThread } from "@/components/inbox/message-thread";
 import { GlobalIncomingCallAlert } from "@/components/inbox/global-incoming-call-alert";
-import { ContactSidebar } from "@/components/inbox/contact-sidebar";
+import { OperationalSidebar } from "@/components/inbox/operational-sidebar";
 import { toast } from "sonner";
 import { WifiOff } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -882,7 +882,7 @@ function InboxPageInner() {
             toggle — which is itself desktop-only — never affects it. */}
         {contactPanelOpen && (
           <div className="hidden lg:block">
-            <ContactSidebar
+            <OperationalSidebar
               contact={activeContact}
               conversationId={activeConversation?.id ?? null}
               onTagsChanged={handleContactTagsChange}

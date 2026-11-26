@@ -15,7 +15,7 @@ import { soles, type PaymentsPanelData } from "@/components/orders/payments/api"
 // Every action is a POST to the payments endpoint; the database re-validates role, flags and order state and writes the audit. The browser never sends money as a balance:
 // the new total of an edit is derived from the lines by the database, and a cancellation never deletes a payment (it flags the refund).
 
-type Line = { product_name: string; quantity: string; unit_price: string };
+type Line = { product_name: string; quantity: string; unit_price: string; item_type: 'product' | 'accessory' };
 const TEXT_FIELDS = ["customer_name", "dni", "phone", "destination", "agency", "department", "order_description"] as const;
 type TextField = (typeof TEXT_FIELDS)[number];
 
@@ -61,7 +61,7 @@ export function OrderAdminSection({ orderId, panel, onChanged }: { orderId: stri
     setText({ customer_name: order.customer_name, dni: order.dni ?? "", phone: order.phone, destination: order.destination, agency: order.agency, department: order.department ?? "", order_description: order.order_description ?? "" });
     setProduct(order.product);
     setQuantity(String(order.quantity));
-    setLines(items.map((i) => ({ product_name: i.product_name, quantity: String(i.quantity), unit_price: i.unit_price.toFixed(2) })));
+    setLines(items.map((i) => ({ product_name: i.product_name, quantity: String(i.quantity), unit_price: i.unit_price.toFixed(2), item_type: i.item_type ?? 'product' })));
     setReason("");
     setMode("edit");
   };
@@ -71,9 +71,9 @@ export function OrderAdminSection({ orderId, panel, onChanged }: { orderId: stri
     const base: Record<TextField, string> = { customer_name: order.customer_name, dni: order.dni ?? "", phone: order.phone, destination: order.destination, agency: order.agency, department: order.department ?? "", order_description: order.order_description ?? "" };
     for (const k of TEXT_FIELDS) if (text[k].trim() !== base[k]) fields[k] = text[k].trim();
     if (hasItems) {
-      const cur = JSON.stringify(items.map((i) => [i.product_name, String(i.quantity), i.unit_price.toFixed(2)]));
-      const next = JSON.stringify(lines.map((l) => [l.product_name.trim(), l.quantity.trim(), Number(l.unit_price.replace(",", ".")).toFixed(2)]));
-      if (cur !== next) fields.items = lines.map((l) => ({ product_name: l.product_name.trim(), quantity: l.quantity.trim(), unit_price: Number(l.unit_price.replace(",", ".")).toFixed(2) }));
+      const cur = JSON.stringify(items.map((i) => [i.product_name, String(i.quantity), i.unit_price.toFixed(2), i.item_type ?? 'product']));
+      const next = JSON.stringify(lines.map((l) => [l.product_name.trim(), l.quantity.trim(), Number(l.unit_price.replace(",", ".")).toFixed(2), l.item_type]));
+      if (cur !== next) fields.items = lines.map((l) => ({ product_name: l.product_name.trim(), quantity: l.quantity.trim(), unit_price: Number(l.unit_price.replace(",", ".")).toFixed(2), item_type: l.item_type }));
     } else {
       if (product.trim() !== order.product) fields.product = product.trim();
       if (quantity.trim() !== String(order.quantity)) fields.quantity = quantity.trim();
@@ -128,7 +128,7 @@ export function OrderAdminSection({ orderId, panel, onChanged }: { orderId: stri
                   <Button type="button" size="icon" variant="ghost" className="size-8" aria-label={t("removeLine")} disabled={lines.length === 1} onClick={() => setLines(lines.filter((_, j) => j !== i))}><Trash2 className="size-3.5" /></Button>
                 </div>
               ))}
-              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={lines.length >= 20} onClick={() => setLines([...lines, { product_name: "", quantity: "1", unit_price: "" }])}><Plus className="mr-1 size-3" />{t("addLine")}</Button>
+              <Button type="button" size="sm" variant="outline" className="h-7 text-[11px]" disabled={lines.length >= 20} onClick={() => setLines([...lines, { product_name: "", quantity: "1", unit_price: "", item_type: "product" }])}><Plus className="mr-1 size-3" />{t("addLine")}</Button>
               {newTotal !== null ? <p className="text-[11px] text-muted-foreground">{t("newTotal", { total: soles(newTotal), paid: soles(paid) })}</p> : null}
             </div>
           ) : (

@@ -175,7 +175,9 @@ export async function editOrder(ctx: Pick<PaymentCaller, 'userId' | 'accountId'>
       for (const line of v) {
         if (typeof line !== 'object' || line === null || Array.isArray(line)) return fail(400, 'invalid_order_items')
         const l = line as Record<string, unknown>
-        lines.push({ product_name: l.product_name, quantity: typeof l.quantity === 'number' ? String(l.quantity) : l.quantity, unit_price: normalizePrice(l.unit_price) ?? l.unit_price, ...(l.catalog_product_id ? { catalog_product_id: l.catalog_product_id } : {}) })
+        const itemType = l.item_type === undefined ? 'product' : l.item_type
+        if (itemType !== 'product' && itemType !== 'accessory') return fail(400, 'invalid_order_items')
+        lines.push({ product_name: l.product_name, quantity: typeof l.quantity === 'number' ? String(l.quantity) : l.quantity, unit_price: normalizePrice(l.unit_price) ?? l.unit_price, item_type: itemType, ...(l.catalog_product_id ? { catalog_product_id: l.catalog_product_id } : {}) })
       }
       fields[key] = lines
     } else {
@@ -284,9 +286,34 @@ export async function getPaymentsPanel(ctx: PaymentCaller, admin: SupabaseClient
     admin.from('order_finalizations').select('finalized_at, return_state, cleared_at').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_cancellations').select('reason, actor_name, paid_confirmed, refund_required, shipment_stopped, customer_notice, cancelled_at').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_edits').select('id, actor_name, reason, changes, created_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(20),
-    ctx.supabase.from('order_confirmation_items').select('line_number, product_name, quantity, unit_price, catalog_product_id').eq('account_id', ctx.accountId).eq('order_id', orderId).order('line_number', { ascending: true }),
+    ctx.supabase.from('order_confirmation_items').select('line_number, product_name, quantity, unit_price, catalog_product_id, item_type').eq('account_id', ctx.accountId).eq('order_id', orderId).order('line_number', { ascending: true }),
   ])
-  if (financials.error || payments.error || events.error || logistics.error || shipment.error || manual.error || voucher.error || finalization.error || cancellation.error || edits.error || items.error) {
+  let itemRows = items.data
+  let itemError = items.error
+
+  if (
+    itemError &&
+    (
+      itemError.code === '42703' ||
+      itemError.code === 'PGRST204' ||
+      itemError.message?.includes('item_type')
+    )
+  ) {
+    const legacyItems = await ctx.supabase
+      .from('order_confirmation_items')
+      .select('line_number, product_name, quantity, unit_price, catalog_product_id')
+      .eq('account_id', ctx.accountId)
+      .eq('order_id', orderId)
+      .order('line_number', { ascending: true })
+
+    itemError = legacyItems.error
+    itemRows = (legacyItems.data ?? []).map((item) => ({
+      ...item,
+      item_type: 'product' as const,
+    }))
+  }
+
+  if (financials.error || payments.error || events.error || logistics.error || shipment.error || manual.error || voucher.error || finalization.error || cancellation.error || edits.error || itemError) {
     console.error('[payments] panel read failed')
     return fail(500, 'internal_error')
   }
@@ -321,7 +348,7 @@ export async function getPaymentsPanel(ctx: PaymentCaller, admin: SupabaseClient
       voucher_candidate: v && !linked.has(v.id) ? { id: v.id, filename: v.original_filename, amount_hint: normalizeAmount(v.reviewed_data?.amount ?? null) } : null,
       is_supervisor: isSupervisor,
       order: { customer_name: orderRow.customer_name, dni: orderRow.dni, phone: orderRow.phone, product: orderRow.product, quantity: orderRow.quantity, order_description: orderRow.order_description, agency: orderRow.agency, destination: orderRow.destination, department: orderRow.department, seller_name: orderRow.seller_name, seller_user_id: orderRow.seller_user_id },
-      items: ((items.data ?? []) as unknown as Array<{ line_number: number; product_name: string; quantity: number; unit_price: number | string; catalog_product_id: string | null }>).map((i) => ({ ...i, unit_price: Number(i.unit_price) })),
+      items: ((itemRows ?? []) as unknown as Array<{ line_number: number; product_name: string; quantity: number; unit_price: number | string; catalog_product_id: string | null; item_type?: 'product' | 'accessory' }>).map((i) => ({ ...i, unit_price: Number(i.unit_price), item_type: i.item_type ?? 'product' })),
       cancellation: (cancellation.data as PaymentsPanel['cancellation']) ?? null,
       edits: (edits.data ?? []) as unknown as PaymentsPanel['edits'],
     },

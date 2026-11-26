@@ -22,7 +22,9 @@ const stubPost = (status = 200, body: unknown = { changed: true }) => {
   vi.stubGlobal('fetch', f)
   return f
 }
-const sent = (f: ReturnType<typeof stubPost>) => f.mock.calls.map(([, i]) => JSON.parse(String((i as RequestInit).body)))
+const sent = (f: ReturnType<typeof stubPost>) =>
+  (f.mock.calls as unknown as Array<[unknown, RequestInit]>)
+    .map(([, init]) => JSON.parse(String(init.body)))
 
 beforeEach(() => vi.spyOn(window, 'confirm').mockReturnValue(true))
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks() })
@@ -48,7 +50,7 @@ describe('OrderAdminSection', () => {
     fireEvent.change(screen.getByLabelText('reason'), { target: { value: 'descuento' } })
     fireEvent.click(screen.getByText('save'))
     await waitFor(() => expect(f).toHaveBeenCalled())
-    expect(sent(f)[0]).toEqual({ action: 'edit_order', fields: { items: [{ product_name: 'Kit', quantity: '1', unit_price: '80.50' }] }, reason: 'descuento' })
+    expect(sent(f)[0]).toEqual({ action: 'edit_order', fields: { items: [{ product_name: 'Kit', quantity: '1', unit_price: '80.50', item_type: 'product' }] }, reason: 'descuento' })
   })
 
   it('nothing changed -> nothing is sent; a reason is required to save', () => {
