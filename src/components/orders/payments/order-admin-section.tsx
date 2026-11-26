@@ -104,7 +104,6 @@ export function OrderAdminSection({ orderId, panel, onChanged }: { orderId: stri
         <p className="text-[11px] text-muted-foreground">{t("closedHint")}</p>
       ) : mode === null ? (
         <div className="flex flex-wrap gap-2">
-          <Button type="button" size="sm" variant="outline" className="h-8 text-xs" onClick={openEdit}>{t("edit")}</Button>
           <Button type="button" size="sm" variant="outline" className="h-8 border-red-500/40 text-xs text-red-300" onClick={() => { setReason(""); setAck(false); setMode("cancel"); }}>{t("cancelOrder")}</Button>
         </div>
       ) : mode === "edit" ? (

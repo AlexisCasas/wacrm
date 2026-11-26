@@ -3479,7 +3479,7 @@
     }
   },
   "OrderAdmin": {
-    "title": "Datos del pedido y anulación",
+    "title": "Gestión del pedido",
     "edit": "Editar pedido",
     "cancelOrder": "Anular pedido",
     "back": "Volver",
