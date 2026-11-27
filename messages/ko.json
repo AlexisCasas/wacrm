@@ -2154,6 +2154,7 @@
       "reason_required": "A reason is required",
       "invalid_fields": "Some field is invalid",
       "invalid_order_items": "Check the products, quantities and prices",
+      "invalid_catalog_product": "이 주문의 상품이 더 이상 활성 카탈로그에 없습니다. 상품 이름을 다시 입력한 후 저장하세요.",
       "invalid_seller": "Invalid seller",
       "multiproduct_disabled": "Multi-product orders are not enabled",
       "use_items": "Edit the products as lines",

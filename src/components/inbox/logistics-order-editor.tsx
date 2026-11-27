@@ -16,25 +16,16 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import type { PaymentsPanelData } from "@/components/orders/payments/api";
-import { notifyPaymentsChanged } from "@/components/orders/payments/api";
-
-type ItemType = "product" | "accessory";
-
-interface EditableLine {
-  product_name: string;
-  quantity: string;
-  unit_price: string;
-  catalog_product_id: string | null;
-  item_type: ItemType;
-}
-
-interface FormState {
-  customer_name: string;
-  dni: string;
-  phone: string;
-  description: string;
-  destination: string;
-}
+import { notifyPaymentsChanged, soles } from "@/components/orders/payments/api";
+import {
+  buildOrderChanges,
+  formFromOrder,
+  linesFromPanel,
+  parsePrice,
+  type EditableLine,
+  type FormState,
+  type ItemType,
+} from "@/components/inbox/logistics-order-changes";
 
 const EMPTY_FORM: FormState = {
   customer_name: "",
@@ -77,43 +68,8 @@ export function LogisticsOrderEditor({
       setPanel(body);
       setPaymentAmount("");
 
-      setForm({
-        customer_name: body.order.customer_name ?? "",
-        dni: body.order.dni ?? "",
-        phone: body.order.phone ?? "",
-        description: body.order.order_description ?? "",
-        destination: body.order.destination ?? "",
-      });
-
-      if ((body.items ?? []).length > 0) {
-        setLines(
-          (body.items ?? []).map((item) => ({
-            product_name: item.product_name,
-            quantity: String(item.quantity),
-            unit_price: Number(item.unit_price).toFixed(2),
-            catalog_product_id: item.catalog_product_id,
-            item_type: item.item_type ?? "product",
-          })),
-        );
-      } else {
-        const qty =
-          Number(body.order.quantity) > 0 ? Number(body.order.quantity) : 1;
-
-        const unitPrice =
-          qty > 0 ? Number(body.total ?? 0) / qty : Number(body.total ?? 0);
-
-        setLines([
-          {
-            product_name: body.order.product ?? "",
-            quantity: String(qty),
-            unit_price: Number.isFinite(unitPrice)
-              ? unitPrice.toFixed(2)
-              : "0.00",
-            catalog_product_id: null,
-            item_type: "product",
-          },
-        ]);
-      }
+      setForm(formFromOrder(body.order));
+      setLines(linesFromPanel(body));
     } catch {
       setPanel(null);
       setLoadError(true);
@@ -161,7 +117,14 @@ export function LogisticsOrderEditor({
   ) => {
     setLines((current) =>
       current.map((line) =>
-        line === target ? { ...line, [field]: value } : line,
+        line === target
+          ? {
+              ...line,
+              [field]: value,
+              // Same rule as the confirmation editor: a name typed by hand no longer claims to be that catalogue product.
+              ...(field === "product_name" ? { catalog_product_id: null } : {}),
+            }
+          : line,
       ),
     );
   };
@@ -172,27 +135,15 @@ export function LogisticsOrderEditor({
 
   const paymentValue = Number(paymentAmount.replace(",", ".")) || 0;
 
-  const editedTotal = useMemo(
-    () =>
-      Math.round(
-        lines.reduce((sum, line) => {
-          const quantity = Number(line.quantity);
-          const price = Number(line.unit_price.replace(",", "."));
-
-          if (
-            !Number.isFinite(quantity) ||
-            !Number.isFinite(price) ||
-            quantity <= 0 ||
-            price <= 0
-          ) {
-            return sum;
-          }
-
-          return sum + quantity * price;
-        }, 0) * 100,
-      ) / 100,
-    [lines],
+  const changes = useMemo(
+    () => (panel ? buildOrderChanges(panel, form, lines) : null),
+    [panel, form, lines],
   );
+
+  const editedTotal = changes?.total ?? 0;
+
+  const totalWillChange =
+    panel !== null && Math.round(editedTotal * 100) !== Math.round(panel.total * 100);
 
   const editedPendingBalance = panel
     ? Math.max(
@@ -207,24 +158,32 @@ export function LogisticsOrderEditor({
   );
 
   const save = async () => {
-    if (!panel?.order) return;
+    if (!panel?.order || !changes) return;
 
-    if (!form.customer_name.trim()) {
+    const { fields, sendsLines } = changes;
+    const hasEdit = Object.keys(fields).length > 0;
+
+    if (fields.customer_name === "") {
       toast.error("Completa el nombre del cliente.");
       return;
     }
 
-    if (!form.phone.trim()) {
+    if (fields.phone === "") {
       toast.error("Completa el teléfono.");
       return;
     }
 
-    if (!form.destination.trim()) {
+    if (fields.destination === "") {
       toast.error("Completa el destino.");
       return;
     }
 
-    if (!lines.some((line) => line.item_type === "product")) {
+    if (fields.product === "") {
+      toast.error("Completa el nombre del producto.");
+      return;
+    }
+
+    if (sendsLines && !lines.some((line) => line.item_type === "product")) {
       toast.error("Agrega al menos un producto.");
       return;
     }
@@ -245,9 +204,9 @@ export function LogisticsOrderEditor({
       return;
     }
 
-    for (const line of lines) {
+    for (const line of sendsLines ? lines : []) {
       const quantity = Number(line.quantity);
-      const price = Number(line.unit_price.replace(",", "."));
+      const price = parsePrice(line.unit_price);
 
       if (!line.product_name.trim()) {
         toast.error("Completa todos los productos y accesorios.");
@@ -265,53 +224,53 @@ export function LogisticsOrderEditor({
       }
     }
 
-    const fields = {
-      customer_name: form.customer_name.trim(),
-      dni: form.dni.trim(),
-      phone: form.phone.trim(),
-      destination: form.destination.trim(),
-      order_description: form.description.trim(),
-      items: lines.map((line) => ({
-        product_name: line.product_name.trim(),
-        quantity: line.quantity.trim(),
-        unit_price: Number(line.unit_price.replace(",", ".")).toFixed(2),
-        item_type: line.item_type,
-        ...(line.catalog_product_id
-          ? { catalog_product_id: line.catalog_product_id }
-          : {}),
-      })),
-    };
+    if (!hasEdit && paymentValue <= 0) {
+      toast.info("No hay cambios para guardar.");
+      return;
+    }
 
     setSaving(true);
 
     try {
-      const res = await fetch(`/api/orders/payments/orders/${orderId}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: "edit_order",
-          fields,
-          reason: "Actualización desde panel de Logística",
-        }),
-      });
+      let savedTotal = panel.total;
+      let savedPendingBalance = panel.pending_balance;
 
-      const editResult = (await res.json().catch(() => ({}))) as {
-        total?: number | null;
-        pending_balance?: number | null;
-        error?: string;
-      };
+      if (hasEdit) {
+        const res = await fetch(`/api/orders/payments/orders/${orderId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "edit_order",
+            fields,
+            reason: "Actualización desde panel de Logística",
+          }),
+        });
 
-      if (!res.ok) throw new Error("save_failed");
+        const editResult = (await res.json().catch(() => ({}))) as {
+          total?: number | null;
+          pending_balance?: number | null;
+          error?: string;
+        };
 
-      const savedTotal =
-        typeof editResult.total === "number"
-          ? editResult.total
-          : editedTotal;
+        if (editResult.error === "invalid_catalog_product") {
+          toast.error(
+            "Un producto de este pedido ya no está en el catálogo activo. Vuelve a escribir su nombre y guarda.",
+          );
+          return;
+        }
 
-      const savedPendingBalance =
-        typeof editResult.pending_balance === "number"
-          ? editResult.pending_balance
-          : editedPendingBalance;
+        if (!res.ok) throw new Error("save_failed");
+
+        savedTotal =
+          typeof editResult.total === "number"
+            ? editResult.total
+            : editedTotal;
+
+        savedPendingBalance =
+          typeof editResult.pending_balance === "number"
+            ? editResult.pending_balance
+            : editedPendingBalance;
+      }
 
       if (paymentValue > savedPendingBalance) {
         toast.error(
@@ -387,9 +346,11 @@ export function LogisticsOrderEditor({
       }
 
       toast.success(
-        paymentValue > 0
-          ? "Pedido y pago actualizados."
-          : "Pedido actualizado.",
+        !hasEdit
+          ? "Pago registrado."
+          : paymentValue > 0
+            ? "Pedido y pago actualizados."
+            : "Pedido actualizado.",
       );
 
       setPaymentAmount("");
@@ -535,6 +496,13 @@ export function LogisticsOrderEditor({
             S/ {panel.paid_confirmed.toFixed(2)}
           </span>
         </div>
+
+        {totalWillChange ? (
+          <p role="status" className="text-[11px] font-medium text-amber-500">
+            Al guardar, el total del pedido cambiará de {soles(panel.total)} a{" "}
+            {soles(editedTotal)}.
+          </p>
+        ) : null}
 
         <div>
           <label className="mb-1 block text-xs text-muted-foreground">
