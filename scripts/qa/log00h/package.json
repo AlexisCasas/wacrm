@@ -1,0 +1,9 @@
+{
+  "name": "log00h-qa-harness",
+  "private": true,
+  "type": "module",
+  "description": "Throwaway browser dependency of the LOG-00H synthetic QA. The app's own package.json is not touched.",
+  "dependencies": {
+    "playwright": "1.59.1"
+  }
+}

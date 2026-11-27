@@ -1,0 +1,181 @@
+# LOG-00H.2S — functional QA of the LOG-00H candidate on a throwaway runner, with synthetic data only.
+#
+# Nothing here knows about production: no repository secrets, no remote database, no deploy. The runner starts a local Supabase,
+# builds the app, then CUTS outbound network access (isolate.sh) before any migration, seed, app process or test runs.
+# This branch only adds the harness: the first step refuses to run if anything else differs from the candidate commit.
+name: LOG-00H synthetic QA
+
+on:
+  push:
+    branches: [qa/log00h-synthetic]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: log00h-qa
+  cancel-in-progress: true
+
+env:
+  CANDIDATE_SHA: e3b6d4780f3212ba0b3cd34a266c2e58e5c58f2e
+  BASE_SHA: 68c5362e20b3e3e2ecd948a949cfe1429073acc1
+  QA_DIR: /srv/qa
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  qa:
+    name: Synthetic functional QA
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify the candidate is unchanged outside the harness
+        run: |
+          set -euo pipefail
+          git diff --quiet "$CANDIDATE_SHA" HEAD -- . ':(exclude)scripts/qa/log00h' ':(exclude).github/workflows/log00h-qa.yml' \
+            || { echo "The branch differs from the candidate outside the harness:"; git diff --stat "$CANDIDATE_SHA" HEAD; exit 1; }
+          echo "CANDIDATE_VERIFIED=$CANDIDATE_SHA"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        with:
+          version: 2.113.0
+
+      - name: Install app dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Install the browser (harness only; the app's package.json is untouched)
+        working-directory: scripts/qa/log00h
+        run: |
+          set -euo pipefail
+          npm install --no-package-lock --no-audit --no-fund
+          PLAYWRIGHT_BROWSERS_PATH="$HOME/pw-browsers" npx playwright install --with-deps chromium
+
+      - name: Start a local Supabase
+        run: |
+          set -euo pipefail
+          printf '\n[api]\nport = 55321\n' >> supabase/config.toml
+          supabase start -x studio,imgproxy,edge-runtime,logflare,vector,postgres-meta,mailpit,supavisor || supabase start
+          supabase status -o env > "$RUNNER_TEMP/supabase.env"
+
+      - name: Create per-run credentials and build the app
+        run: |
+          set -euo pipefail
+          set -a; . "$RUNNER_TEMP/supabase.env"; set +a
+          : "${ANON_KEY:?}" "${SERVICE_ROLE_KEY:?}" "${DB_URL:?}"
+          ENCRYPTION_KEY="$(openssl rand -hex 32)"
+          META_APP_SECRET="$(openssl rand -hex 24)"
+          CRON_SECRET="$(openssl rand -hex 24)"
+          for v in "$ANON_KEY" "$SERVICE_ROLE_KEY" "$ENCRYPTION_KEY" "$META_APP_SECRET" "$CRON_SECRET"; do echo "::add-mask::$v"; done
+          NODE_BIN="$(dirname "$(command -v node)")"
+          cat > "$RUNNER_TEMP/qa-env.sh" <<EOF
+          PATH=$NODE_BIN:/usr/local/bin:/usr/bin:/bin
+          PLAYWRIGHT_BROWSERS_PATH=$QA_DIR/pw-browsers
+          QA_DIR=$QA_DIR
+          QA_RESULTS=$QA_DIR/results
+          CANDIDATE_SHA=$CANDIDATE_SHA
+          APP_URL=http://127.0.0.1:3000
+          LOCAL_URL=http://127.0.0.1:55321
+          LOCAL_ANON=$ANON_KEY
+          LOCAL_SERVICE=$SERVICE_ROLE_KEY
+          QA_DB_URL=$DB_URL
+          NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:55321
+          NEXT_PUBLIC_SUPABASE_ANON_KEY=$ANON_KEY
+          NEXT_PUBLIC_SITE_URL=http://127.0.0.1:3000
+          NEXT_PUBLIC_APP_LOCALE=es
+          SUPABASE_SERVICE_ROLE_KEY=$SERVICE_ROLE_KEY
+          ENCRYPTION_KEY=$ENCRYPTION_KEY
+          META_APP_SECRET=$META_APP_SECRET
+          AUTOMATION_CRON_SECRET=$CRON_SECRET
+          SHALOM_CUSTOMER_MESSAGES_ENABLED=false
+          WHATSAPP_TEMPLATES_DRY_RUN=true
+          WHATSAPP_CALLING_ENABLED=true
+          NEXT_TELEMETRY_DISABLED=1
+          EOF
+          (set -a; . "$RUNNER_TEMP/qa-env.sh"; set +a; export PATH="$NODE_BIN:$PATH"; npm run build)
+          cp -r .next/static .next/standalone/.next/static
+          cp -r public .next/standalone/public
+
+      - name: Prepare the unprivileged QA user and its copy of the code
+        run: |
+          set -euo pipefail
+          sudo useradd --create-home --shell /bin/bash qarun
+          sudo mkdir -p "$QA_DIR/results"
+          sudo cp -a "$GITHUB_WORKSPACE" "$QA_DIR/repo"
+          git worktree add --detach "$RUNNER_TEMP/base" "$BASE_SHA"
+          sudo cp -a "$RUNNER_TEMP/base" "$QA_DIR/base"
+          sudo ln -s "$QA_DIR/repo/node_modules" "$QA_DIR/base/node_modules"
+          sudo cp -a "$HOME/pw-browsers" "$QA_DIR/pw-browsers"
+          sudo cp "$RUNNER_TEMP/qa-env.sh" "$QA_DIR/env.sh"
+          sudo chown -R qarun:qarun "$QA_DIR"
+          sudo chmod 600 "$QA_DIR/env.sh"
+
+      - name: Cut outbound network access and prove it
+        run: bash scripts/qa/log00h/isolate.sh apply "$QA_DIR/results/isolation-before.json"
+
+      - name: Apply every migration from scratch
+        run: |
+          set -euo pipefail
+          supabase db reset --local --no-seed
+          bash scripts/qa/log00h/wait-api.sh
+
+      - name: Verify the resulting schema
+        run: bash scripts/qa/log00h/as-qa.sh node scripts/qa/log00h/verify-schema.mjs
+
+      - name: Repository SQL suites (each one rolls itself back)
+        run: bash scripts/qa/log00h/as-qa.sh bash scripts/qa/log00h/sql-suites.sh
+
+      - name: Database-backed test suites of the repository (candidate, then base for any failure)
+        timeout-minutes: 18
+        run: bash scripts/qa/log00h/db-suites.sh
+
+      - name: Fresh database and synthetic data
+        run: |
+          set -euo pipefail
+          supabase db reset --local --no-seed
+          bash scripts/qa/log00h/wait-api.sh
+          bash scripts/qa/log00h/as-qa.sh node scripts/qa/log00h/seed.mjs
+
+      - name: Start the app without outbound access
+        id: start_app
+        run: bash scripts/qa/log00h/start-app.sh
+
+      - name: Functional test matrix
+        timeout-minutes: 28
+        run: bash scripts/qa/log00h/as-qa.sh node scripts/qa/log00h/run-tests.mjs
+
+      - name: Prove the isolation still holds
+        if: always()
+        run: |
+          if [ -d "$QA_DIR/results" ]; then bash scripts/qa/log00h/isolate.sh check "$QA_DIR/results/isolation-after.json"; fi
+
+      - name: Build the report and scan the evidence for secrets
+        if: always()
+        run: bash scripts/qa/log00h/collect.sh "$GITHUB_WORKSPACE/qa-artifacts"
+
+      - name: Publish the evidence
+        if: always() && hashFiles('qa-artifacts/SCAN_OK') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: log00h-qa-evidence
+          path: qa-artifacts
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Tear everything down
+        if: always()
+        run: |
+          sudo pkill -u qarun || true
+          supabase stop --no-backup || true
+
+      - name: Verdict
+        if: always()
+        run: bash scripts/qa/log00h/verdict.sh "$GITHUB_WORKSPACE/qa-artifacts"

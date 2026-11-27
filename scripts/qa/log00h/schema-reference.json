@@ -1,0 +1,14 @@
+{
+  "note": "Reference values read from the live schema on 2026-11-27 (catalog only, read-only). A difference is reported as drift between the repository and that schema, not repaired.",
+  "counts": { "publicTables": 112, "publicPolicies": 160, "publicTriggers": 86, "publicTablesWithoutRls": 0 },
+  "functions": {
+    "edit_order_confirmation": { "md5": "1649841ef840", "securityDefiner": true, "execute": ["service_role"] },
+    "cancel_order_confirmation": { "md5": "89b8789664c3", "securityDefiner": true, "execute": ["service_role"] },
+    "correct_order_total": { "md5": "7ffb8b1b878e", "securityDefiner": true, "execute": ["service_role"] },
+    "register_order_payment": { "md5": "385b7e51ce7a", "securityDefiner": true, "execute": ["service_role"] },
+    "confirm_order_payment": { "md5": "9d4bb7c50718", "securityDefiner": true, "execute": ["service_role"] },
+    "create_order_confirmation": { "md5": "bfbd6b93d3b1", "securityDefiner": false, "execute": ["service_role"] },
+    "derive_conversation_to_commercial": { "md5": "537e85744369", "securityDefiner": true, "execute": ["authenticated", "service_role"] },
+    "conversation_operational_access": { "md5": "4b1420d29afb", "securityDefiner": true, "execute": ["anon", "authenticated", "service_role"] }
+  }
+}
