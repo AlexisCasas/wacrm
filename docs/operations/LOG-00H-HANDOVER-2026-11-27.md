@@ -6,10 +6,12 @@
 ## 1. Executive status
 
 - Production has **not** been modified by this workstream: no deploy, merge, production migration, production DB write or customer message.
+- Production provenance was re-audited on 2026-11-27: active `wacrm-app-1` is built from commit `68c5362e20b3e3e2ecd948a949cfe1429073acc1` (`wacrm-app:inbox-height-68c5362e`). This commit exists in GitHub and is now additionally anchored by `release/prod-baseline-68c5362e-20261127`.
+- `origin/main` is **not** the production lineage and must not be used as a deployment source for this release. It is hundreds of commits behind the deployed lineage.
 - LOG-00H candidate is published in PR [#175](https://github.com/AlexisCasas/wacrm/pull/175), HEAD `e3b6d4780f3212ba0b3cd34a266c2e58e5c58f2e`, Draft, not merged.
 - CI and migration checks for the LOG-00H candidate passed in run [#46010951268](https://github.com/AlexisCasas/wacrm/actions/runs/46010951268) and the corresponding migration checks from the same candidate cycle.
 - Synthetic QA infrastructure now runs in GitHub Actions rather than on the production VPS. The QA run completed the matrix but correctly returned FAIL due to three payment retry defects and one test-selector defect; later selector correction is in the QA branch but a full run against the payment fix is still required.
-- Payment retry remediation is in PR [#181](https://github.com/AlexisCasas/wacrm/pull/181), Draft, not merged. Current head `027a36656b91e0beb89bbf11f3cb37abf9c36e9a`, base is LOG-00H candidate `e3b6d478`.
+- Payment retry remediation is in PR [#181](https://github.com/AlexisCasas/wacrm/pull/181), Draft, not merged. Current head `ce07368f4d774ac3b348be08f4d19decc48fbe2b`; its functional tree is the PAY candidate stacked on LOG-00H `e3b6d478`.
 - PR #181 CI is **not fully green**: Migrations succeeded, one CI run succeeded, but a later CI run failed one unrelated inbox unit test. Do not treat the PR as CI-green until the failing test is resolved or explicitly classified with baseline evidence.
 - The PR #179 QA harness is Draft and based on #175. Current head `f169057f1657bca523930c6e44f7df2c18c2b54d`. It has the corrected accessible selectors for the confirmed-orders UI test. It has not yet been rerun against the PAY remediation in #181.
 
@@ -61,7 +63,8 @@ All synthetic QA runs use fictitious data in ephemeral GitHub Actions runners; t
 | [46014218975](https://github.com/AlexisCasas/wacrm/actions/runs/46014218975) | `f169057f` | Harness branch CI SUCCESS; this is not the functional QA result. |
 | [46014113646](https://github.com/AlexisCasas/wacrm/actions/runs/46014113646) | Payment PR CI cycle | Migrations SUCCESS. |
 | [46014113647](https://github.com/AlexisCasas/wacrm/actions/runs/46014113647) | Payment PR CI cycle | CI SUCCESS. |
-| [46014142794](https://github.com/AlexisCasas/wacrm/actions/runs/46014142794) | Payment PR CI cycle | CI FAILURE: one unit test in `src/components/inbox/conversation-list.test.tsx`, test “tagCatalogVersion invalidation … preserves selectedTagIds / OR-filter behavior across a catalog refresh”; unable to find menuitemcheckbox “Favoritos”. 5712 passed, 551 skipped, 1 failed. Build skipped. Treat as unresolved until baseline comparison/reproduction. |
+| [46014142794](https://github.com/AlexisCasas/wacrm/actions/runs/46014142794) | Payment PR CI cycle | CI FAILURE: one unit test in `src/components/inbox/conversation-list.test.tsx`, test “tagCatalogVersion invalidation … preserves selectedTagIds / OR-filter behavior across a catalog refresh”; unable to find menuitemcheckbox “Favoritos”. The test file blob is identical between #175 and #181, so this failure is not introduced by the PAY diff; keep it classified separately from PAY. |
+| [46017665725](https://github.com/AlexisCasas/wacrm/actions/runs/46017665725) | Combined PAY candidate + synthetic harness | Candidate integrity PASS; build, migrations, schema, SQL suites, DB suites, seed, app start, **functional matrix**, isolation, collection and artifact publication all PASS. Final workflow conclusion is FAILURE only because the final `Verdict` step failed. Evidence artifact `log00h-qa-evidence` was published. Do not promote until the Verdict cause is read and classified. |
 
 The workflow history includes repeated runs triggered by pushes and PR events. Always verify each run's exact `head_sha`; never infer success from a run on an older commit.
 
@@ -127,6 +130,20 @@ Cause identified in candidate UI:
 12. Resolve the dependency/base-branch strategy before merging: #175 is based on #173's preserved code; #181 is stacked on #175's head; #179 is a test harness and should not be merged into production.
 13. Only after formal QA approval prepare a separate production deployment plan with Claude Code.
 14. No production deployment, migration, payment test, or customer message without explicit approval.
+
+## 8A. Production lineage audit — 2026-11-27
+
+Read-only VPS audit confirmed:
+- Active production commit: `68c5362e20b3e3e2ecd948a949cfe1429073acc1`.
+- Active image: `wacrm-app:inbox-height-68c5362e`.
+- The production code commit exists on GitHub and is the exact base of PR #175.
+- PR #175 is 2 commits ahead of production and 0 behind.
+- PR #181 is stacked on #175 and is 8 commits ahead of production and 0 behind.
+- The application code running in production is preserved in GitHub. Operational scripts and Compose overrides on the VPS are not fully represented in Git and must be preserved independently during any future deployment.
+- `origin/main` is not safe as a release source for this stack. Future release preparation must start from production commit `68c5362e` or a verified descendant.
+- Stable GitHub anchor created: `release/prod-baseline-68c5362e-20261127` -> exact production commit.
+
+**Production remains untouched.** This audit and GitHub anchoring do not authorize deployment.
 
 ## 9. Responsibilities for the incoming team
 
