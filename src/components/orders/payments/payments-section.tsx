@@ -44,6 +44,16 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
   const [reason, setReason] = useState("");
   const [overReason, setOverReason] = useState("");
   const [requestKey, setRequestKey] = useState(newRequestKey());
+  const pendingAttemptStorageKey = `wacrm:pending-payment:${orderId}`;
+  type PendingAttempt = { requestKey: string; draft: Draft };
+  const readPendingAttempt = (): PendingAttempt | null => {
+    try {
+      const raw = window.sessionStorage.getItem(pendingAttemptStorageKey);
+      if (!raw) return null;
+      const value = JSON.parse(raw) as PendingAttempt;
+      return typeof value.requestKey === 'string' && value.draft && typeof value.draft.amount === 'string' ? value : null;
+    } catch { return null; }
+  };
   const [acting, setActing] = useState<null | { kind: "void" | "reject" | "confirm-over"; payment: PaymentView }>(null);
   const [showHistory, setShowHistory] = useState(false);
   const [deliveryNote, setDeliveryNote] = useState("");
@@ -89,6 +99,7 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
     setBusy(false);
     if (!r.ok) {
       toast.error(r.body.error === "exceeds_balance" && typeof r.body.pending_balance === "number" ? t("err.exceeds_balance_with", { balance: soles(r.body.pending_balance) }) : errorText(r.body.error));
+      await load();
       return false;
     }
     if (okMessage) toast.success(okMessage);
@@ -101,7 +112,22 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
   const startRegister = () => {
     const hint = panel.voucher_candidate?.amount_hint;
     setDraft({ ...emptyDraft(), amount: hint ? hint.toFixed(2) : "", evidenceId: panel.voucher_candidate?.id ?? null, evidenceName: panel.voucher_candidate?.filename ?? null });
-    setRequestKey(newRequestKey());
+    const pending = readPendingAttempt();
+    if (pending) {
+      const alreadyRegistered = panel.payments.some((payment) => payment.request_key === pending.requestKey);
+      if (alreadyRegistered) {
+        window.sessionStorage.removeItem(pendingAttemptStorageKey);
+        setRequestKey(newRequestKey());
+        toast.info(t("registeredToast"));
+        return;
+      }
+      setRequestKey(pending.requestKey);
+      setDraft(pending.draft);
+    } else {
+      const key = newRequestKey();
+      setRequestKey(key);
+      window.sessionStorage.removeItem(pendingAttemptStorageKey);
+    }
     setForm({ mode: "register" });
   };
   const startCorrect = (p: PaymentView) => {
@@ -130,11 +156,20 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
 
   const submit = async () => {
     const payment = { request_key: requestKey, amount: draft.amount.trim(), kind: draft.kind, method: draft.method.trim() || undefined, operation_number: draft.operation.trim() || undefined, paid_at: new Date(draft.paidAt).toISOString(), evidence_document_id: draft.evidenceId ?? undefined, notes: draft.notes.trim() || undefined };
+    if (form?.mode === "register") {
+      try { window.sessionStorage.setItem(pendingAttemptStorageKey, JSON.stringify({ requestKey, draft } satisfies PendingAttempt)); } catch { /* The in-memory key still protects retries in this mounted form. */ }
+    }
     const ok =
       form?.mode === "correct"
         ? await run({ action: "correct", payment_id: form.payment.id, expected_version: form.payment.row_version, reason: reason.trim(), overpayment_reason: overReason.trim() || undefined, ...payment }, t("correctedToast"))
         : await run({ action: "register", ...payment }, t("registeredToast"));
-    if (ok) setForm(null);
+    if (ok) {
+      if (form?.mode === "register") {
+        window.sessionStorage.removeItem(pendingAttemptStorageKey);
+        setRequestKey(newRequestKey());
+      }
+      setForm(null);
+    }
   };
 
   const validDraft = /^\d{1,7}([.,]\d{1,2})?$/.test(draft.amount.trim()) && Number(draft.amount.replace(",", ".")) > 0 && !Number.isNaN(Date.parse(draft.paidAt)) && (form?.mode !== "correct" || reason.trim() !== "");
