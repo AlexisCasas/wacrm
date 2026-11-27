@@ -218,6 +218,35 @@ describe('PaymentsSection · actions by role', () => {
     await screen.findByText('status.unpaid')
     expect(screen.queryByRole('button', { name: 'markDelivered' })).toBeNull()
   })
+  it('reuses the same request key and draft after an uncertain register response and form reopen', async () => {
+    let postCount = 0
+    const f = stubFetch((_url, init) => {
+      if (init?.method === 'POST') {
+        postCount += 1
+        return postCount === 1
+          ? { status: 500, body: { error: 'internal_error' } }
+          : { status: 201, body: { payment_id: PAY } }
+      }
+      return { body: panel() }
+    })
+    render(<PaymentsSection orderId={ORDER} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'register' }))
+    fireEvent.change(screen.getByLabelText('amount'), { target: { value: '20.00' } })
+    fireEvent.change(screen.getByLabelText('method'), { target: { value: 'yape' } })
+    fireEvent.click(screen.getByRole('button', { name: 'save' }))
+    await waitFor(() => expect(posted(f)).toHaveLength(1))
+    const first = posted(f)[0]
+    expect(first.request_key).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'cancel' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'register' }))
+    expect((screen.getByLabelText('amount') as HTMLInputElement).value).toBe('20.00')
+    fireEvent.click(screen.getByRole('button', { name: 'save' }))
+    await waitFor(() => expect(posted(f)).toHaveLength(2))
+    expect(posted(f)[1].request_key).toBe(first.request_key)
+    expect(posted(f)[1].amount).toBe(first.amount)
+    expect(posted(f)[1].method).toBe(first.method)
+  })
+
 })
 
 describe('PaymentChip (list) and the read-only chat view', () => {

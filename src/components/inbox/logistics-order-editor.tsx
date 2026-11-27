@@ -49,6 +49,12 @@ export function LogisticsOrderEditor({
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState("");
+  const [pendingPaymentAttempt, setPendingPaymentAttempt] = useState<null | {
+    requestKey: string;
+    amount: string;
+    kind: "advance" | "balance" | "full";
+    paidAt: string;
+  }>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -289,12 +295,29 @@ export function LogisticsOrderEditor({
         const totalCents = Math.round(savedTotal * 100);
         const balanceCents = Math.round(savedPendingBalance * 100);
 
-        const kind =
+        const kind: "advance" | "balance" | "full" =
           panel.paid_confirmed === 0 && paymentCents === totalCents
             ? "full"
             : paymentCents === balanceCents
               ? "balance"
               : "advance";
+
+        const amount = paymentValue.toFixed(2);
+        const attempt =
+          pendingPaymentAttempt &&
+          pendingPaymentAttempt.amount === amount &&
+          pendingPaymentAttempt.kind === kind
+            ? pendingPaymentAttempt
+            : {
+                requestKey: crypto.randomUUID(),
+                amount,
+                kind,
+                paidAt: new Date().toISOString(),
+              };
+
+        if (attempt !== pendingPaymentAttempt) {
+          setPendingPaymentAttempt(attempt);
+        }
 
         const registerRes = await fetch(
           `/api/orders/payments/orders/${orderId}`,
@@ -303,10 +326,10 @@ export function LogisticsOrderEditor({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               action: "register",
-              request_key: crypto.randomUUID(),
-              amount: paymentValue.toFixed(2),
-              kind,
-              paid_at: new Date().toISOString(),
+              request_key: attempt.requestKey,
+              amount: attempt.amount,
+              kind: attempt.kind,
+              paid_at: attempt.paidAt,
               notes: "Pago registrado desde panel de Logística",
             }),
           },
@@ -327,22 +350,26 @@ export function LogisticsOrderEditor({
           throw new Error("payment_register_failed");
         }
 
-        const confirmRes = await fetch(
-          `/api/orders/payments/orders/${orderId}`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "confirm",
-              payment_id: registered.payment_id,
-              expected_version: registered.row_version,
-            }),
-          },
-        );
+        if (registered.status !== "confirmed") {
+          const confirmRes = await fetch(
+            `/api/orders/payments/orders/${orderId}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                action: "confirm",
+                payment_id: registered.payment_id,
+                expected_version: registered.row_version,
+              }),
+            },
+          );
 
-        if (!confirmRes.ok) {
-          throw new Error("payment_confirm_failed");
+          if (!confirmRes.ok) {
+            throw new Error("payment_confirm_failed");
+          }
         }
+
+        setPendingPaymentAttempt(null);
       }
 
       toast.success(
