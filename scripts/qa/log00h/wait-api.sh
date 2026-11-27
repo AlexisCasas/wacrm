@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# After a start or reset, wait until REST, Auth and Storage answer through the local gateway.
+# After a start or reset, wait until the PostgREST gateway root, Auth and Storage answer through the local gateway. Do not probe an application table: RLS/grants are tested separately.
 set -euo pipefail
 set -a; . "${RUNNER_TEMP:?}/supabase.env"; set +a
 base=http://127.0.0.1:55321
 for attempt in $(seq 1 60); do
-  rest=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY" "$base/rest/v1/accounts?select=id&limit=1" || true)
+  rest=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "apikey: $ANON_KEY" "$base/rest/v1/" || true)
   auth=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "apikey: $ANON_KEY" "$base/auth/v1/health" || true)
   storage=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 -H "apikey: $SERVICE_ROLE_KEY" -H "Authorization: Bearer $SERVICE_ROLE_KEY" "$base/storage/v1/bucket" || true)
   if [ "$rest" = 200 ] && [ "$auth" = 200 ] && [ "$storage" = 200 ]; then echo "API ready after $attempt attempts"; exit 0; fi
