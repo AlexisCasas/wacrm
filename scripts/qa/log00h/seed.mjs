@@ -28,14 +28,21 @@ for (const acc of ['A', 'B']) {
     const name = `QA ${acc} ${area}`
     const created = await must(admin.auth.admin.createUser({ email, password, email_confirm: true, user_metadata: { full_name: name } }), `user ${key}`)
     const id = created.user.id
-    const profile = await must(admin.from('profiles').select('account_id').eq('user_id', id).single(), `profile ${key}`)
+    // profiles deliberately has no PostgREST table privileges for service_role (migration 034).
+    // Seed this QA-only identity metadata through the local postgres connection, not by weakening production grants.
+    const sqlLiteral = (value) => "'" + String(value).replace(/'/g, "''") + "'"
+    const profileJson = execFileSync('psql', [process.env.QA_DB_URL, '-X', '-At', '-v', 'ON_ERROR_STOP=1', '-c',
+      `select json_build_object('account_id', account_id)::text from public.profiles where user_id = ${sqlLiteral(id)}::uuid`], { encoding: 'utf8' }).trim()
+    if (!profileJson) throw new Error(`profile missing after auth signup: ${key}`)
+    const profile = JSON.parse(profileJson)
     if (area === 'OWN') {
       world.accounts[acc] = profile.account_id
       await must(admin.from('accounts').update({ name: `QA Cuenta ${acc}` }).eq('id', profile.account_id), 'account name')
-      await must(admin.from('profiles').update({ full_name: name }).eq('user_id', id), 'owner name')
+      execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c',
+        `update public.profiles set full_name = ${sqlLiteral(name)} where user_id = ${sqlLiteral(id)}::uuid`], { stdio: 'inherit' })
     } else {
-      await must(admin.from('profiles').update({ full_name: name, account_id: world.accounts[acc], account_role: accountRole }).eq('user_id', id), `move ${key}`)
-      await must(admin.from('profiles').update({ operational_role: operationalRole }).eq('user_id', id), `area ${key}`)
+      execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c',
+        `update public.profiles set full_name = ${sqlLiteral(name)}, account_id = ${sqlLiteral(world.accounts[acc)}::uuid, account_role = ${sqlLiteral(accountRole)}, operational_role = ${sqlLiteral(operationalRole)} where user_id = ${sqlLiteral(id)}::uuid`], { stdio: 'inherit' })
       const { error } = await admin.from('accounts').delete().eq('id', profile.account_id)
       if (error) console.warn(`leftover account of ${key} not removed: ${error.code}`)
     }
