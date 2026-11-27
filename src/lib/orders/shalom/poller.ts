@@ -228,7 +228,7 @@ export async function runShalomTick(admin: SupabaseClient, deps: PollDeps): Prom
   }
 
   // ... and the customer message itself: an external action (WhatsApp), so it also honours the global kill switch; a failure here never touches the tracking.
-  if (!deps.skipQueries) {
+  if (!deps.skipQueries && process.env.SHALOM_CUSTOMER_MESSAGES_ENABLED === 'true') {
     summary.messages = await processCustomerMessages(admin, { cfg: deps.cfg, now: deps.now, sendMessage: deps.sendMessage })
     summary.errors += summary.messages.errors
   }

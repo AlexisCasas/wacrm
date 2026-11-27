@@ -478,6 +478,18 @@
       ],
       "status": "pending",
       "note": "payment parity protection unit 2: supervisor-only, audited correction of a tracked order total. No backfill and no payment row is changed, created or deleted."
+    },
+    {
+      "new_version": "20261206000000",
+      "new_file": "20261206000000_order_edit_and_cancellation.sql",
+      "sha256": "77d561e04cc492f4f0da59bfa96cf879b5d9fa9bcadca391f059ed4b33135a07",
+      "depends_on": [
+        "20261204000018",
+        "20261204000019",
+        "20261205000005"
+      ],
+      "status": "pending",
+      "note": "autonomous operation: edit_order_confirmation + cancel_order_confirmation (supervised, audited), order_edits/order_cancellations append-only audits, cancellation guards on child tables. Additive; validated on an isolated restore of the 2026-11-24T15:24Z production dump."
     }
   ]
 }

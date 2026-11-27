@@ -332,13 +332,27 @@ describe.skipIf(!QA_ENABLED)('immediate arrival notice (destination_arrival_cust
     it('GLOBAL kill switch (skipQueries): the arrival row is created by the DB (no Shalom involved) but NOTHING is sent; with the switch back ON the tick sends it once', async () => {
       const { order } = await arrive('tick')
       const provider = createFakeProvider(() => 'destination')
-      const off = await runShalomTick(w.admin, { provider, cfg: CFG, now: () => new Date(clockMs), skipQueries: true, sendMessage: fakeSend })
-      expect(off.messages.claimed).toBe(0)
-      expect(sendCalls).toHaveLength(0)
-      const on = await runShalomTick(w.admin, { provider, cfg: CFG, now: () => new Date(clockMs), skipQueries: false, sendMessage: fakeSend })
-      expect(on.messages).toMatchObject({ sent: 1 })
-      expect(sendCalls).toHaveLength(1)
-      expect((await arrivalOf(order))[0].status).toBe('sent')
+      const previous = process.env.SHALOM_CUSTOMER_MESSAGES_ENABLED
+      try {
+        process.env.SHALOM_CUSTOMER_MESSAGES_ENABLED = 'true'
+        const off = await runShalomTick(w.admin, { provider, cfg: CFG, now: () => new Date(clockMs), skipQueries: true, sendMessage: fakeSend })
+        expect(off.messages.claimed).toBe(0)
+        expect(sendCalls).toHaveLength(0)
+
+        process.env.SHALOM_CUSTOMER_MESSAGES_ENABLED = 'false'
+        const trackingOnly = await runShalomTick(w.admin, { provider, cfg: CFG, now: () => new Date(clockMs), skipQueries: false, sendMessage: fakeSend })
+        expect(trackingOnly.messages.claimed).toBe(0)
+        expect(sendCalls).toHaveLength(0)
+
+        process.env.SHALOM_CUSTOMER_MESSAGES_ENABLED = 'true'
+        const on = await runShalomTick(w.admin, { provider, cfg: CFG, now: () => new Date(clockMs), skipQueries: false, sendMessage: fakeSend })
+        expect(on.messages).toMatchObject({ sent: 1 })
+        expect(sendCalls).toHaveLength(1)
+        expect((await arrivalOf(order))[0].status).toBe('sent')
+      } finally {
+        if (previous === undefined) delete process.env.SHALOM_CUSTOMER_MESSAGES_ENABLED
+        else process.env.SHALOM_CUSTOMER_MESSAGES_ENABLED = previous
+      }
     })
   })
 

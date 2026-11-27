@@ -16,17 +16,21 @@ export type FinancialStatus = 'unpaid' | 'partially_paid' | 'paid'
 
 const REASON_STATUS: Record<string, number> = {
   not_tracked: 409, stale: 409, exceeds_balance: 409, overpayment_reason_required: 422, duplicate_evidence: 409, duplicate_operation: 409, invalid_evidence: 422,
-  not_confirmable: 409, not_rejectable: 409, not_voidable: 409, not_correctable: 409, shalom_tracking_active: 409, not_ready_for_dispatch: 409, order_closed: 409, below_paid: 409,
+  not_confirmable: 409, not_rejectable: 409, not_voidable: 409, not_correctable: 409, shalom_tracking_active: 409, not_ready_for_dispatch: 409, order_closed: 409, below_paid: 409, order_cancelled: 409, paid_requires_ack: 409, supervisor_required: 403,
 }
 const MESSAGE_STATUS: Record<string, [number, string]> = {
   invalid_amount: [400, 'invalid_amount'], invalid_request: [400, 'invalid_request'], reason_required: [422, 'reason_required'], request_key_conflict: [409, 'request_key_conflict'],
   overpayment_reason_required: [422, 'overpayment_reason_required'], duplicate_evidence: [409, 'duplicate_evidence'], duplicate_operation: [409, 'duplicate_operation'], invalid_total: [400, 'invalid_total'],
+  invalid_fields: [400, 'invalid_fields'], invalid_order_items: [400, 'invalid_order_items'], invalid_seller: [400, 'invalid_seller'], invalid_catalog_product: [400, 'invalid_catalog_product'], use_items: [400, 'use_items'],
 }
 
 /** Maps a database exception to an HTTP verdict. 42501 is "not found" (cross-account and unknown ids are indistinguishable) or feature_disabled. */
 export function mapPaymentError(error: { code?: string; message?: string }): ServiceResult<never> {
   const message = error.message ?? ''
-  if (error.code === '42501') return message.includes('feature_disabled') ? fail(403, 'feature_disabled') : fail(404, 'not_found')
+  if (error.code === '42501') {
+    if (message.includes('multiproduct_disabled')) return fail(403, 'multiproduct_disabled')
+    return message.includes('feature_disabled') ? fail(403, 'feature_disabled') : fail(404, 'not_found')
+  }
   if (error.code === '22023') {
     for (const [key, [status, code]] of Object.entries(MESSAGE_STATUS)) if (message.includes(key)) return fail(status, code)
     return fail(400, 'invalid_request')
@@ -39,7 +43,7 @@ function settle<T>(data: unknown, error: { code?: string; message?: string } | n
   if (error) return mapPaymentError(error)
   const out = (data ?? {}) as Record<string, unknown>
   if (out.ok === true) return { ok: true, status: 200, body: ok(out) }
-  return fail(REASON_STATUS[String(out.reason ?? '')] ?? 409, String(out.reason ?? 'rejected'), out.pending_balance !== undefined ? { pending_balance: out.pending_balance } : undefined)
+  return fail(REASON_STATUS[String(out.reason ?? '')] ?? 409, String(out.reason ?? 'rejected'), out.pending_balance !== undefined || out.paid_confirmed !== undefined ? { ...(out.pending_balance !== undefined ? { pending_balance: out.pending_balance } : {}), ...(out.paid_confirmed !== undefined ? { paid_confirmed: out.paid_confirmed } : {}) } : undefined)
 }
 
 const text = (v: unknown, max: number): string | null => (typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, max) : null)
@@ -140,6 +144,60 @@ export async function correctOrderTotal(ctx: Pick<PaymentCaller, 'userId' | 'acc
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------
+// Autonomous operation: EDIT and CANCEL (anulacion) of a confirmed order. Both go through SECURITY DEFINER RPCs that re-validate actor / flags / area / order, write an
+// append-only audit row and never take money from the browser (the total of an edit is derived from the lines by the database).
+// ---------------------------------------------------------------------------------------------------------------------------------------------
+
+const EDIT_TEXT_FIELDS = ['customer_name', 'dni', 'phone', 'order_description', 'agency', 'destination', 'department', 'product'] as const
+
+export async function editOrder(ctx: Pick<PaymentCaller, 'userId' | 'accountId'>, admin: SupabaseClient, orderId: string, input: { fields?: unknown; reason?: unknown }, now: Date = new Date()) {
+  if (!isUuid(orderId)) return fail(400, 'invalid_order_id')
+  const reason = text(input.reason, 300)
+  if (!reason) return fail(422, 'reason_required')
+  const raw = input.fields
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return fail(400, 'invalid_fields')
+  const src = raw as Record<string, unknown>
+  const fields: Record<string, unknown> = {}
+  for (const key of Object.keys(src)) {
+    const v = src[key]
+    if ((EDIT_TEXT_FIELDS as readonly string[]).includes(key)) {
+      if (typeof v !== 'string') return fail(400, 'invalid_fields')
+      fields[key] = v
+    } else if (key === 'seller_user_id') {
+      if (typeof v !== 'string' || !isUuid(v)) return fail(400, 'invalid_fields')
+      fields[key] = v
+    } else if (key === 'quantity') {
+      if (typeof v !== 'string' && typeof v !== 'number') return fail(400, 'invalid_fields')
+      fields[key] = String(v)
+    } else if (key === 'items') {
+      if (!Array.isArray(v) || v.length < 1 || v.length > 20) return fail(400, 'invalid_order_items')
+      const lines: Record<string, unknown>[] = []
+      for (const line of v) {
+        if (typeof line !== 'object' || line === null || Array.isArray(line)) return fail(400, 'invalid_order_items')
+        const l = line as Record<string, unknown>
+        const itemType = l.item_type === undefined ? 'product' : l.item_type
+        if (itemType !== 'product' && itemType !== 'accessory') return fail(400, 'invalid_order_items')
+        lines.push({ product_name: l.product_name, quantity: typeof l.quantity === 'number' ? String(l.quantity) : l.quantity, unit_price: normalizePrice(l.unit_price) ?? l.unit_price, item_type: itemType, ...(l.catalog_product_id ? { catalog_product_id: l.catalog_product_id } : {}) })
+      }
+      fields[key] = lines
+    } else {
+      return fail(400, 'invalid_fields')
+    }
+  }
+  if (Object.keys(fields).length === 0) return fail(400, 'invalid_fields')
+  const { data, error } = await admin.rpc('edit_order_confirmation', { p_account: ctx.accountId, p_actor: ctx.userId, p_order: orderId, p_fields: fields, p_reason: reason, p_now: now.toISOString() })
+  return settle(data, error, (o) => ({ changed: o.changed === true, fields: Array.isArray(o.fields) ? o.fields : [], total: o.total === undefined ? null : Number(o.total), pending_balance: o.pending_balance == null ? null : Number(o.pending_balance) }))
+}
+
+export async function cancelOrder(ctx: Pick<PaymentCaller, 'userId' | 'accountId'>, admin: SupabaseClient, orderId: string, input: { reason?: unknown; acknowledgePaid?: unknown }, now: Date = new Date()) {
+  if (!isUuid(orderId)) return fail(400, 'invalid_order_id')
+  const reason = text(input.reason, 300)
+  if (!reason) return fail(422, 'reason_required')
+  const { data, error } = await admin.rpc('cancel_order_confirmation', { p_account: ctx.accountId, p_actor: ctx.userId, p_order: orderId, p_reason: reason, p_ack_paid: input.acknowledgePaid === true, p_now: now.toISOString() })
+  return settle(data, error, (o) => ({ changed: o.changed === true, refund_required: o.refund_required === true, paid_confirmed: Number(o.paid_confirmed ?? 0), shipment_stopped: o.shipment_stopped === true }))
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------
 // Reads
 // ---------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -199,18 +257,25 @@ export interface PaymentsPanel {
   /** A validated PR-04 voucher NOT linked to a live payment: offered as evidence, with its amount as a HINT only (a person confirms). */
   voucher_candidate: { id: string; filename: string; amount_hint: number | null } | null
   is_supervisor: boolean
+  /** The editable commercial data of the order (what the edit dialog starts from). */
+  order: { customer_name: string; dni: string | null; phone: string; product: string; quantity: number; order_description: string | null; agency: string; destination: string; department: string | null; seller_name: string; seller_user_id: string | null }
+  items: Array<{ line_number: number; product_name: string; quantity: number; unit_price: number; catalog_product_id: string | null }>
+  /** Set when the order was cancelled (anulada). Money rows are never deleted: `refund_required` flags what must be returned. */
+  cancellation: { reason: string; actor_name: string; paid_confirmed: number | string; refund_required: boolean; shipment_stopped: boolean; customer_notice: string; cancelled_at: string } | null
+  edits: Array<{ id: string; actor_name: string; reason: string; changes: Record<string, { old: unknown; new: unknown }>; created_at: string }>
 }
 
 export async function getPaymentsPanel(ctx: PaymentCaller, admin: SupabaseClient, orderId: string, isSupervisor: boolean): Promise<ServiceResult<PaymentsPanel>> {
   if (!isUuid(orderId)) return fail(400, 'invalid_order_id')
   const denied = await denyUnlessPayments(ctx)
   if (denied) return denied
-  const { data: order, error: orderError } = await ctx.supabase.from('order_confirmations').select('id, price').eq('account_id', ctx.accountId).eq('id', orderId).maybeSingle()
+  const { data: order, error: orderError } = await ctx.supabase.from('order_confirmations').select('id, price, customer_name, dni, phone, product, quantity, order_description, agency, destination, department, seller_name, seller_user_id').eq('account_id', ctx.accountId).eq('id', orderId).maybeSingle()
   if (orderError) return fail(500, 'internal_error')
   if (!order) return fail(404, 'not_found')
-  const total = Number((order as { price: number | string }).price)
+  const orderRow = order as unknown as { price: number | string } & PaymentsPanel['order']
+  const total = Number(orderRow.price)
 
-  const [financials, payments, events, logistics, shipment, manual, voucher, finalization] = await Promise.all([
+  const [financials, payments, events, logistics, shipment, manual, voucher, finalization, cancellation, edits, items] = await Promise.all([
     ctx.supabase.from('order_financials').select('paid_confirmed, financial_status').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_payments').select(PAYMENT_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: true }).limit(100),
     ctx.supabase.from('order_payment_events').select('id, payment_id, event_type, actor_name, amount, balance_before, balance_after, financial_status_after, reason, created_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(60),
@@ -219,8 +284,36 @@ export async function getPaymentsPanel(ctx: PaymentCaller, admin: SupabaseClient
     ctx.supabase.from('order_manual_deliveries').select('delivered_at').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
     ctx.supabase.from('order_documents').select('id, original_filename, reviewed_data').eq('account_id', ctx.accountId).eq('order_id', orderId).eq('kind', 'voucher').eq('status', 'validated').maybeSingle(),
     admin.from('order_finalizations').select('finalized_at, return_state, cleared_at').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
+    ctx.supabase.from('order_cancellations').select('reason, actor_name, paid_confirmed, refund_required, shipment_stopped, customer_notice, cancelled_at').eq('account_id', ctx.accountId).eq('order_id', orderId).maybeSingle(),
+    ctx.supabase.from('order_edits').select('id, actor_name, reason, changes, created_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(20),
+    ctx.supabase.from('order_confirmation_items').select('line_number, product_name, quantity, unit_price, catalog_product_id, item_type').eq('account_id', ctx.accountId).eq('order_id', orderId).order('line_number', { ascending: true }),
   ])
-  if (financials.error || payments.error || events.error || logistics.error || shipment.error || manual.error || voucher.error || finalization.error) {
+  let itemRows = items.data
+  let itemError = items.error
+
+  if (
+    itemError &&
+    (
+      itemError.code === '42703' ||
+      itemError.code === 'PGRST204' ||
+      itemError.message?.includes('item_type')
+    )
+  ) {
+    const legacyItems = await ctx.supabase
+      .from('order_confirmation_items')
+      .select('line_number, product_name, quantity, unit_price, catalog_product_id')
+      .eq('account_id', ctx.accountId)
+      .eq('order_id', orderId)
+      .order('line_number', { ascending: true })
+
+    itemError = legacyItems.error
+    itemRows = (legacyItems.data ?? []).map((item) => ({
+      ...item,
+      item_type: 'product' as const,
+    }))
+  }
+
+  if (financials.error || payments.error || events.error || logistics.error || shipment.error || manual.error || voucher.error || finalization.error || cancellation.error || edits.error || itemError) {
     console.error('[payments] panel read failed')
     return fail(500, 'internal_error')
   }
@@ -254,6 +347,10 @@ export async function getPaymentsPanel(ctx: PaymentCaller, admin: SupabaseClient
       finalization: fz && fz.cleared_at === null ? { finalized_at: fz.finalized_at, return_state: fz.return_state } : null,
       voucher_candidate: v && !linked.has(v.id) ? { id: v.id, filename: v.original_filename, amount_hint: normalizeAmount(v.reviewed_data?.amount ?? null) } : null,
       is_supervisor: isSupervisor,
+      order: { customer_name: orderRow.customer_name, dni: orderRow.dni, phone: orderRow.phone, product: orderRow.product, quantity: orderRow.quantity, order_description: orderRow.order_description, agency: orderRow.agency, destination: orderRow.destination, department: orderRow.department, seller_name: orderRow.seller_name, seller_user_id: orderRow.seller_user_id },
+      items: ((itemRows ?? []) as unknown as Array<{ line_number: number; product_name: string; quantity: number; unit_price: number | string; catalog_product_id: string | null; item_type?: 'product' | 'accessory' }>).map((i) => ({ ...i, unit_price: Number(i.unit_price), item_type: i.item_type ?? 'product' })),
+      cancellation: (cancellation.data as PaymentsPanel['cancellation']) ?? null,
+      edits: (edits.data ?? []) as unknown as PaymentsPanel['edits'],
     },
   }
 }
@@ -265,6 +362,8 @@ export interface PaymentSummary {
   total: number
   paid_confirmed: number
   pending_balance: number
+  /** The order was cancelled (anulado). */
+  cancelled?: boolean
 }
 
 /** One light row per TRACKED order for the list chip (orders without a financial row are simply absent: not tracked). */
@@ -273,17 +372,19 @@ export async function getPaymentsSummary(ctx: PaymentCaller, ids: string[]): Pro
   if (unique.length === 0 || unique.length > MAX_SUMMARY_IDS || !unique.every(isUuid)) return fail(400, 'invalid_ids')
   const denied = await denyUnlessPayments(ctx)
   if (denied) return denied
-  const [fin, orders] = await Promise.all([
+  const [fin, orders, cancels] = await Promise.all([
     ctx.supabase.from('order_financials').select('order_id, paid_confirmed, financial_status').eq('account_id', ctx.accountId).in('order_id', unique),
     ctx.supabase.from('order_confirmations').select('id, price').eq('account_id', ctx.accountId).in('id', unique),
+    ctx.supabase.from('order_cancellations').select('order_id').eq('account_id', ctx.accountId).in('order_id', unique),
   ])
-  if (fin.error || orders.error) return fail(500, 'internal_error')
+  if (fin.error || orders.error || cancels.error) return fail(500, 'internal_error')
+  const cancelled = new Set(((cancels.data ?? []) as Array<{ order_id: string }>).map((c) => c.order_id))
   const price = new Map(((orders.data ?? []) as Array<{ id: string; price: number | string }>).map((o) => [o.id, Number(o.price)]))
   const summaries: Record<string, PaymentSummary> = {}
   for (const r of (fin.data ?? []) as Array<{ order_id: string; paid_confirmed: number | string; financial_status: FinancialStatus }>) {
     const total = price.get(r.order_id) ?? 0
     const paid = Number(r.paid_confirmed)
-    summaries[r.order_id] = { financial_status: r.financial_status, total, paid_confirmed: paid, pending_balance: Math.max(Math.round((total - paid) * 100) / 100, 0) }
+    summaries[r.order_id] = { financial_status: r.financial_status, total, paid_confirmed: paid, pending_balance: Math.max(Math.round((total - paid) * 100) / 100, 0), ...(cancelled.has(r.order_id) ? { cancelled: true } : {}) }
   }
   return { ok: true, status: 200, body: { summaries } }
 }
