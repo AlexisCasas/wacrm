@@ -210,6 +210,7 @@ export async function denyUnlessPayments(ctx: Pick<PaymentCaller, 'supabase' | '
 
 export interface PaymentView {
   id: string
+  request_key: string
   amount: number
   kind: string
   method: string | null
@@ -229,7 +230,7 @@ export interface PaymentView {
   voided_at: string | null
   row_version: number
 }
-const PAYMENT_COLUMNS = 'id, amount, kind, method, operation_number, paid_at, status, evidence_document_id, notes, supersedes_payment_id, overpayment_reason, registered_by_name, registered_at, confirmed_by_name, confirmed_at, rejected_reason, voided_reason, voided_at, row_version'
+const PAYMENT_COLUMNS = 'id, request_key, amount, kind, method, operation_number, paid_at, status, evidence_document_id, notes, supersedes_payment_id, overpayment_reason, registered_by_name, registered_at, confirmed_by_name, confirmed_at, rejected_reason, voided_reason, voided_at, row_version'
 
 export interface PaymentEventView {
   id: string
