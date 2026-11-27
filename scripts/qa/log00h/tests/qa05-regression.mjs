@@ -37,10 +37,10 @@ export async function register(r) {
   await r.test('05.2', { user: 'A-LOG / A-COM', title: 'Pedidos Confirmados: lista y paginación', expected: 'Lista, carga más; Comercial 403' }, async (t) => {
     const page = await t.page('A-LOG')
     await page.goto(`${APP}/confirmed-orders`, { waitUntil: 'domcontentloaded' })
-    const buttons = page.getByRole('button', { name: /openOrder/ })
+    const buttons = page.getByRole('button', { name: /^Ver el pedido de / })
     await buttons.first().waitFor({ timeout: 60_000 })
     const first = await buttons.count()
-    await page.getByRole('button', { name: 'loadMore' }).click()
+    await page.getByRole('button', { name: 'Cargar más' }).click()
     await until(async () => (await buttons.count()) > first, 'the second page')
     const second = await buttons.count()
     const denied = await t.api('A-COM', 'GET', '/api/orders/confirmed')
