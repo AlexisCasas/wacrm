@@ -28,6 +28,8 @@ import {
   handleTemplateWebhookChange,
   isTemplateWebhookField,
 } from '@/lib/whatsapp/template-webhook'
+import { parseWhatsAppCallPermissionReply } from '@/lib/whatsapp/calling-webhook'
+import { processWhatsAppCallingWebhookChange } from '@/lib/whatsapp/calling-webhook-processor'
 
 export interface MetaWebhookPayload { entry?: WhatsAppWebhookEntry[] }
 
@@ -70,9 +72,15 @@ interface WhatsAppMessage {
    * to advance the per-contact run.
    */
   interactive?: {
-    type: 'button_reply' | 'list_reply'
+    type: 'button_reply' | 'list_reply' | 'call_permission_reply'
     button_reply?: { id: string; title: string }
     list_reply?: { id: string; title: string; description?: string }
+    call_permission_reply?: {
+      response: 'accept' | 'reject'
+      is_permanent?: boolean
+      expiration_timestamp?: string
+      response_source?: string
+    }
   }
   /**
    * Set when the customer taps a QUICK_REPLY button on a *template*
@@ -124,6 +132,7 @@ interface WhatsAppWebhookEntry {
       contacts?: WhatsAppWebhookContact[]
       messages?: WhatsAppMessage[]
       statuses?: WhatsAppWebhookStatus[]
+      calls?: unknown[]
     }
     field: string
   }>
@@ -144,6 +153,15 @@ export async function processWebhook(body: MetaWebhookPayload) {
         await handleTemplateWebhookChange(
           { field: change.field, value: change.value as unknown },
           supabaseAdmin(),
+        )
+        continue
+      }
+
+      if (change.field === 'calls') {
+        await processWhatsAppCallingWebhookChange(
+          supabaseAdmin(),
+          { field: change.field, value: change.value as unknown },
+          entry.id,
         )
         continue
       }
@@ -567,6 +585,76 @@ async function processMessage(
     })
     if (blockedRpcErr) {
       console.error('[webhook] record_blocked_inbound failed:', blockedRpcErr.message)
+    }
+    return
+  }
+
+  // Call-permission replies are control events, not ordinary Inbox messages.
+  // Persist the approved/rejected state and return before message fan-out.
+  const callPermissionReply = parseWhatsAppCallPermissionReply(message)
+  if (callPermissionReply) {
+    const expirySeconds = callPermissionReply.expiration_timestamp
+      ? Number(callPermissionReply.expiration_timestamp)
+      : null
+    const validTemporaryExpiry =
+      Number.isSafeInteger(expirySeconds) &&
+      (expirySeconds as number) > Math.floor(Date.now() / 1000)
+    const permissionStatus =
+      callPermissionReply.response === 'reject'
+        ? 'no_permission'
+        : callPermissionReply.is_permanent === true
+          ? 'permanent'
+          : validTemporaryExpiry
+            ? 'temporary'
+            : 'no_permission'
+    const responseSource =
+      callPermissionReply.response_source === 'user_action' ||
+      callPermissionReply.response_source === 'automatic'
+        ? callPermissionReply.response_source
+        : null
+
+    const { error: permissionError } = await supabaseAdmin()
+      .from('whatsapp_call_permissions')
+      .upsert({
+        account_id: accountId,
+        phone_number_id: phoneNumberId,
+        contact_id: contactRecord.id,
+        status: permissionStatus,
+        expiration_time: permissionStatus === 'temporary' ? expirySeconds : null,
+        response_source: responseSource,
+        last_message_id: message.id,
+        context_id: callPermissionReply.context_message_id ?? null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'phone_number_id,contact_id' })
+
+    if (permissionError) {
+      console.error('[calling-permission] permission reply persistence failed', {
+        account_id: accountId,
+        code: permissionError.code ?? 'unknown',
+      })
+      throw new Error('calling_permission_reply_persist_failed')
+    }
+
+    if (callPermissionReply.context_message_id) {
+      const { error: requestError } = await supabaseAdmin()
+        .from('whatsapp_call_permission_requests')
+        .update({
+          status: callPermissionReply.response === 'accept' ? 'accepted' : 'rejected',
+          responded_at: new Date().toISOString(),
+          response_source: responseSource,
+        })
+        .eq('account_id', accountId)
+        .eq('phone_number_id', phoneNumberId)
+        .eq('contact_id', contactRecord.id)
+        .eq('request_message_id', callPermissionReply.context_message_id)
+
+      if (requestError) {
+        console.error('[calling-permission] permission request audit update failed', {
+          account_id: accountId,
+          code: requestError.code ?? 'unknown',
+        })
+        throw new Error('calling_permission_request_update_failed')
+      }
     }
     return
   }
