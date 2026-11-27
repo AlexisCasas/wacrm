@@ -46,16 +46,19 @@ export async function mkConversation(world, accKey, label) {
   const acc = world.accounts[accKey]
   const phone = fakePhone()
   const name = `Contacto QA ${label}`
-  const contact = await must(
-    admin.from('contacts').insert({ user_id: world.users[`${accKey}-OWN`].id, account_id: acc, phone, name }).select('id').single(), 'contact')
+  // Restricted tables are seeded only through the local postgres connection in this disposable database.
+  const ownerId = world.users[`${accKey}-OWN`].id
+  const contactId = randomUUID()
+  const conversationId = randomUUID()
   const now = new Date().toISOString()
-  const conversation = await must(
-    admin.from('conversations').insert({ user_id: world.users[`${accKey}-OWN`].id, account_id: acc, contact_id: contact.id, last_message_text: `Mensaje sintético ${label}`, last_message_at: now }).select('id').single(), 'conversation')
-  await must(admin.from('messages').insert([
-    { conversation_id: conversation.id, sender_type: 'customer', content_type: 'text', content_text: `Hola, consulta sintética ${label}`, status: 'delivered' },
-    { conversation_id: conversation.id, sender_type: 'agent', content_type: 'text', content_text: 'Respuesta sintética de QA', status: 'read' },
-  ]), 'messages')
-  return { conversationId: conversation.id, contactId: contact.id, phone, label }
+  const literal = (value) => "'" + String(value).replace(/'/g, "''") + "'"
+  const sql = [
+    `insert into public.contacts (id, user_id, account_id, phone, name) values (${literal(contactId)}::uuid, ${literal(ownerId)}::uuid, ${literal(acc)}::uuid, ${literal(phone)}, ${literal(name)});`,
+    `insert into public.conversations (id, user_id, account_id, contact_id, last_message_text, last_message_at) values (${literal(conversationId)}::uuid, ${literal(ownerId)}::uuid, ${literal(acc)}::uuid, ${literal(contactId)}::uuid, ${literal(`Mensaje sintético ${label}`)}, ${literal(now)}::timestamptz);`,
+    `insert into public.messages (conversation_id, sender_type, content_type, content_text, status) values (${literal(conversationId)}::uuid, 'customer', 'text', ${literal(`Hola, consulta sintética ${label}`)}, 'delivered'), (${literal(conversationId)}::uuid, 'agent', 'text', 'Respuesta sintética de QA', 'read');`
+  ].join('\n')
+  execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c', sql], { stdio: 'inherit' })
+  return { conversationId, contactId, phone, label }
 }
 
 /** Chat placed directly in the logistics stage without any tracked order (the historical case). */
