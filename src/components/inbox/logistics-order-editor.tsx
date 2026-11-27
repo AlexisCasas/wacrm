@@ -295,7 +295,7 @@ export function LogisticsOrderEditor({
         const totalCents = Math.round(savedTotal * 100);
         const balanceCents = Math.round(savedPendingBalance * 100);
 
-        const kind =
+        const kind: "advance" | "balance" | "full" =
           panel.paid_confirmed === 0 && paymentCents === totalCents
             ? "full"
             : paymentCents === balanceCents
