@@ -42,7 +42,7 @@ for (const acc of ['A', 'B']) {
         `update public.profiles set full_name = ${sqlLiteral(name)} where user_id = ${sqlLiteral(id)}::uuid`], { stdio: 'inherit' })
     } else {
       execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c',
-        `update public.profiles set full_name = ${sqlLiteral(name)}, account_id = ${sqlLiteral(world.accounts[acc)}::uuid, account_role = ${sqlLiteral(accountRole)}, operational_role = ${sqlLiteral(operationalRole)} where user_id = ${sqlLiteral(id)}::uuid`], { stdio: 'inherit' })
+        `update public.profiles set full_name = ${sqlLiteral(name)}, account_id = ${sqlLiteral(world.accounts[acc])}::uuid, account_role = ${sqlLiteral(accountRole)}, operational_role = ${sqlLiteral(operationalRole)} where user_id = ${sqlLiteral(id)}::uuid`], { stdio: 'inherit' })
       const { error } = await admin.from('accounts').delete().eq('id', profile.account_id)
       if (error) console.warn(`leftover account of ${key} not removed: ${error.code}`)
     }
