@@ -469,21 +469,28 @@ function InboxPageInner() {
    * missed events. Cheap to fire; the children dedupe on their own.
    */
   useEffect(() => {
-    const onVisibility = () => {
-      if (document.visibilityState === "visible") {
+    const onReturnToInbox = () => {
+      if (
+        document.visibilityState === "visible" &&
+        document.hasFocus()
+      ) {
         setResyncToken((n) => n + 1);
         if (
           activeConversation?.unread_count &&
-          activeConversation.unread_count > 0 &&
-          document.hasFocus()
+          activeConversation.unread_count > 0
         ) {
           markConversationRead(activeConversation.id);
         }
       }
     };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") onReturnToInbox();
+    };
     document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onReturnToInbox);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onReturnToInbox);
     };
   }, [activeConversation, markConversationRead]);
 
@@ -508,6 +515,22 @@ function InboxPageInner() {
         );
       }
       setConversations(ordered);
+      // A reconnect/visibility/focus resync may be the first place we learn
+      // that the already-open conversation became unread while the app was
+      // backgrounded. If the user is now truly looking at WACRM, treat that
+      // refreshed unread state as read.
+      if (
+        activeConversation &&
+        document.visibilityState === "visible" &&
+        document.hasFocus()
+      ) {
+        const refreshedActive = ordered.find(
+          (conversation) => conversation.id === activeConversation.id,
+        );
+        if (refreshedActive && refreshedActive.unread_count > 0) {
+          markConversationRead(refreshedActive.id);
+        }
+      }
       // Resolve a pending deep-link here rather than in an effect — this
       // is an event handler, so the setState calls below are allowed by
       // react-hooks/set-state-in-effect. Runs once per ?c=<id> URL value
