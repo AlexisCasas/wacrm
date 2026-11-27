@@ -7,6 +7,7 @@ export const PAYMENT_KINDS: PaymentKind[] = ['advance', 'balance', 'full', 'othe
 
 export interface PaymentView {
   id: string
+  request_key: string
   amount: number
   kind: PaymentKind
   method: string | null
