@@ -3526,6 +3526,7 @@
       "reason_required": "A reason is required",
       "invalid_fields": "Some field is invalid",
       "invalid_order_items": "Check the products, quantities and prices",
+      "invalid_catalog_product": "A product in this order is no longer in the active catalogue. Type its name again and save.",
       "invalid_seller": "Invalid seller",
       "multiproduct_disabled": "Multi-product orders are not enabled",
       "use_items": "Edit the products as lines",

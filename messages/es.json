@@ -3526,6 +3526,7 @@
       "reason_required": "El motivo es obligatorio",
       "invalid_fields": "Algún campo no es válido",
       "invalid_order_items": "Revisa productos, cantidades y precios",
+      "invalid_catalog_product": "Un producto del pedido ya no está en el catálogo activo. Vuelve a escribir su nombre y guarda.",
       "invalid_seller": "Vendedor no válido",
       "multiproduct_disabled": "Los pedidos multiproducto no están habilitados",
       "use_items": "Edita los productos como líneas",

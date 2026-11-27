@@ -53,6 +53,27 @@ describe('OrderAdminSection', () => {
     expect(sent(f)[0]).toEqual({ action: 'edit_order', fields: { items: [{ product_name: 'Kit', quantity: '1', unit_price: '80.50', item_type: 'product' }] }, reason: 'descuento' })
   })
 
+  it('editing lines keeps the catalog link of a line whose name was not touched, and drops it when the product is renamed', async () => {
+    const CATALOG = '22222222-2222-4222-8222-222222222222'
+    const linked = { ...base, items: [{ line_number: 1, product_name: 'Kit', quantity: 1, unit_price: 100, catalog_product_id: CATALOG }] }
+    const f = stubPost()
+    const a = render(<OrderAdminSection orderId={ORDER} panel={linked as never} onChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('edit'))
+    fireEvent.change(screen.getAllByLabelText('field.quantity')[0], { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('reason'), { target: { value: 'x' } })
+    fireEvent.click(screen.getByText('save'))
+    await waitFor(() => expect(f).toHaveBeenCalledTimes(1))
+    expect(sent(f)[0].fields.items).toEqual([{ product_name: 'Kit', quantity: '2', unit_price: '100.00', item_type: 'product', catalog_product_id: CATALOG }])
+    a.unmount()
+    render(<OrderAdminSection orderId={ORDER} panel={linked as never} onChanged={async () => {}} />)
+    fireEvent.click(screen.getByText('edit'))
+    fireEvent.change(screen.getAllByLabelText('field.product')[0], { target: { value: 'Otro' } })
+    fireEvent.change(screen.getByLabelText('reason'), { target: { value: 'x' } })
+    fireEvent.click(screen.getByText('save'))
+    await waitFor(() => expect(f).toHaveBeenCalledTimes(2))
+    expect(sent(f)[1].fields.items).toEqual([{ product_name: 'Otro', quantity: '1', unit_price: '100.00', item_type: 'product' }])
+  })
+
   it('nothing changed -> nothing is sent; a reason is required to save', () => {
     const f = stubPost()
     render(<OrderAdminSection orderId={ORDER} panel={base as never} onChanged={async () => {}} />)

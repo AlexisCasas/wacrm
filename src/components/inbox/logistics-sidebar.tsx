@@ -10,6 +10,8 @@ import {
 } from "@/components/ui/select";
 import { Loader2, PackageCheck } from "lucide-react";
 import { LogisticsOrderEditor } from "@/components/inbox/logistics-order-editor";
+import { DeriveToCommercial } from "@/components/inbox/derive-to-commercial";
+import { useAuth } from "@/hooks/use-auth";
 import { LogisticsPanel } from "@/components/orders/logistics/logistics-panel";
 import { ShalomSection } from "@/components/orders/shalom/shalom-section";
 
@@ -40,6 +42,7 @@ export function LogisticsSidebar({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  const { canSendMessages } = useAuth();
 
   useEffect(() => {
     let cancelled = false;
@@ -108,6 +111,13 @@ export function LogisticsSidebar({
         <p className="mt-0.5 text-xs text-muted-foreground">
           Gestión del pedido de esta conversación
         </p>
+        {/* Outside the order list on purpose: a chat with no tracked order also has to be handed back. The server decides who sees it. */}
+        {canSendMessages ? (
+          <DeriveToCommercial
+            key={`routing-${conversationId ?? "none"}`}
+            conversationId={conversationId}
+          />
+        ) : null}
       </div>
 
       <div className="flex-1 overflow-y-auto px-4 py-4">
