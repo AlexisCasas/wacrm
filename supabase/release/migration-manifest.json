@@ -490,6 +490,16 @@
       ],
       "status": "pending",
       "note": "autonomous operation: edit_order_confirmation + cancel_order_confirmation (supervised, audited), order_edits/order_cancellations append-only audits, cancellation guards on child tables. Additive; validated on an isolated restore of the 2026-11-24T15:24Z production dump."
+    },
+    {
+      "new_version": "20261206000001",
+      "new_file": "20261206000001_order_item_type.sql",
+      "sha256": "8574f7f8c6d28b97f916cda116da237bac7f7b99170e2c364b41f652055a05d3",
+      "depends_on": [
+        "20261206000000"
+      ],
+      "status": "pending",
+      "note": "Logistics Inbox: adds item_type to confirmed order lines (product/accessory), preserves existing rows as products and extends edit_order_confirmation; both types contribute to the order total. Manifest registration only; runtime application must be verified separately."
     }
   ]
 }
