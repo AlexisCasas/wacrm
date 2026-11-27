@@ -353,6 +353,7 @@ export async function sendMessageToConversation(
       contentText,
       replyToMessageId,
       senderId,
+      origin,
     });
   }
 
@@ -654,6 +655,7 @@ export async function sendMessageToConversation(
       // until they explicitly hit "Resume AI" — this send alone must not
       // hand it back to the bot.
       ai_handoff_summary: null,
+      ...(origin === 'manual_reply' ? { unread_count: 0 } : {}),
     })
     .eq('id', conversationId);
 
@@ -704,6 +706,7 @@ interface ManyChatSendArgs {
   contentText?: string | null;
   replyToMessageId?: string | null;
   senderId?: string | null;
+  origin: SendOrigin;
 }
 
 async function sendViaManyChat(
@@ -711,7 +714,7 @@ async function sendViaManyChat(
   accountId: string,
   args: ManyChatSendArgs,
 ): Promise<SendMessageResult> {
-  const { conversationId, contactId, messageType, contentText, replyToMessageId } = args;
+  const { conversationId, contactId, messageType, contentText, replyToMessageId, origin } = args;
 
   // No silent fallback to Meta for anything ManyChat can't carry yet —
   // a clear, typed rejection instead.
@@ -785,6 +788,7 @@ async function sendViaManyChat(
       // See the matching comment on the Meta path above: clear the
       // "needs human attention" marker only, never re-enable the bot.
       ai_handoff_summary: null,
+      ...(origin === 'manual_reply' ? { unread_count: 0 } : {}),
     })
     .eq('id', conversationId);
 

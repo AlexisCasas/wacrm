@@ -343,9 +343,8 @@ export function MessageThread({
   }, [messages, tTimer]);
 
   // Store latest callback in a ref so fetchMessages doesn't need to
-  // depend on `onMessagesLoaded` — otherwise parent re-renders cause
-  // fetchMessages to change → useEffect re-fires → refetch → realtime
-  // UPDATE on conversations.unread_count → parent re-renders → LOOP.
+  // depend on `onMessagesLoaded` — otherwise parent re-renders can
+  // cause unnecessary refetches.
   // The ref is written inside an effect so the mutation doesn't happen
   // during render (React 19 refs rule); consumers only read `.current`
   // inside the async fetch completion, which runs after the render.
@@ -355,7 +354,6 @@ export function MessageThread({
   });
 
   const conversationId = conversation?.id;
-  const hasUnread = (conversation?.unread_count ?? 0) > 0;
   // Written in an effect (React 19 refs rule); read only inside async completions and callbacks.
   useEffect(() => {
     messagesRef.current = messages;
@@ -375,10 +373,9 @@ export function MessageThread({
     [conversationId],
   );
 
-  // Fetch messages whenever the selected conversation changes. Kept
-  // separate from the unread-reset effect so that incoming messages
-  // arriving while the thread is open don't trigger a full refetch —
-  // they only flip hasUnread, which only the reset effect listens to.
+  // Fetch messages whenever the selected conversation changes. Incoming
+  // messages arriving while the thread is open are handled by realtime and
+  // must remain unread until a human advisor actually replies.
   useEffect(() => {
     if (!conversationId) return;
 
@@ -540,27 +537,6 @@ export function MessageThread({
   useEffect(() => {
     setReplyTo(null);
   }, [conversationId]);
-
-  // Reset the server-side unread_count to 0 whenever an unread count
-  // surfaces on the active conversation — covers both (a) opening a
-  // conversation that had unread messages and (b) new messages arriving
-  // while the user is already viewing the thread (webhook server-bumps
-  // unread_count to N+1; the realtime UPDATE propagates it into the
-  // client, which re-runs this effect and flips it back to 0).
-  //
-  // Guarding on hasUnread prevents the eq-update loop: once unread_count
-  // is 0 the condition is false, so no further UPDATE is issued.
-  useEffect(() => {
-    if (!conversationId || !hasUnread) return;
-    const supabase = createClient();
-    supabase
-      .from("conversations")
-      .update({ unread_count: 0 })
-      .eq("id", conversationId)
-      .then(({ error }) => {
-        if (error) console.error("Failed to reset unread_count:", error);
-      });
-  }, [conversationId, hasUnread]);
 
   const scrollToBottom = useCallback(() => {
     const el = scrollRef.current;

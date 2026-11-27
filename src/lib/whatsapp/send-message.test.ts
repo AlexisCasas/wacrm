@@ -923,6 +923,26 @@ describe('sendMessageToConversation — a successful manual send clears ai_hando
     expect(captured.conversation).toMatchObject({ ai_handoff_summary: null });
   });
 
+  it('clears unread_count only for an explicit manual_reply', async () => {
+    const manual: CapturedWrites = {};
+    await sendMessageToConversation(sendPathDb([], manual), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'text',
+      contentText: 'Respuesta del asesor',
+      origin: 'manual_reply',
+    });
+    expect(manual.conversation).toMatchObject({ unread_count: 0 });
+
+    const automated: CapturedWrites = {};
+    await sendMessageToConversation(sendPathDb([], automated), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'text',
+      contentText: 'Respuesta automatizada',
+      origin: 'automated',
+    });
+    expect(automated.conversation).not.toHaveProperty('unread_count');
+  });
+
   it('does NOT set ai_autoreply_disabled — the human keeps ownership until an explicit Resume AI', async () => {
     const captured: CapturedWrites = {};
     await sendMessageToConversation(sendPathDb([], captured), 'acct-1', {
@@ -981,6 +1001,24 @@ describe('sendMessageToConversation — a successful manual send clears ai_hando
       { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Hola!' },
     );
     expect(captured.conversation).toMatchObject({ ai_handoff_summary: null });
+  });
+
+  it('clears unread_count only for an explicit manual_reply', async () => {
+    const manual: ManyChatCaptured = {};
+    await sendMessageToConversation(
+      manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured: manual }),
+      'acct-mc',
+      { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Respuesta del asesor', origin: 'manual_reply' },
+    );
+    expect(manual.conversation).toMatchObject({ unread_count: 0 });
+
+    const automated: ManyChatCaptured = {};
+    await sendMessageToConversation(
+      manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured: automated }),
+      'acct-mc',
+      { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Respuesta automatizada', origin: 'automated' },
+    );
+    expect(automated.conversation).not.toHaveProperty('unread_count');
   });
 
   it('does NOT set ai_autoreply_disabled', async () => {
