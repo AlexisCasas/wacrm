@@ -1,6 +1,7 @@
 // Synthetic world of the LOG-00H QA: clients, factories (through the real database functions wherever one exists) and snapshots.
 // LOCAL ONLY: refuses anything but the throwaway local Supabase. Every name, phone and document number here is invented.
 import { randomBytes, randomInt, randomUUID } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 
 import { createClient } from '@supabase/supabase-js'
