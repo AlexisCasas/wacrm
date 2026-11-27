@@ -186,6 +186,73 @@ describe('LogisticsOrderEditor: saving never rewrites what the person did not ch
     expect(posts[1]).toMatchObject({ amount: '200.00', kind: 'full' })
   })
 
+
+
+  it('reuses the same request_key and payload when the register response is lost', async () => {
+    const posts: Body[] = []
+    let firstRegister = true
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      if (!init || init.method !== 'POST') return new Response(JSON.stringify(panelData({ total: 100 })), { status: 200 })
+      const body = JSON.parse(String(init.body)) as Body
+      posts.push(body)
+      if (body.action === 'register') {
+        if (firstRegister) {
+          firstRegister = false
+          throw new TypeError('network response lost')
+        }
+        return new Response(JSON.stringify({ payment_id: 'p1', row_version: 1, status: 'recorded', created: false }), { status: 200 })
+      }
+      if (body.action === 'confirm') return new Response(JSON.stringify({ changed: true, status: 'confirmed' }), { status: 200 })
+      return new Response('{}', { status: 200 })
+    }))
+    await open()
+    pay('20')
+    save()
+    await waitFor(() => expect(h.err).toHaveBeenCalled())
+    save()
+    await waitFor(() => expect(h.ok).toHaveBeenCalled())
+    const registers = posts.filter((p) => p.action === 'register')
+    expect(registers).toHaveLength(2)
+    expect(registers[1].request_key).toBe(registers[0].request_key)
+    expect(registers[1].amount).toBe(registers[0].amount)
+    expect(registers[1].paid_at).toBe(registers[0].paid_at)
+    expect(posts.filter((p) => p.action === 'confirm')).toHaveLength(1)
+  })
+
+  it('reconciles a lost confirm response without confirming or registering a second payment', async () => {
+    const posts: Body[] = []
+    let confirmed = false
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      if (!init || init.method !== 'POST') return new Response(JSON.stringify(panelData({ total: 100 })), { status: 200 })
+      const body = JSON.parse(String(init.body)) as Body
+      posts.push(body)
+      if (body.action === 'register') {
+        return new Response(JSON.stringify({
+          payment_id: 'p1',
+          row_version: confirmed ? 2 : 1,
+          status: confirmed ? 'confirmed' : 'recorded',
+          created: !confirmed,
+        }), { status: confirmed ? 200 : 201 })
+      }
+      if (body.action === 'confirm') {
+        confirmed = true
+        throw new TypeError('confirm response lost')
+      }
+      return new Response('{}', { status: 200 })
+    }))
+    await open()
+    pay('20')
+    save()
+    await waitFor(() => expect(h.err).toHaveBeenCalled())
+    save()
+    await waitFor(() => expect(h.ok).toHaveBeenCalled())
+    const registers = posts.filter((p) => p.action === 'register')
+    expect(registers).toHaveLength(2)
+    expect(registers[1].request_key).toBe(registers[0].request_key)
+    expect(registers[1].paid_at).toBe(registers[0].paid_at)
+    expect(posts.filter((p) => p.action === 'confirm')).toHaveLength(1)
+  })
+
   it('when the edit is refused no payment is registered', async () => {
     const posts = serve(panelData(), { status: 409, body: { error: 'order_closed' } })
     await open()
