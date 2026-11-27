@@ -365,21 +365,13 @@ function InboxPageInner() {
         // the row patch, closing the snapshot race with an immediate send.
         rememberConversationActivity(conv);
         if (knownConvIdsRef.current.has(conv.id)) {
-          // If this UPDATE is for the conv the user is currently viewing,
-          // suppress the incoming unread_count — the user is reading it
-          // RIGHT NOW, so any positive value would just flicker the badge
-          // back on for the ~100ms it takes for the reset effect's server
-          // UPDATE to round-trip. Non-active convs take the value as-is.
-          const isActive = activeConversation?.id === conv.id;
+          // Keep unread_count exactly as the server reports it, even for the
+          // currently open thread. Viewing a conversation is not the same as
+          // a human advisor replying to it.
           setConversations((prev) =>
             sortConversationsByActivity(
               prev.map((c) =>
-                c.id === conv.id
-                  ? {
-                      ...mergeConversationUpdate(c, conv),
-                      unread_count: isActive ? 0 : conv.unread_count,
-                    }
-                  : c,
+                c.id === conv.id ? mergeConversationUpdate(c, conv) : c,
               ),
             ),
           );
@@ -502,17 +494,8 @@ function InboxPageInner() {
           setActiveConversation(match);
           setActiveContact(match.contact ?? null);
           setMessages([]);
-          // Mirror the optimistic unread reset that handleSelectConversation
-          // does — the user just deep-linked into this conv, treat that the
-          // same as a click. Leaves activeConversation.unread_count alone so
-          // the MessageThread reset effect still fires the server UPDATE.
-          if (match.unread_count > 0) {
-            setConversations((prev) =>
-              prev.map((c) =>
-                c.id === match.id ? { ...c, unread_count: 0 } : c,
-              ),
-            );
-          }
+          // Deep-linking is navigation only. Keep unread_count unchanged
+          // until a human advisor actually replies.
         }
       }
     },
@@ -529,22 +512,8 @@ function InboxPageInner() {
       setActiveConversation(conv);
       setActiveContact(conv.contact ?? null);
       setMessages([]);
-      // Optimistically clear the unread badge for this conv. The
-      // server-side reset is fired by the unread-reset effect inside
-      // MessageThread (which reads activeConversation.unread_count, not
-      // the list copy — so we deliberately leave that intact below to
-      // keep the effect firing), and the realtime UPDATE that comes
-      // back will sync to 0 again as a no-op. Zeroing the list copy
-      // here means the user sees the badge disappear the instant they
-      // click instead of waiting for the round-trip — and it persists
-      // even if the realtime UPDATE is dropped.
-      setConversations((prev) =>
-        prev.map((c) =>
-          c.id === conv.id && c.unread_count > 0
-            ? { ...c, unread_count: 0 }
-            : c,
-        ),
-      );
+      // Selecting a conversation is navigation only. Do not clear its
+      // unread badge here; only a successful human advisor reply does that.
       // Record the selection on the deep-link ref BEFORE we change the
       // URL. The router.replace below flips `deepLinkConvId`, which can
       // in turn cause ConversationList to refetch and eventually call

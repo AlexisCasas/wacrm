@@ -943,6 +943,18 @@ describe('sendMessageToConversation — a successful manual send clears ai_hando
     expect(automated.conversation).not.toHaveProperty('unread_count');
   });
 
+  it('manual operational sends can preserve unread_count explicitly', async () => {
+    const captured: CapturedWrites = {};
+    await sendMessageToConversation(sendPathDb([], captured), 'acct-1', {
+      conversationId: 'cv-1',
+      messageType: 'text',
+      contentText: 'Aviso operativo',
+      origin: 'manual_reply',
+      markConversationRead: false,
+    });
+    expect(captured.conversation).not.toHaveProperty('unread_count');
+  });
+
   it('does NOT set ai_autoreply_disabled — the human keeps ownership until an explicit Resume AI', async () => {
     const captured: CapturedWrites = {};
     await sendMessageToConversation(sendPathDb([], captured), 'acct-1', {
@@ -1019,6 +1031,22 @@ describe('sendMessageToConversation — a successful manual send clears ai_hando
       { conversationId: 'cv-mc-1', messageType: 'text', contentText: 'Respuesta automatizada', origin: 'automated' },
     );
     expect(automated.conversation).not.toHaveProperty('unread_count');
+  });
+
+  it('manual operational sends can preserve unread_count explicitly', async () => {
+    const captured: ManyChatCaptured = {};
+    await sendMessageToConversation(
+      manyChatSendDb({ link: { manychat_contact_id: 'mc-contact-1' }, captured }),
+      'acct-mc',
+      {
+        conversationId: 'cv-mc-1',
+        messageType: 'text',
+        contentText: 'Aviso operativo',
+        origin: 'manual_reply',
+        markConversationRead: false,
+      },
+    );
+    expect(captured.conversation).not.toHaveProperty('unread_count');
   });
 
   it('does NOT set ai_autoreply_disabled', async () => {

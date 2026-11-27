@@ -225,6 +225,7 @@ export async function sendPackagingTemplate(
       templateParams: built.params,
       templateMessageParams: { body: built.params, ...(headerMediaUrl ? { headerMediaUrl } : {}) },
       origin: 'manual_reply',
+      markConversationRead: false,
       actor: { userId: ctx.userId },
       senderId: ctx.userId,
     })

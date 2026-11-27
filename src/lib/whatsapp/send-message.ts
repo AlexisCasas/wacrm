@@ -113,6 +113,12 @@ export interface SendMessageParams {
   actor?: ManualSendActor;
   /** Authenticated dashboard user who authored this manual send. */
   senderId?: string | null;
+  /**
+   * Whether this successful human-triggered send counts as "advisor replied"
+   * for unread purposes. Defaults to true only for manual_reply. Operational
+   * sends can keep manual_reply permissions while preserving unread state.
+   */
+  markConversationRead?: boolean;
 }
 
 export interface SendMessageResult {
@@ -291,6 +297,7 @@ export async function sendMessageToConversation(
     origin = 'automated',
     actor,
     senderId,
+    markConversationRead = origin === 'manual_reply',
   } = params;
 
   if (!conversationId) {
@@ -354,6 +361,7 @@ export async function sendMessageToConversation(
       replyToMessageId,
       senderId,
       origin,
+      markConversationRead,
     });
   }
 
@@ -655,7 +663,7 @@ export async function sendMessageToConversation(
       // until they explicitly hit "Resume AI" — this send alone must not
       // hand it back to the bot.
       ai_handoff_summary: null,
-      ...(origin === 'manual_reply' ? { unread_count: 0 } : {}),
+      ...(origin === 'manual_reply' && markConversationRead ? { unread_count: 0 } : {}),
     })
     .eq('id', conversationId);
 
@@ -707,6 +715,7 @@ interface ManyChatSendArgs {
   replyToMessageId?: string | null;
   senderId?: string | null;
   origin: SendOrigin;
+  markConversationRead: boolean;
 }
 
 async function sendViaManyChat(
@@ -714,7 +723,7 @@ async function sendViaManyChat(
   accountId: string,
   args: ManyChatSendArgs,
 ): Promise<SendMessageResult> {
-  const { conversationId, contactId, messageType, contentText, replyToMessageId, origin } = args;
+  const { conversationId, contactId, messageType, contentText, replyToMessageId, origin, markConversationRead } = args;
 
   // No silent fallback to Meta for anything ManyChat can't carry yet —
   // a clear, typed rejection instead.
@@ -788,7 +797,7 @@ async function sendViaManyChat(
       // See the matching comment on the Meta path above: clear the
       // "needs human attention" marker only, never re-enable the bot.
       ai_handoff_summary: null,
-      ...(origin === 'manual_reply' ? { unread_count: 0 } : {}),
+      ...(origin === 'manual_reply' && markConversationRead ? { unread_count: 0 } : {}),
     })
     .eq('id', conversationId);
 
