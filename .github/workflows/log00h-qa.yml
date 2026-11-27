@@ -17,7 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  CANDIDATE_SHA: c885d58c7157744cdf95cab3d5e0da8b661f14f8
+  CANDIDATE_SHA: b83bf5d1feae877d39bb4184737838609db0c05c
   BASE_SHA: 68c5362e20b3e3e2ecd948a949cfe1429073acc1
   QA_DIR: /srv/qa
   NEXT_TELEMETRY_DISABLED: '1'
