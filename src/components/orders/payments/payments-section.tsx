@@ -33,6 +33,25 @@ function useErrorText() {
 type Draft = { amount: string; kind: PaymentKind; method: string; operation: string; paidAt: string; notes: string; evidenceId: string | null; evidenceName: string | null };
 const emptyDraft = (): Draft => ({ amount: "", kind: "advance", method: "", operation: "", paidAt: nowLocalInput(), notes: "", evidenceId: null, evidenceName: null });
 
+// A logical payment attempt keeps the same idempotency key across network failures,
+// component remounts and page reloads. A successful response clears the pending key;
+// a later intentional payment therefore receives a fresh key.
+function stablePaymentRequest(orderId: string, mode: "register" | "correct", payment: Record<string, unknown>) {
+  const fingerprint = JSON.stringify(payment);
+  const storageKey = `wacrm:payment-attempt:${orderId}:${mode}:${fingerprint}`;
+  let requestKey: string;
+  try {
+    requestKey = sessionStorage.getItem(storageKey) ?? "";
+    if (!requestKey) {
+      requestKey = newRequestKey();
+      sessionStorage.setItem(storageKey, requestKey);
+    }
+  } catch {
+    requestKey = newRequestKey();
+  }
+  return { requestKey, clear: () => { try { sessionStorage.removeItem(storageKey); } catch { /* storage unavailable */ } } };
+}
+
 export function PaymentsSection({ orderId }: { orderId: string }) {
   const t = useTranslations("OrderPayments");
   const locale = useLocale();
@@ -129,12 +148,18 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
   };
 
   const submit = async () => {
-    const payment = { request_key: requestKey, amount: draft.amount.trim(), kind: draft.kind, method: draft.method.trim() || undefined, operation_number: draft.operation.trim() || undefined, paid_at: new Date(draft.paidAt).toISOString(), evidence_document_id: draft.evidenceId ?? undefined, notes: draft.notes.trim() || undefined };
+    const paymentFields = { amount: draft.amount.trim(), kind: draft.kind, method: draft.method.trim() || undefined, operation_number: draft.operation.trim() || undefined, paid_at: new Date(draft.paidAt).toISOString(), evidence_document_id: draft.evidenceId ?? undefined, notes: draft.notes.trim() || undefined };
+    const mode = form?.mode === "correct" ? "correct" : "register";
+    const attempt = stablePaymentRequest(orderId, mode, { ...paymentFields, ...(form?.mode === "correct" ? { payment_id: form.payment.id, reason: reason.trim(), overpayment_reason: overReason.trim() || undefined } : {}) });
+    const payment = { request_key: attempt.requestKey, ...paymentFields };
     const ok =
       form?.mode === "correct"
         ? await run({ action: "correct", payment_id: form.payment.id, expected_version: form.payment.row_version, reason: reason.trim(), overpayment_reason: overReason.trim() || undefined, ...payment }, t("correctedToast"))
         : await run({ action: "register", ...payment }, t("registeredToast"));
-    if (ok) setForm(null);
+    if (ok) {
+      attempt.clear();
+      setForm(null);
+    }
   };
 
   const validDraft = /^\d{1,7}([.,]\d{1,2})?$/.test(draft.amount.trim()) && Number(draft.amount.replace(",", ".")) > 0 && !Number.isNaN(Date.parse(draft.paidAt)) && (form?.mode !== "correct" || reason.trim() !== "");
