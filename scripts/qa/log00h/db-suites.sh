@@ -7,10 +7,13 @@ here="$(cd "$(dirname "$0")" && pwd)"
 
 run_suites() { # $1 = repo|base, $2 = output name, rest = files
   local dir="$1" name="$2"; shift 2
+  local rc=0
   QA_SUBDIR="$dir" bash "$here/as-qa.sh" env -u SHALOM_CUSTOMER_MESSAGES_ENABLED -u WHATSAPP_CALLING_ENABLED -u WHATSAPP_TEMPLATES_DRY_RUN \
     timeout 600 node node_modules/vitest/vitest.mjs run "$@" --no-file-parallelism --reporter=default --reporter=json "--outputFile.json=$QA_DIR/results/$name.json" \
-    >"$RUNNER_TEMP/$name.log" 2>&1 || true
+    >"$RUNNER_TEMP/$name.log" 2>&1 || rc=$?
   tail -n 40 "$RUNNER_TEMP/$name.log"
+  echo "$name: vitest exit $rc (the report decides from its JSON output)"
+  sudo test -f "$QA_DIR/results/$name.json" || { echo "$name produced no result file"; exit 1; }
   sudo install -m 0644 -o qarun -g qarun "$RUNNER_TEMP/$name.log" "$QA_DIR/results/$name.log"
 }
 

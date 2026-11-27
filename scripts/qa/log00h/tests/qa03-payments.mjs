@@ -146,7 +146,8 @@ export async function register(r) {
   }
   const report = (t, afterFailure, after) => {
     const text = `tras el fallo: ${JSON.stringify(rows(afterFailure))}; tras reintentar: ${JSON.stringify(rows(after))}; confirmado ${after.financial.paid}`
-    if (after.payments.length > 1) t.finding(`DUPLICADO al reintentar (cada intento usa una request_key nueva): ${text}`)
+    // one payment typed once must end as at most one record: anything else is a defect of the application, never a pass
+    assert.ok(after.payments.length <= 1, `DUPLICADO al reintentar (cada intento usa una request_key nueva): ${text}`)
     return text
   }
 
@@ -180,8 +181,10 @@ export async function register(r) {
     const body = { action: 'register', request_key: `qa-same-${randomUUID()}`, amount: '25.00', kind: 'advance', paid_at: new Date(Date.now() - 60_000).toISOString() }
     const first = await t.api('A-LOG', 'POST', `/api/orders/payments/orders/${order.orderId}`, body)
     const second = await t.api('A-LOG', 'POST', `/api/orders/payments/orders/${order.orderId}`, body)
-    assert.equal(first.status, 200, JSON.stringify(first.body))
+    assert.equal(first.status, 201, JSON.stringify(first.body))
+    assert.equal(first.body.created, true)
     assert.equal(second.status, 200, JSON.stringify(second.body))
+    assert.equal(second.body.created, false)
     assert.equal(second.body.payment_id, first.body.payment_id)
     assert.deepEqual(rows(await t.after('order')), [[25, 'recorded']])
     return 'Misma respuesta, un registro'
@@ -197,7 +200,8 @@ export async function register(r) {
     assert.deepEqual(t.paymentPosts(), [])
     const url = `/api/orders/payments/orders/${order.orderId}`
     const reg = await t.api('A-LOG', 'POST', url, { action: 'register', request_key: `qa-over-${randomUUID()}`, amount: '150.00', kind: 'advance', paid_at: new Date(Date.now() - 60_000).toISOString() })
-    if (reg.status === 200) {
+    assert.ok(reg.status === 201 || (reg.status >= 400 && reg.status < 500), `register over balance: ${reg.status} ${JSON.stringify(reg.body)}`)
+    if (reg.status === 201) {
       const confirm = await t.api('A-LOG', 'POST', url, { action: 'confirm', payment_id: reg.body.payment_id, expected_version: reg.body.row_version })
       assert.equal(confirm.status, 409, JSON.stringify(confirm.body))
       assert.equal(confirm.body.error, 'exceeds_balance')
@@ -218,6 +222,72 @@ export async function register(r) {
       seen.push(`${key} ${paid}/${pending}`)
     }
     return seen.join(' · ')
+  })
+
+  // ---- reject, void and recovery, through the app's endpoint with real sessions ----
+  const endpoint = (order) => `/api/orders/payments/orders/${order.orderId}`
+  const registerAs = async (t, order, amount) => {
+    const res = await t.api('A-LOG', 'POST', endpoint(order), {
+      action: 'register', request_key: `qa-api-${randomUUID()}`, amount, kind: 'advance', paid_at: new Date(Date.now() - 60_000).toISOString(),
+    })
+    assert.equal(res.status, 201, JSON.stringify(res.body))
+    return res.body
+  }
+  const act = (t, user, order, action, payment, extra = {}) =>
+    t.api(user, 'POST', endpoint(order), { action, payment_id: payment.payment_id, ...extra })
+
+  await r.test('03.12', { user: 'A-LOG', title: 'Rechazar un pago registrado', expected: 'rejected; saldo intacto; no se puede confirmar después' }, async (t) => {
+    const order = await t.setup(() => one(world))
+    await t.watch('order', order.orderId)
+    const payment = await registerAs(t, order, '30.00')
+    const rejected = await act(t, 'A-LOG', order, 'reject', payment, { reason: 'comprobante ilegible (QA)' })
+    assert.equal(rejected.status, 200, JSON.stringify(rejected.body))
+    const confirm = await act(t, 'A-LOG', order, 'confirm', payment)
+    assert.equal(confirm.status, 409, JSON.stringify(confirm.body))
+    const after = await t.after('order')
+    assert.deepEqual(rows(after), [[30, 'rejected']])
+    assert.deepEqual(after.financial, { paid: 0, status: 'unpaid' })
+    return 'Rechazado; confirmado 0'
+  })
+
+  await r.test('03.13', { user: 'A-LOG / A-SUP', title: 'Anular un pago confirmado', expected: 'Logística 403; Supervisor anula; saldo restituido una sola vez' }, async (t) => {
+    const order = await t.setup(() => one(world))
+    await t.watch('order', order.orderId)
+    const payment = await registerAs(t, order, '30.00')
+    assert.equal((await act(t, 'A-LOG', order, 'confirm', payment)).status, 200)
+    const denied = await act(t, 'A-LOG', order, 'void', payment, { reason: 'QA' })
+    assert.equal(denied.status, 403, JSON.stringify(denied.body))
+    assert.deepEqual((await t.after('order')).financial, { paid: 30, status: 'partially_paid' })
+    const voided = await act(t, 'A-SUP', order, 'void', payment, { reason: 'error de registro (QA)' })
+    assert.equal(voided.status, 200, JSON.stringify(voided.body))
+    const again = await act(t, 'A-SUP', order, 'void', payment, { reason: 'segundo intento (QA)' })
+    assert.ok([200, 409].includes(again.status), JSON.stringify(again.body))
+    const after = await t.after('order')
+    assert.deepEqual(rows(after), [[30, 'voided']])
+    assert.deepEqual(after.financial, { paid: 0, status: 'unpaid' })
+    return `Anulado; segundo intento ${again.status} sin efecto`
+  })
+
+  await r.test('03.14', { user: 'A-LOG', title: 'Recuperar un pago registrado sin confirmar, sin duplicarlo', expected: 'Confirmar el mismo registro (dos veces) deja un solo pago de 20' }, async (t) => {
+    const order = await t.setup(() => one(world))
+    await t.watch('order', order.orderId)
+    const { page, aside } = await panelFor(t, 'A-LOG', order)
+    await failOnce(page, 'confirm', { reachServer: false })
+    await payInput(aside).fill('20')
+    await save(aside)
+    await toast(page, GENERIC)
+    assert.deepEqual(rows(await t.after('order')), [[20, 'recorded']])
+    const panel = await t.api('A-LOG', 'GET', endpoint(order))
+    assert.equal(panel.status, 200)
+    const pending = { payment_id: panel.body.payments[0].id }
+    const first = await act(t, 'A-LOG', order, 'confirm', pending)
+    assert.equal(first.status, 200, JSON.stringify(first.body))
+    const second = await act(t, 'A-LOG', order, 'confirm', pending)
+    assert.ok([200, 409].includes(second.status), JSON.stringify(second.body))
+    const after = await t.after('order')
+    assert.deepEqual(rows(after), [[20, 'confirmed']])
+    assert.deepEqual(after.financial, { paid: 20, status: 'partially_paid' })
+    return `Recuperado por la API del mismo registro; segunda confirmación ${second.status} sin efecto`
   })
 }
 

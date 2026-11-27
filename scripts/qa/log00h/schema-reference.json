@@ -1,5 +1,10 @@
 {
   "note": "Reference values read from the live schema on 2026-11-27 (catalog only, read-only). A difference is reported as drift between the repository and that schema, not repaired.",
+  "privileges": {
+    "tables": { "count": 336, "md5": "47fbf3f4d3146c486b91851107a0d1ef" },
+    "functions": { "count": 855, "md5": "0f8d7f624c8b62db0f7a18b01b0846b3" },
+    "columns": { "count": 18, "md5": "cc866af0282d11e679834a01b2b84de8" }
+  },
   "counts": { "publicTables": 112, "publicPolicies": 160, "publicTriggers": 86, "publicTablesWithoutRls": 0 },
   "functions": {
     "edit_order_confirmation": { "md5": "1649841ef840", "securityDefiner": true, "execute": ["service_role"] },

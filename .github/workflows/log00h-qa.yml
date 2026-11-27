@@ -8,8 +8,6 @@ name: LOG-00H synthetic QA
 on:
   push:
     branches: [qa/log00h-synthetic]
-  pull_request:
-    branches: [fix/logistics-log00h-regressions-20261127]
 
 permissions:
   contents: read
@@ -36,6 +34,7 @@ jobs:
           persist-credentials: false
 
       - name: Verify the candidate is unchanged outside the harness
+        id: candidate
         run: |
           set -euo pipefail
           git diff --quiet "$CANDIDATE_SHA" HEAD -- . ':(exclude)scripts/qa/log00h' ':(exclude).github/workflows/log00h-qa.yml' \
@@ -52,23 +51,30 @@ jobs:
           version: 2.113.0
 
       - name: Install app dependencies
+        id: deps
         run: npm ci --no-audit --no-fund
 
       - name: Install the browser (harness only; the app's package.json is untouched)
+        id: browser
         working-directory: scripts/qa/log00h
         run: |
           set -euo pipefail
           npm install --no-package-lock --no-audit --no-fund
           PLAYWRIGHT_BROWSERS_PATH="$HOME/pw-browsers" npx playwright install --with-deps chromium
+          PLAYWRIGHT_BROWSERS_PATH="$HOME/pw-browsers" node -e "require('playwright').chromium.launch().then((b) => b.close())"
 
       - name: Start a local Supabase
+        id: supabase
         run: |
           set -euo pipefail
-          printf '\n[api]\nport = 55321\n' >> supabase/config.toml
-          supabase start -x studio,imgproxy,edge-runtime,logflare,vector,postgres-meta,mailpit,supavisor || supabase start
+          # Runner-only settings, never committed. The live project grants anon / authenticated / service_role on new objects of `public` by default and
+          # the migrations rely on it; this CLI revokes those defaults unless told otherwise. verify-schema.mjs compares the resulting privileges.
+          printf '\n[api]\nport = 55321\nauto_expose_new_tables = true\n' >> supabase/config.toml
+          supabase start -x studio,imgproxy,edge-runtime,logflare,vector,postgres-meta,mailpit,supavisor
           supabase status -o env > "$RUNNER_TEMP/supabase.env"
 
       - name: Create per-run credentials and build the app
+        id: build
         run: |
           set -euo pipefail
           set -a; . "$RUNNER_TEMP/supabase.env"; set +a
@@ -107,6 +113,7 @@ jobs:
           cp -r public .next/standalone/public
 
       - name: Prepare the unprivileged QA user and its copy of the code
+        id: qauser
         run: |
           set -euo pipefail
           sudo useradd --create-home --shell /bin/bash qarun
@@ -121,25 +128,31 @@ jobs:
           sudo chmod 600 "$QA_DIR/env.sh"
 
       - name: Cut outbound network access and prove it
+        id: isolate
         run: bash scripts/qa/log00h/isolate.sh apply "$QA_DIR/results/isolation-before.json"
 
       - name: Apply every migration from scratch
+        id: migrations
         run: |
           set -euo pipefail
           supabase db reset --local --no-seed
           bash scripts/qa/log00h/wait-api.sh
 
       - name: Verify the resulting schema
+        id: schema
         run: bash scripts/qa/log00h/as-qa.sh node scripts/qa/log00h/verify-schema.mjs
 
       - name: Repository SQL suites (each one rolls itself back)
+        id: sql_suites
         run: bash scripts/qa/log00h/as-qa.sh bash scripts/qa/log00h/sql-suites.sh
 
       - name: Database-backed test suites of the repository (candidate, then base for any failure)
+        id: db_suites
         timeout-minutes: 18
         run: bash scripts/qa/log00h/db-suites.sh
 
       - name: Fresh database and synthetic data
+        id: seed
         run: |
           set -euo pipefail
           supabase db reset --local --no-seed
@@ -151,17 +164,32 @@ jobs:
         run: bash scripts/qa/log00h/start-app.sh
 
       - name: Functional test matrix
+        id: matrix
         timeout-minutes: 28
         run: bash scripts/qa/log00h/as-qa.sh node scripts/qa/log00h/run-tests.mjs
 
       - name: Prove the isolation still holds
-        if: always()
-        run: |
-          if [ -d "$QA_DIR/results" ]; then bash scripts/qa/log00h/isolate.sh check "$QA_DIR/results/isolation-after.json"; fi
+        id: isolation_check
+        if: always() && steps.isolate.outcome != 'skipped'
+        run: bash scripts/qa/log00h/isolate.sh check "$QA_DIR/results/isolation-after.json"
 
-      - name: Build the report and scan the evidence for secrets
+      - name: Collect the evidence
+        id: collect
         if: always()
         run: bash scripts/qa/log00h/collect.sh "$GITHUB_WORKSPACE/qa-artifacts"
+
+      - name: Tear everything down
+        id: teardown
+        if: always()
+        run: bash scripts/qa/log00h/teardown.sh
+
+      - name: Build the report and scan the evidence for secrets
+        id: report
+        if: always()
+        env:
+          # outcome of each stage, as GitHub recorded it; a stage that never ran stays "skipped" and is reported as NOT_RUN
+          STEP_OUTCOMES: ${{ toJSON(steps) }}
+        run: bash scripts/qa/log00h/report.sh "$GITHUB_WORKSPACE/qa-artifacts"
 
       - name: Publish the evidence
         if: always() && hashFiles('qa-artifacts/SCAN_OK') != ''
@@ -171,12 +199,6 @@ jobs:
           path: qa-artifacts
           retention-days: 7
           if-no-files-found: error
-
-      - name: Tear everything down
-        if: always()
-        run: |
-          sudo pkill -u qarun || true
-          supabase stop --no-backup || true
 
       - name: Verdict
         if: always()

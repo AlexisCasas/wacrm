@@ -1,10 +1,13 @@
-// Synthetic world of the LOG-00H QA: clients, factories (through the real database functions wherever one exists) and snapshots.
+// Synthetic world of the LOG-00H QA: clients, factories and snapshots.
+// Plain rows are prepared through the local postgres connection (db.mjs). Orders and payments are created with the database functions the app server
+// calls (service role + acting user, re-validated by the database). The service role is otherwise used only to READ what the tests compare.
 // LOCAL ONLY: refuses anything but the throwaway local Supabase. Every name, phone and document number here is invented.
 import { randomBytes, randomInt, randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 
 import { createClient } from '@supabase/supabase-js'
+
+import { sqlRows } from './db.mjs'
 
 export const SUPABASE_URL = process.env.LOCAL_URL
 if (SUPABASE_URL !== 'http://127.0.0.1:55321') throw new Error(`refusing to run against ${SUPABASE_URL}`)
@@ -44,38 +47,47 @@ export const fakePhone = () => `51900${String(randomInt(0, 1_000_000)).padStart(
 
 /** A contact + chat with a couple of invented messages. */
 export async function mkConversation(world, accKey, label) {
-  const acc = world.accounts[accKey]
   const phone = fakePhone()
-  const name = `Contacto QA ${label}`
-  // Restricted tables are seeded only through the local postgres connection in this disposable database.
-  const ownerId = world.users[`${accKey}-OWN`].id
   const contactId = randomUUID()
   const conversationId = randomUUID()
-  const now = new Date().toISOString()
-  const literal = (value) => "'" + String(value).replace(/'/g, "''") + "'"
-  const sql = [
-    `insert into public.contacts (id, user_id, account_id, phone, name) values (${literal(contactId)}::uuid, ${literal(ownerId)}::uuid, ${literal(acc)}::uuid, ${literal(phone)}, ${literal(name)});`,
-    `insert into public.conversations (id, user_id, account_id, contact_id, last_message_text, last_message_at) values (${literal(conversationId)}::uuid, ${literal(ownerId)}::uuid, ${literal(acc)}::uuid, ${literal(contactId)}::uuid, ${literal(`Mensaje sintético ${label}`)}, ${literal(now)}::timestamptz);`,
-    `insert into public.messages (conversation_id, sender_type, content_type, content_text, status) values (${literal(conversationId)}::uuid, 'customer', 'text', ${literal(`Hola, consulta sintética ${label}`)}, 'delivered'), (${literal(conversationId)}::uuid, 'agent', 'text', 'Respuesta sintética de QA', 'read');`
-  ].join('\n')
-  execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c', sql], { stdio: 'inherit' })
+  sqlRows(`conversation ${label}`, `
+    insert into public.contacts (id, user_id, account_id, phone, name)
+      values (:'contact', :'owner', :'account', :'phone', :'name');
+    insert into public.conversations (id, user_id, account_id, contact_id, last_message_text, last_message_at)
+      values (:'conversation', :'owner', :'account', :'contact', :'preview', now());
+    insert into public.messages (conversation_id, sender_type, content_type, content_text, status)
+      values (:'conversation', 'customer', 'text', :'question', 'delivered'),
+             (:'conversation', 'agent', 'text', 'Respuesta sintética de QA', 'read')
+      returning id;
+  `, {
+    contact: contactId, conversation: conversationId, owner: world.users[`${accKey}-OWN`].id, account: world.accounts[accKey], phone,
+    name: `Contacto QA ${label}`, preview: `Mensaje sintético ${label}`, question: `Hola, consulta sintética ${label}`,
+  }, 2)
   return { conversationId, contactId, phone, label }
 }
 
 /** Chat placed directly in the logistics stage without any tracked order (the historical case). */
 export async function toLogisticsStage(world, accKey, conversationId) {
-  await must(admin.from('conversation_routing').insert({
-    conversation_id: conversationId, account_id: world.accounts[accKey], stage: 'logistics', updated_by: world.users[`${accKey}-LOG`].id, version: 1,
-  }), 'routing')
+  sqlRows('initial routing', `
+    insert into public.conversation_routing (conversation_id, account_id, stage, updated_by, version)
+      values (:'conversation', :'account', 'logistics', :'who', 1)
+      returning conversation_id;
+  `, { conversation: conversationId, account: world.accounts[accKey], who: world.users[`${accKey}-LOG`].id }, 1)
 }
 
 export async function mkCatalog(world, accKey, label) {
+  const id = randomUUID()
   const key = `qa-${label}-${rid()}`.toLowerCase()
   const name = `QA Producto ${label} ${rid()}`
-  const row = await must(admin.from('audio_guide_products').insert({ account_id: world.accounts[accKey], product_key: key, display_name: name }).select('id').single(), 'catalog')
-  return { id: row.id, name }
+  sqlRows(`catalogue ${label}`, `
+    insert into public.audio_guide_products (id, account_id, product_key, display_name)
+      values (:'id', :'account', :'key', :'name') returning id;
+  `, { id, account: world.accounts[accKey], key, name }, 1)
+  return { id, name }
 }
-export const setCatalogActive = (id, active) => must(admin.from('audio_guide_products').update({ active }).eq('id', id), 'catalog active')
+export const setCatalogActive = async (id, active) => {
+  sqlRows('catalogue active', `update public.audio_guide_products set active = :'active' where id = :'id' returning id;`, { id, active: String(active) }, 1)
+}
 
 /**
  * Confirms an order through create_order_confirmation (routing and financial row follow, as in the product).
@@ -138,33 +150,34 @@ export async function payAndConfirm(world, order, amount, kind) {
 export async function finalize(world, order, total) {
   const account = world.accounts[order.account]
   const who = world.users[`${order.account}-LOG`].id
-  const now = new Date().toISOString()
-  const mkDoc = async (kind) => {
-    const id = randomUUID()
-    const base = {
-      id, account_id: account, order_id: order.orderId, kind, association: 'direct', request_key: `qa-${kind}-${rid()}`,
-      storage_path: `account-${account}/orders/${order.orderId}/${kind}s/${id}/f.pdf`, original_filename: 'qa.pdf', mime_type: 'application/pdf', size_bytes: 10,
-      content_hash: randomBytes(32).toString('hex'), uploaded_by: who,
-    }
-    const row = kind === 'voucher'
-      ? { ...base, status: 'validated', source: 'upload', version: 1, reviewed_data: { dni: '00000001' }, validated_by: who, validated_at: now }
-      : { ...base, status: 'active', source: 'upload' }
-    await must(admin.from('order_documents').insert(row), `document ${kind}`)
-    return id
-  }
-  const voucher = await mkDoc('voucher')
-  const evidence = await mkDoc('evidence')
+  const voucher = randomUUID()
+  const evidence = randomUUID()
   const dispatch = randomUUID()
-  await must(admin.from('order_template_dispatches').insert({
-    id: dispatch, account_id: account, order_id: order.orderId, request_key: `qa-d-${rid()}`, status: 'claimed', evidence_document_id: evidence,
-    template_name: 'qa_template', template_language: 'es', actor_user_id: who, conversation_id: order.conversationId,
-  }), 'dispatch claimed')
-  await must(admin.from('order_template_dispatches').update({ status: 'sending', sending_at: now }).eq('id', dispatch), 'dispatch sending')
-  await must(admin.from('order_template_dispatches').update({ status: 'sent', wamid: `wamid.QASYNTHETIC${rid()}`, finished_at: now }).eq('id', dispatch), 'dispatch sent')
-  await must(admin.from('order_logistics').insert({
-    order_id: order.orderId, account_id: account, status: 'ready_for_dispatch', voucher_document_id: voucher, validated_at: now, validated_by: who, evidence_document_id: evidence,
-    packaging_started_at: now, packaging_started_by: who, packaging_completed_at: now, packaging_completed_by: who, completed_dispatch_id: dispatch,
-  }), 'logistics ready')
+  const path = (kind, id) => `account-${account}/orders/${order.orderId}/${kind}s/${id}/f.pdf`
+  // The dispatch goes claimed -> sending -> sent: the database guards that state machine, so it is walked step by step.
+  sqlRows('ready for dispatch', `
+    insert into public.order_documents (id, account_id, order_id, kind, association, request_key, storage_path, original_filename, mime_type, size_bytes,
+        content_hash, uploaded_by, status, source, version, reviewed_data, validated_by, validated_at)
+      values (:'voucher', :'account', :'order', 'voucher', 'direct', :'voucher_key', :'voucher_path', 'qa.pdf', 'application/pdf', 10,
+        :'voucher_hash', :'who', 'validated', 'upload', 1, '{"dni":"00000001"}'::jsonb, :'who', now());
+    insert into public.order_documents (id, account_id, order_id, kind, association, request_key, storage_path, original_filename, mime_type, size_bytes,
+        content_hash, uploaded_by, status, source)
+      values (:'evidence', :'account', :'order', 'evidence', 'direct', :'evidence_key', :'evidence_path', 'qa.pdf', 'application/pdf', 10,
+        :'evidence_hash', :'who', 'active', 'upload');
+    insert into public.order_template_dispatches (id, account_id, order_id, request_key, status, evidence_document_id, template_name, template_language, actor_user_id, conversation_id)
+      values (:'dispatch', :'account', :'order', :'dispatch_key', 'claimed', :'evidence', 'qa_template', 'es', :'who', :'conversation');
+    update public.order_template_dispatches set status = 'sending', sending_at = now() where id = :'dispatch';
+    update public.order_template_dispatches set status = 'sent', wamid = :'wamid', finished_at = now() where id = :'dispatch';
+    insert into public.order_logistics (order_id, account_id, status, voucher_document_id, validated_at, validated_by, evidence_document_id,
+        packaging_started_at, packaging_started_by, packaging_completed_at, packaging_completed_by, completed_dispatch_id)
+      values (:'order', :'account', 'ready_for_dispatch', :'voucher', now(), :'who', :'evidence', now(), :'who', now(), :'who', :'dispatch')
+      returning order_id;
+  `, {
+    account, who, voucher, evidence, dispatch, order: order.orderId, conversation: order.conversationId,
+    voucher_key: `qa-voucher-${rid()}`, voucher_path: path('voucher', voucher), voucher_hash: randomBytes(32).toString('hex'),
+    evidence_key: `qa-evidence-${rid()}`, evidence_path: path('evidence', evidence), evidence_hash: randomBytes(32).toString('hex'),
+    dispatch_key: `qa-d-${rid()}`, wamid: `wamid.QASYNTHETIC${rid()}`,
+  }, 1)
   await rpc('mark_order_delivered_manual', { p_account: account, p_actor: who, p_order: order.orderId, p_note: 'entrega sintética' })
   await payAndConfirm(world, order, total, 'full')
 }

@@ -1,9 +1,10 @@
 // Builds the synthetic world on an empty database: two accounts, four roles in each, catalogue, orders, payments and chats.
 // Writes the identifiers (no credentials) to the results and the full world, with passwords, to a private file that is never published.
-import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 
+import { sql, sqlRows } from './lib/db.mjs'
+import { seedChecks } from './lib/seed-checks.mjs'
 import {
   PRIVATE_DIR, admin, cancelOrder, correctTotal, editOrder, finalize, mkCatalog, mkConversation, mkOrder, must, payAndConfirm, registerPayment, rejectPayment,
   confirmPayment, routingState, saveWorld, setCatalogActive, signedIn, toLogisticsStage, voidPayment,
@@ -28,24 +29,22 @@ for (const acc of ['A', 'B']) {
     const name = `QA ${acc} ${area}`
     const created = await must(admin.auth.admin.createUser({ email, password, email_confirm: true, user_metadata: { full_name: name } }), `user ${key}`)
     const id = created.user.id
-    // profiles deliberately has no PostgREST table privileges for service_role (migration 034).
-    // Seed this QA-only identity metadata through the local postgres connection, not by weakening production grants.
-    const sqlLiteral = (value) => "'" + String(value).replace(/'/g, "''") + "'"
-    const profileJson = execFileSync('psql', [process.env.QA_DB_URL, '-X', '-At', '-v', 'ON_ERROR_STOP=1', '-c',
-      `select json_build_object('account_id', account_id)::text from public.profiles where user_id = ${sqlLiteral(id)}::uuid`], { encoding: 'utf8' }).trim()
-    if (!profileJson) throw new Error(`profile missing after auth signup: ${key}`)
-    const profile = JSON.parse(profileJson)
+    const [signupAccount] = sqlRows(`signup profile ${key}`, `select account_id from public.profiles where user_id = :'user';`, { user: id }, 1)
     if (area === 'OWN') {
-      world.accounts[acc] = profile.account_id
-      execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c',
-        `update public.accounts set name = ${sqlLiteral(`QA Cuenta ${acc}`)} where id = ${sqlLiteral(profile.account_id)}::uuid`], { stdio: 'inherit' })
-      execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c',
-        `update public.profiles set full_name = ${sqlLiteral(name)} where user_id = ${sqlLiteral(id)}::uuid`], { stdio: 'inherit' })
+      world.accounts[acc] = signupAccount
+      sqlRows(`owner ${key}`, `
+        update public.accounts set name = :'account_name' where id = :'account';
+        update public.profiles set full_name = :'name' where user_id = :'user' returning user_id;
+      `, { account: signupAccount, account_name: `QA Cuenta ${acc}`, name, user: id }, 1)
     } else {
-      execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c',
-        `update public.profiles set full_name = ${sqlLiteral(name)}, account_id = ${sqlLiteral(world.accounts[acc])}::uuid, account_role = ${sqlLiteral(accountRole)}, operational_role = ${sqlLiteral(operationalRole)} where user_id = ${sqlLiteral(id)}::uuid`], { stdio: 'inherit' })
-      const { error } = await admin.from('accounts').delete().eq('id', profile.account_id)
-      if (error) console.warn(`leftover account of ${key} not removed: ${error.code}`)
+      // Two statements on purpose: moving a profile to another account clears its operational area (database trigger).
+      sqlRows(`membership ${key}`, `
+        update public.profiles set full_name = :'name', account_id = :'account', account_role = :'account_role' where user_id = :'user';
+        update public.profiles set operational_role = :'operational_role' where user_id = :'user' returning user_id;
+      `, { name, account: world.accounts[acc], account_role: accountRole, operational_role: operationalRole, user: id }, 1)
+      sqlRows(`leftover account ${key}`, `
+        delete from public.accounts a where a.id = :'leftover' and not exists (select 1 from public.profiles p where p.account_id = a.id) returning a.id;
+      `, { leftover: signupAccount }, 1)
     }
     world.users[key] = { id, email, password, name }
   }
@@ -53,15 +52,23 @@ for (const acc of ['A', 'B']) {
 
 // ---- settings. InkaClick delivery OFF, no WhatsApp configuration at all, customer messages OFF ----
 for (const acc of ['A', 'B']) {
-  await must(admin.from('order_integration_settings').upsert({
-    account_id: world.accounts[acc], enabled: false, confirm_enabled: true, multiproduct_enabled: true, product_tags_required: false, logistics_mvp_enabled: true,
-  }), `integration ${acc}`)
+  sqlRows(`integration settings ${acc}`, `
+    insert into public.order_integration_settings (account_id, enabled, confirm_enabled, multiproduct_enabled, product_tags_required, logistics_mvp_enabled)
+      values (:'account', false, true, true, false, true)
+      on conflict (account_id) do update set enabled = false, confirm_enabled = true, multiproduct_enabled = true, product_tags_required = false, logistics_mvp_enabled = true
+      returning account_id;
+  `, { account: world.accounts[acc] }, 1)
 }
 // O3 is confirmed BEFORE payments are switched on: it stays untracked (historical)
 world.orders.O3 = await mkOrder(world, 'A', { label: 'O3', total: 80 })
 for (const acc of ['A', 'B']) {
-  await must(admin.from('order_payment_settings').upsert({ account_id: world.accounts[acc], order_payments_enabled: true }), `payments ${acc}`)
-  await must(admin.from('order_shipment_settings').upsert({ account_id: world.accounts[acc], shalom_tracking_enabled: true, destination_customer_message_enabled: false }), `shipments ${acc}`)
+  sqlRows(`payment and shipment settings ${acc}`, `
+    insert into public.order_payment_settings (account_id, order_payments_enabled) values (:'account', true)
+      on conflict (account_id) do update set order_payments_enabled = true;
+    insert into public.order_shipment_settings (account_id, shalom_tracking_enabled, destination_customer_message_enabled) values (:'account', true, false)
+      on conflict (account_id) do update set shalom_tracking_enabled = true, destination_customer_message_enabled = false
+      returning account_id;
+  `, { account: world.accounts[acc] }, 1)
 }
 
 // ---- catalogue ----
@@ -103,8 +110,8 @@ O.O15a = await mkOrder(world, 'A', { label: 'O15a', total: 40, conversation: mul
 O.O15b = await mkOrder(world, 'A', { label: 'O15b', total: 55, conversation: multi })
 O.OB1 = await mkOrder(world, 'B', { label: 'OB1', items: [{ product_name: 'Producto B', quantity: 1, unit_price: 45 }] })
 O.OB2 = await mkOrder(world, 'B', { label: 'OB2', total: 65 })
-// filler so that "Pedidos confirmados" needs a second page
-for (let i = 1; i <= 15; i += 1) O[`F${i}`] = await mkOrder(world, 'A', { label: `F${i}`, total: 10 + i })
+// filler so that "Pedidos confirmados" needs a second page (50 orders per page)
+for (let i = 1; i <= 40; i += 1) O[`F${i}`] = await mkOrder(world, 'A', { label: `F${i}`, total: 10 + i })
 
 // ---- chats in each stage ----
 const com = await mkConversation(world, 'A', 'CV-COM')
@@ -117,18 +124,12 @@ world.conversations = { 'CV-COM': com.conversationId, 'CV-LOG': O.O1.conversatio
 O.CVSH = shared
 
 // ---- fault injection: QA database only, never a migration ----
-execFileSync('psql', [process.env.QA_DB_URL, '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-f', new URL('./faults.sql', import.meta.url).pathname], { stdio: 'inherit' })
+sql('fault triggers', readFileSync(new URL('./faults.sql', import.meta.url), 'utf8'))
 
 // ---- the seed proves itself ----
-const accounts = await must(admin.from('accounts').select('id'), 'accounts')
-const whatsapp = await must(admin.from('whatsapp_config').select('id'), 'whatsapp_config')
 const stages = {}
 for (const [k, id] of Object.entries(world.conversations)) stages[k] = (await routingState(id)).stage
-const expectStages = { 'CV-COM': 'commercial', 'CV-LOG': 'logistics', 'CV-LOG0': 'logistics', 'CV-SH': 'shared', 'CV-MULTI': 'logistics', CVB: 'logistics' }
-const summary = {
-  accounts: accounts.length, users: Object.keys(world.users).length, orders: Object.keys(O).length, whatsappConfigRows: whatsapp.length, stages,
-  ok: accounts.length === 2 && whatsapp.length === 0 && JSON.stringify(stages) === JSON.stringify(expectStages),
-}
+const summary = seedChecks(world, stages)
 saveWorld(world)
 writeFileSync(`${process.env.QA_RESULTS}/seed.json`, JSON.stringify({
   summary, accounts: world.accounts,
@@ -136,5 +137,5 @@ writeFileSync(`${process.env.QA_RESULTS}/seed.json`, JSON.stringify({
   orders: Object.fromEntries(Object.entries(O).map(([k, o]) => [k, { orderId: o.orderId, conversationId: o.conversationId }])),
   conversations: world.conversations,
 }, null, 2))
-console.log(JSON.stringify(summary))
+console.log(JSON.stringify(summary, null, 2))
 if (!summary.ok) process.exit(1)

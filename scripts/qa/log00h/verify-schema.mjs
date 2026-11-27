@@ -46,7 +46,30 @@ for (const [name, expected] of Object.entries(ref.functions)) {
   check(`function:${name}`, expected, { md5, securityDefiner: secdef === 't', execute: (grants ?? '').split(',').filter(Boolean) }, hard)
 }
 
+// ---- effective privileges: the permission tests only mean something if this database grants what the live one grants ----
+for (const role of ['authenticated', 'service_role']) {
+  check(`privilege_smoke:${role}:profiles`, 't', sql(`select has_table_privilege('${role}', 'public.profiles', 'select')`), true)
+}
+const privilegeLines = {
+  tables: `select c.relname||':'||r.role||':'||concat(case when has_table_privilege(r.role,c.oid,'SELECT') then 'S' else '-' end, case when has_table_privilege(r.role,c.oid,'INSERT') then 'I' else '-' end,
+      case when has_table_privilege(r.role,c.oid,'UPDATE') then 'U' else '-' end, case when has_table_privilege(r.role,c.oid,'DELETE') then 'D' else '-' end) as line
+    from pg_class c cross join (values ('anon'),('authenticated'),('service_role')) r(role)
+    where c.relnamespace='public'::regnamespace and c.relkind in ('r','p','v','m')`,
+  functions: `select p.proname||'('||pg_get_function_identity_arguments(p.oid)||'):'||r.role||':'||case when has_function_privilege(r.role,p.oid,'EXECUTE') then 'X' else '-' end as line
+    from pg_proc p cross join (values ('anon'),('authenticated'),('service_role')) r(role)
+    where p.pronamespace='public'::regnamespace and not exists (select 1 from pg_depend d where d.classid='pg_proc'::regclass and d.objid=p.oid and d.deptype='e')`,
+  columns: `select c.relname||'.'||a.attname||':'||a.attacl::text as line from pg_attribute a join pg_class c on c.oid=a.attrelid
+    where c.relnamespace='public'::regnamespace and a.attacl is not null`,
+}
+const privilegeMatrix = {}
+for (const [id, q] of Object.entries(privilegeLines)) {
+  const [count, digest] = sql(`select count(*), md5(coalesce(string_agg(line, E'\\n' order by line collate "C"), '')) from (${q}) s`).split('\t')
+  const observed = { count: Number(count), md5: digest }
+  check(`privileges:${id}`, ref.privileges[id], observed)
+  if (JSON.stringify(observed) !== JSON.stringify(ref.privileges[id])) privilegeMatrix[id] = sql(`select line from (${q}) s order by line collate "C"`).split('\n')
+}
+
 const versions = sql("select current_setting('server_version')")
-writeFileSync(`${process.env.QA_RESULTS}/schema.json`, JSON.stringify({ postgres: versions, migrationFiles: files.length, checks }, null, 2))
+writeFileSync(`${process.env.QA_RESULTS}/schema.json`, JSON.stringify({ postgres: versions, migrationFiles: files.length, checks, privilegeMatrix }, null, 2))
 for (const c of checks) console.log(`${c.status.padEnd(4)} ${c.id}${c.status === 'PASS' ? '' : `  expected=${JSON.stringify(c.expected)} observed=${JSON.stringify(c.observed)}`}`)
 if (checks.some((c) => c.status === 'FAIL')) process.exit(1)
