@@ -472,13 +472,20 @@ function InboxPageInner() {
     const onVisibility = () => {
       if (document.visibilityState === "visible") {
         setResyncToken((n) => n + 1);
+        if (
+          activeConversation?.unread_count &&
+          activeConversation.unread_count > 0 &&
+          document.hasFocus()
+        ) {
+          markConversationRead(activeConversation.id);
+        }
       }
     };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, []);
+  }, [activeConversation, markConversationRead]);
 
   /**
    * Manual refresh trigger for the thread-header refresh button.
@@ -543,11 +550,13 @@ function InboxPageInner() {
 
   const handleSelectConversation = useCallback(
     (conv: Conversation) => {
-      // Re-clicking the already-active conversation would clear the
-      // messages array, but the fetch effect in MessageThread only re-runs
-      // when conversationId changes — so messages would stay empty until
-      // the user navigated away and back. Bail out early instead.
-      if (activeConversation?.id === conv.id) return;
+      // Re-clicking the already-active conversation is still a human
+      // view. Mark it read before returning, but do not clear/reload its
+      // messages.
+      if (activeConversation?.id === conv.id) {
+        if (conv.unread_count > 0) markConversationRead(conv.id);
+        return;
+      }
       setActiveConversation(conv);
       setActiveContact(conv.contact ?? null);
       setMessages([]);
