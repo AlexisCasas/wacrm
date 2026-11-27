@@ -8,6 +8,8 @@ name: LOG-00H synthetic QA
 on:
   push:
     branches: [qa/log00h-synthetic]
+  pull_request:
+    branches: [feat/logistics-side-panel-20261126]
 
 permissions:
   contents: read
