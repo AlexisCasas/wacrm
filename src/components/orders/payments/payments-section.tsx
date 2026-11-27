@@ -36,9 +36,10 @@ const emptyDraft = (): Draft => ({ amount: "", kind: "advance", method: "", oper
 // A logical payment attempt keeps the same idempotency key across network failures,
 // component remounts and page reloads. A successful response clears the pending key;
 // a later intentional payment therefore receives a fresh key.
-function stablePaymentRequest(orderId: string, mode: "register" | "correct", payment: Record<string, unknown>) {
-  const fingerprint = JSON.stringify(payment);
-  const storageKey = `wacrm:payment-attempt:${orderId}:${mode}:${fingerprint}`;
+function stablePaymentRequest(orderId: string, mode: "register" | "correct") {
+  // One unresolved logical payment attempt per order/mode. Keep it even if the
+  // page reloads and the draft is reconstructed; clear only after server success.
+  const storageKey = `wacrm:payment-attempt:${orderId}:${mode}`;
   let requestKey: string;
   try {
     requestKey = sessionStorage.getItem(storageKey) ?? "";
@@ -150,7 +151,7 @@ export function PaymentsSection({ orderId }: { orderId: string }) {
   const submit = async () => {
     const paymentFields = { amount: draft.amount.trim(), kind: draft.kind, method: draft.method.trim() || undefined, operation_number: draft.operation.trim() || undefined, paid_at: new Date(draft.paidAt).toISOString(), evidence_document_id: draft.evidenceId ?? undefined, notes: draft.notes.trim() || undefined };
     const mode = form?.mode === "correct" ? "correct" : "register";
-    const attempt = stablePaymentRequest(orderId, mode, { ...paymentFields, ...(form?.mode === "correct" ? { payment_id: form.payment.id, reason: reason.trim(), overpayment_reason: overReason.trim() || undefined } : {}) });
+    const attempt = stablePaymentRequest(orderId, mode);
     const payment = { request_key: attempt.requestKey, ...paymentFields };
     const ok =
       form?.mode === "correct"
