@@ -108,7 +108,19 @@ jobs:
           WHATSAPP_CALLING_ENABLED=true
           NEXT_TELEMETRY_DISABLED=1
           EOF
-          (set -a; . "$RUNNER_TEMP/qa-env.sh"; set +a; export PATH="$NODE_BIN:$PATH"; npm run build)
+          set +e
+          (set -a; . "$RUNNER_TEMP/qa-env.sh"; set +a; export PATH="$NODE_BIN:$PATH"; npm run build) 2>&1 | tee "$RUNNER_TEMP/build.log"
+          BUILD_STATUS=${PIPESTATUS[0]}
+          set -e
+          if [ "$BUILD_STATUS" -ne 0 ]; then
+            {
+              echo '### Build failure'
+              echo '~~~text'
+              tail -n 120 "$RUNNER_TEMP/build.log"
+              echo '~~~'
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit "$BUILD_STATUS"
+          fi
           cp -r .next/static .next/standalone/.next/static
           cp -r public .next/standalone/public
 
