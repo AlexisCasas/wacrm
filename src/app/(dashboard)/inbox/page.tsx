@@ -71,6 +71,30 @@ function InboxPageInner() {
   const optimisticActivitySnapshotsRef = useRef<
     Map<string, ConversationActivitySnapshot | undefined>
   >(new Map());
+
+  const markConversationRead = useCallback((conversationId: string) => {
+    setConversations((prev) =>
+      prev.map((conversation) =>
+        conversation.id === conversationId && conversation.unread_count > 0
+          ? { ...conversation, unread_count: 0 }
+          : conversation,
+      ),
+    );
+    setActiveConversation((prev) =>
+      prev && prev.id === conversationId && prev.unread_count > 0
+        ? { ...prev, unread_count: 0 }
+        : prev,
+    );
+
+    const supabase = createClient();
+    void supabase
+      .from("conversations")
+      .update({ unread_count: 0 })
+      .eq("id", conversationId)
+      .then(({ error }) => {
+        if (error) console.error("Failed to mark conversation as read:", error);
+      });
+  }, []);
   const rememberConversationActivity = useCallback((conversation: Conversation) => {
     const current = latestActivityByConversationRef.current.get(conversation.id);
     latestActivityByConversationRef.current.set(
@@ -383,15 +407,24 @@ function InboxPageInner() {
           hydrateConversation(conv.id);
         }
 
-        // Update active conversation if it changed
+        // Update the open conversation. A new unread message counts as
+        // read only while a person is actually looking at this browser tab;
+        // background/inactive tabs must never clear unread on their own.
         if (activeConversation && conv.id === activeConversation.id) {
           setActiveConversation((prev) =>
             prev ? mergeConversationUpdate(prev, conv) : prev
           );
+          if (
+            conv.unread_count > 0 &&
+            document.visibilityState === "visible" &&
+            document.hasFocus()
+          ) {
+            markConversationRead(conv.id);
+          }
         }
       }
     },
-    [activeConversation, hydrateConversation, rememberConversationActivity]
+    [activeConversation, hydrateConversation, markConversationRead, rememberConversationActivity]
   );
 
   // Subscribe to realtime. The `isConnected` flag below feeds the
@@ -494,12 +527,18 @@ function InboxPageInner() {
           setActiveConversation(match);
           setActiveContact(match.contact ?? null);
           setMessages([]);
-          // Deep-linking is navigation only. Keep unread_count unchanged
-          // until a human advisor actually replies.
+          // Landing on a deep-linked conversation is a human view when the
+          // page is visible, so mark it read. Background hydration must not.
+          if (
+            match.unread_count > 0 &&
+            document.visibilityState === "visible"
+          ) {
+            markConversationRead(match.id);
+          }
         }
       }
     },
-    [deepLinkConvId, activeConversation?.id]
+    [deepLinkConvId, activeConversation?.id, markConversationRead]
   );
 
   const handleSelectConversation = useCallback(
@@ -512,8 +551,9 @@ function InboxPageInner() {
       setActiveConversation(conv);
       setActiveContact(conv.contact ?? null);
       setMessages([]);
-      // Selecting a conversation is navigation only. Do not clear its
-      // unread badge here; only a successful human advisor reply does that.
+      // An explicit user click is a real human view, so this conversation
+      // becomes read immediately. Automated activity never calls this handler.
+      if (conv.unread_count > 0) markConversationRead(conv.id);
       // Record the selection on the deep-link ref BEFORE we change the
       // URL. The router.replace below flips `deepLinkConvId`, which can
       // in turn cause ConversationList to refetch and eventually call
@@ -527,7 +567,7 @@ function InboxPageInner() {
       // replace() to avoid polluting browser history with every click.
       router.replace(`/inbox?c=${conv.id}`, { scroll: false });
     },
-    [activeConversation?.id, router]
+    [activeConversation?.id, markConversationRead, router]
   );
 
   // The global ring banner stays mounted regardless of the selected thread.

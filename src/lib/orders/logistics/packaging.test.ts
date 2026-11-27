@@ -231,7 +231,7 @@ describe('sendPackagingTemplate · the send', () => {
       templateLanguage: 'es',
       templateParams: ['Ana', EMPTY_PARAM_FALLBACK],
       templateMessageParams: { body: ['Ana', EMPTY_PARAM_FALLBACK], headerMediaUrl: 'https://signed.example/h' },
-      origin: 'manual_reply', markConversationRead: false,
+      origin: 'manual_reply',
       actor: { userId: USER },
       senderId: USER,
     })
