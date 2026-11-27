@@ -37,7 +37,8 @@ for (const acc of ['A', 'B']) {
     const profile = JSON.parse(profileJson)
     if (area === 'OWN') {
       world.accounts[acc] = profile.account_id
-      await must(admin.from('accounts').update({ name: `QA Cuenta ${acc}` }).eq('id', profile.account_id), 'account name')
+      execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c',
+        `update public.accounts set name = ${sqlLiteral(`QA Cuenta ${acc}`)} where id = ${sqlLiteral(profile.account_id)}::uuid`], { stdio: 'inherit' })
       execFileSync('psql', [process.env.QA_DB_URL, '-X', '-v', 'ON_ERROR_STOP=1', '-c',
         `update public.profiles set full_name = ${sqlLiteral(name)} where user_id = ${sqlLiteral(id)}::uuid`], { stdio: 'inherit' })
     } else {
