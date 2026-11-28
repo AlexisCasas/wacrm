@@ -400,6 +400,36 @@ describe('LogisticsOrderEditor: saving never rewrites what the person did not ch
     expect(registers[1].amount).toBe(firstRegister?.amount)
   })
 
+  it('releases a terminally rejected attempt so a later legitimate payment gets a new key', async () => {
+    const posts: Body[] = []
+    let registerCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      if (!init || init.method !== 'POST') return new Response(JSON.stringify(panelData({ total: 100 })), { status: 200 })
+      const body = JSON.parse(String(init.body)) as Body
+      posts.push(body)
+      if (body.action === 'register') {
+        registerCount += 1
+        return registerCount === 1
+          ? new Response(JSON.stringify({ payment_id: 'p1', row_version: 2, status: 'rejected', created: false }), { status: 200 })
+          : new Response(JSON.stringify({ payment_id: 'p2', row_version: 1, status: 'recorded', created: true }), { status: 201 })
+      }
+      return new Response('{}', { status: 200 })
+    }))
+
+    await open()
+    pay('20')
+    save()
+    await waitFor(() => expect(h.err).toHaveBeenCalled())
+    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).disabled).toBe(false)
+    pay('30')
+    save()
+    await waitFor(() => expect(h.ok).toHaveBeenCalled())
+    const registers = posts.filter((p) => p.action === 'register')
+    expect(registers).toHaveLength(2)
+    expect(registers[0].request_key).not.toBe(registers[1].request_key)
+    expect(registers.map((p) => p.amount)).toEqual(['20.00', '30.00'])
+  })
+
   it('when the edit is refused no payment is registered', async () => {
     const posts = serve(panelData(), { status: 409, body: { error: 'order_closed' } })
     await open()
