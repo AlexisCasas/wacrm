@@ -7,8 +7,8 @@
 ## Estado general
 
 - Hechos: **5/13**
-- Parciales: **6/13**
-- Pendientes: **2/13**
+- Parciales: **7/13**
+- Pendientes: **1/13**
 
 > Estos estados reflejan el control funcional declarado del entregable. No sustituyen validación técnica, QA ni evidencia de producción.
 
@@ -23,7 +23,7 @@
 | 05 | Simplificación de campos | Hecho |
 | 06 | Adelantos y saldo automático | Hecho |
 | 07 | Accesorios y comisiones | Parcial |
-| 08 | Filtros para cobranza | Pendiente |
+| 08 | Filtros para cobranza | Parcial |
 | 09 | Notificaciones Shalom | Parcial |
 | 10 | Eliminar campos innecesarios | Hecho |
 | 11 | Fotografías y evidencias | Parcial |
@@ -35,7 +35,7 @@
 ### Próximo
 **08 — Filtros para cobranza**
 
-Definir criterios exactos de cobranza, campos, combinaciones y alcance por rol/cuenta antes de implementar.
+Implementación preparada en `feat/cobranza-balance-filter-20261128` con filtros Todos / Con saldo / Sin pagar / Pago parcial / Pagado. Estado: **Parcial** hasta completar validación técnica y deploy.
 
 ### Después
 **02 — Dos plantillas WhatsApp**
