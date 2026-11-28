@@ -296,7 +296,6 @@ export function LogisticsOrderEditor({
     setSaving(true);
 
     try {
-      let savedTotal = panel.total;
       let savedPendingBalance = panel.pending_balance;
 
       if (effectivePaymentAmount > 0 && !attemptForRecovery) {
@@ -364,10 +363,6 @@ export function LogisticsOrderEditor({
 
         if (!res.ok) throw new Error("save_failed");
 
-        savedTotal =
-          typeof editResult.total === "number"
-            ? editResult.total
-            : editedTotal;
         savedPendingBalance =
           typeof editResult.pending_balance === "number"
             ? editResult.pending_balance
@@ -620,6 +615,13 @@ export function LogisticsOrderEditor({
           </p>
         ) : null}
 
+        {pendingPaymentAttempt ? (
+          <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2 text-[11px] text-amber-200">
+            Hay un intento de pago pendiente por {soles(Number(pendingPaymentAttempt.amount))}.
+            Se recuperará con la misma referencia antes de permitir otro importe.
+          </p>
+        ) : null}
+
         <div>
           <label className="mb-1 block text-xs text-muted-foreground">
             Pago
@@ -628,6 +630,7 @@ export function LogisticsOrderEditor({
             value={paymentAmount}
             inputMode="decimal"
             placeholder="0.00"
+            disabled={saving || pendingPaymentAttempt !== null}
             onChange={(e) => setPaymentAmount(e.target.value)}
           />
         </div>
