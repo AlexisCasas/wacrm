@@ -370,7 +370,7 @@ describe("Inbox search (FIX-01)", () => {
       await type("987654321");
       await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
       expect(screen.queryByText("Ana")).toBeNull();
-      h.failOrders = false; h.rpcRows = [[{ contact_id: "ct-b1" }]]; h.rows.order = [bsuidOnly("b1", "Solo Bsuid")];
+      h.failOrders = false; h.rpcWindows = []; h.rpcRows = [[{ contact_id: "ct-b1" }]]; h.rows.order = [bsuidOnly("b1", "Solo Bsuid")];
       fireEvent.click(screen.getByText("retry"));
       await waitFor(() => expect(screen.getByText("Solo Bsuid")).toBeTruthy());
     });
