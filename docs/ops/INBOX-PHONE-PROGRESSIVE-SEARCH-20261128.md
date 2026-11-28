@@ -122,3 +122,37 @@ V2 resuelve teléfonos completos en este orden:
 4. solo sin match exacto corre la búsqueda ancha.
 
 La RPC de contactos reutiliza `idx_contacts_account_phone_normalized`; no crea índice de expresión en contacts.
+
+
+## Estado final pre-deploy
+
+- Producción actual: `0c4e88bb0d52eac69a944a38c3d662f97d2425c4`
+- Imagen actual: `wacrm-app:cobranza-filters-0c4e88bb`
+- Candidato final remoto: `186d388a76bdb3b824ee508fa1860a8bb1852a8e`
+- Rama: `fix/inbox-phone-progressive-search-20261128`
+- Estado: **READY FOR DEPLOY**
+- Ahead / behind: 7 / 0
+- Merge-base: producción exacta `0c4e88bb...`
+
+Validación final:
+- 467/467 tests PASS, dos pasadas
+- 52/52 tests de comportamiento PASS
+- release-manifest PASS
+- migration-ledger verify OK
+- typecheck PASS
+- lint 0 errores
+- build PASS
+
+Alcance del deploy:
+- solo búsqueda por número completo en Inbox;
+- búsqueda por nombre/texto preservada;
+- unread/read sin cambios;
+- no toca Cobranza, Flows, WhatsApp send, Shalom, Calling, plantillas, Caddy ni crons.
+
+Orden obligatorio:
+1. aplicar únicamente `20261205000007_inbox_phone_progressive_search.sql`;
+2. validar RPCs/índice/caso real;
+3. desplegar el SHA exacto `186d388a...`;
+4. verificar en producción el caso `51942309277`.
+
+No marcar como cerrado hasta obtener `DEPLOY PASS`.
