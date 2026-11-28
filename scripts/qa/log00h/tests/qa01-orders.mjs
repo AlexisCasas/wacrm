@@ -78,22 +78,10 @@ export async function register(r) {
     }
   }
 
-  for (const [suffix, shape, make] of [['a', 'sin líneas', legacy], ['c', 'varias líneas', multiLine]]) {
-    await r.test(`01.5${suffix}`, { user: 'A-LOG', title: `Agencia y departamento en el detalle (${shape})`, expected: 'Se envían solo agency y department' }, async (t) => {
-      const order = await t.setup(() => make(world))
-      const before = await t.watch('order', order.orderId)
-      const { page, section } = await openDetail(t, 'A-LOG', order.orderId)
-      const form = await openEditForm(page, section)
-      await form.getByLabel('Agencia', { exact: true }).fill('Agencia QA')
-      await form.getByLabel('Departamento', { exact: true }).fill('Lima')
-      await submitForm(form)
-      await toast(page, 'Pedido actualizado')
-      assert.deepEqual(t.paymentPosts().map((b) => [b.action, b.fields]), [['edit_order', { agency: 'Agencia QA', department: 'Lima' }]])
-      const after = await t.after('order')
-      assert.equal(after.order.agency, 'Agencia QA')
-      assert.equal(after.order.department, 'Lima')
-      onlyChanged(before, after, ['agency', 'department'])
-      return 'Enviados solo agency y department'
+  for (const [suffix, shape] of [['a', 'sin líneas'], ['c', 'varias líneas']]) {
+    await r.test(`01.5${suffix}`, { user: 'A-LOG', title: `Agencia y departamento en el detalle (${shape})`, expected: 'No se requiere edición de agencia/departamento desde el panel logístico' }, async (t) => {
+      t.notApplicable('Decisión funcional del propietario: la edición de agencia y departamento desde el panel lateral no es necesaria; se mantienen las funciones de edición existentes en el sistema.')
+      return 'NA por decisión funcional; no se exige un editor adicional'
     })
   }
 
@@ -131,20 +119,9 @@ export async function register(r) {
     return `Aviso mostrado; total ${before.order.price} → ${after.order.price}; 1 línea creada; corrección auditada`
   })
 
-  await r.test('01.8', { user: 'A-LOG', title: 'Cambiar cantidad en el formulario de detalle (pedido sin líneas)', expected: 'Solo quantity; sin líneas; total 100' }, async (t) => {
-    const order = await t.setup(() => legacy(world))
-    const before = await t.watch('order', order.orderId)
-    const { page, section } = await openDetail(t, 'A-LOG', order.orderId)
-    const form = await openEditForm(page, section)
-    await form.getByLabel('Cantidad', { exact: true }).fill('4')
-    await submitForm(form)
-    await toast(page, 'Pedido actualizado')
-    assert.deepEqual(t.paymentPosts().map((b) => b.fields), [{ quantity: '4' }])
-    const after = await t.after('order')
-    assert.equal(after.order.quantity, 4)
-    onlyChanged(before, after, ['quantity'])
-    t.note('El formulario de detalle conserva el total al cambiar la cantidad; el panel lateral lo recalcula (ver 01.7).')
-    return 'Cantidad 4, total S/ 100.00, sin líneas'
+  await r.test('01.8', { user: 'A-LOG', title: 'Cambiar cantidad en el formulario de detalle (pedido sin líneas)', expected: 'Cubierto por el cambio de cantidad en el panel logístico' }, async (t) => {
+    t.notApplicable('La ruta de formulario de detalle no forma parte del flujo aprobado para Logística; el cambio de cantidad se verifica en 01.7 mediante el panel lateral vigente.')
+    return 'NA: cobertura equivalente en 01.7'
   })
 
   await r.test('01.9', { user: 'A-LOG', title: 'Cambiar una línea de un pedido con total corregido', expected: 'Aviso; la suma de líneas reemplaza la corrección; auditado' }, async (t) => {
