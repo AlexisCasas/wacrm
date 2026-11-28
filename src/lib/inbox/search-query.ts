@@ -87,6 +87,31 @@ export function orderPhoneCandidates(plan: Pick<InboxSearchPlan, "phoneExact">):
   return plan.phoneExact;
 }
 
+/**
+ * Progressive historical windows for an exact phone fallback through confirmed
+ * orders. The UI never exposes these steps: callers try them oldest only when
+ * newer windows have no match, and stop on the first hit.
+ */
+export const ORDER_PHONE_WINDOW_DAYS = [15, 30, 90, 180, 365] as const;
+
+export interface PhoneSearchWindow {
+  after: string | null;
+  before: string | null;
+}
+
+export function orderPhoneSearchWindows(nowMs: number = Date.now()): PhoneSearchWindow[] {
+  const isoBefore = (days: number) => new Date(nowMs - days * 86_400_000).toISOString();
+  const out: PhoneSearchWindow[] = [];
+  let previous: string | null = null;
+  for (const days of ORDER_PHONE_WINDOW_DAYS) {
+    const boundary = isoBefore(days);
+    out.push({ after: boundary, before: previous });
+    previous = boundary;
+  }
+  out.push({ after: null, before: previous });
+  return out;
+}
+
 export interface OrderContactPick {
   /** Distinct contact ids, most recent order first, at most `MAX_ORDER_MATCH_CONTACTS`. */
   contactIds: string[];

@@ -18,6 +18,8 @@ const h = vi.hoisted(() => ({
   orderPhones: [] as string[][],
   orderContactIds: [] as string[][],
   orderQueries: 0,
+  rpcWindows: [] as Array<{ p_account: string; p_phones: string[]; p_after: string | null; p_before: string | null; p_limit: number }>,
+  rpcRows: [] as Array<Array<{ contact_id: string | null }>>,
   fail: false,
   orFilters: [] as string[],
   ilikePatterns: [] as string[],
@@ -27,6 +29,14 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
+    rpc: (_name: string, args: { p_account: string; p_phones: string[]; p_after: string | null; p_before: string | null; p_limit: number }) => {
+      h.orderQueries++;
+      h.orderPhones.push(args.p_phones);
+      h.rpcWindows.push(args);
+      const index = h.rpcWindows.length - 1;
+      const result = { data: h.rpcRows[index] ?? [], error: h.failOrders ? { message: "orders boom" } : null };
+      return { abortSignal: () => Promise.resolve(result) };
+    },
     from: (table: string) => {
       let source: "normal" | "contact" | "message" | "order" = "normal";
       const b: Record<string, unknown> = {
@@ -87,7 +97,7 @@ async function type(value: string) {
 
 beforeEach(() => {
   h.rows = { contact: [], message: [], normal: [], order: [] };
-  h.orders = []; h.failOrders = false; h.orderPhones = []; h.orderContactIds = []; h.orderQueries = 0;
+  h.orders = []; h.failOrders = false; h.orderPhones = []; h.orderContactIds = []; h.orderQueries = 0; h.rpcWindows = []; h.rpcRows = [];
   h.fail = false; h.orFilters = []; h.ilikePatterns = []; h.ranges = []; h.eqCalls = [];
 });
 afterEach(cleanup);
@@ -190,7 +200,7 @@ describe("Inbox search (FIX-01)", () => {
   });
 
   it("scopes the order lookup to the current account", async () => {
-    h.orders = [{ contact_id: "ct-b1" }];
+    h.rpcRows = [[{ contact_id: "ct-b1" }]];
     h.rows.order = [mk("b1", "Order Match", "")];
     render(<Harness />);
     await type("987654321");
@@ -222,7 +232,7 @@ describe("Inbox search (FIX-01)", () => {
     const bsuidOnly = (id: string, name: string) => ({ ...mk(id, name, ""), contact: { ...mk(id, name, "").contact, phone: "" } }) as Conversation;
 
     it("a complete phone also consults orders and shows the BSUID-only conversation with the badge", async () => {
-      h.orders = [{ contact_id: "ct-b1" }, { contact_id: "ct-b1" }]; // two orders, one contact
+      h.rpcRows = [[{ contact_id: "ct-b1" }, { contact_id: "ct-b1" }]]; // two orders, one contact
       h.rows.order = [bsuidOnly("b1", "Solo Bsuid")];
       render(<Harness />);
       await type("+51 954 953 878");
@@ -254,7 +264,7 @@ describe("Inbox search (FIX-01)", () => {
 
     it("one phone on orders of several contacts shows every match and selects none", async () => {
       const onSelect = vi.fn();
-      h.orders = [{ contact_id: "ct-b1" }, { contact_id: "ct-b2" }, { contact_id: "ct-b3" }];
+      h.rpcRows = [[{ contact_id: "ct-b1" }, { contact_id: "ct-b2" }, { contact_id: "ct-b3" }]];
       h.rows.order = [bsuidOnly("b1", "Uno"), bsuidOnly("b2", "Dos"), bsuidOnly("b3", "Tres")];
       function Wrap() {
         const [list, setList] = useState<Conversation[]>([]);
@@ -267,7 +277,7 @@ describe("Inbox search (FIX-01)", () => {
     });
 
     it("orders with a deleted contact (null) are ignored", async () => {
-      h.orders = [{ contact_id: null }];
+      h.rpcRows = [[{ contact_id: null }]];
       render(<Harness />);
       await type("987654321");
       await waitFor(() => expect(h.orderQueries).toBe(1));
@@ -276,13 +286,36 @@ describe("Inbox search (FIX-01)", () => {
     });
 
     it("more than 100 matching contacts: expands 100 and says there are more", async () => {
-      h.orders = Array.from({ length: 130 }, (_, i) => ({ contact_id: `ct-x${i}` }));
+      h.rpcRows = [Array.from({ length: 101 }, (_, i) => ({ contact_id: `ct-x${i}` }))];
       h.rows.order = Array.from({ length: 100 }, (_, i) => bsuidOnly(`x${i}`, `Cliente ${i}`));
       render(<Harness />);
       await type("987654321");
       await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
       expect(screen.getByText("orderMatchesTruncated")).toBeTruthy();
       expect(h.orderContactIds.at(-1)).toHaveLength(100);
+    });
+
+    it("expands 15d -> 30d -> 90d and stops on the first historical match", async () => {
+      h.rpcRows = [[], [], [{ contact_id: "ct-b1" }]];
+      h.rows.order = [bsuidOnly("b1", "Historico")];
+      render(<Harness />);
+      await type("51942309277");
+      await waitFor(() => expect(screen.getByText("Historico")).toBeTruthy());
+      expect(h.rpcWindows).toHaveLength(3);
+      expect(h.rpcWindows[0].p_after).toBeTruthy();
+      expect(h.rpcWindows[0].p_before).toBeNull();
+      expect(h.rpcWindows[1].p_before).toBe(h.rpcWindows[0].p_after);
+      expect(h.rpcWindows[2].p_before).toBe(h.rpcWindows[1].p_after);
+      expect(h.rpcWindows.every((w) => w.p_account === "acct-1")).toBe(true);
+      expect(h.orderPhones[0]).toEqual(["51942309277", "942309277"]);
+    });
+
+    it("skips historical order fallback when the contact phone already matches directly", async () => {
+      h.rows.contact = [mk("1", "Directo", "51942309277")];
+      render(<Harness />);
+      await type("51942309277");
+      await waitFor(() => expect(screen.getByText("Directo")).toBeTruthy());
+      expect(h.orderQueries).toBe(0);
     });
 
     it("an order lookup failure is shown as an error, never as partial results", async () => {
@@ -293,13 +326,13 @@ describe("Inbox search (FIX-01)", () => {
       await type("987654321");
       await waitFor(() => expect(screen.getByRole("alert")).toBeTruthy());
       expect(screen.queryByText("Ana")).toBeNull();
-      h.failOrders = false; h.orders = [{ contact_id: "ct-b1" }]; h.rows.order = [bsuidOnly("b1", "Solo Bsuid")];
+      h.failOrders = false; h.rpcRows = [[{ contact_id: "ct-b1" }]]; h.rows.order = [bsuidOnly("b1", "Solo Bsuid")];
       fireEvent.click(screen.getByText("retry"));
       await waitFor(() => expect(screen.getByText("Solo Bsuid")).toBeTruthy());
     });
 
     it("the order matches respect the status filter", async () => {
-      h.orders = [{ contact_id: "ct-b1" }];
+      h.rpcRows = [[{ contact_id: "ct-b1" }]];
       h.rows.order = [{ ...bsuidOnly("b1", "Solo Bsuid"), status: "closed" } as Conversation];
       render(<Harness />);
       await type("987654321");

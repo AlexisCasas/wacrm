@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_ORDER_MATCH_CONTACTS,
   orderPhoneCandidates,
+  orderPhoneSearchWindows,
   pickOrderContactIds,
   escapeLike,
   exactPhoneCandidates,
@@ -150,5 +151,20 @@ describe("order phone lookup (FIX 02)", () => {
     expect(matchesInboxSearch(c, plan)).toBe(false);
     expect(matchesInboxSearch(c, plan, new Set(["k1"]))).toBe(true);
     expect(matchesInboxSearch(c, plan, new Set(["other"]))).toBe(false);
+  });
+});
+
+
+describe("progressive order-phone windows", () => {
+  it("searches 0-15, 15-30, 30-90, 90-180, 180-365, then older history", () => {
+    const now = Date.UTC(2026, 10, 28, 12, 0, 0);
+    expect(orderPhoneSearchWindows(now)).toEqual([
+      { after: "2026-11-13T12:00:00.000Z", before: null },
+      { after: "2026-10-29T12:00:00.000Z", before: "2026-11-13T12:00:00.000Z" },
+      { after: "2026-08-30T12:00:00.000Z", before: "2026-10-29T12:00:00.000Z" },
+      { after: "2026-06-01T12:00:00.000Z", before: "2026-08-30T12:00:00.000Z" },
+      { after: "2025-11-28T12:00:00.000Z", before: "2026-06-01T12:00:00.000Z" },
+      { after: null, before: "2025-11-28T12:00:00.000Z" },
+    ]);
   });
 });

@@ -4,6 +4,7 @@ import { contactLabel } from "@/lib/contacts/display";
 import {
   matchesInboxSearch,
   orderPhoneCandidates,
+  orderPhoneSearchWindows,
   pickOrderContactIds,
   planInboxSearch,
 } from "@/lib/inbox/search-query";
@@ -200,46 +201,57 @@ export function ConversationList({
           // (never order.conversation_id, which can be stale). RLS applies to
           // both tables as the signed-in user; a failure here fails the whole
           // search (no partial result is shown as definitive).
-          const ORDER_PAGE = 1_000;
+          const ORDER_PAGE = MAX_ORDER_MATCH_CONTACTS + 1;
           const orderPhones = orderPhoneCandidates(plan);
           const fetchOrderMatches = async () => {
             if (orderPhones.length === 0) {
               return { rows: [] as InboxRows, truncated: false };
             }
-            requests++;
-            const orderQuery = supabase
-              .from("order_confirmations")
-              .select("contact_id")
-              .in("phone", orderPhones)
-              .eq("account_id", accountId);
-            const { data: orders, error: orderError } = await orderQuery
-              .not("contact_id", "is", null)
-              .order("confirmed_at", { ascending: false })
-              .abortSignal(controller.signal)
-              .range(0, ORDER_PAGE - 1);
-            if (orderError) throw orderError;
-            const picked = pickOrderContactIds(
-              (orders ?? []) as { contact_id: string | null }[],
-              ORDER_PAGE,
-            );
-            if (picked.contactIds.length === 0) {
-              return { rows: [] as InboxRows, truncated: picked.truncated };
+
+            // Try the newest orders first, then progressively expand the
+            // historical window until a match is found. The RPC normalizes
+            // legacy order phone formatting in SQL, so "+51 942-309-277" and
+            // "51942309277" are equivalent without loading broad order pages.
+            for (const window of orderPhoneSearchWindows()) {
+              requests++;
+              const { data: orders, error: orderError } = await supabase
+                .rpc("search_order_contacts_by_phone_window", {
+                  p_account: accountId,
+                  p_phones: orderPhones,
+                  p_after: window.after,
+                  p_before: window.before,
+                  p_limit: ORDER_PAGE,
+                })
+                .abortSignal(controller.signal);
+              if (orderError) throw orderError;
+              const picked = pickOrderContactIds(
+                (orders ?? []) as { contact_id: string | null }[],
+                ORDER_PAGE,
+              );
+              if (picked.contactIds.length === 0) continue;
+              return {
+                rows: await fetchAll(baseQuery().in("contact_id", picked.contactIds)),
+                truncated: picked.truncated,
+              };
             }
-            return {
-              rows: await fetchAll(baseQuery().in("contact_id", picked.contactIds)),
-              truncated: picked.truncated,
-            };
+            return { rows: [] as InboxRows, truncated: false };
           };
 
-          const [contactMatches, messageMatches, orderMatches] = await Promise.all([
+          const [contactMatches, messageMatches] = await Promise.all([
             fetchAll(
               baseQuery().or(plan.contactOrFilter, {
                 referencedTable: "contact",
               }),
             ),
             fetchAll(baseQuery().ilike("last_message_text", plan.likePattern)),
-            fetchOrderMatches(),
           ]);
+          // A direct contact match is already definitive and fastest. Only
+          // fall back to historical orders for complete phones when the
+          // contact itself did not match (e.g. BSUID/phone-less contact).
+          const orderMatches =
+            contactMatches.length > 0
+              ? { rows: [] as InboxRows, truncated: false }
+              : await fetchOrderMatches();
           const unique = new Map<string, (typeof contactMatches)[number]>();
           for (const conversation of [...contactMatches, ...messageMatches]) {
             unique.set(conversation.id, conversation);
