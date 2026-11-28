@@ -48,7 +48,7 @@ const pay = (value: string) => fireEvent.change(screen.getByPlaceholderText('0.0
 const save = () => fireEvent.click(screen.getByRole('button', { name: /Guardar/ }))
 const totalShown = () => screen.getByText('Total').nextElementSibling?.textContent
 
-beforeEach(() => { h.ok.mockReset(); h.err.mockReset(); h.info.mockReset() })
+beforeEach(() => { h.ok.mockReset(); h.err.mockReset(); h.info.mockReset(); window.sessionStorage.clear() })
 afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 describe('LogisticsOrderEditor: saving never rewrites what the person did not change', () => {
@@ -254,18 +254,17 @@ describe('LogisticsOrderEditor: saving never rewrites what the person did not ch
     expect(posts.filter((p) => p.action === 'confirm')).toHaveLength(1)
   })
 
-  it('changing the amount after a failed attempt is a new operation: new request_key, nothing old is resent', async () => {
+  it('locks the amount while an uncertain attempt is unresolved, then allows a new legitimate payment with a new key', async () => {
     const posts: Body[] = []
-    let firstRegister = true
+    let registerCount = 0
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
       if (!init || init.method !== 'POST') return new Response(JSON.stringify(panelData({ total: 100 })), { status: 200 })
       const body = JSON.parse(String(init.body)) as Body
       posts.push(body)
       if (body.action === 'register') {
-        if (firstRegister) {
-          firstRegister = false
-          throw new TypeError('network response lost')
-        }
+        registerCount += 1
+        if (registerCount === 1) throw new TypeError('network response lost')
+        if (registerCount === 2) return new Response(JSON.stringify({ payment_id: 'p1', row_version: 2, status: 'confirmed', created: false }), { status: 200 })
         return new Response(JSON.stringify({ payment_id: 'p2', row_version: 1, status: 'recorded', created: true }), { status: 201 })
       }
       return new Response('{}', { status: 200 })
@@ -274,12 +273,131 @@ describe('LogisticsOrderEditor: saving never rewrites what the person did not ch
     pay('20')
     save()
     await waitFor(() => expect(h.err).toHaveBeenCalled())
+    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).disabled).toBe(true)
+    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).value).toBe('20')
+    save()
+    await waitFor(() => expect(h.ok).toHaveBeenCalledTimes(1))
+    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).disabled).toBe(false)
     pay('30')
+    save()
+    await waitFor(() => expect(h.ok).toHaveBeenCalledTimes(2))
+    const registers = posts.filter((p) => p.action === 'register')
+    expect(registers.map((p) => p.amount)).toEqual(['20.00', '20.00', '30.00'])
+    expect(registers[1].request_key).toBe(registers[0].request_key)
+    expect(registers[2].request_key).not.toBe(registers[0].request_key)
+  })
+
+  it('recovers the same payment attempt after the editor is unmounted and mounted again', async () => {
+    const posts: Body[] = []
+    let registerCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      if (!init || init.method !== 'POST') return new Response(JSON.stringify(panelData({ total: 100 })), { status: 200 })
+      const body = JSON.parse(String(init.body)) as Body
+      posts.push(body)
+      if (body.action === 'register') {
+        registerCount += 1
+        if (registerCount === 1) throw new TypeError('response lost after server commit')
+        return new Response(JSON.stringify({ payment_id: 'p1', row_version: 2, status: 'confirmed', created: false }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    }))
+
+    await open()
+    pay('20')
+    save()
+    await waitFor(() => expect(h.err).toHaveBeenCalled())
+    const firstKey = posts.find((p) => p.action === 'register')?.request_key
+
+    cleanup()
+    render(<LogisticsOrderEditor orderId={ORDER} />)
+    await waitFor(() => expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).value).toBe('20.00'))
+    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).disabled).toBe(true)
     save()
     await waitFor(() => expect(h.ok).toHaveBeenCalled())
     const registers = posts.filter((p) => p.action === 'register')
-    expect(registers.map((p) => p.amount)).toEqual(['20.00', '30.00'])
-    expect(registers[1].request_key).not.toBe(registers[0].request_key)
+    expect(registers).toHaveLength(2)
+    expect(registers[1].request_key).toBe(firstKey)
+    expect(posts.filter((p) => p.action === 'confirm')).toHaveLength(0)
+  })
+
+  it('keeps separate pending attempts when switching between two orders in the same conversation', async () => {
+    const otherOrder = '33333333-3333-4333-8333-333333333333'
+    const posts: Array<Body & { orderId: string }> = []
+    let firstOrderRegisterCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      const orderId = url.match(/orders\\/([^/?]+)/)?.[1] ?? ORDER
+      if (!init || init.method !== 'POST') return new Response(JSON.stringify(panelData({ total: 100 })), { status: 200 })
+      const body = JSON.parse(String(init.body)) as Body
+      posts.push({ ...body, orderId })
+      if (body.action === 'register' && orderId === ORDER) {
+        firstOrderRegisterCount += 1
+        if (firstOrderRegisterCount === 1) throw new TypeError('response lost after commit')
+        return new Response(JSON.stringify({ payment_id: 'p1', row_version: 2, status: 'confirmed', created: false }), { status: 200 })
+      }
+      if (body.action === 'register') return new Response(JSON.stringify({ payment_id: 'p2', row_version: 1, status: 'recorded', created: true }), { status: 201 })
+      return new Response('{}', { status: 200 })
+    }))
+
+    const view = render(<LogisticsOrderEditor orderId={ORDER} />)
+    await waitFor(() => expect(screen.getByDisplayValue('Ana')).toBeTruthy())
+    pay('20')
+    save()
+    await waitFor(() => expect(h.err).toHaveBeenCalled())
+    const firstKey = posts.find((p) => p.action === 'register' && p.orderId === ORDER)?.request_key
+
+    view.rerender(<LogisticsOrderEditor orderId={otherOrder} />)
+    await waitFor(() => expect(screen.getByDisplayValue('Ana')).toBeTruthy())
+    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).value).toBe('')
+    pay('20')
+    save()
+    await waitFor(() => expect(h.ok).toHaveBeenCalledTimes(1))
+    const otherKey = posts.find((p) => p.action === 'register' && p.orderId === otherOrder)?.request_key
+    expect(otherKey).toBeTruthy()
+    expect(otherKey).not.toBe(firstKey)
+
+    view.rerender(<LogisticsOrderEditor orderId={ORDER} />)
+    await waitFor(() => expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).value).toBe('20.00'))
+    save()
+    await waitFor(() => expect(h.ok).toHaveBeenCalledTimes(2))
+    const firstOrderRegisters = posts.filter((p) => p.action === 'register' && p.orderId === ORDER)
+    expect(firstOrderRegisters).toHaveLength(2)
+    expect(firstOrderRegisters[1].request_key).toBe(firstKey)
+  })
+
+  it('replays the exact order edit snapshot together with an uncertain payment after remount', async () => {
+    const posts: Body[] = []
+    let registerCount = 0
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
+      if (!init || init.method !== 'POST') return new Response(JSON.stringify(panelData({ total: 100 })), { status: 200 })
+      const body = JSON.parse(String(init.body)) as Body
+      posts.push(body)
+      if (body.action === 'edit_order') return new Response(JSON.stringify({ changed: true, total: 100, pending_balance: 100 }), { status: 200 })
+      if (body.action === 'register') {
+        registerCount += 1
+        if (registerCount === 1) throw new TypeError('register response lost')
+        return new Response(JSON.stringify({ payment_id: 'p1', row_version: 2, status: 'confirmed', created: false }), { status: 200 })
+      }
+      return new Response('{}', { status: 200 })
+    }))
+
+    await open()
+    type('Ana', 'Ana María')
+    pay('20')
+    save()
+    await waitFor(() => expect(h.err).toHaveBeenCalled())
+    const firstEdit = posts.find((p) => p.action === 'edit_order')
+    const firstRegister = posts.find((p) => p.action === 'register')
+    cleanup()
+    render(<LogisticsOrderEditor orderId={ORDER} />)
+    await waitFor(() => expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).value).toBe('20.00'))
+    save()
+    await waitFor(() => expect(h.ok).toHaveBeenCalled())
+    const edits = posts.filter((p) => p.action === 'edit_order')
+    const registers = posts.filter((p) => p.action === 'register')
+    expect(edits).toHaveLength(2)
+    expect(edits[1].fields).toEqual(firstEdit?.fields)
+    expect(registers[1].request_key).toBe(firstRegister?.request_key)
+    expect(registers[1].amount).toBe(firstRegister?.amount)
   })
 
   it('when the edit is refused no payment is registered', async () => {
