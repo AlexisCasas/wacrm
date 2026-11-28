@@ -237,23 +237,48 @@ export function ConversationList({
             return { rows: [] as InboxRows, truncated: false };
           };
 
-          const [contactMatches, messageMatches] = await Promise.all([
+          const fetchNormalizedContactMatches = async () => {
+            if (orderPhones.length === 0) return [] as InboxRows;
+            requests++;
+            const { data: ids, error: idsError } = await supabase
+              .rpc("search_contact_ids_by_phone", {
+                p_account: accountId,
+                p_phones: orderPhones,
+                p_limit: MAX_ORDER_MATCH_CONTACTS + 1,
+              })
+              .abortSignal(controller.signal);
+            if (idsError) throw idsError;
+            const contactIds = Array.from(
+              new Set(
+                ((ids ?? []) as { contact_id: string | null }[])
+                  .map((row) => row.contact_id)
+                  .filter((id): id is string => !!id),
+              ),
+            ).slice(0, MAX_ORDER_MATCH_CONTACTS);
+            if (contactIds.length === 0) return [] as InboxRows;
+            return fetchAll(baseQuery().in("contact_id", contactIds));
+          };
+
+          const [contactMatches, normalizedPhoneMatches, messageMatches] = await Promise.all([
             fetchAll(
               baseQuery().or(plan.contactOrFilter, {
                 referencedTable: "contact",
               }),
             ),
+            fetchNormalizedContactMatches(),
             fetchAll(baseQuery().ilike("last_message_text", plan.likePattern)),
           ]);
-          // A direct contact match is already definitive and fastest. Only
-          // fall back to historical orders for complete phones when the
-          // contact itself did not match (e.g. BSUID/phone-less contact).
-          const orderMatches =
-            contactMatches.length > 0
-              ? { rows: [] as InboxRows, truncated: false }
-              : await fetchOrderMatches();
+
+          // Raw-phone normalization is authoritative for a complete number.
+          // Historical orders are only a second fallback for BSUID/phone-less
+          // contacts or stale contact data.
+          const hasDirectPhoneMatch =
+            contactMatches.length > 0 || normalizedPhoneMatches.length > 0;
+          const orderMatches = hasDirectPhoneMatch
+            ? { rows: [] as InboxRows, truncated: false }
+            : await fetchOrderMatches();
           const unique = new Map<string, (typeof contactMatches)[number]>();
-          for (const conversation of [...contactMatches, ...messageMatches]) {
+          for (const conversation of [...contactMatches, ...normalizedPhoneMatches, ...messageMatches]) {
             unique.set(conversation.id, conversation);
           }
           const onlyByOrder = new Set<string>();

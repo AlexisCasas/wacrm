@@ -85,3 +85,25 @@ Agrega:
 - RPC de solo lectura.
 
 No modifica datos existentes.
+
+
+## Robustez adicional de Contacts
+
+Se añadió una segunda ruta exacta para teléfonos completos que normaliza directamente `contacts.phone` con `regexp_replace`.
+
+Esto cubre registros históricos donde:
+- `phone_normalized` está vacío;
+- `phone_normalized` quedó desactualizado;
+- `phone` contiene espacios, guiones, paréntesis o `+51`.
+
+Ejemplo equivalente:
+- `+51 942-309-277`
+- `51942309277`
+- `942309277`
+
+Orden definitivo para un teléfono completo:
+1. búsqueda normal existente;
+2. contacto por `contacts.phone` normalizado;
+3. si aún no existe coincidencia, pedidos históricos por ventanas progresivas.
+
+El usuario no ve ninguno de estos pasos.

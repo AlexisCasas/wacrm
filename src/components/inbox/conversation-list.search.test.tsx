@@ -20,6 +20,8 @@ const h = vi.hoisted(() => ({
   orderQueries: 0,
   rpcWindows: [] as Array<{ p_account: string; p_phones: string[]; p_after: string | null; p_before: string | null; p_limit: number }>,
   rpcRows: [] as Array<Array<{ contact_id: string | null }>>,
+  contactRpcRows: [] as Array<{ contact_id: string | null }>,
+  contactRpcCalls: [] as Array<{ p_account: string; p_phones: string[]; p_limit: number }>,
   fail: false,
   orFilters: [] as string[],
   ilikePatterns: [] as string[],
@@ -29,10 +31,21 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
-    rpc: (_name: string, args: { p_account: string; p_phones: string[]; p_after: string | null; p_before: string | null; p_limit: number }) => {
+    rpc: (name: string, args: { p_account: string; p_phones: string[]; p_after?: string | null; p_before?: string | null; p_limit: number }) => {
+      if (name === "search_contact_ids_by_phone") {
+        h.contactRpcCalls.push({ p_account: args.p_account, p_phones: args.p_phones, p_limit: args.p_limit });
+        return { abortSignal: () => Promise.resolve({ data: h.contactRpcRows, error: null }) };
+      }
       h.orderQueries++;
       h.orderPhones.push(args.p_phones);
-      h.rpcWindows.push(args);
+      const window = {
+        p_account: args.p_account,
+        p_phones: args.p_phones,
+        p_after: args.p_after ?? null,
+        p_before: args.p_before ?? null,
+        p_limit: args.p_limit,
+      };
+      h.rpcWindows.push(window);
       const index = h.rpcWindows.length - 1;
       const result = { data: h.rpcRows[index] ?? [], error: h.failOrders ? { message: "orders boom" } : null };
       return { abortSignal: () => Promise.resolve(result) };
@@ -97,7 +110,7 @@ async function type(value: string) {
 
 beforeEach(() => {
   h.rows = { contact: [], message: [], normal: [], order: [] };
-  h.orders = []; h.failOrders = false; h.orderPhones = []; h.orderContactIds = []; h.orderQueries = 0; h.rpcWindows = []; h.rpcRows = [];
+  h.orders = []; h.failOrders = false; h.orderPhones = []; h.orderContactIds = []; h.orderQueries = 0; h.rpcWindows = []; h.rpcRows = []; h.contactRpcRows = []; h.contactRpcCalls = [];
   h.fail = false; h.orFilters = []; h.ilikePatterns = []; h.ranges = []; h.eqCalls = [];
 });
 afterEach(cleanup);
@@ -293,6 +306,21 @@ describe("Inbox search (FIX-01)", () => {
       await waitFor(() => expect(screen.getByRole("status")).toBeTruthy());
       expect(screen.getByText("orderMatchesTruncated")).toBeTruthy();
       expect(h.orderContactIds.at(-1)).toHaveLength(100);
+    });
+
+    it("finds a contact by normalized raw phone even when phone_normalized is stale or empty", async () => {
+      h.contactRpcRows = [{ contact_id: "ct-b1" }];
+      h.rows.order = [bsuidOnly("b1", "Formato Histórico")];
+      render(<Harness />);
+      await type("+51 942-309-277");
+      await waitFor(() => expect(screen.getByText("Formato Histórico")).toBeTruthy());
+      expect(h.contactRpcCalls).toHaveLength(1);
+      expect(h.contactRpcCalls[0]).toEqual({
+        p_account: "acct-1",
+        p_phones: ["51942309277", "942309277"],
+        p_limit: 101,
+      });
+      expect(h.orderQueries).toBe(0);
     });
 
     it("expands 15d -> 30d -> 90d and stops on the first historical match", async () => {
