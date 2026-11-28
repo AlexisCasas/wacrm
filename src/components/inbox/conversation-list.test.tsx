@@ -167,6 +167,7 @@ const NORMAL_CONV = conv({
 function renderList(conversations: Conversation[]) {
   return render(
     <ConversationList
+      accountId="acct-1"
       activeConversationId={null}
       onSelect={() => {}}
       conversations={conversations}

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTranslations } from "next-intl";
 import { createClient } from "@/lib/supabase/client";
 import { useHandoffConversationGuard } from "@/hooks/use-handoff-conversation-guard";
+import { useAuth } from "@/hooks/use-auth";
 import { useRoutingStageEvents } from "@/hooks/use-conversation-routing";
 import {
   INBOX_CONVERSATION_SELECT,
@@ -50,6 +51,7 @@ function InboxPageInner() {
   const tCalling = useTranslations("Inbox.calling");
   const router = useRouter();
   const searchParams = useSearchParams();
+  const { accountId, profileLoading } = useAuth();
   /**
    * `?c=<id>` deep-link support. Used when landing here from the
    * dashboard's recent-conversations list so the right thread opens
@@ -258,34 +260,17 @@ function InboxPageInner() {
     }
   }, [rememberConversationActivity]);
 
-  // Check WhatsApp connection status on mount
+  // Check WhatsApp connection status once account tenancy is resolved.
+  // Reuse AuthProvider's accountId instead of issuing a second profile lookup.
   useEffect(() => {
+    if (profileLoading) return;
+    if (!accountId) {
+      setWhatsappConnected(false);
+      return;
+    }
+
     const checkConnection = async () => {
       const supabase = createClient();
-      const {
-        data: { session },
-      } = await supabase.auth.getSession();
-      const user = session?.user;
-
-      if (!user) return;
-
-      // whatsapp_config is one-row-per-account post-multi-user, so
-      // the previous `.eq('user_id', user.id)` would miss the row
-      // for any teammate who didn't personally save the config —
-      // the "WhatsApp not connected" banner would show in the
-      // shared inbox even though the admin had it configured.
-      // Resolve account_id via the profile and query by that.
-      const { data: profile } = await supabase
-        .from("profiles")
-        .select("account_id")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      const accountId = profile?.account_id as string | undefined;
-      if (!accountId) {
-        setWhatsappConnected(false);
-        return;
-      }
-
       const { data } = await supabase
         .from("whatsapp_config")
         .select("status")
@@ -295,8 +280,8 @@ function InboxPageInner() {
       setWhatsappConnected(data?.status === "connected");
     };
 
-    checkConnection();
-  }, []);
+    void checkConnection();
+  }, [accountId, profileLoading]);
 
   // Handle realtime message events
   const handleMessageEvent = useCallback(
@@ -872,6 +857,7 @@ function InboxPageInner() {
           )}
         >
           <ConversationList
+            accountId={accountId}
             activeConversationId={activeConversation?.id ?? null}
             onSelect={handleSelectConversation}
             conversations={conversations}

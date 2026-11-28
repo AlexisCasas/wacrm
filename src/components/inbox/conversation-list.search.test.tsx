@@ -71,6 +71,7 @@ function Harness({ initial }: { initial?: Conversation[] }) {
   const [list, setList] = useState<Conversation[]>(initial ?? []);
   return (
     <ConversationList
+      accountId="acct-1"
       activeConversationId={null}
       onSelect={() => {}}
       conversations={list}
@@ -144,11 +145,12 @@ describe("Inbox search (FIX-01)", () => {
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("blocked contacts stay excluded and no account override is added (RLS isolation untouched)", async () => {
+  it("scopes Inbox conversation queries to the authenticated account while preserving blocked filtering", async () => {
     render(<Harness />);
     await type("ana");
     await waitFor(() => expect(h.ranges.length).toBeGreaterThan(0));
-    expect(h.eqCalls.every(([c, v]) => c === "contact.blocked" && v === false)).toBe(true);
+    expect(h.eqCalls).toContainEqual(["account_id", "acct-1"]);
+    expect(h.eqCalls).toContainEqual(["contact.blocked", false]);
   });
 
   it("pages each branch past 1000 rows", async () => {
@@ -211,7 +213,7 @@ describe("Inbox search (FIX-01)", () => {
       h.rows.order = [bsuidOnly("b1", "Uno"), bsuidOnly("b2", "Dos"), bsuidOnly("b3", "Tres")];
       function Wrap() {
         const [list, setList] = useState<Conversation[]>([]);
-        return <ConversationList activeConversationId={null} onSelect={onSelect} conversations={list} onConversationsLoaded={setList} />;
+        return <ConversationList accountId="acct-1" activeConversationId={null} onSelect={onSelect} conversations={list} onConversationsLoaded={setList} />;
       }
       render(<Wrap />);
       await type("987654321");

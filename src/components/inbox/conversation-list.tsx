@@ -36,6 +36,7 @@ import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { startSearchTimer } from "@/lib/perf/search-timing";
 
 interface ConversationListProps {
+  accountId: string | null;
   activeConversationId: string | null;
   onSelect: (conversation: Conversation) => void;
   conversations: Conversation[];
@@ -68,6 +69,7 @@ type InboxFilter = ConversationStatus | "all" | "unread" | "needs_human";
 const SEARCH_DEBOUNCE_MS = 300;
 
 export function ConversationList({
+  accountId,
   activeConversationId,
   onSelect,
   conversations,
@@ -136,14 +138,17 @@ export function ConversationList({
       const term = appliedSearch.trim();
       const finishTimer = startSearchTimer("inbox", term.length);
       let requests = 0;
-      const baseQuery = () =>
-        supabase
+      const baseQuery = () => {
+        let query = supabase
           .from("conversations")
           .select(INBOX_CONVERSATION_SELECT)
-          .eq("contact.blocked", false)
+          .eq("contact.blocked", false);
+        if (accountId) query = query.eq("account_id", accountId);
+        return query
           .order("last_message_at", { ascending: false })
           .order("id", { ascending: true })
           .abortSignal(controller.signal);
+      };
 
       type InboxRows = Parameters<typeof normalizeConversations>[0];
       type InboxQueryError = {
@@ -199,10 +204,12 @@ export function ConversationList({
               return { rows: [] as InboxRows, truncated: false };
             }
             requests++;
-            const { data: orders, error: orderError } = await supabase
+            let orderQuery = supabase
               .from("order_confirmations")
               .select("contact_id")
-              .in("phone", orderPhones)
+              .in("phone", orderPhones);
+            if (accountId) orderQuery = orderQuery.eq("account_id", accountId);
+            const { data: orders, error: orderError } = await orderQuery
               .not("contact_id", "is", null)
               .order("confirmed_at", { ascending: false })
               .abortSignal(controller.signal)
@@ -290,7 +297,7 @@ export function ConversationList({
     // `resyncToken` is included so the parent can force a refetch when
     // the realtime channel reconnects or the tab regains focus — catches
     // up on any events sent while the WS was disconnected or throttled.
-  }, [resyncToken, appliedSearch, retryToken]);
+  }, [accountId, resyncToken, appliedSearch, retryToken]);
 
   // Tag definitions for the filter picker — loaded once (labels/colours
   // stay stable regardless of which conversations happen to be loaded),
@@ -302,13 +309,15 @@ export function ConversationList({
     const supabase = createClient();
     let cancelled = false;
     (async () => {
-      const { data } = await supabase.from("tags").select("*").order("name");
+      let query = supabase.from("tags").select("*");
+      if (accountId) query = query.eq("account_id", accountId);
+      const { data } = await query.order("name");
       if (!cancelled && data) setTags(data as Tag[]);
     })();
     return () => {
       cancelled = true;
     };
-  }, [tagCatalogVersion]);
+  }, [accountId, tagCatalogVersion]);
 
   // Company options are derived from the loaded conversations — there's no
   // separate companies table, and only companies with a live conversation
