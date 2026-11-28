@@ -9,6 +9,7 @@ import { api, type OrderEventView, type PanelData } from "@/components/orders/lo
 import { PackagingSection } from "@/components/orders/logistics/packaging-section";
 import { StatusStepper, limaDateTime } from "@/components/orders/logistics/shared";
 import { VoucherSection } from "@/components/orders/logistics/voucher-section";
+import { CustomerTemplateActions } from "@/components/orders/logistics/customer-template-actions";
 
 // The logistics side of ONE confirmed order, rendered inside the existing order detail (PR-02) and only when the server says the caller works
 // the logistics stage (flag ON + logistics / supervisor). For anyone else — and with the flag OFF — it renders NOTHING, so the detail is exactly
@@ -30,7 +31,7 @@ export function LogisticsPanel({ orderId }: { orderId: string }) {
     if (!r.ok) return void setState("error");
     // Trust nothing about the shape: anything that is not the logistics panel (an unexpected answer) simply shows nothing.
     const b = r.body as Partial<PanelData>;
-    if (!b || typeof b.logistics?.status !== "string" || !Array.isArray(b.vouchers) || !Array.isArray(b.events) || !Array.isArray(b.dispatches)) return void setState("hidden");
+    if (!b || typeof b.logistics?.status !== "string" || !Array.isArray(b.vouchers) || !Array.isArray(b.events) || !Array.isArray(b.dispatches) || !Array.isArray(b.customer_dispatches)) return void setState("hidden");
     setData(r.body);
     setState("ready");
   }, [orderId]);
@@ -74,6 +75,13 @@ export function LogisticsPanel({ orderId }: { orderId: string }) {
           <div className="space-y-5">
             <StatusStepper status={data.logistics.status} />
             <VoucherSection orderId={orderId} status={data.logistics.status} vouchers={data.vouchers} onChanged={() => void load()} />
+            <CustomerTemplateActions
+              orderId={orderId}
+              voucherDocumentId={data.logistics.voucher_document_id ?? null}
+              vouchers={data.vouchers}
+              dispatches={data.customer_dispatches}
+              onChanged={() => void load()}
+            />
             <PackagingSection orderId={orderId} status={data.logistics.status} evidence={data.evidence} dispatches={data.dispatches} onChanged={() => void load()} />
             <Trace events={data.events} />
           </div>
