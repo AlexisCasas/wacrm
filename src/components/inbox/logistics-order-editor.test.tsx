@@ -325,7 +325,7 @@ describe('LogisticsOrderEditor: saving never rewrites what the person did not ch
     const posts: Array<Body & { orderId: string }> = []
     let firstOrderRegisterCount = 0
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
-      const orderId = url.match(/orders\\/([^/?]+)/)?.[1] ?? ORDER
+      const orderId = url.split('/').filter(Boolean).pop() ?? ORDER
       if (!init || init.method !== 'POST') return new Response(JSON.stringify(panelData({ total: 100 })), { status: 200 })
       const body = JSON.parse(String(init.body)) as Body
       posts.push({ ...body, orderId })
