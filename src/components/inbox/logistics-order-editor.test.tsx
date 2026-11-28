@@ -34,7 +34,7 @@ const serve = (data: unknown, edit: { status?: number; body?: unknown } = {}) =>
     const body = JSON.parse(String(init.body)) as Body
     posts.push(body)
     if (body.action === 'edit_order') return new Response(JSON.stringify(edit.body ?? { changed: true }), { status: edit.status ?? 200 })
-    if (body.action === 'register') return new Response(JSON.stringify({ payment_id: 'p1', row_version: 1 }), { status: 200 })
+    if (body.action === 'register') return new Response(JSON.stringify({ payment_id: 'p1', row_version: 1, status: 'recorded', created: true }), { status: 201 })
     return new Response('{}', { status: 200 })
   }))
   return posts
