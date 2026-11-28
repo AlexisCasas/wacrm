@@ -39,6 +39,8 @@ import { PaymentsSection } from "@/components/orders/payments/payments-section";
 // DNI and phone are not part of the payload, so they cannot be shown here.
 
 const ALL = "__all__";
+const FINANCIAL_FILTERS = ["balance", "unpaid", "partially_paid", "paid"] as const;
+type FinancialFilter = typeof ALL | (typeof FINANCIAL_FILTERS)[number];
 const SEARCH_DEBOUNCE_MS = 300;
 const MAX_NAMES_IN_ROW = 3;
 
@@ -142,11 +144,9 @@ export function ConfirmedOrdersWorkspace() {
   // list is untouched: the chip narrows the loaded orders and keeps loading pages until every abandoned order is found or the list ends.
   const [abandonedIds, setAbandonedIds] = useState<string[] | null>(null);
   const [abandonedOnly, setAbandonedOnly] = useState(false);
-  // Cobranza: ids of tracked orders with a real pending balance
-  // (unpaid or partially_paid). The server derives this from order_financials;
-  // the client never computes balances.
-  const [balanceIds, setBalanceIds] = useState<string[] | null>(null);
-  const [balanceOnly, setBalanceOnly] = useState(false);
+  // Cobranza is filtered server-side from order_financials so keyset
+  // pagination remains correct even when matches are on later pages.
+  const [financialFilter, setFinancialFilter] = useState<FinancialFilter>(ALL);
   const requestSeq = useRef(0);
   const opener = useRef<HTMLElement | null>(null);
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -179,32 +179,11 @@ export function ConfirmedOrdersWorkspace() {
     };
   }, [reloadKey]);
 
-  useEffect(() => {
-    let alive = true;
-    const loadBalanceIds = async () => {
-      try {
-        const res = await fetch("/api/orders/payments/with-balance", { cache: "no-store" });
-        if (!alive) return;
-        if (!res.ok) return setBalanceIds(null);
-        const body = (await res.json().catch(() => null)) as { order_ids?: string[] } | null;
-        setBalanceIds(Array.isArray(body?.order_ids) ? body.order_ids : null);
-      } catch {
-        if (alive) setBalanceIds(null);
-      }
-    };
-    void loadBalanceIds();
-    const onPaymentsChanged = () => void loadBalanceIds();
-    window.addEventListener(PAYMENTS_CHANGED_EVENT, onPaymentsChanged);
-    return () => {
-      alive = false;
-      window.removeEventListener(PAYMENTS_CHANGED_EVENT, onPaymentsChanged);
-    };
-  }, [reloadKey]);
-
   const fetchPage = useCallback(
     async (after: string | null): Promise<{ kind: "ok"; body: ListResponse } | { kind: Exclude<LoadState, "loading" | "ready"> }> => {
       const params = new URLSearchParams();
       if (status !== ALL) params.set("status", status);
+      if (financialFilter !== ALL) params.set("financial", financialFilter);
       if (search) params.set("q", search);
       if (after) params.set("cursor", after);
       try {
@@ -220,7 +199,7 @@ export function ConfirmedOrdersWorkspace() {
         return { kind: "error" };
       }
     },
-    [status, search],
+    [status, financialFilter, search],
   );
 
   // First page: reruns whenever a filter changes (or the user retries). A stale answer (older request) is ignored.
@@ -297,8 +276,7 @@ export function ConfirmedOrdersWorkspace() {
     return () => window.removeEventListener("keydown", onKey);
   }, [selected]);
 
-  const abandonedNarrowed = abandonedOnly && abandonedIds ? orders.filter((o) => abandonedIds.includes(o.id)) : orders;
-  const shown = balanceOnly && balanceIds ? abandonedNarrowed.filter((o) => balanceIds.includes(o.id)) : abandonedNarrowed;
+  const shown = abandonedOnly && abandonedIds ? orders.filter((o) => abandonedIds.includes(o.id)) : orders;
   // The drawer always shows the order the operator is looking at: the selected order as it is in the CURRENT list. When a search / filter /
   // reload takes it out of the list the selection is dropped, so the drawer (and the voucher upload inside it) can never keep another order's data.
   const current = selected ? shown.find((o) => o.id === selected.id) ?? null : null;
@@ -313,20 +291,18 @@ export function ConfirmedOrdersWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [abandonedOnly, abandonedIds, orders, cursor, state, loadingMore]);
 
-  // Same paging rule for Cobranza: if a matching order is on a later keyset
-  // page, keep loading until every known "Con saldo" id is present or the
-  // server says there are no more pages.
   useEffect(() => {
-    if (!balanceOnly || !balanceIds || state !== "ready" || !cursor || loadingMore) return;
-    const loaded = new Set(orders.map((o) => o.id));
-    if (balanceIds.some((id) => !loaded.has(id))) void loadMore();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [balanceOnly, balanceIds, orders, cursor, state, loadingMore]);
+    const onPaymentsChanged = () => {
+      if (financialFilter !== ALL) setReloadKey((k) => k + 1);
+    };
+    window.addEventListener(PAYMENTS_CHANGED_EVENT, onPaymentsChanged);
+    return () => window.removeEventListener(PAYMENTS_CHANGED_EVENT, onPaymentsChanged);
+  }, [financialFilter]);
 
-  const filtering = status !== ALL || search !== "" || searchInput !== "" || abandonedOnly || balanceOnly;
+  const filtering = status !== ALL || financialFilter !== ALL || search !== "" || searchInput !== "" || abandonedOnly;
   const clearFilters = () => {
     setAbandonedOnly(false);
-    setBalanceOnly(false);
+    setFinancialFilter(ALL);
     setStatus(ALL);
     setSearchInput("");
     setSearch("");
@@ -401,19 +377,21 @@ export function ConfirmedOrdersWorkspace() {
               {t("abandonedFilter")} ({abandonedIds.length})
             </Button>
           ) : null}
-          {balanceIds !== null ? (
-            <Button
-              type="button"
-              variant={balanceOnly ? "default" : "outline"}
-              size="sm"
-              aria-pressed={balanceOnly}
-              title={t("balanceFilterHint")}
-              onClick={() => setBalanceOnly((v) => !v)}
-              className="h-10"
-            >
-              {t("balanceFilter")} ({balanceIds.length})
-            </Button>
-          ) : null}
+          <Select value={financialFilter} onValueChange={(v) => v && setFinancialFilter(v as FinancialFilter)}>
+            <SelectTrigger aria-label={t("financialFilter")} className="h-10 w-full rounded-lg sm:w-48">
+              <SelectValue>
+                {financialFilter === ALL ? t("financialAll") : t(`financial.${financialFilter}`)}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL}>{t("financialAll")}</SelectItem>
+              {FINANCIAL_FILTERS.map((value) => (
+                <SelectItem key={value} value={value}>
+                  {t(`financial.${value}`)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
           <Button type="button" variant="ghost" size="sm" onClick={clearFilters} disabled={!filtering} className="text-muted-foreground">
             {t("clearFilters")}
           </Button>
@@ -439,7 +417,7 @@ export function ConfirmedOrdersWorkspace() {
         </Card>
       )}
 
-      {state === "ready" && shown.length === 0 && !(abandonedOnly && cursor) && !(balanceOnly && cursor) && <Notice text={filtering ? t("emptyFiltered") : t("empty")} />}
+      {state === "ready" && shown.length === 0 && !(abandonedOnly && cursor) && <Notice text={filtering ? t("emptyFiltered") : t("empty")} />}
 
       {state === "ready" && shown.length > 0 && (
         <Card className="gap-0 overflow-hidden rounded-xl py-0">

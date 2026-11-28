@@ -186,71 +186,43 @@ describe('ConfirmedOrdersWorkspace: list', () => {
   })
 })
 
-describe('ConfirmedOrdersWorkspace: Cobranza "Con saldo" filter, id search', () => {
-  it('shows "Con saldo", narrows to server-provided ids and clear restores the list', async () => {
-    const first = order();
-    const second = multi();
-    const f = vi.fn(async (url: string) =>
-      String(url).includes('/api/orders/payments/with-balance')
-        ? new Response(JSON.stringify({ order_ids: [first.id] }))
-        : String(url).includes('/api/orders/shalom/abandoned')
-          ? new Response('{}', { status: 403 })
-          : new Response(JSON.stringify({ orders: [first, second], next_cursor: null })),
-    )
-    vi.stubGlobal('fetch', f)
+describe('ConfirmedOrdersWorkspace: Cobranza financial filters, id search', () => {
+  it.each([
+    ['balance', 'financial.balance'],
+    ['unpaid', 'financial.unpaid'],
+    ['partially_paid', 'financial.partially_paid'],
+    ['paid', 'financial.paid'],
+  ])('sends financial=%s to the server', async (value, label) => {
+    const f = answer({ orders: [order()], next_cursor: null })
     render(<ConfirmedOrdersWorkspace />)
     await screen.findByText('Cliente Uno')
-    expect(screen.getByText('Cliente Tres')).toBeTruthy()
-    const balance = screen.getByRole('button', { name: /balanceFilter/ })
-    expect(balance).toBeTruthy()
-    expect(f.mock.calls.some(([u]) => String(u).includes('/api/orders/payments/with-balance'))).toBe(true)
+    fireEvent.click(screen.getByLabelText('financialFilter'))
+    fireEvent.click(await screen.findByText(label))
+    await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).includes(`financial=${value}`))).toBe(true))
+  })
 
-    fireEvent.click(balance)
-    await waitFor(() => expect(screen.queryByText('Cliente Tres')).toBeNull())
-    expect(screen.getByText('Cliente Uno')).toBeTruthy()
-    expect(balance.getAttribute('aria-pressed')).toBe('true')
-
+  it('defaults to Todos and clearFilters removes the financial query', async () => {
+    const f = answer({ orders: [order()], next_cursor: null })
+    render(<ConfirmedOrdersWorkspace />)
+    await screen.findByText('Cliente Uno')
+    expect(screen.getByText('financialAll')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('financialFilter'))
+    fireEvent.click(await screen.findByText('financial.paid'))
+    await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).includes('financial=paid'))).toBe(true))
     fireEvent.click(screen.getByRole('button', { name: 'clearFilters' }))
-    await waitFor(() => expect(screen.getByText('Cliente Tres')).toBeTruthy())
-    expect(balance.getAttribute('aria-pressed')).toBe('false')
+    await waitFor(() => expect(String(f.mock.calls[f.mock.calls.length - 1][0])).not.toContain('financial='))
   })
 
-  it('keeps loading keyset pages while a balance order has not been loaded yet', async () => {
-    const later = multi();
-    let confirmedCalls = 0;
-    const f = vi.fn(async (url: string) => {
-      const u = String(url)
-      if (u.includes('/api/orders/payments/with-balance')) return new Response(JSON.stringify({ order_ids: [later.id] }))
-      if (u.includes('/api/orders/shalom/abandoned')) return new Response('{}', { status: 403 })
-      if (u.includes('/api/orders/confirmed')) {
-        confirmedCalls++
-        return confirmedCalls === 1
-          ? new Response(JSON.stringify({ orders: [order()], next_cursor: 'cursor-next' }))
-          : new Response(JSON.stringify({ orders: [later], next_cursor: null }))
-      }
-      return new Response('{}', { status: 404 })
-    })
-    vi.stubGlobal('fetch', f)
-    render(<ConfirmedOrdersWorkspace />)
-    const balance = await screen.findByRole('button', { name: /balanceFilter/ })
-    fireEvent.click(balance)
-    await waitFor(() => expect(screen.getByText('Cliente Tres')).toBeTruthy())
-    expect(confirmedCalls).toBeGreaterThanOrEqual(2)
-    expect(screen.queryByText('Cliente Uno')).toBeNull()
-  })
-
-  it('does not show the filter when payment access is unavailable', async () => {
-    const f = vi.fn(async (url: string) =>
-      String(url).includes('/api/orders/payments/with-balance')
-        ? new Response('{}', { status: 404 })
-        : String(url).includes('/api/orders/shalom/abandoned')
-          ? new Response('{}', { status: 403 })
-          : new Response(JSON.stringify({ orders: [order()], next_cursor: null })),
-    )
-    vi.stubGlobal('fetch', f)
+  it('payment changes refresh an active financial view', async () => {
+    const f = answer({ orders: [order()], next_cursor: null })
     render(<ConfirmedOrdersWorkspace />)
     await screen.findByText('Cliente Uno')
-    expect(screen.queryByRole('button', { name: /balanceFilter/ })).toBeNull()
+    fireEvent.click(screen.getByLabelText('financialFilter'))
+    fireEvent.click(await screen.findByText('financial.balance'))
+    await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).includes('financial=balance'))).toBe(true))
+    const before = f.mock.calls.length
+    window.dispatchEvent(new CustomEvent('wacrm:payments-changed', { detail: { orderId: order().id } }))
+    await waitFor(() => expect(f.mock.calls.length).toBeGreaterThan(before))
   })
 
   it('the search box sends a full UUID and an id prefix as q, unchanged, and "Clear filters" resets it', async () => {

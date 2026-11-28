@@ -45,14 +45,24 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'invalid status' }, { status: 400 })
     }
 
+    const financial = params.get('financial')
+    if (financial !== null && financial !== '' && !['balance', 'unpaid', 'partially_paid', 'paid'].includes(financial)) {
+      return NextResponse.json({ error: 'invalid financial status' }, { status: 400 })
+    }
+
     const rawCursor = params.get('cursor')
     const cursor = rawCursor ? decodeCursor(rawCursor) : null
     if (rawCursor && !cursor) return NextResponse.json({ error: 'invalid cursor' }, { status: 400 })
 
     const q = sanitizeSearch(params.get('q'))
 
-    let query = ctx.supabase.from('order_confirmations').select(CONFIRMED_ORDER_COLUMNS).eq('account_id', ctx.accountId)
+    const select = financial
+      ? `${CONFIRMED_ORDER_COLUMNS},order_financials!inner(financial_status)`
+      : CONFIRMED_ORDER_COLUMNS
+    let query = ctx.supabase.from('order_confirmations').select(select).eq('account_id', ctx.accountId)
     if (status) query = query.eq('delivery_status', status)
+    if (financial === 'balance') query = query.in('order_financials.financial_status', ['unpaid', 'partially_paid'])
+    else if (financial) query = query.eq('order_financials.financial_status', financial)
     if (q) {
       const idRange = idPrefixRange(q)
       const idFilter = idRange ? `,and(id.gte.${idRange.lo},id.lte.${idRange.hi})` : ''

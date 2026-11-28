@@ -2826,8 +2826,14 @@
     },
     "abandonedFilter": "En abandono",
     "abandonedFilterHint": "Mostrar solo pedidos en abandono (20+ días en destino)",
-    "balanceFilter": "Con saldo",
-    "balanceFilterHint": "Mostrar solo pedidos con saldo pendiente (sin pagar o pago parcial)"
+    "financialFilter": "Filtrar por cobranza",
+    "financialAll": "Todos",
+    "financial": {
+      "balance": "Con saldo",
+      "unpaid": "Sin pagar",
+      "partially_paid": "Pago parcial",
+      "paid": "Pagado"
+    }
   },
   "OrderLogistics": {
     "title": "Logística",

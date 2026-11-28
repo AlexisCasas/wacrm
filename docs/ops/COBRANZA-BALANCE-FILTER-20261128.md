@@ -1,4 +1,4 @@
-# WACRM — Filtro de Cobranza "Con saldo"
+# WACRM — Filtros de Cobranza
 
 **Fecha:** 2026-11-28  
 **Base productiva:** `6a1ba63366e1c88156441c96db74c6144594e77c`  
@@ -6,7 +6,7 @@
 
 ## Objetivo
 
-Permitir que Logística/Supervisión identifiquen en **Pedidos confirmados** los pedidos que todavía tienen saldo pendiente por cobrar, sin recalcular importes en el navegador.
+Permitir que Logística/Supervisión filtren **Pedidos confirmados** por estado financiero real, sin recalcular importes en el navegador.
 
 ## Fuente de verdad
 
@@ -76,3 +76,16 @@ Así un pago confirmado que deja el saldo en cero puede sacar el pedido del filt
 - cambios de DB;
 - cambios en unread/read;
 - búsqueda de contactos por celular.
+
+
+## Alcance final acordado
+
+El filtro de Cobranza se implementa server-side en `GET /api/orders/confirmed` con estas opciones:
+
+- Todos
+- Con saldo = unpaid + partially_paid
+- Sin pagar = unpaid
+- Pago parcial = partially_paid
+- Pagado = paid
+
+El filtro se aplica antes de la paginación keyset, por lo que opera sobre todo el conjunto de pedidos y no solo sobre la página cargada. No se crean migrations ni se cambia la lógica de pagos.

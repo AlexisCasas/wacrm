@@ -2826,8 +2826,14 @@
     },
     "abandonedFilter": "Abandoned",
     "abandonedFilterHint": "Show only abandoned orders (20+ days at destination)",
-    "balanceFilter": "With balance",
-    "balanceFilterHint": "Show only orders with a pending balance (unpaid or partially paid)"
+    "financialFilter": "Filter by collections",
+    "financialAll": "All",
+    "financial": {
+      "balance": "With balance",
+      "unpaid": "Unpaid",
+      "partially_paid": "Partially paid",
+      "paid": "Paid"
+    }
   },
   "OrderLogistics": {
     "title": "Logistics",

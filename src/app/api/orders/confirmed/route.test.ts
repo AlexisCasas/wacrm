@@ -244,6 +244,22 @@ describe('GET /api/orders/confirmed: filters and pagination', () => {
     expect(listCall().or).toEqual([`confirmed_at.lt.2026-11-16T17:12:59.474993+00:00,and(confirmed_at.eq.2026-11-16T17:12:59.474993+00:00,id.lt.${ORDER_A})`])
   })
 
+  it('financial filters are validated and applied before pagination', async () => {
+    for (const value of ['unpaid', 'partially_paid', 'paid']) {
+      calls.length = 0
+      await get(`?financial=${value}`)
+      expect(listCall().select).toContain('order_financials!inner(financial_status)')
+      expect(listCall().eq).toContainEqual(['order_financials.financial_status', value])
+    }
+    expect((await get('?financial=bogus')).status).toBe(400)
+  })
+
+  it('"Con saldo" maps to unpaid + partially_paid', async () => {
+    await get('?financial=balance')
+    expect(listCall().select).toContain('order_financials!inner(financial_status)')
+    expect(listCall().in).toContainEqual(['order_financials.financial_status', ['unpaid', 'partially_paid']])
+  })
+
   it('delivery_status filter is validated against the known states', async () => {
     await get('?status=held')
     expect(listCall().eq).toContainEqual(['delivery_status', 'held'])
