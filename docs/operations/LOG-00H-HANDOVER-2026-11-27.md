@@ -265,3 +265,77 @@ Do not start Phase 3 audit features until Phase 2's required operational behavio
 - Before each implementation, fetch current production descendant, current PR heads, workflow runs and this handover document. The historical SHAs above may become stale.
 - Do not rely on PR #181 alone for Logistics payment safety; LOG-00H.3 shows a gap in the deployed Logistics panel.
 - No production write, migration, payment simulation, customer message, merge or deployment without explicit authorization.
+
+
+---
+
+## 12. Owner decision — item 04 edit fields (2026-11-28)
+
+The owner confirmed that editing agency and department from the Logistics side panel is **not required**. The existing order-editing functions elsewhere in the system are sufficient. Therefore:
+- Do not restore the hidden “Editar pedido” button solely to expose agency/department.
+- Do not treat the hidden side-panel button as a blocker for Phase 2.
+- Keep the existing edit flows and their safe-save/catalogue protections.
+- Item 04 remains **Hecho / accepted with existing system functions** for the business dashboard. No additional development is authorized for agency/department editing in the Logistics panel.
+
+## 13. Latest synthetic QA result — run 46029178722
+
+Run: https://github.com/AlexisCasas/wacrm/actions/runs/46029178722  
+Candidate SHA: `b83bf5d1feae877d39bb4184737838609db0c05c`
+
+- Functional matrix: **73 PASS, 1 NA, 0 FAIL** (74 rows).
+- PAY retry acceptance 03.8a–03.8d: PASS.
+- Additional 03.9 same-key API replay: PASS.
+- 03.14 recovery of recorded/unconfirmed payment without duplicate: PASS.
+- Confirmed Orders 05.2 list/pagination: PASS.
+- Routing, role permissions and tenant isolation: PASS.
+- Runner, browser, Supabase, network isolation, 139 migrations, synthetic seed, app start, artifact secret scan and teardown: PASS.
+- Global result: `QA_FINAL=PARTIAL`, not PASS, because:
+  - `SCHEMA=PARTIAL`: function privilege fingerprint differs from expected (same count 855, different hash). Table and column privileges, smoke checks, and eight key function definitions pass. Do not change grants without understanding the expected-vs-observed function list.
+  - `DATABASE_SUITES=PARTIAL`: 327 pass, 5 skipped, 1 Shalom customer-message test fails in candidate and also fails when repeated on base. Expected claimed=1/failed=1, actual 0/0. It is baseline/pre-existing, but still unresolved as a suite gap. The five skipped tests require Shalom simulator/server and remain NOT_RUN.
+- This run is on the synthetic QA branch/candidate `b83bf5d1`, not a certification of every later production commit or live VPS UI.
+- The QA workflow's red conclusion is the deliberate final verdict for PARTIAL; the functional matrix itself has zero failed rows.
+
+## 14. Updated Phase 2 delivery order — after owner decision
+
+The dashboard's declared statuses remain 4 Hecho / 6 Parcial / 3 Pendiente. Item 04 is accepted as Hecho using existing system editing functions; no new side-panel editor work is required.
+
+### P0 — before declaring Logistics/payment work release-ready
+1. **Logistics payment recovery (cross-cutting blocker, additional to the 13 items):** production audit found the Logistics editor's retry key only in component memory and not scoped durably by order. Synthetic 03.8a–d passes cover the candidate's mounted retry path but do not prove reload, conversation switch, order switch, or a subsequent legitimate same-amount payment. Implement and test durable per-order attempt recovery, reconciliation after uncertain register/confirm, no false success, and correct creation of a new logical payment. Do not run payment writes in production as a test.
+2. **Close QA caveats:** investigate the function privilege hash diff without changing grants speculatively; retain the baseline Shalom test failure and five skipped tests as explicit release caveats or complete the missing simulator-based tests in an isolated runner.
+
+### P1 — finish logistics state and Shalom dependencies
+3. **Item 02 — two WhatsApp templates:** define and test the order summary/packaging template and voucher dispatch template, with required variables and provider acceptance outcomes.
+4. **Item 03 — Shalom voucher validation:** validate voucher presence and content before sending the summary; extract and verify order number and Shalom code; handle guide mismatch / not-found cases safely.
+5. **Item 01 — six Logistics states:** implement/verify triggers in dependency order:
+   - Confirmado: successful order confirmation.
+   - Procesado: only after Meta accepts the packaging template (not button click or mere attempt).
+   - En tránsito: Shalom tracking state.
+   - En destino: Shalom tracking state.
+   - No encontrado en Shalom: guide/tracking association not found.
+   - Finalizado: manual action by Logistics or Supervisor; releases the commercial cycle while retaining full history.
+6. **Item 09 — Shalom notifications:** complete notifications tied to state changes; deduplicate sends, track delivery/uncertain outcomes, and do not advance state on rejected sends.
+
+### P2 — remaining operational workflows
+7. **Item 07 — accessories and commissions:** editable accessory prices; accessories included in order totals but excluded from main-product commission base according to the approved business rule. Confirm the commission formula with the owner before implementation if not already documented.
+8. **Item 08 — collection filters:** filter/access conversations by Logistics state with server-side authorization.
+9. **Item 11 — photos and packaging evidence:** avoid duplicate uploads; preserve evidence association and recover safely after uncertain upload.
+10. **Item 12 — message ordering:** correct chronological/presentation ordering and verify no duplicate or out-of-order customer messages.
+11. **Item 13 — progressive order loading:** retain pagination and verify smooth loading/performance on realistic list sizes.
+
+### Accepted / no new work
+- **Item 04 — edit panel beside chat:** accepted as Hecho using existing edit functions; do not restore side-panel agency/department editing.
+- **Item 05 — simplified fields:** Hecho.
+- **Item 06 — advances and automatic balance:** Hecho, financial reconciliation previously PASS.
+- **Item 10 — remove unnecessary fields:** Hecho.
+
+### Deployment sequence with Claude Code
+After the above code/QA gates:
+1. GPT/GitHub MCP prepares the final release stack from the verified production lineage `c52ed8d2` (or a newer independently verified production descendant), not from `main` by assumption.
+2. CI, migrations and relevant isolated QA must correspond to the exact release HEAD.
+3. Claude Code runs read-only VPS preflight: image/commit provenance, backups, schema compatibility, active sessions/jobs, health, rollback image and resource headroom.
+4. Owner explicitly authorizes deployment.
+5. Claude performs controlled deployment; no speculative migration replay. In particular, `20261206000001` was already observed applied in production; do not re-run it solely because manifest status says pending.
+6. Post-deploy read-only verification: health/readiness, restarts, webhook errors, Shalom, routing, order save and financial reconciliation.
+7. Any production payment validation must use an explicitly approved controlled test strategy; never create a real customer payment just to test retries.
+
+**Current release decision remains NO-GO** until P0 and required P1 deliverables are completed and accepted.
