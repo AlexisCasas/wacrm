@@ -186,22 +186,71 @@ describe('ConfirmedOrdersWorkspace: list', () => {
   })
 })
 
-describe('ConfirmedOrdersWorkspace: no "Con saldo" filter, id search', () => {
-  it('there is NO "Con saldo" chip (even when /with-balance would answer ids) and the screen never asks for it', async () => {
+describe('ConfirmedOrdersWorkspace: Cobranza "Con saldo" filter, id search', () => {
+  it('shows "Con saldo", narrows to server-provided ids and clear restores the list', async () => {
+    const first = order();
+    const second = multi();
     const f = vi.fn(async (url: string) =>
       String(url).includes('/api/orders/payments/with-balance')
-        ? new Response(JSON.stringify({ order_ids: [order().id] }))
+        ? new Response(JSON.stringify({ order_ids: [first.id] }))
         : String(url).includes('/api/orders/shalom/abandoned')
           ? new Response('{}', { status: 403 })
-          : new Response(JSON.stringify({ orders: [order(), multi()], next_cursor: null })),
+          : new Response(JSON.stringify({ orders: [first, second], next_cursor: null })),
     )
     vi.stubGlobal('fetch', f)
     render(<ConfirmedOrdersWorkspace />)
     await screen.findByText('Cliente Uno')
-    expect(screen.getByText('Cliente Tres')).toBeTruthy() // the whole list, not only tracked orders
+    expect(screen.getByText('Cliente Tres')).toBeTruthy()
+    const balance = screen.getByRole('button', { name: /balanceFilter/ })
+    expect(balance).toBeTruthy()
+    expect(f.mock.calls.some(([u]) => String(u).includes('/api/orders/payments/with-balance'))).toBe(true)
+
+    fireEvent.click(balance)
+    await waitFor(() => expect(screen.queryByText('Cliente Tres')).toBeNull())
+    expect(screen.getByText('Cliente Uno')).toBeTruthy()
+    expect(balance.getAttribute('aria-pressed')).toBe('true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'clearFilters' }))
+    await waitFor(() => expect(screen.getByText('Cliente Tres')).toBeTruthy())
+    expect(balance.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('keeps loading keyset pages while a balance order has not been loaded yet', async () => {
+    const later = multi();
+    let confirmedCalls = 0;
+    const f = vi.fn(async (url: string) => {
+      const u = String(url)
+      if (u.includes('/api/orders/payments/with-balance')) return new Response(JSON.stringify({ order_ids: [later.id] }))
+      if (u.includes('/api/orders/shalom/abandoned')) return new Response('{}', { status: 403 })
+      if (u.includes('/api/orders/confirmed')) {
+        confirmedCalls++
+        return confirmedCalls === 1
+          ? new Response(JSON.stringify({ orders: [order()], next_cursor: 'cursor-next' }))
+          : new Response(JSON.stringify({ orders: [later], next_cursor: null }))
+      }
+      return new Response('{}', { status: 404 })
+    })
+    vi.stubGlobal('fetch', f)
+    render(<ConfirmedOrdersWorkspace />)
+    const balance = await screen.findByRole('button', { name: /balanceFilter/ })
+    fireEvent.click(balance)
+    await waitFor(() => expect(screen.getByText('Cliente Tres')).toBeTruthy())
+    expect(confirmedCalls).toBeGreaterThanOrEqual(2)
+    expect(screen.queryByText('Cliente Uno')).toBeNull()
+  })
+
+  it('does not show the filter when payment access is unavailable', async () => {
+    const f = vi.fn(async (url: string) =>
+      String(url).includes('/api/orders/payments/with-balance')
+        ? new Response('{}', { status: 404 })
+        : String(url).includes('/api/orders/shalom/abandoned')
+          ? new Response('{}', { status: 403 })
+          : new Response(JSON.stringify({ orders: [order()], next_cursor: null })),
+    )
+    vi.stubGlobal('fetch', f)
+    render(<ConfirmedOrdersWorkspace />)
+    await screen.findByText('Cliente Uno')
     expect(screen.queryByRole('button', { name: /balanceFilter/ })).toBeNull()
-    expect(screen.queryByText(/balanceFilter/)).toBeNull()
-    expect(f.mock.calls.some(([u]) => String(u).includes('with-balance'))).toBe(false)
   })
 
   it('the search box sends a full UUID and an id prefix as q, unchanged, and "Clear filters" resets it', async () => {
