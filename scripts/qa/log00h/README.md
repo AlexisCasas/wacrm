@@ -27,4 +27,4 @@ These scripts refuse to run against anything but `127.0.0.1`; `isolate.sh` refus
 
 ## P0-01 candidate run
 
-This harness copy targets the production-derived candidate `560a37b400938178a02fb0acb25e9999e967fb77` with baseline `c52ed8d2b8486c06c11fa79f11a9a08007b4ec90`. It is an isolated GitHub Actions runner; all data are synthetic.
+This harness copy targets the production-derived candidate `88c3c2b4dcc10452ef253f0d1bbc6c5719dee12d` with baseline `c52ed8d2b8486c06c11fa79f11a9a08007b4ec90`. It is an isolated GitHub Actions runner; all data are synthetic.
