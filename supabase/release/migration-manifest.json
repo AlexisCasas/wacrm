@@ -493,7 +493,7 @@
     {
       "new_version": "20261205000008",
       "new_file": "20261205000008_order_customer_templates.sql",
-      "sha256": "250c0f40fe9695b6937fc765137566a7cd3a852e4df615cce1cddb0967a81d93",
+      "sha256": "858cdb4221433b355d3e63a68a07bcc44e3cd06bbe4626a9e6b46facbad007d5",
       "depends_on": [
         "20261101000000",
         "20261204000003"

@@ -182,7 +182,7 @@ export async function sendOrderCustomerTemplate(
     if(done.error)return fail(500,'dispatch_record_failed',{dispatch_id:claimed.dispatch_id,status:'uncertain'})
     return {ok:true,status:200,body:{dispatch_id:claimed.dispatch_id,status:'sent',attempt:claimed.attempt}}
   }catch(error){
-    const uncertain=error instanceof Error&&/failed to save to DB|timeout|ECONNRESET|aborted/i.test(error.message)
+    const uncertain=error instanceof Error&&/failed to save to DB|timeout|fetch failed|failed to fetch|network|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|aborted/i.test(error.message)
     const outcome=uncertain?'uncertain':'failed'
     await finish(admin,ctx,claimed.dispatch_id,outcome,{code:uncertain?'send_uncertain':'send_failed'})
     return fail(uncertain?409:502,uncertain?'send_uncertain':'send_failed',{dispatch_id:claimed.dispatch_id,status:outcome})

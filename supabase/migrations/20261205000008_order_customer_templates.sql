@@ -99,6 +99,15 @@ BEGIN
     RETURN jsonb_build_object('ok',false,'reason','voucher_required');
   END IF;
 
+  -- Serialize double-clicks/retries for the same logical send before reading
+  -- or creating the ledger row. This closes the SELECT-none / concurrent-INSERT race.
+  PERFORM pg_advisory_xact_lock(
+    hashtextextended(
+      concat_ws(':', p_account::text, p_order::text, v_doc.id::text, p_kind),
+      0
+    )
+  );
+
   SELECT conversation_id INTO v_conv FROM public.order_confirmations
     WHERE id=p_order AND account_id=p_account;
   IF v_conv IS NULL THEN RETURN jsonb_build_object('ok',false,'reason','order_without_conversation'); END IF;
