@@ -7,7 +7,7 @@ import { field, panelFor, payInput, quantity, save, toast } from '../lib/ui.mjs'
 import { cancelOrder } from '../lib/world.mjs'
 import { legacy } from './qa01-orders.mjs'
 
-const GENERIC = 'No se pudieron guardar los cambios.'
+const GENERIC = 'No se pudo completar el pago. El intento quedó conservado para recuperar la misma operación sin duplicarla.'
 const one = (world) => legacy(world, { total: 100, quantity: 1 })
 const rows = (snap) => snap.payments.map((p) => [p.amount, p.status])
 const PAYMENTS_URL = '**/api/orders/payments/orders/*'
@@ -154,9 +154,12 @@ export async function register(r) {
   await r.test('03.8a', { user: 'A-LOG', title: 'Reintentar tras un fallo de confirmación', expected: 'Un solo pago' }, async (t) => {
     const order = await t.setup(() => one(world))
     const { page, afterFailure } = await retry(t, order, { amount: '13.13' })
-    await until2(async () => (await t.after('order')).payments.length > 1 || (await page.locator('[data-sonner-toast]').count()) > 1)
-    await pause(1500)
-    return report(t, afterFailure, await t.after('order'))
+    await toast(page, 'Pago registrado.')
+    await pause(500)
+    const after = await t.after('order')
+    assert.deepEqual(rows(after), [[13.13, 'confirmed']])
+    assert.deepEqual(after.financial, { paid: 13.13, status: 'partially_paid' })
+    return report(t, afterFailure, after)
   })
 
   for (const [id, title, fault] of [
@@ -170,7 +173,8 @@ export async function register(r) {
       await toast(page, 'Pago registrado.')
       const after = await t.after('order')
       const text = report(t, afterFailure, after)
-      if (after.payments.length === 1) assert.deepEqual(rows(after), [[20, 'confirmed']])
+      assert.deepEqual(rows(after), [[20, 'confirmed']])
+      assert.deepEqual(after.financial, { paid: 20, status: 'partially_paid' })
       return text
     })
   }
