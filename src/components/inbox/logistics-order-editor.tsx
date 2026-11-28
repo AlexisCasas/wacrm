@@ -56,7 +56,7 @@ function readPendingPaymentAttempt(orderId: string): PendingLogisticsPaymentAtte
       value.orderId !== orderId ||
       typeof value.requestKey !== "string" ||
       typeof value.amount !== "string" ||
-      !/^\\d{1,7}\\.\\d{2}$/.test(value.amount) ||
+      !/^\d{1,7}\.\d{2}$/.test(value.amount) ||
       !["advance", "balance", "full"].includes(String(value.kind)) ||
       typeof value.paidAt !== "string" ||
       !Number.isFinite(Date.parse(value.paidAt)) ||
