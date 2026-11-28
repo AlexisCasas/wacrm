@@ -186,3 +186,12 @@ El `voucher_envio_shalom` actual corresponde a otro momento operativo (guía/env
 8. Resultado incierto nunca se reenvía solo.
 9. Enviar cualquiera de las dos plantillas no cambia el estado logístico.
 10. Ambos mensajes aparecen en el chat del mismo cliente.
+
+
+## Estado del candidato
+
+Backend + UI preparados en la rama. La comunicación es independiente de Embalaje y usa un ledger propio.
+
+**Bloqueador deliberado antes de deploy:** si el voucher validado es PDF, "Enviar voucher al cliente" permanece deshabilitado hasta validar una conversión PDF→imagen estable en el contenedor productivo. "Enviar resumen" no depende del formato del archivo y sí puede operar con voucher PDF validado.
+
+La migración nueva es aditiva y NO debe aplicarse hasta que el candidato completo pase auditoría, tests, build y QA.

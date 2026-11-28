@@ -71,11 +71,23 @@ export interface OrderEventView {
   created_at: string
 }
 
+export interface CustomerTemplateDispatchView {
+  id: string
+  kind: 'summary' | 'voucher'
+  status: 'claimed' | 'sending' | 'sent' | 'failed' | 'uncertain'
+  attempt: number
+  error_code: string | null
+  resolution: string | null
+  voucher_document_id: string
+  created_at: string
+}
+
 export interface PanelData {
-  logistics: { status: LogisticsStatus; version: number; evidence_document_id: string | null }
+  logistics: { status: LogisticsStatus; version: number; voucher_document_id?: string | null; evidence_document_id: string | null }
   vouchers: DocumentView[]
   evidence: DocumentView | null
   dispatches: DispatchView[]
+  customer_dispatches: CustomerTemplateDispatchView[]
   events: OrderEventView[]
 }
 
