@@ -23,7 +23,7 @@ export async function voucherImageSignedUrl(
   admin: SupabaseClient,
   input: { storagePath: string; mimeType: string },
 ): Promise<ServiceResult<{ url: string; derived: boolean }>> {
-  if (input.mimeType.startsWith('image/')) {
+  if (input.mimeType === 'image/jpeg' || input.mimeType === 'image/png') {
     const { data, error } = await admin.storage
       .from(ORDER_DOCS_BUCKET)
       .createSignedUrl(input.storagePath, META_MEDIA_TTL_SECONDS)
@@ -31,6 +31,9 @@ export async function voucherImageSignedUrl(
     return { ok: true, status: 200, body: { url: data.signedUrl, derived: false } }
   }
 
+  // Meta template IMAGE headers support JPEG/PNG. A validated WEBP is not
+  // forwarded as-is because Meta would reject it after the human clicks send.
+  if (input.mimeType === 'image/webp') return fail(415, 'voucher_image_required')
   if (input.mimeType !== 'application/pdf') return fail(415, 'voucher_image_required')
 
   const { data: source, error: downloadError } = await admin.storage
@@ -53,7 +56,7 @@ export async function voucherImageSignedUrl(
     try {
       await execFileAsync(
         'pdftoppm',
-        ['-f', '1', '-singlefile', '-jpeg', '-r', '150', pdfPath, outputPrefix],
+        ['-f', '1', '-singlefile', '-jpeg', '-r', '150', '-scale-to', '2000', pdfPath, outputPrefix],
         { timeout: PDF_RENDER_TIMEOUT_MS, maxBuffer: 64 * 1024 },
       )
     } catch {

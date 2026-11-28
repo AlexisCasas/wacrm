@@ -50,6 +50,8 @@ export interface CustomerTemplateDispatchView {
   error_code: string | null
   resolution: string | null
   voucher_document_id: string
+  claimed_at: string
+  sending_at: string | null
   created_at: string
 }
 
@@ -105,7 +107,7 @@ export async function getOrderPanel(ctx: LogisticsCaller, orderId: string): Prom
     ctx.supabase.from('order_documents').select(DOCUMENT_PUBLIC_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).eq('kind', 'voucher').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(50),
     ctx.supabase.from('order_documents').select(DOCUMENT_PUBLIC_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).eq('kind', 'evidence').eq('status', 'active').maybeSingle(),
     ctx.supabase.from('order_template_dispatches').select('id, status, attempt, error_code, resolution, claimed_at, finished_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(20),
-    ctx.supabase.from('order_customer_template_dispatches').select('id, kind, status, attempt, error_code, resolution, voucher_document_id, created_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(20),
+    ctx.supabase.from('order_customer_template_dispatches').select('id, kind, status, attempt, error_code, resolution, voucher_document_id, claimed_at, sending_at, created_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(20),
     ctx.supabase.from('order_logistics_events').select(EVENT_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(EVENT_LIMIT),
   ])
   const failed = [items, logistics, vouchers, evidence, dispatches, customerDispatches, events].find((r) => r.error)

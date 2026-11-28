@@ -37,7 +37,7 @@ const order = (id: string, name: string, total: number, destination: string) => 
 const ORDER_A = order(A, 'Cliente Sullana', 95, 'Piura, Sullana SANTA ROSA')
 const ORDER_B = order(B, 'Cliente Chincha', 149, 'Ica, Chincha')
 
-const panel = { order: {}, logistics: { status: 'pending_voucher', version: 0, evidence_document_id: null }, vouchers: [], evidence: null, dispatches: [], events: [] }
+const panel = { order: {}, logistics: { status: 'pending_voucher', version: 0, evidence_document_id: null }, vouchers: [], evidence: null, dispatches: [], customer_dispatches: [], events: [] }
 
 function stubServer() {
   const uploads: string[] = []

@@ -19,7 +19,7 @@ const doc = (over: Record<string, unknown> = {}) => ({
   original_filename: 'voucher.pdf', mime_type: 'application/pdf', size_bytes: 10, ocr_status: 'done', ocr_attempts: 1, ocr_error_code: null, validated_at: 't', created_at: 't', ...over,
 })
 const evidence = doc({ id: 'e-1', kind: 'evidence', status: 'active', original_filename: 'embalaje.jpg', mime_type: 'image/jpeg', version: null })
-const packing = (ev: unknown = null) => ({ order: {}, logistics: { status: 'packing', version: 2, evidence_document_id: ev ? 'e-1' : null }, vouchers: [doc()], evidence: ev, dispatches: [], events: [] })
+const packing = (ev: unknown = null) => ({ order: {}, logistics: { status: 'packing', version: 2, evidence_document_id: ev ? 'e-1' : null }, vouchers: [doc()], evidence: ev, dispatches: [], customer_dispatches: [], events: [] })
 const chat = (available: boolean[]) => ({ media: available.map((a, i) => ({ message_id: `m-${i}`, content_type: 'image', created_at: 't', available: a, preview_url: a ? 'https://x/y.jpg' : null })) })
 
 type Handler = (url: string, init?: RequestInit) => { status?: number; body: unknown } | undefined

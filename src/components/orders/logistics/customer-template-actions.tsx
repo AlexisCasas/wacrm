@@ -63,6 +63,18 @@ export function CustomerTemplateActions({
     onChanged();
   };
 
+  const isStaleInFlight = (d: CustomerTemplateDispatchView | null) => {
+    if (!d || (d.status !== "claimed" && d.status !== "sending")) return false;
+    const startedAt = d.sending_at ?? d.claimed_at;
+    const startedMs = Date.parse(startedAt);
+    return Number.isFinite(startedMs) && Date.now() - startedMs >= 10 * 60 * 1000;
+  };
+
+  const blocksSend = (d: CustomerTemplateDispatchView | null) =>
+    d?.status === "sent" ||
+    d?.status === "uncertain" ||
+    ((d?.status === "claimed" || d?.status === "sending") && !isStaleInFlight(d));
+
   const label = (kind: Kind, d: CustomerTemplateDispatchView | null) => {
     if (d?.status === "sent") return t(kind === "summary" ? "customerSummarySentLabel" : "customerVoucherSentLabel");
     if (d?.status === "failed") return t(kind === "summary" ? "customerRetrySummary" : "customerRetryVoucher");
@@ -79,13 +91,13 @@ export function CustomerTemplateActions({
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
         <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5"
-          disabled={!ready || busy !== null || summary?.status === "sent" || summary?.status === "claimed" || summary?.status === "sending" || summary?.status === "uncertain"}
+          disabled={!ready || busy !== null || blocksSend(summary)}
           onClick={() => void send("summary")}>
           {busy === "summary" ? <Loader2 className="size-3.5 animate-spin" /> : <MessageSquareText className="size-3.5" aria-hidden />}
           {label("summary", summary)}
         </Button>
         <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5"
-          disabled={!ready || busy !== null || voucherSend?.status === "sent" || voucherSend?.status === "claimed" || voucherSend?.status === "sending" || voucherSend?.status === "uncertain"}
+          disabled={!ready || busy !== null || blocksSend(voucherSend)}
           onClick={() => void send("voucher")}>
           {busy === "voucher" ? <Loader2 className="size-3.5 animate-spin" /> : <FileImage className="size-3.5" aria-hidden />}
           {label("voucher", voucherSend)}

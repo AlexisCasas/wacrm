@@ -41,6 +41,7 @@ const panel = (over: Record<string, unknown> = {}) => ({
   vouchers: [],
   evidence: null,
   dispatches: [],
+  customer_dispatches: [],
   events: [],
   ...over,
 })

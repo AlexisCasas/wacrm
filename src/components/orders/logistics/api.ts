@@ -79,6 +79,8 @@ export interface CustomerTemplateDispatchView {
   error_code: string | null
   resolution: string | null
   voucher_document_id: string
+  claimed_at: string
+  sending_at: string | null
   created_at: string
 }
 
