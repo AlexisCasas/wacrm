@@ -491,6 +491,17 @@
       "note": "Inbox phone search patch: exact indexed contact lookup plus progressive confirmed-order phone lookup; account-scoped SECURITY INVOKER RPCs, with broad search only as fallback."
     },
     {
+      "new_version": "20261205000008",
+      "new_file": "20261205000008_order_customer_templates.sql",
+      "sha256": "250c0f40fe9695b6937fc765137566a7cd3a852e4df615cce1cddb0967a81d93",
+      "depends_on": [
+        "20261101000000",
+        "20261204000003"
+      ],
+      "status": "pending",
+      "note": "Manual customer communications from a validated voucher: order summary + voucher image, with a dedicated dispatch ledger. Additive and inert until per-account Meta template names/languages are configured."
+    },
+    {
       "new_version": "20261206000000",
       "new_file": "20261206000000_order_edit_and_cancellation.sql",
       "sha256": "77d561e04cc492f4f0da59bfa96cf879b5d9fa9bcadca391f059ed4b33135a07",

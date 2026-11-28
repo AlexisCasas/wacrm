@@ -50,7 +50,7 @@ CREATE INDEX IF NOT EXISTS order_customer_template_dispatches_order_idx
   ON public.order_customer_template_dispatches(account_id, order_id, created_at DESC);
 
 ALTER TABLE public.order_customer_template_dispatches ENABLE ROW LEVEL SECURITY;
-REVOKE ALL ON public.order_customer_template_dispatches FROM PUBLIC, anon;
+REVOKE ALL ON public.order_customer_template_dispatches FROM PUBLIC, anon, authenticated;
 GRANT SELECT ON public.order_customer_template_dispatches TO authenticated;
 GRANT ALL ON public.order_customer_template_dispatches TO service_role;
 
