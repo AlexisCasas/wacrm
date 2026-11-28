@@ -119,13 +119,14 @@ describe("Inbox search (FIX-01)", () => {
   it.each(["987654321", "+51 987 654 321", "987-654-321", "(51) 987-654-321"])(
     "phone typed as %s finds the contact (exact normalized filter)",
     async (typed) => {
-      h.rows.contact = [mk("1", "Ana", "51987654321")];
+      h.contactRpcRows = [{ contact_id: "ct-1" }];
+      h.rows.order = [mk("1", "Ana", "51987654321")];
       render(<Harness />);
       await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());
       await type(typed);
       await waitFor(() => expect(screen.getByText("Ana")).toBeTruthy());
-      expect(h.orFilters.at(-1)).toContain("phone_normalized.in.(51987654321,987654321)");
-      expect(h.orFilters.at(-1)).not.toContain("phone.ilike");
+      expect(h.contactRpcCalls.at(-1)?.p_phones).toEqual(["51987654321", "987654321"]);
+      expect(h.orderQueries).toBe(0);
     },
   );
 
@@ -256,7 +257,8 @@ describe("Inbox search (FIX-01)", () => {
     });
 
     it("a conversation already found through the contact is not duplicated nor badged", async () => {
-      h.rows.contact = [mk("1", "Ana", "51987654321")];
+      h.contactRpcRows = [{ contact_id: "ct-1" }];
+      h.rows.order = [mk("1", "Ana", "51987654321")];
       h.orders = [{ contact_id: "ct-1" }];
       h.rows.order = [mk("1", "Ana", "51987654321")];
       render(<Harness />);
@@ -339,15 +341,29 @@ describe("Inbox search (FIX-01)", () => {
     });
 
     it("skips historical order fallback when the contact phone already matches directly", async () => {
-      h.rows.contact = [mk("1", "Directo", "51942309277")];
+      h.contactRpcRows = [{ contact_id: "ct-1" }];
+      h.rows.order = [mk("1", "Directo", "51942309277")];
       render(<Harness />);
       await type("51942309277");
       await waitFor(() => expect(screen.getByText("Directo")).toBeTruthy());
       expect(h.orderQueries).toBe(0);
     });
 
+    it("returns an exact order-phone match without running the broad timeout-prone branches", async () => {
+      h.rpcRows = [[{ contact_id: "ct-b1" }]];
+      h.rows.order = [bsuidOnly("b1", "Caso real")];
+      h.fail = true;
+      render(<Harness />);
+      await type("51942309277");
+      await waitFor(() => expect(screen.getByText("Caso real")).toBeTruthy());
+      expect(h.orFilters).toHaveLength(0);
+      expect(h.ilikePatterns).toHaveLength(0);
+      expect(screen.queryByRole("alert")).toBeNull();
+    });
+
     it("an order lookup failure is shown as an error, never as partial results", async () => {
-      h.rows.contact = [mk("1", "Ana", "51987654321")];
+      h.contactRpcRows = [{ contact_id: "ct-1" }];
+      h.rows.order = [mk("1", "Ana", "51987654321")];
       h.failOrders = true;
       render(<Harness />);
       await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());

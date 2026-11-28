@@ -2,6 +2,7 @@
 
 import { contactLabel } from "@/lib/contacts/display";
 import {
+  MAX_ORDER_MATCH_CONTACTS,
   matchesInboxSearch,
   orderPhoneCandidates,
   orderPhoneSearchWindows,
@@ -203,15 +204,40 @@ export function ConversationList({
           // search (no partial result is shown as definitive).
           const ORDER_PAGE = MAX_ORDER_MATCH_CONTACTS + 1;
           const orderPhones = orderPhoneCandidates(plan);
-          const fetchOrderMatches = async () => {
-            if (orderPhones.length === 0) {
-              return { rows: [] as InboxRows, truncated: false };
-            }
+          const missingRpc = (value: unknown) => {
+            const e = value as { code?: string | null; message?: string | null };
+            return e?.code === "PGRST202" || e?.code === "42883" || /function .* does not exist/i.test(e?.message ?? "");
+          };
 
-            // Try the newest orders first, then progressively expand the
-            // historical window until a match is found. The RPC normalizes
-            // legacy order phone formatting in SQL, so "+51 942-309-277" and
-            // "51942309277" are equivalent without loading broad order pages.
+          const conversationsForContactIds = async (ids: string[]) => {
+            if (ids.length === 0) return [] as InboxRows;
+            return fetchAll(baseQuery().in("contact_id", ids.slice(0, MAX_ORDER_MATCH_CONTACTS)));
+          };
+
+          const fetchExactContactMatches = async (): Promise<InboxRows | null> => {
+            if (orderPhones.length === 0) return [] as InboxRows;
+            requests++;
+            const { data: ids, error: idsError } = await supabase
+              .rpc("search_contact_ids_by_phone", {
+                p_account: accountId,
+                p_phones: orderPhones,
+                p_limit: ORDER_PAGE,
+              })
+              .abortSignal(controller.signal);
+            if (idsError) {
+              if (missingRpc(idsError)) return null;
+              throw idsError;
+            }
+            const contactIds = Array.from(new Set(
+              ((ids ?? []) as { contact_id: string | null }[])
+                .map((row) => row.contact_id)
+                .filter((id): id is string => !!id),
+            ));
+            return conversationsForContactIds(contactIds);
+          };
+
+          const fetchOrderMatches = async (): Promise<{ rows: InboxRows; truncated: boolean } | null> => {
+            if (orderPhones.length === 0) return { rows: [] as InboxRows, truncated: false };
             for (const window of orderPhoneSearchWindows()) {
               requests++;
               const { data: orders, error: orderError } = await supabase
@@ -223,74 +249,57 @@ export function ConversationList({
                   p_limit: ORDER_PAGE,
                 })
                 .abortSignal(controller.signal);
-              if (orderError) throw orderError;
+              if (orderError) {
+                if (missingRpc(orderError)) return null;
+                throw orderError;
+              }
               const picked = pickOrderContactIds(
                 (orders ?? []) as { contact_id: string | null }[],
                 ORDER_PAGE,
               );
               if (picked.contactIds.length === 0) continue;
               return {
-                rows: await fetchAll(baseQuery().in("contact_id", picked.contactIds)),
+                rows: await conversationsForContactIds(picked.contactIds),
                 truncated: picked.truncated,
               };
             }
             return { rows: [] as InboxRows, truncated: false };
           };
 
-          const fetchNormalizedContactMatches = async () => {
-            if (orderPhones.length === 0) return [] as InboxRows;
-            requests++;
-            const { data: ids, error: idsError } = await supabase
-              .rpc("search_contact_ids_by_phone", {
-                p_account: accountId,
-                p_phones: orderPhones,
-                p_limit: MAX_ORDER_MATCH_CONTACTS + 1,
-              })
-              .abortSignal(controller.signal);
-            if (idsError) throw idsError;
-            const contactIds = Array.from(
-              new Set(
-                ((ids ?? []) as { contact_id: string | null }[])
-                  .map((row) => row.contact_id)
-                  .filter((id): id is string => !!id),
-              ),
-            ).slice(0, MAX_ORDER_MATCH_CONTACTS);
-            if (contactIds.length === 0) return [] as InboxRows;
-            return fetchAll(baseQuery().in("contact_id", contactIds));
-          };
-
-          const [contactMatches, normalizedPhoneMatches, messageMatches] = await Promise.all([
-            fetchAll(
-              baseQuery().or(plan.contactOrFilter, {
-                referencedTable: "contact",
-              }),
-            ),
-            fetchNormalizedContactMatches(),
-            fetchAll(baseQuery().ilike("last_message_text", plan.likePattern)),
-          ]);
-
-          // Raw-phone normalization is authoritative for a complete number.
-          // Historical orders are only a second fallback for BSUID/phone-less
-          // contacts or stale contact data.
-          const hasDirectPhoneMatch =
-            contactMatches.length > 0 || normalizedPhoneMatches.length > 0;
-          const orderMatches = hasDirectPhoneMatch
-            ? { rows: [] as InboxRows, truncated: false }
-            : await fetchOrderMatches();
-          const unique = new Map<string, (typeof contactMatches)[number]>();
-          for (const conversation of [...contactMatches, ...normalizedPhoneMatches, ...messageMatches]) {
-            unique.set(conversation.id, conversation);
-          }
-          const onlyByOrder = new Set<string>();
-          for (const conversation of orderMatches.rows) {
-            if (!unique.has(conversation.id)) {
-              unique.set(conversation.id, conversation);
-              onlyByOrder.add(conversation.id);
+          // For a complete phone, resolve the cheap indexed paths FIRST.
+          // A timeout in broad ILIKE branches must never discard an exact
+          // contact/order match that was already available.
+          if (orderPhones.length > 0) {
+            const exactContacts = await fetchExactContactMatches();
+            if (exactContacts && exactContacts.length > 0) {
+              data = exactContacts;
+            } else {
+              const exactOrders = await fetchOrderMatches();
+              if (exactOrders && exactOrders.rows.length > 0) {
+                data = exactOrders.rows;
+                orderOnly = new Set(exactOrders.rows.map((row) => row.id));
+                truncated = exactOrders.truncated;
+              }
             }
           }
-          orderOnly = onlyByOrder;
-          truncated = orderMatches.truncated;
-          data = Array.from(unique.values());
+
+          // Free text/fragments, or a complete phone with no exact match,
+          // retain the historical broad search as a final fallback.
+          if (data === null) {
+            const [contactMatches, messageMatches] = await Promise.all([
+              fetchAll(
+                baseQuery().or(plan.contactOrFilter, {
+                  referencedTable: "contact",
+                }),
+              ),
+              fetchAll(baseQuery().ilike("last_message_text", plan.likePattern)),
+            ]);
+            const unique = new Map<string, (typeof contactMatches)[number]>();
+            for (const conversation of [...contactMatches, ...messageMatches]) {
+              unique.set(conversation.id, conversation);
+            }
+            data = Array.from(unique.values());
+          }
         } catch (searchError) {
           error = {
             message:

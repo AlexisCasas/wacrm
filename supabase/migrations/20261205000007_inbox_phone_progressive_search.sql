@@ -56,16 +56,9 @@ GRANT EXECUTE ON FUNCTION public.search_order_contacts_by_phone_window(UUID, TEX
   TO authenticated;
 
 
--- Historical contacts may have phone_normalized='' or stale even though
--- contacts.phone still contains the real number. Search the authoritative raw
--- phone after digit normalization so formatting cannot hide a conversation.
-CREATE INDEX IF NOT EXISTS contacts_account_phone_digits_idx
-  ON public.contacts (
-    account_id,
-    public.order_phone_digits(phone)
-  )
-  WHERE blocked = false;
-
+-- contacts.phone_normalized is generated digits-only data and already has
+-- idx_contacts_account_phone_normalized. Reuse it directly so the planner can
+-- use the existing index under RLS.
 CREATE OR REPLACE FUNCTION public.search_contact_ids_by_phone(
   p_account UUID,
   p_phones TEXT[],
@@ -81,7 +74,7 @@ AS $$
   FROM public.contacts c
   WHERE c.account_id = p_account
     AND c.blocked = false
-    AND public.order_phone_digits(c.phone) = ANY(p_phones)
+    AND c.phone_normalized = ANY(p_phones)
   ORDER BY c.updated_at DESC, c.id
   LIMIT LEAST(GREATEST(p_limit, 1), 101)
 $$;

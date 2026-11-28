@@ -107,3 +107,18 @@ Orden definitivo para un teléfono completo:
 3. si aún no existe coincidencia, pedidos históricos por ventanas progresivas.
 
 El usuario no ve ninguno de estos pasos.
+
+
+## V2 — causa real confirmada
+
+Para `51942309277`, el contacto es BSUID y no tiene teléfono en contacts. El número existe en `order_confirmations.phone` y la conversación sí existe.
+
+La falla era de composición: la rama de pedidos encontraba el contacto, pero las búsquedas anchas por contacto/mensaje podían dar timeout/500 y, al ejecutarse juntas, descartaban el resultado correcto.
+
+V2 resuelve teléfonos completos en este orden:
+1. contacto exacto indexado por `phone_normalized`;
+2. pedidos por ventanas progresivas;
+3. si alguno encuentra conversación, devuelve inmediatamente;
+4. solo sin match exacto corre la búsqueda ancha.
+
+La RPC de contactos reutiliza `idx_contacts_account_phone_normalized`; no crea índice de expresión en contacts.

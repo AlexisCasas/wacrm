@@ -500,6 +500,17 @@
       ],
       "status": "pending",
       "note": "Logistics Inbox: adds item_type to confirmed order lines (product/accessory), preserves existing rows as products and extends edit_order_confirmation; both types contribute to the order total. Manifest registration only; runtime application must be verified separately."
+    },
+    {
+      "new_version": "20261205000007",
+      "new_file": "20261205000007_inbox_phone_progressive_search.sql",
+      "sha256": "fdba7d9f7ac49dc04342dd505fe3b3fa34085da39e0ed2384c189151b97cbc97",
+      "depends_on": [
+        "order_confirmations",
+        "contacts"
+      ],
+      "status": "pending",
+      "note": "Inbox phone search patch: exact indexed contact lookup plus progressive confirmed-order phone lookup; account-scoped SECURITY INVOKER RPCs, with broad search only as fallback."
     }
   ]
 }
