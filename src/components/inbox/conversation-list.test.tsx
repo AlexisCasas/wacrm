@@ -9,7 +9,7 @@ import type { Conversation } from "@/types";
 // Component-level coverage for the Inbox "Needs human attention" indicator
 // and filter (this round's item C): the indicator must show only for a real
 // handoff (disabled + a non-empty summary), never for a bare manual pause,
-// and must not crowd out the existing unread badge / status dot. See
+// and must not crowd out the existing unread badge. See
 // needsHumanAttention() in src/lib/inbox/conversations.ts for the shared
 // predicate this all builds on.
 // ---------------------------------------------------------------------------
@@ -332,7 +332,7 @@ describe('ConversationList — badges alongside the indicator (test #20, #21)', 
     expect(screen.getByTitle("open")).toBeInTheDocument();
   });
 
-  it("the unread badge and status dot still render normally with no handoff present", async () => {
+  it("the unread badge still render normally with no handoff present", async () => {
     renderList([conv({ ...NORMAL_CONV, unread_count: 5, status: "pending" })]);
     expect(await screen.findByText("5")).toBeInTheDocument();
     expect(screen.getByTitle("pending")).toBeInTheDocument();
@@ -383,7 +383,7 @@ describe("ConversationList — compact tag badges (P3, no extra query)", () => {
     expect(screen.getByText("+2")).toBeInTheDocument();
   });
 
-  it("badges never block the existing unread badge / status dot from rendering", async () => {
+  it("badges never block the existing unread badge from rendering", async () => {
     const conversation = conv({
       ...HANDOFF_CONV,
       contact: taggedContact("Tagged Handoff", [tag("t1", "Favoritos")]),
