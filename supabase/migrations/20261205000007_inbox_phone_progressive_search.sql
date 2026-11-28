@@ -74,6 +74,7 @@ AS $$
   FROM public.contacts c
   WHERE c.account_id = p_account
     AND c.blocked = false
+    AND c.phone_normalized <> ''
     AND c.phone_normalized = ANY(p_phones)
   ORDER BY c.updated_at DESC, c.id
   LIMIT LEAST(GREATEST(p_limit, 1), 101)

@@ -44,6 +44,12 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@/lib/supabase/client", () => ({
   createClient: () => ({
+    rpc: () => ({
+      abortSignal: () => Promise.resolve({
+        data: null,
+        error: { code: "PGRST202", message: "function does not exist" },
+      }),
+    }),
     from: (table: string) => {
       let source: "normal" | "contact" | "message" = "normal";
       const builder = {

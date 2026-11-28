@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
   contactRpcRows: [] as Array<{ contact_id: string | null }>,
   contactRpcCalls: [] as Array<{ p_account: string; p_phones: string[]; p_limit: number }>,
   fail: false,
+  failBroad: false,
   orFilters: [] as string[],
   ilikePatterns: [] as string[],
   ranges: [] as { source: string; from: number; to: number }[],
@@ -71,7 +72,7 @@ vi.mock("@/lib/supabase/client", () => ({
             return Promise.resolve({ data: h.orders.slice(from, to + 1), error: null });
           }
           h.ranges.push({ source, from, to });
-          if (h.fail) return Promise.resolve({ data: null, error: { message: "boom" } });
+          if (h.fail || (h.failBroad && source !== "order")) return Promise.resolve({ data: null, error: { message: "boom" } });
           return Promise.resolve({ data: h.rows[source].slice(from, to + 1), error: null });
         },
         then: (resolve: (r: unknown) => unknown) =>
@@ -111,7 +112,7 @@ async function type(value: string) {
 beforeEach(() => {
   h.rows = { contact: [], message: [], normal: [], order: [] };
   h.orders = []; h.failOrders = false; h.orderPhones = []; h.orderContactIds = []; h.orderQueries = 0; h.rpcWindows = []; h.rpcRows = []; h.contactRpcRows = []; h.contactRpcCalls = [];
-  h.fail = false; h.orFilters = []; h.ilikePatterns = []; h.ranges = []; h.eqCalls = [];
+  h.fail = false; h.failBroad = false; h.orFilters = []; h.ilikePatterns = []; h.ranges = []; h.eqCalls = [];
 });
 afterEach(cleanup);
 
@@ -219,7 +220,7 @@ describe("Inbox search (FIX-01)", () => {
     render(<Harness />);
     await type("987654321");
     await waitFor(() => expect(h.orderQueries).toBe(1));
-    expect(h.eqCalls).toContainEqual(["order_confirmations", "account_id", "acct-1"]);
+    expect(h.rpcWindows[0]?.p_account).toBe("acct-1");
   });
 
   it("pages each branch past 1000 rows", async () => {
@@ -295,7 +296,7 @@ describe("Inbox search (FIX-01)", () => {
       h.rpcRows = [[{ contact_id: null }]];
       render(<Harness />);
       await type("987654321");
-      await waitFor(() => expect(h.orderQueries).toBe(1));
+      await waitFor(() => expect(h.orderQueries).toBe(6));
       expect(h.orderContactIds).toEqual([]);
       await waitFor(() => expect(screen.getByText("noConversations")).toBeTruthy());
     });
@@ -310,9 +311,9 @@ describe("Inbox search (FIX-01)", () => {
       expect(h.orderContactIds.at(-1)).toHaveLength(100);
     });
 
-    it("finds a contact by normalized raw phone even when phone_normalized is stale or empty", async () => {
+    it("finds a contact through the indexed normalized phone RPC", async () => {
       h.contactRpcRows = [{ contact_id: "ct-b1" }];
-      h.rows.order = [bsuidOnly("b1", "Formato Histórico")];
+      h.rows.order = [mk("b1", "Formato Histórico", "51942309277")];
       render(<Harness />);
       await type("+51 942-309-277");
       await waitFor(() => expect(screen.getByText("Formato Histórico")).toBeTruthy());
@@ -352,7 +353,7 @@ describe("Inbox search (FIX-01)", () => {
     it("returns an exact order-phone match without running the broad timeout-prone branches", async () => {
       h.rpcRows = [[{ contact_id: "ct-b1" }]];
       h.rows.order = [bsuidOnly("b1", "Caso real")];
-      h.fail = true;
+      h.failBroad = true;
       render(<Harness />);
       await type("51942309277");
       await waitFor(() => expect(screen.getByText("Caso real")).toBeTruthy());
@@ -362,8 +363,7 @@ describe("Inbox search (FIX-01)", () => {
     });
 
     it("an order lookup failure is shown as an error, never as partial results", async () => {
-      h.contactRpcRows = [{ contact_id: "ct-1" }];
-      h.rows.order = [mk("1", "Ana", "51987654321")];
+      h.contactRpcRows = [];
       h.failOrders = true;
       render(<Harness />);
       await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());

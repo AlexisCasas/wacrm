@@ -480,6 +480,17 @@
       "note": "payment parity protection unit 2: supervisor-only, audited correction of a tracked order total. No backfill and no payment row is changed, created or deleted."
     },
     {
+      "new_version": "20261205000007",
+      "new_file": "20261205000007_inbox_phone_progressive_search.sql",
+      "sha256": "dd5dc9dd8a9957572705e92f5c6812ec2afdad2fc823cb947bbc5afce47167e7",
+      "depends_on": [
+        "001",
+        "20261101000000"
+      ],
+      "status": "pending",
+      "note": "Inbox phone search patch: exact indexed contact lookup plus progressive confirmed-order phone lookup; account-scoped SECURITY INVOKER RPCs, with broad search only as fallback."
+    },
+    {
       "new_version": "20261206000000",
       "new_file": "20261206000000_order_edit_and_cancellation.sql",
       "sha256": "77d561e04cc492f4f0da59bfa96cf879b5d9fa9bcadca391f059ed4b33135a07",
@@ -500,17 +511,6 @@
       ],
       "status": "pending",
       "note": "Logistics Inbox: adds item_type to confirmed order lines (product/accessory), preserves existing rows as products and extends edit_order_confirmation; both types contribute to the order total. Manifest registration only; runtime application must be verified separately."
-    },
-    {
-      "new_version": "20261205000007",
-      "new_file": "20261205000007_inbox_phone_progressive_search.sql",
-      "sha256": "fdba7d9f7ac49dc04342dd505fe3b3fa34085da39e0ed2384c189151b97cbc97",
-      "depends_on": [
-        "order_confirmations",
-        "contacts"
-      ],
-      "status": "pending",
-      "note": "Inbox phone search patch: exact indexed contact lookup plus progressive confirmed-order phone lookup; account-scoped SECURITY INVOKER RPCs, with broad search only as fallback."
     }
   ]
 }
