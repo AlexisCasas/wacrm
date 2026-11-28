@@ -238,3 +238,45 @@ Pendiente antes de deploy:
 4. creación y aprobación de las dos plantillas Meta;
 5. configuración por cuenta;
 6. migration + candidate + dry-run + deploy controlado.
+
+
+## Auditoría V2 — bloqueos corregidos
+
+Auditoría recibida sobre `a51953d62815b6999b974dc53609ed2e17399bdd`:
+
+- migration, RLS, permisos e idempotencia: PASS;
+- resumen: contrato de 10 variables correcto;
+- PDF→JPG: funcional con Poppler;
+- Docker real: build/health PASS;
+- resultado global anterior: BLOCKED por 4 defectos pequeños.
+
+Correcciones aplicadas en `7af97d377144a39adfe887c93c30e7d774a195d1`:
+
+1. Fixtures existentes:
+   - `logistics-ui.test.tsx`
+   - `evidence-upload-ui.test.tsx`
+   - `confirmed-orders-stale-selection.test.tsx`
+   ahora incluyen `customer_dispatches: []`.
+
+2. PDF seguro:
+   - `pdftoppm` añade `-scale-to 2000`;
+   - evita dimensiones absurdas y consumo de memoria descontrolado;
+   - sigue renderizando solo la primera página.
+
+3. Dispatch atascado:
+   - el panel expone `claimed_at` y `sending_at`;
+   - un `claimed/sending` de menos de 10 min sigue bloqueado;
+   - después de 10 min el botón vuelve a habilitarse;
+   - el siguiente clic hace que el backend lo convierta a `uncertain`;
+   - la persona puede resolver `confirmed_sent` / `confirmed_not_sent`.
+
+4. WEBP:
+   - JPEG/PNG se firman directamente;
+   - PDF se renderiza a JPEG;
+   - WEBP falla cerrado con `voucher_image_required` en lugar de enviarse a Meta y fallar después.
+
+Pendiente:
+- repetir auditoría/tests completos;
+- validar tests permanentes nuevos de Claude o equivalentes;
+- typecheck/lint/Docker build;
+- si pasa, continuar a Meta setup.
