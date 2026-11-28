@@ -355,3 +355,22 @@ Después de aprobación:
 8. QA real con pedido de prueba.
 
 No desplegar código antes de aplicar la migration: el panel consulta `order_customer_template_dispatches`.
+
+
+## Meta templates approved
+
+Aprobación confirmada por el usuario en Meta/WhatsApp Manager:
+
+- `resumen_pedido_confirmado` — activa/aprobada
+- `voucher_pedido_validado` — activa/aprobada
+
+Estado del requerimiento:
+- desarrollo técnico: validado
+- Meta setup: completado
+- siguiente fase: sincronización/configuración en WACRM + migration + candidate + deploy
+
+Configuración esperada por cuenta:
+- `summary_template_name = resumen_pedido_confirmado`
+- `summary_template_language = es`
+- `voucher_customer_template_name = voucher_pedido_validado`
+- `voucher_customer_template_language = es`
