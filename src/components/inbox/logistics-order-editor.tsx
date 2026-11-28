@@ -292,6 +292,7 @@ export function LogisticsOrderEditor({
     setSaving(true);
 
     try {
+      let savedTotal = panel.total;
       let savedPendingBalance = panel.pending_balance;
 
       if (hasEdit) {
@@ -319,6 +320,10 @@ export function LogisticsOrderEditor({
 
         if (!res.ok) throw new Error("save_failed");
 
+        savedTotal =
+          typeof editResult.total === "number"
+            ? editResult.total
+            : editedTotal;
         savedPendingBalance =
           typeof editResult.pending_balance === "number"
             ? editResult.pending_balance
@@ -340,7 +345,7 @@ export function LogisticsOrderEditor({
 
       if (effectivePaymentAmount > 0 && !attemptForRecovery) {
         const amountCents = Math.round(effectivePaymentAmount * 100);
-        const totalCents = Math.round(editedTotal * 100);
+        const totalCents = Math.round(savedTotal * 100);
         const balanceCents = Math.round(savedPendingBalance * 100);
         const kind: PendingLogisticsPaymentAttempt["kind"] =
           panel.paid_confirmed === 0 && amountCents === totalCents
@@ -489,6 +494,7 @@ export function LogisticsOrderEditor({
             Nombre completo
           </label>
           <Input
+            disabled={saving || pendingPaymentAttempt !== null}
             value={form.customer_name}
             onChange={(e) =>
               setForm((current) => ({
@@ -505,6 +511,7 @@ export function LogisticsOrderEditor({
               DNI
             </label>
             <Input
+              disabled={saving || pendingPaymentAttempt !== null}
               value={form.dni}
               inputMode="numeric"
               onChange={(e) =>
@@ -521,6 +528,7 @@ export function LogisticsOrderEditor({
               Teléfono
             </label>
             <Input
+              disabled={saving || pendingPaymentAttempt !== null}
               value={form.phone}
               inputMode="tel"
               onChange={(e) =>
@@ -538,6 +546,7 @@ export function LogisticsOrderEditor({
         title="Productos"
         type="product"
         lines={products}
+        disabled={saving || pendingPaymentAttempt !== null}
         onAdd={() => addLine("product")}
         onUpdate={updateLine}
         onRemove={removeLine}
@@ -547,6 +556,7 @@ export function LogisticsOrderEditor({
         title="Accesorios"
         type="accessory"
         lines={accessories}
+        disabled={saving || pendingPaymentAttempt !== null}
         onAdd={() => addLine("accessory")}
         onUpdate={updateLine}
         onRemove={removeLine}
@@ -559,6 +569,7 @@ export function LogisticsOrderEditor({
         </div>
 
         <Textarea
+          disabled={saving || pendingPaymentAttempt !== null}
           value={form.description}
           rows={3}
           placeholder="Descripción del pedido"
@@ -639,6 +650,7 @@ export function LogisticsOrderEditor({
             Destino
           </label>
           <Input
+            disabled={saving || pendingPaymentAttempt !== null}
             value={form.destination}
             onChange={(e) =>
               setForm((current) => ({
@@ -671,6 +683,7 @@ function LineGroup({
   title,
   type,
   lines,
+  disabled = false,
   onAdd,
   onUpdate,
   onRemove,
@@ -678,6 +691,7 @@ function LineGroup({
   title: string;
   type: ItemType;
   lines: EditableLine[];
+  disabled?: boolean;
   onAdd: () => void;
   onUpdate: (
     line: EditableLine,
@@ -696,6 +710,7 @@ function LineGroup({
           size="sm"
           variant="outline"
           className="h-8"
+          disabled={disabled}
           onClick={onAdd}
         >
           <Plus className="mr-1 size-3.5" />
@@ -716,6 +731,7 @@ function LineGroup({
             >
               <div className="flex gap-2">
                 <Input
+                  disabled={disabled}
                   value={line.product_name}
                   placeholder={
                     type === "product"
@@ -732,6 +748,7 @@ function LineGroup({
                   variant="ghost"
                   size="icon"
                   className="size-9 shrink-0"
+                  disabled={disabled}
                   onClick={() => onRemove(line)}
                   aria-label="Eliminar"
                 >
@@ -745,6 +762,7 @@ function LineGroup({
                     Cantidad
                   </label>
                   <Input
+                    disabled={disabled}
                     value={line.quantity}
                     inputMode="numeric"
                     onChange={(e) =>
@@ -758,6 +776,7 @@ function LineGroup({
                     Precio
                   </label>
                   <Input
+                    disabled={disabled}
                     value={line.unit_price}
                     inputMode="decimal"
                     onChange={(e) =>
