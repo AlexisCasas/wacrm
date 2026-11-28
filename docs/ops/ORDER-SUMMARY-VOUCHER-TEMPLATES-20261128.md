@@ -307,3 +307,51 @@ Pendiente:
 - typecheck;
 - Docker build;
 - si todo pasa: Meta setup.
+
+
+## READY FOR META SETUP
+
+Validación final sobre:
+
+`fb998b61da4c936fcc8da23f8ae8f559d723ab61`
+
+Resultado: **READY FOR META SETUP**
+
+Validaciones finales:
+- 109/109 tests focales PASS;
+- suite completa 5,814 PASS / 0 FAIL / 549 omitidos;
+- typecheck PASS;
+- lint 0 errores;
+- Docker build real PASS;
+- pdftoppm disponible en runtime;
+- PDF normal y gigante renderizados correctamente;
+- WEBP bloqueado;
+- /tmp limpio;
+- candidate aislado healthy/readiness 200;
+- migration `20261205000008` y manifest OK.
+
+Plantillas Meta a crear:
+
+### resumen_pedido_confirmado
+- categoría: UTILITY
+- idioma: es
+- header: ninguno
+- variables: 10
+
+### voucher_pedido_validado
+- categoría: UTILITY
+- idioma: es
+- header: IMAGE
+- variables body: 3
+
+Después de aprobación:
+1. sincronizar ambas en `message_templates`;
+2. configurar `order_logistics_settings` por cuenta;
+3. aplicar migration;
+4. validar objetos;
+5. build/candidate;
+6. dry-run;
+7. deploy;
+8. QA real con pedido de prueba.
+
+No desplegar código antes de aplicar la migration: el panel consulta `order_customer_template_dispatches`.
