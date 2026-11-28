@@ -280,3 +280,30 @@ Pendiente:
 - validar tests permanentes nuevos de Claude o equivalentes;
 - typecheck/lint/Docker build;
 - si pasa, continuar a Meta setup.
+
+
+## Último bloqueo UI corregido
+
+Auditoría final sobre `d2348d4e3fb0a700e449dba58f091beaf410ad77`:
+
+- backend, migration, permisos, PDF render, idempotencia, roles y state safety: PASS;
+- único bloqueo: `Date.now()` dentro del render de `customer-template-actions.tsx`.
+
+Corrección aplicada en:
+
+`532e0c8a5a17d0dc6bb7256a7594b9805435b702`
+
+Cambio:
+- se añadió `nowMs` en estado;
+- `useEffect` actualiza el reloj cada 30 s;
+- `isStaleInFlight` usa ese estado;
+- un envío en `claimed/sending` se habilita solo al superar 10 minutos, sin requerir recarga del panel;
+- se añadió test permanente `customer-template-actions.test.tsx` para validar 9:30 min bloqueado → >10 min habilitado.
+
+Pendiente:
+- revalidar lint;
+- correr el nuevo test;
+- suite completa;
+- typecheck;
+- Docker build;
+- si todo pasa: Meta setup.
