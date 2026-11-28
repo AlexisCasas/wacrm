@@ -7,8 +7,8 @@
 ## Estado general
 
 - Hechos: **6/13**
-- Parciales: **6/13**
-- Pendientes: **1/13**
+- Parciales: **7/13**
+- Pendientes: **0/13**
 
 > Estos estados reflejan el control funcional declarado del entregable. No sustituyen validación técnica, QA ni evidencia de producción.
 
@@ -17,7 +17,7 @@
 | ID | Requerimiento | Estado |
 |---|---|---|
 | 01 | Estados logísticos | Parcial |
-| 02 | Dos plantillas WhatsApp | Pendiente |
+| 02 | Dos plantillas WhatsApp | Parcial |
 | 03 | Validación del voucher Shalom | Parcial |
 | 04 | Panel de edición junto al chat | Hecho |
 | 05 | Simplificación de campos | Hecho |
@@ -35,7 +35,7 @@
 ### Próximo
 **02 — Dos plantillas WhatsApp**
 
-Pendiente de definir/validar las dos plantillas, variables, idioma, disparadores y alcance de uso.
+En desarrollo V2 sobre la producción actual. Alcance definido: dos acciones manuales entre Voucher y Embalaje — Resumen del pedido y Voucher al cliente — habilitadas solo con voucher validado.
 
 ### Cerrado recientemente
 **08 — Filtros para cobranza**
@@ -51,7 +51,7 @@ Incluye:
 
 Deploy validado con health/readiness/Caddy/crons/webhooks sin observaciones.
 
-Confirmar las dos plantillas, variables, idioma, disparadores, roles autorizados y necesidad de aprobación en Meta antes de desarrollo/despliegue.
+Estado técnico actual: migración renumerada a `20261205000008`, ledger independiente, idempotencia reforzada, PDF→imagen con Poppler, permisos restringidos a Logística/Supervisor y rama V2 basada en la producción actual. Pendiente auditoría final, aprobación/configuración de las plantillas en Meta y deploy controlado.
 
 ## Parciales a cerrar después
 
@@ -78,16 +78,18 @@ El orden puede cambiar por dependencias o feedback operativo.
 
 ## Siguiente acción
 
-Iniciar definición y auditoría de **08 — Filtros para cobranza**.
+Completar auditoría técnica de **02 — Dos plantillas WhatsApp** sobre la rama:
 
-Documentar:
+`feat/order-summary-voucher-templates-v2-20261128`
 
-- objetivo operativo del filtro;
-- campos disponibles para cobranza;
-- criterios y combinaciones necesarias;
-- alcance por cuenta/rol;
-- comportamiento actual;
-- propuesta mínima antes de implementar.
+Validar:
+- migration `20261205000008`;
+- seguridad/RLS/permisos;
+- idempotencia y estados uncertain;
+- PDF→imagen en el contenedor real;
+- tests/typecheck/lint/build;
+- configuración y aprobación Meta de `resumen_pedido_confirmado` y `voucher_pedido_validado`;
+- candidate, dry-run y deploy.
 
 ## Decisión registrada
 
