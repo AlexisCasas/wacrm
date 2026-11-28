@@ -339,3 +339,43 @@ After the above code/QA gates:
 7. Any production payment validation must use an explicitly approved controlled test strategy; never create a real customer payment just to test retries.
 
 **Current release decision remains NO-GO** until P0 and required P1 deliverables are completed and accepted.
+
+
+---
+
+## 15. P0-01 — Logistics payment recovery started (2026-11-28)
+
+- PR: [#183 — durable per-order payment retry recovery](https://github.com/AlexisCasas/wacrm/pull/183), Draft.
+- Feature branch: `fix/logistics-payment-recovery-p0-01`.
+- Release base branch: `baseline/prod-c52ed8d2-20261128`, anchored at the verified production revision `c52ed8d2b8486c06c11fa79f11a9a08007b4ec90`.
+- Candidate HEAD at time of this update: `88c3c2b4dcc10452ef253f0d1bbc6c5719dee12d`.
+- Only two application files changed: `src/components/inbox/logistics-order-editor.tsx` and its test file.
+
+### Design decisions
+- Store pending payment metadata in tab-scoped `sessionStorage`, keyed by order ID. This survives reload/remount and conversation navigation in the same tab; it does not promise recovery after the tab/session is closed.
+- Persist only payment metadata (request key, amount, kind, paid-at timestamp). Do not persist customer/order PII.
+- When an order edit and payment are combined, the edit completes first. The payment attempt is persisted immediately before the register request. If the edit response is uncertain, no payment request has yet been sent; after reload, the server's current order state is loaded and the user can retry the edit/payment.
+- Once a payment attempt exists, lock order-edit fields and payment amount until reconciliation. Replays only the same payment attempt; they do not repeat an already-completed order edit.
+- Existing DB RPC idempotency remains authoritative: replay same request key, same order, amount and kind. Confirm only if the replay returns `recorded`; skip if `confirmed`; release a terminal `rejected`/`voided` attempt only after reading that status.
+- Clear a pending attempt only on confirmed success or a definitive `exceeds_balance` rejection (RPC checks an existing request key before balance validation). Keep it on network/5xx/uncertain outcomes.
+- No SQL/RPC/migration changes.
+
+### Regression tests added
+- Lost register response followed by component unmount/remount.
+- Switch between two orders in the same conversation: independent pending attempts and keys.
+- Combined order edit + payment: after successful edit and uncertain payment, remount recovers payment without repeating the edit.
+- Same amount after a successful operation uses a new key.
+- Changed amount and order-edit inputs remain locked while an uncertain attempt is pending.
+- A terminally rejected attempt can be followed by a new legitimate payment with a new key.
+
+### Current Actions
+- CI on candidate `88c3c2b4`: [run 46109922729](https://github.com/AlexisCasas/wacrm/actions/runs/46109922729), in progress at this update. An earlier attempt failed TypeScript because the edit response type omitted `total`; the type was corrected and the newer candidate is under CI.
+- Isolated synthetic QA on the same candidate, baseline `c52ed8d2`: [run 46109948397](https://github.com/AlexisCasas/wacrm/actions/runs/46109948397), in progress. It runs the existing 74-row harness with synthetic data in an ephemeral runner.
+- Do not treat either run as PASS until completed and the exact candidate SHA is confirmed.
+- No production deployment, DB writes, migration, messages, or payment operations were performed.
+
+### Next gate
+1. CI green on exact PR #183 HEAD.
+2. Synthetic QA matrix and payment retry acceptance pass for 03.8a–03.8d, with additional remount/order-scope cases reviewed in unit tests.
+3. Review any remaining `SCHEMA=PARTIAL` / `DATABASE_SUITES=PARTIAL` caveats separately; do not relax grants or rewrite the pre-existing Shalom test just to force green.
+4. Only then prepare Claude Code VPS preflight and obtain explicit deployment approval.
