@@ -35,6 +35,61 @@ const EMPTY_FORM: FormState = {
   destination: "",
 };
 
+type PendingLogisticsPaymentAttempt = {
+  orderId: string;
+  requestKey: string;
+  amount: string;
+  kind: "advance" | "balance" | "full";
+  paidAt: string;
+  editFields: Record<string, unknown>;
+};
+
+const pendingPaymentStorageKey = (orderId: string) =>
+  `wacrm:logistics-payment-attempt:v1:${orderId}`;
+
+function readPendingPaymentAttempt(orderId: string): PendingLogisticsPaymentAttempt | null {
+  try {
+    const raw = window.sessionStorage.getItem(pendingPaymentStorageKey(orderId));
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PendingLogisticsPaymentAttempt>;
+    if (
+      value.orderId !== orderId ||
+      typeof value.requestKey !== "string" ||
+      typeof value.amount !== "string" ||
+      !/^\\d{1,7}\\.\\d{2}$/.test(value.amount) ||
+      !["advance", "balance", "full"].includes(String(value.kind)) ||
+      typeof value.paidAt !== "string" ||
+      !Number.isFinite(Date.parse(value.paidAt)) ||
+      typeof value.editFields !== "object" ||
+      value.editFields === null ||
+      Array.isArray(value.editFields)
+    ) return null;
+    return value as PendingLogisticsPaymentAttempt;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingPaymentAttempt(attempt: PendingLogisticsPaymentAttempt) {
+  try {
+    window.sessionStorage.setItem(
+      pendingPaymentStorageKey(attempt.orderId),
+      JSON.stringify(attempt),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearPendingPaymentAttempt(orderId: string) {
+  try {
+    window.sessionStorage.removeItem(pendingPaymentStorageKey(orderId));
+  } catch {
+    // Storage may be unavailable; in-memory state is still cleared.
+  }
+}
+
 export function LogisticsOrderEditor({
   orderId,
   onChanged,
@@ -49,16 +104,16 @@ export function LogisticsOrderEditor({
   const [loadError, setLoadError] = useState(false);
   const [saving, setSaving] = useState(false);
   const [paymentAmount, setPaymentAmount] = useState("");
-  const [pendingPaymentAttempt, setPendingPaymentAttempt] = useState<null | {
-    requestKey: string;
-    amount: string;
-    kind: "advance" | "balance" | "full";
-    paidAt: string;
-  }>(null);
+  const [pendingPaymentAttempt, setPendingPaymentAttempt] =
+    useState<PendingLogisticsPaymentAttempt | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setLoadError(false);
+
+    const pendingAttempt = readPendingPaymentAttempt(orderId);
+    setPendingPaymentAttempt(pendingAttempt);
+    setPaymentAmount(pendingAttempt?.amount ?? "");
 
     try {
       const res = await fetch(`/api/orders/payments/orders/${orderId}`, {
@@ -72,7 +127,6 @@ export function LogisticsOrderEditor({
       if (!body.order) throw new Error("order_missing");
 
       setPanel(body);
-      setPaymentAmount("");
 
       setForm(formFromOrder(body.order));
       setLines(linesFromPanel(body));
@@ -166,35 +220,39 @@ export function LogisticsOrderEditor({
   const save = async () => {
     if (!panel?.order || !changes) return;
 
+    const resumedAttempt = pendingPaymentAttempt;
     const { fields, sendsLines } = changes;
-    const hasEdit = Object.keys(fields).length > 0;
+    // If a previous request has an uncertain outcome, replay its exact order edit and payment payload.
+    // Never derive a new request key from a changed form while that logical attempt is unresolved.
+    const fieldsToSave = resumedAttempt ? resumedAttempt.editFields : fields;
+    const hasEdit = Object.keys(fieldsToSave).length > 0;
+    const effectivePaymentAmount = resumedAttempt
+      ? Number(resumedAttempt.amount)
+      : paymentValue;
 
-    if (fields.customer_name === "") {
+    if (!resumedAttempt && fields.customer_name === "") {
       toast.error("Completa el nombre del cliente.");
       return;
     }
-
-    if (fields.phone === "") {
+    if (!resumedAttempt && fields.phone === "") {
       toast.error("Completa el teléfono.");
       return;
     }
-
-    if (fields.destination === "") {
+    if (!resumedAttempt && fields.destination === "") {
       toast.error("Completa el destino.");
       return;
     }
-
-    if (fields.product === "") {
+    if (!resumedAttempt && fields.product === "") {
       toast.error("Completa el nombre del producto.");
       return;
     }
-
-    if (sendsLines && !lines.some((line) => line.item_type === "product")) {
+    if (!resumedAttempt && sendsLines && !lines.some((line) => line.item_type === "product")) {
       toast.error("Agrega al menos un producto.");
       return;
     }
 
     if (
+      !resumedAttempt &&
       paymentAmount.trim() &&
       (
         !/^\d{1,7}([.,]\d{1,2})?$/.test(paymentAmount.trim()) ||
@@ -205,41 +263,76 @@ export function LogisticsOrderEditor({
       return;
     }
 
-    if (paymentValue > editedPendingBalance) {
+    // A resumed attempt must be replayed even if the current balance is now lower:
+    // the server may already have registered/confirmed that exact request_key.
+    if (!resumedAttempt && effectivePaymentAmount > editedPendingBalance) {
       toast.error("El pago no puede superar el saldo pendiente.");
       return;
     }
 
-    for (const line of sendsLines ? lines : []) {
+    for (const line of resumedAttempt || !sendsLines ? [] : lines) {
       const quantity = Number(line.quantity);
       const price = parsePrice(line.unit_price);
-
       if (!line.product_name.trim()) {
         toast.error("Completa todos los productos y accesorios.");
         return;
       }
-
       if (!Number.isInteger(quantity) || quantity < 1) {
         toast.error("Revisa las cantidades.");
         return;
       }
-
       if (!Number.isFinite(price) || price <= 0) {
         toast.error("Revisa los precios.");
         return;
       }
     }
 
-    if (!hasEdit && paymentValue <= 0) {
+    if (!hasEdit && effectivePaymentAmount <= 0) {
       toast.info("No hay cambios para guardar.");
       return;
     }
 
+    let attemptForRecovery: PendingLogisticsPaymentAttempt | null = resumedAttempt;
     setSaving(true);
 
     try {
       let savedTotal = panel.total;
       let savedPendingBalance = panel.pending_balance;
+
+      if (effectivePaymentAmount > 0 && !attemptForRecovery) {
+        const predictedTotal = hasEdit ? editedTotal : panel.total;
+        const predictedBalance = Math.max(
+          Math.round((predictedTotal - panel.paid_confirmed) * 100) / 100,
+          0,
+        );
+        const amountCents = Math.round(effectivePaymentAmount * 100);
+        const totalCents = Math.round(predictedTotal * 100);
+        const balanceCents = Math.round(predictedBalance * 100);
+        const kind: PendingLogisticsPaymentAttempt["kind"] =
+          panel.paid_confirmed === 0 && amountCents === totalCents
+            ? "full"
+            : amountCents === balanceCents
+              ? "balance"
+              : "advance";
+
+        attemptForRecovery = {
+          orderId,
+          requestKey: crypto.randomUUID(),
+          amount: effectivePaymentAmount.toFixed(2),
+          kind,
+          paidAt: new Date().toISOString(),
+          editFields: fieldsToSave,
+        };
+
+        // Persist before the first network mutation, including a preceding order edit.
+        // sessionStorage survives reloads and conversation navigation in the same tab.
+        if (!writePendingPaymentAttempt(attemptForRecovery)) {
+          attemptForRecovery = null;
+          toast.error("No se pudo conservar el intento de pago. No se envió ningún cambio; vuelve a intentarlo.");
+          return;
+        }
+        setPendingPaymentAttempt(attemptForRecovery);
+      }
 
       if (hasEdit) {
         const res = await fetch(`/api/orders/payments/orders/${orderId}`, {
@@ -247,7 +340,7 @@ export function LogisticsOrderEditor({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "edit_order",
-            fields,
+            fields: fieldsToSave,
             reason: "Actualización desde panel de Logística",
           }),
         });
@@ -259,6 +352,10 @@ export function LogisticsOrderEditor({
         };
 
         if (editResult.error === "invalid_catalog_product") {
+          if (attemptForRecovery) {
+            clearPendingPaymentAttempt(orderId);
+            setPendingPaymentAttempt(null);
+          }
           toast.error(
             "Un producto de este pedido ya no está en el catálogo activo. Vuelve a escribir su nombre y guarda.",
           );
@@ -271,54 +368,30 @@ export function LogisticsOrderEditor({
           typeof editResult.total === "number"
             ? editResult.total
             : editedTotal;
-
         savedPendingBalance =
           typeof editResult.pending_balance === "number"
             ? editResult.pending_balance
             : editedPendingBalance;
       }
 
-      if (paymentValue > savedPendingBalance) {
-        toast.error(
-          "El pedido se actualizó, pero el pago no se registró porque supera el nuevo saldo.",
-        );
-
+      if (
+        attemptForRecovery &&
+        !resumedAttempt &&
+        effectivePaymentAmount > savedPendingBalance
+      ) {
+        clearPendingPaymentAttempt(orderId);
+        setPendingPaymentAttempt(null);
         setPaymentAmount("");
+        toast.error(
+          "El pedido se actualizó, pero el pago no se registró porque supera el nuevo saldo. Revisa el saldo e ingresa un nuevo importe.",
+        );
         await load();
         notifyPaymentsChanged(orderId);
         onChanged?.();
         return;
       }
 
-      if (paymentValue > 0) {
-        const paymentCents = Math.round(paymentValue * 100);
-        const totalCents = Math.round(savedTotal * 100);
-        const balanceCents = Math.round(savedPendingBalance * 100);
-
-        const kind: "advance" | "balance" | "full" =
-          panel.paid_confirmed === 0 && paymentCents === totalCents
-            ? "full"
-            : paymentCents === balanceCents
-              ? "balance"
-              : "advance";
-
-        const amount = paymentValue.toFixed(2);
-        const attempt =
-          pendingPaymentAttempt &&
-          pendingPaymentAttempt.amount === amount &&
-          pendingPaymentAttempt.kind === kind
-            ? pendingPaymentAttempt
-            : {
-                requestKey: crypto.randomUUID(),
-                amount,
-                kind,
-                paidAt: new Date().toISOString(),
-              };
-
-        if (attempt !== pendingPaymentAttempt) {
-          setPendingPaymentAttempt(attempt);
-        }
-
+      if (attemptForRecovery) {
         const registerRes = await fetch(
           `/api/orders/payments/orders/${orderId}`,
           {
@@ -326,10 +399,10 @@ export function LogisticsOrderEditor({
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               action: "register",
-              request_key: attempt.requestKey,
-              amount: attempt.amount,
-              kind: attempt.kind,
-              paid_at: attempt.paidAt,
+              request_key: attemptForRecovery.requestKey,
+              amount: attemptForRecovery.amount,
+              kind: attemptForRecovery.kind,
+              paid_at: attemptForRecovery.paidAt,
               notes: "Pago registrado desde panel de Logística",
             }),
           },
@@ -347,6 +420,16 @@ export function LogisticsOrderEditor({
           !registered.payment_id ||
           !registered.row_version
         ) {
+          // This is a definitive rejection before a payment row exists. It is safe
+          // to release the attempt; uncertain network/5xx outcomes stay persisted.
+          if (registered.error === "exceeds_balance") {
+            clearPendingPaymentAttempt(orderId);
+            setPendingPaymentAttempt(null);
+            setPaymentAmount("");
+            await load();
+            toast.error("El saldo cambió y el pago no se registró. Revisa el saldo e ingresa un nuevo importe.");
+            return;
+          }
           throw new Error("payment_register_failed");
         }
 
@@ -364,29 +447,35 @@ export function LogisticsOrderEditor({
             },
           );
 
-          if (!confirmRes.ok) {
-            throw new Error("payment_confirm_failed");
-          }
+          if (!confirmRes.ok) throw new Error("payment_confirm_failed");
         }
 
+        clearPendingPaymentAttempt(orderId);
         setPendingPaymentAttempt(null);
       }
 
       toast.success(
         !hasEdit
           ? "Pago registrado."
-          : paymentValue > 0
+          : effectivePaymentAmount > 0
             ? "Pedido y pago actualizados."
             : "Pedido actualizado.",
       );
 
       setPaymentAmount("");
-
       await load();
       notifyPaymentsChanged(orderId);
       onChanged?.();
     } catch {
-      toast.error("No se pudieron guardar los cambios.");
+      toast.error(
+        "No se pudo completar el guardado. El intento quedó conservado para recuperar la misma operación sin duplicarla.",
+      );
+      if (attemptForRecovery) {
+        setPendingPaymentAttempt(attemptForRecovery);
+        setPaymentAmount(attemptForRecovery.amount);
+      }
+      // Refresh server state, but keep the persisted logical attempt for the next replay.
+      await load();
     } finally {
       setSaving(false);
     }
