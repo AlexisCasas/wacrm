@@ -42,6 +42,17 @@ export interface DispatchView {
   finished_at: string | null
 }
 
+export interface CustomerTemplateDispatchView {
+  id: string
+  kind: 'summary' | 'voucher'
+  status: 'claimed' | 'sending' | 'sent' | 'failed' | 'uncertain'
+  attempt: number
+  error_code: string | null
+  resolution: string | null
+  voucher_document_id: string
+  created_at: string
+}
+
 export interface OrderPanel {
   order: ConfirmedOrder
   logistics: LogisticsState
@@ -50,6 +61,8 @@ export interface OrderPanel {
   evidence: DocumentView | null
   /** The operational template sends of this order (technical state: only `uncertain` needs a person). */
   dispatches: DispatchView[]
+  /** Manual customer communications. These never move the logistics state. */
+  customer_dispatches: CustomerTemplateDispatchView[]
   events: OrderEventView[]
 }
 
@@ -81,7 +94,7 @@ export async function getOrderPanel(ctx: LogisticsCaller, orderId: string): Prom
   }
   if (!orderRow) return fail(404, 'not_found')
 
-  const [items, logistics, vouchers, evidence, dispatches, events] = await Promise.all([
+  const [items, logistics, vouchers, evidence, dispatches, customerDispatches, events] = await Promise.all([
     ctx.supabase.from('order_confirmation_items').select(CONFIRMED_ITEM_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).order('line_number', { ascending: true }),
     ctx.supabase
       .from('order_logistics')
@@ -92,9 +105,10 @@ export async function getOrderPanel(ctx: LogisticsCaller, orderId: string): Prom
     ctx.supabase.from('order_documents').select(DOCUMENT_PUBLIC_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).eq('kind', 'voucher').order('created_at', { ascending: false }).order('id', { ascending: false }).limit(50),
     ctx.supabase.from('order_documents').select(DOCUMENT_PUBLIC_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).eq('kind', 'evidence').eq('status', 'active').maybeSingle(),
     ctx.supabase.from('order_template_dispatches').select('id, status, attempt, error_code, resolution, claimed_at, finished_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(20),
+    ctx.supabase.from('order_customer_template_dispatches').select('id, kind, status, attempt, error_code, resolution, voucher_document_id, created_at').eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(20),
     ctx.supabase.from('order_logistics_events').select(EVENT_COLUMNS).eq('account_id', ctx.accountId).eq('order_id', orderId).order('created_at', { ascending: false }).limit(EVENT_LIMIT),
   ])
-  const failed = [items, logistics, vouchers, evidence, dispatches, events].find((r) => r.error)
+  const failed = [items, logistics, vouchers, evidence, dispatches, customerDispatches, events].find((r) => r.error)
   if (failed?.error) {
     console.error('[logistics] panel read failed:', failed.error.code)
     return fail(500, 'internal_error')
@@ -109,6 +123,7 @@ export async function getOrderPanel(ctx: LogisticsCaller, orderId: string): Prom
       vouchers: (vouchers.data ?? []) as unknown as DocumentView[],
       evidence: (evidence.data as unknown as DocumentView | null) ?? null,
       dispatches: (dispatches.data ?? []) as unknown as DispatchView[],
+      customer_dispatches: (customerDispatches.data ?? []) as unknown as CustomerTemplateDispatchView[],
       events: (events.data ?? []) as unknown as OrderEventView[],
     },
   }
