@@ -6,9 +6,9 @@
 
 ## Estado general
 
-- Hechos: **4/13**
+- Hechos: **5/13**
 - Parciales: **6/13**
-- Pendientes: **3/13**
+- Pendientes: **2/13**
 
 > Estos estados reflejan el control funcional declarado del entregable. No sustituyen validación técnica, QA ni evidencia de producción.
 
@@ -27,22 +27,17 @@
 | 09 | Notificaciones Shalom | Parcial |
 | 10 | Eliminar campos innecesarios | Hecho |
 | 11 | Fotografías y evidencias | Parcial |
-| 12 | Orden de mensajes | Pendiente |
+| 12 | Orden de mensajes | Hecho |
 | 13 | Carga progresiva de pedidos | Parcial |
 
 ## Orden acordado para continuar
 
 ### Próximo
-**12 — Orden de mensajes**
-
-Motivo: requerimiento pendiente y acotado al Inbox/UI, con menor dependencia externa que las plantillas WhatsApp o integraciones Shalom. Antes de modificar código se debe auditar el orden actual, reglas de ordenación, realtime, paginación/histórico y comportamiento con mensajes entrantes/salientes.
-
-### Después
 **08 — Filtros para cobranza**
 
 Definir criterios exactos de cobranza, campos, combinaciones y alcance por rol/cuenta antes de implementar.
 
-### Luego
+### Después
 **02 — Dos plantillas WhatsApp**
 
 Confirmar las dos plantillas, variables, idioma, disparadores, roles autorizados y necesidad de aprobación en Meta antes de desarrollo/despliegue.
@@ -72,13 +67,17 @@ El orden puede cambiar por dependencias o feedback operativo.
 
 ## Siguiente acción
 
-Iniciar auditoría de **12 — Orden de mensajes** y documentar:
+Iniciar definición y auditoría de **08 — Filtros para cobranza**.
 
-- orden actual de carga/render;
-- criterio por `created_at` / `id`;
-- comportamiento realtime;
-- mensajes entrantes vs salientes;
-- carga inicial e histórico;
-- duplicados o reordenamientos;
-- efecto de paginación/resync;
+Documentar:
+
+- objetivo operativo del filtro;
+- campos disponibles para cobranza;
+- criterios y combinaciones necesarias;
+- alcance por cuenta/rol;
+- comportamiento actual;
 - propuesta mínima antes de implementar.
+
+## Decisión registrada
+
+**12 — Orden de mensajes** se marca como **Hecho** por decisión del producto. No se abrirá un nuevo desarrollo para este punto salvo que aparezca evidencia funcional nueva.
