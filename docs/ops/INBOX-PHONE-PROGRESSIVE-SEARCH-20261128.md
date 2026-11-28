@@ -156,3 +156,43 @@ Orden obligatorio:
 4. verificar en producción el caso `51942309277`.
 
 No marcar como cerrado hasta obtener `DEPLOY PASS`.
+
+
+## Producción — deploy completado
+
+- Estado: **DEPLOY PASS - WITH OBSERVATIONS**
+- Commit productivo: `186d388a76bdb3b824ee508fa1860a8bb1852a8e`
+- Imagen productiva: `wacrm-app:inbox-phone-search-186d388a`
+- Cutover: 2026-11-28 18:50:10 UTC
+- Migration aplicada antes del código: `20261205000007_inbox_phone_progressive_search.sql`
+- Checksum validado: `dd5dc9dd…`
+- Health: healthy
+- Reinicios: 0
+- Readiness: 200
+- Caddy: PASS
+- Webhooks: 1461 procesados, 0 atascados
+- Errores de app: 0
+
+### Caso real pre-cutover
+
+`51942309277`:
+- 0 match exacto en contacts;
+- 1 pedido en ventana 0–15 días;
+- resolvió su `contact_id`;
+- conversación accesible dentro de la misma cuenta;
+- `942309277` produce el mismo resultado.
+
+### Observaciones no bloqueantes
+
+1. Tres 502 aislados en `POST /api/whatsapp/webhook` alrededor del build/cutover. Los webhooks terminaron procesados y no hubo patrón nuevo.
+2. Un 500 recurrente en `orders-sheets` por `altered_rows`, ya existente antes del deploy.
+
+### Pendiente para cierre funcional
+
+Con una sesión autenticada, buscar en Inbox:
+
+`51942309277`
+
+y confirmar visualmente que aparece la conversación esperada.
+
+Hasta esa comprobación, el deploy técnico queda cerrado y el QA visual queda pendiente.
