@@ -80,20 +80,8 @@ export async function register(r) {
   })
 
   await r.test('02.4b', { user: 'A-LOG', title: 'Renombrar una línea vinculada (formulario de detalle)', expected: 'No aplicable: se valida por el panel lateral vigente' }, async (t) => {
-    t.notApplicable('El formulario de detalle no es la vía aprobada para edición logística; el mismo comportamiento se cubre en el panel lateral vigente en 02.4a / 02.6a.')
+    t.notApplicable('El formulario de detalle no es la vía aprobada para edición logística; el mismo comportamiento se cubre en el panel lateral vigente en 02.4a.')
     return 'NA: comportamiento equivalente cubierto por el panel lateral'
-  }), async (t) => {
-    const order = await t.setup(() => multiLine(world))
-    await t.watch('order', order.orderId)
-    const { page, section } = await openDetail(t, 'A-LOG', order.orderId)
-    const form = await openEditForm(page, section)
-    await form.getByLabel('Producto', { exact: true }).nth(0).fill('Nombre escrito a mano')
-    await submitForm(form)
-    await toast(page, 'Pedido actualizado')
-    const after = await t.after('order')
-    assert.deepEqual(after.items.map((i) => i.catalog_product_id), [null, order.catalog[1].id, null])
-    assert.deepEqual(after.items.map((i) => i.item_type), ['product', 'product', 'product'])
-    return 'Línea 1 desvinculada; línea 2 conserva el vínculo'
   })
 
   await r.test('02.5', { user: 'A-LOG', title: 'Cambiar cantidad sin renombrar', expected: 'Se conserva el vínculo' }, async (t) => {
@@ -122,18 +110,8 @@ export async function register(r) {
   })
 
   await r.test('02.6b', { user: 'A-LOG', title: 'Producto inactivo: guardar líneas (formulario de detalle)', expected: 'No aplicable: se valida por el panel lateral vigente' }, async (t) => {
-    t.notApplicable('El formulario de detalle no es la vía aprobada para edición logística; el mismo comportamiento se cubre en el panel lateral vigente en 02.4a / 02.6a.')
+    t.notApplicable('El formulario de detalle no es la vía aprobada para edición logística; el mismo comportamiento se cubre en el panel lateral vigente en 02.6a.')
     return 'NA: comportamiento equivalente cubierto por el panel lateral'
-  }), async (t) => {
-    const order = await t.setup(() => withInactive(world))
-    const before = await t.watch('order', order.orderId)
-    const { page, section } = await openDetail(t, 'A-LOG', order.orderId)
-    const form = await openEditForm(page, section)
-    await form.getByLabel('Cantidad', { exact: true }).nth(0).fill('2')
-    await submitForm(form)
-    await toast(page, 'ya no está en el catálogo activo')
-    assert.deepEqual(await t.after('order'), before)
-    return 'Rechazado sin cambios'
   })
 
   await r.test('02.7', { user: 'A-LOG', title: 'Recuperación: volver a escribir el nombre inactivo', expected: 'Guarda sin vínculo' }, async (t) => {
