@@ -274,7 +274,7 @@ describe('LogisticsOrderEditor: saving never rewrites what the person did not ch
     save()
     await waitFor(() => expect(h.err).toHaveBeenCalled())
     expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).disabled).toBe(true)
-    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).value).toBe('20')
+    expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).value).toBe('20.00')
     save()
     await waitFor(() => expect(h.ok).toHaveBeenCalledTimes(1))
     expect((screen.getByPlaceholderText('0.00') as HTMLInputElement).disabled).toBe(false)
