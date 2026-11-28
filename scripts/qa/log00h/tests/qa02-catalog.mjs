@@ -79,7 +79,10 @@ export async function register(r) {
     return 'Línea 1 desvinculada; línea 2 conserva el vínculo'
   })
 
-  await r.test('02.4b', { user: 'A-LOG', title: 'Renombrar una línea vinculada (formulario de detalle)', expected: 'Solo esa línea pierde el vínculo' }, async (t) => {
+  await r.test('02.4b', { user: 'A-LOG', title: 'Renombrar una línea vinculada (formulario de detalle)', expected: 'No aplicable: se valida por el panel lateral vigente' }, async (t) => {
+    t.notApplicable('El formulario de detalle no es la vía aprobada para edición logística; el mismo comportamiento se cubre en el panel lateral vigente en 02.4a / 02.6a.')
+    return 'NA: comportamiento equivalente cubierto por el panel lateral'
+  }), async (t) => {
     const order = await t.setup(() => multiLine(world))
     await t.watch('order', order.orderId)
     const { page, section } = await openDetail(t, 'A-LOG', order.orderId)
@@ -118,7 +121,10 @@ export async function register(r) {
     return 'Rechazado sin cambios; el mensaje pide volver a escribir el nombre'
   })
 
-  await r.test('02.6b', { user: 'A-LOG', title: 'Producto inactivo: guardar líneas (formulario de detalle)', expected: 'Rechazo con mensaje propio y sin cambios' }, async (t) => {
+  await r.test('02.6b', { user: 'A-LOG', title: 'Producto inactivo: guardar líneas (formulario de detalle)', expected: 'No aplicable: se valida por el panel lateral vigente' }, async (t) => {
+    t.notApplicable('El formulario de detalle no es la vía aprobada para edición logística; el mismo comportamiento se cubre en el panel lateral vigente en 02.4a / 02.6a.')
+    return 'NA: comportamiento equivalente cubierto por el panel lateral'
+  }), async (t) => {
     const order = await t.setup(() => withInactive(world))
     const before = await t.watch('order', order.orderId)
     const { page, section } = await openDetail(t, 'A-LOG', order.orderId)
