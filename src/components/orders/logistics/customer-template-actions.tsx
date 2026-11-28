@@ -37,7 +37,6 @@ export function CustomerTemplateActions({
   const summary = stateFor("summary");
   const voucherSend = stateFor("voucher");
   const ready = !!voucher;
-  const voucherIsImage = !!voucher?.mime_type?.startsWith("image/");
 
   const send = async (kind: Kind) => {
     setBusy(kind);
@@ -86,14 +85,12 @@ export function CustomerTemplateActions({
           {label("summary", summary)}
         </Button>
         <Button type="button" size="sm" variant="outline" className="h-8 gap-1.5"
-          disabled={!ready || !voucherIsImage || busy !== null || voucherSend?.status === "sent" || voucherSend?.status === "claimed" || voucherSend?.status === "sending" || voucherSend?.status === "uncertain"}
-          title={ready && !voucherIsImage ? t("customerVoucherPdfBlocked") : undefined}
+          disabled={!ready || busy !== null || voucherSend?.status === "sent" || voucherSend?.status === "claimed" || voucherSend?.status === "sending" || voucherSend?.status === "uncertain"}
           onClick={() => void send("voucher")}>
           {busy === "voucher" ? <Loader2 className="size-3.5 animate-spin" /> : <FileImage className="size-3.5" aria-hidden />}
           {label("voucher", voucherSend)}
         </Button>
       </div>
-      {ready && !voucherIsImage ? <p className="text-[11px] text-amber-300">{t("customerVoucherPdfBlocked")}</p> : null}
       {[summary, voucherSend].filter((d): d is CustomerTemplateDispatchView => d?.status === "uncertain").map((d) => (
         <div key={d.id} className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2">
           <p className="flex items-center gap-1.5 text-[11px] text-amber-200">
