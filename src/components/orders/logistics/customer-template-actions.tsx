@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { FileImage, Loader2, MessageSquareText, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslations } from "next-intl";
@@ -27,6 +27,14 @@ export function CustomerTemplateActions({
   const t = useTranslations("OrderLogistics");
   const errorText = useErrorText();
   const [busy, setBusy] = useState<Kind | "resolve" | null>(null);
+  const [nowMs, setNowMs] = useState(0);
+
+  useEffect(() => {
+    const tick = () => setNowMs(Date.now());
+    tick();
+    const timer = window.setInterval(tick, 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   const voucher = useMemo(
     () => vouchers.find((v) => v.id === voucherDocumentId && v.status === "validated") ?? null,
@@ -67,7 +75,7 @@ export function CustomerTemplateActions({
     if (!d || (d.status !== "claimed" && d.status !== "sending")) return false;
     const startedAt = d.sending_at ?? d.claimed_at;
     const startedMs = Date.parse(startedAt);
-    return Number.isFinite(startedMs) && Date.now() - startedMs >= 10 * 60 * 1000;
+    return Number.isFinite(startedMs) && nowMs - startedMs >= 10 * 60 * 1000;
   };
 
   const blocksSend = (d: CustomerTemplateDispatchView | null) =>
