@@ -49,6 +49,31 @@ const reasonStatus:Record<string,number>={
 const text=(v:unknown):string|null=>typeof v==='string'&&v.trim()?v.trim():null
 const lineSummary=(items:Array<{quantity:number;product_name:string}>)=>items.map(i=>`${i.quantity} × ${i.product_name}`).join(' · ')
 
+export function buildSummaryTemplateParams(input:{
+  customerName:string
+  dni:string
+  destination:string
+  items:Array<{quantity:number;product_name:string}>
+  total:number
+  paid:number
+  pending:number
+  shalomNumber:string
+  shalomCode:string
+}):string[]{
+  return [
+    input.customerName,
+    input.customerName,
+    input.dni,
+    input.destination,
+    lineSummary(input.items),
+    formatSoles(input.total),
+    formatSoles(input.paid),
+    formatSoles(input.pending),
+    input.shalomNumber,
+    input.shalomCode,
+  ]
+}
+
 async function claim(admin:SupabaseClient,ctx:Pick<LogisticsCaller,'accountId'|'userId'>,orderId:string,kind:Kind):Promise<ServiceResult<Claim>>{
   const {data,error}=await admin.rpc('begin_order_customer_template',{p_account:ctx.accountId,p_actor:ctx.userId,p_order:orderId,p_kind:kind})
   if(error)return mapRpcError(error)
@@ -117,11 +142,17 @@ export async function sendOrderCustomerTemplate(
   let params:string[]
   let headerMediaUrl:string|undefined
   if(kind==='summary'){
-    params=[
-      order.customer_name,order.customer_name,dni,destination,lineSummary(order.lines),
-      formatSoles(balance.total),formatSoles(balance.paid),formatSoles(balance.pending),
-      shalomNumber,shalomCode,
-    ]
+    params=buildSummaryTemplateParams({
+      customerName:order.customer_name,
+      dni,
+      destination,
+      items:order.lines,
+      total:balance.total,
+      paid:balance.paid,
+      pending:balance.pending,
+      shalomNumber,
+      shalomCode,
+    })
     if(extractVariableIndices(template.body_text).length!==params.length)return preFail('template_params_mismatch')
   }else{
     params=[order.customer_name,order.customer_name,destination]

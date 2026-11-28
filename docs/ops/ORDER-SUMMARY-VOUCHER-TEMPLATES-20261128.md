@@ -56,6 +56,15 @@ Destino: {{4}}
 Costo total: {{6}}
 Adelanto: {{7}}
 PAGO PENDIENTE: {{8}}
+
+👇👇👇👇
+
+Aquí te compartimos los datos de envío para que puedas hacer el seguimiento:
+
+Número de orden: {{9}}
+Código: {{10}}
+
+👇👇👇👇
 ```
 
 Variables:
@@ -72,6 +81,8 @@ Variables:
 6. costo total formateado: `S/ 580.00`
 7. monto pagado confirmado / adelanto: `S/ 80.00`
 8. saldo pendiente: `S/ 500.00`
+9. número de orden Shalom validado
+10. código Shalom validado
 
 ### Fuente de datos
 
