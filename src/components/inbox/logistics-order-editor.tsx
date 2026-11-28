@@ -307,6 +307,7 @@ export function LogisticsOrderEditor({
         });
 
         const editResult = (await res.json().catch(() => ({}))) as {
+          total?: number | null;
           pending_balance?: number | null;
           error?: string;
         };
