@@ -162,3 +162,106 @@ Read-only VPS audit confirmed:
 6. Use Claude Code only for VPS work and production read-only verification unless the owner authorizes more.
 
 **Current release gate: NO-GO.** Production remains unchanged.
+
+---
+
+## 11. Post-deployment audit LOG-00H.3 — 2026-11-28
+
+Source: Claude Code read-only VPS audit supplied by the project owner. This section records reported findings; it does not claim an independent reproduction by GitHub CI.
+
+### Production provenance
+
+- Active container: `wacrm-app-1`.
+- Active image: `wacrm-app:unread-human-view-c52ed8d2`.
+- Image digest: `sha256:9ff20e22c8968b5aafb4643155811ca2875f8f385aadc1424665d6cdd00d30d1`.
+- Deployed revision: `c52ed8d2b8486c06c11fa79f11a9a08007b4ec90`.
+- Runtime health: healthy, readiness 200, 0 restarts, no OOM reported.
+- Lineage reported: `68c5362e → e3b6d478 → b83bf5d1 → f479e8ac → c52ed8d2`.
+- PR #175 head `e3b6d478` is an ancestor of production. PR #181 head `c885d58c` is not an ancestor, but its tree was reported identical to `b83bf5d1`, which is in production lineage.
+- Additional commits after the feature stack: `f479e8ac` hides the “Editar pedido” button; `c52ed8d2` contains unread-message changes.
+- No deploy, restart, DB write, migration or customer message was performed during the audit.
+- `origin/main` is not the production lineage. Future release work must branch from the verified production baseline/descendant, not blindly from main.
+
+### LOG-00H.3 findings
+
+| Area | Audit result | Interpretation / action |
+|---|---|---|
+| Derive to Commercial | PASS in code, when conversation is in Logistics stage | No production usage recorded; needs supervised real UI validation |
+| Changed-fields-only order save | PASS | No unchanged-field rewrite detected |
+| Legacy order/product preservation | PASS | No unnecessary recalculation when lines are unchanged |
+| Register payment without editing order | PASS | Preserve this invariant |
+| Edit order button | FAIL | Hidden since `f479e8ac`; agency/department API remains, but UI entry point unavailable. Decide whether to restore the button or provide another approved edit entry point |
+| Catalogue links / inactive products | PASS | Preserve existing behavior |
+| Corrected totals | PASS conditionally | Preserved when lines unchanged; recalculated with warning when lines change |
+| Logistics payment retry | FAIL | Key is in component memory only; reload/conversation change can create a new key. Switching order within same chat can cause conflict; a later legitimate same-amount payment can show false “Payment registered” |
+| Confirmed Orders payment retry | PASS within same browser tab/session | Does not prove Logistics panel recovery |
+| Pagination | PASS in the reported synthetic/runtime check | Keep progressive loading requirement partially open until end-to-end user confirmation |
+| Financial reconciliation | PASS | 504 tracked orders reconciled; no orphan events or cross-account links reported |
+| Production duplicate payments | NONE found | Two payments total; none since payment deployment. The same-amount pair was a rejection followed by a valid registration, not a duplicate |
+| Confirmed Orders access/UI | UNKNOWN | No real user session was used |
+| Inbox / Calling / Shalom regression | UNKNOWN | Insufficient live activity/session evidence |
+| Flows | PASS | No regression reported |
+| Webhook 502 | One transient 502 reported, no restart; 3580 inbox events processed | Meta retry outcome not verified |
+| Sheets reconcile | Two 500 responses, pre-existing since 11-Nov | Separate incident, not caused by this deployment |
+| Shalom guide | One guide/voucher mismatch reported | Reconcile/correct guide before relying on tracking |
+
+### PAY-01–PAY-04 production gap
+
+The synthetic run `46029178722` on `b83bf5d1` was reported as 73 PASS, 1 NA, but global result PARTIAL because schema privilege differences and incomplete DB suites remain. This run does not close production payment recovery.
+
+The VPS audit specifically found that the Logistics panel does not use the same durable `sessionStorage` recovery as Confirmed Orders. The retry key is memory-only and is not scoped to the order. Therefore:
+- Do not declare PAY-01–PAY-04 closed for the Logistics panel.
+- Do not infer “no duplicates found” means retry behavior is safe; no payments were recorded after deployment.
+- Keep the operational precaution: after a Logistics payment error, do not re-enter/retry blindly; inspect the payment list / reconcile first.
+- Any remediation must scope the idempotency key to the logical payment attempt and order, preserve the original payload, recover uncertain server state, and never falsely report success.
+
+### Phase 2 — 13 deliverables (owner's dashboard, 2026-11-28)
+
+Dashboard declared: 4/13 Hecho, 6/13 Parcial, 3/13 Pendiente. This is a declared business-status count, not a verified technical completion percentage.
+
+| # | Deliverable | Dashboard status | Current evidence / next action |
+|---|---|---|---|
+| 01 | Logistics states | Partial | Define and verify full lifecycle: Confirmado on order confirmation; Procesado only after Meta accepts the packaging template; En tránsito / En destino from Shalom tracking; No encontrado en Shalom on guide/tracking mismatch; Finalizado manually by Logistics or Supervisor and releases the commercial cycle while preserving history |
+| 02 | Two WhatsApp templates | Pending | Specify and validate separately: order summary/packaging and Shalom voucher dispatch; define required variables and send outcomes |
+| 03 | Shalom voucher validation | Partial | Validate voucher before sending summary; extract/check order number and Shalom code; reconcile current guide mismatch |
+| 04 | Edit panel beside chat | Declared Done | Revalidation required: audit found “Editar pedido” hidden since `f479e8ac`; determine whether the approved edit entry point must be restored or replaced |
+| 05 | Simplify Logistics fields | Done | Preserve verified reduced form and required financial visibility |
+| 06 | Advances and automatic balance | Done | Financial reconciliation passed in LOG-00H.3; preserve invariant |
+| 07 | Accessories and commissions | Partial | Allow accessories with editable prices without treating them as main products for commission calculation; test with synthetic accessory cases |
+| 08 | Collection filters | Pending | Filters and access to conversations by Logistics state |
+| 09 | Shalom notifications | Partial | Complete notification/template behavior tied to Shalom states; verify delivery and deduplication |
+| 10 | Remove unnecessary fields | Done | Preserve removed email/company/reason fields while retaining internal product description |
+| 11 | Photos and packaging evidence | Partial | Prevent duplicate uploads; verify retry, progress, and evidence association |
+| 12 | Message ordering | Pending | Correct ordering/presentation of messages sent to customer |
+| 13 | Progressive order loading | Partial | Pagination reported PASS, but progressive loading needs full UX verification with realistic list sizes |
+
+**Important status distinction:** the dashboard count remains 4/6/3 as declared. Item 04 must be marked “Hecho declarado / revalidación requerida” until the hidden button discrepancy is resolved; do not silently change the owner's business status count without agreement.
+
+### Recommended execution order for remaining Phase 2 work
+
+**P0 — protect financial/order operations**
+1. PAY-LOGISTICS: repair durable idempotency in Logistics payment panel, including reload, conversation switch, order switch, same-amount legitimate next payment, uncertain register and confirm responses, and truthful UI outcome.
+2. ITEM-04: decide and restore the approved order-edit entry point for agency/department, without changing safe-save/catalogue invariants.
+3. ITEM-03: fix voucher/order-number/code validation and reconcile the mismatched guide.
+
+**P1 — complete logistics lifecycle**
+4. ITEM-01: formalize and test all six Logistics states and their triggers, especially Meta acceptance for Procesado and manual Finalizado permissions/release semantics.
+5. ITEM-02: complete the two WhatsApp templates and variable validation.
+6. ITEM-09: finish Shalom state notifications, deduplication and delivery tracking.
+
+**P2 — operational usability**
+7. ITEM-07: accessory pricing and commission exclusion.
+8. ITEM-08: collection filters and state-based conversation access.
+9. ITEM-11: photo/evidence duplicate prevention.
+10. ITEM-12: message ordering.
+11. ITEM-13: progressive loading end-to-end.
+
+Do not start Phase 3 audit features until Phase 2's required operational behaviors are accepted, unless the owner explicitly reprioritizes.
+
+### New-team operating rules
+
+- Use GitHub MCP for code, PRs, CI, QA and documentation.
+- Use Claude Code for VPS queries and deployment. Keep VPS inspections read-only unless a specific write action is explicitly approved.
+- Before each implementation, fetch current production descendant, current PR heads, workflow runs and this handover document. The historical SHAs above may become stale.
+- Do not rely on PR #181 alone for Logistics payment safety; LOG-00H.3 shows a gap in the deployed Logistics panel.
+- No production write, migration, payment simulation, customer message, merge or deployment without explicit authorization.
