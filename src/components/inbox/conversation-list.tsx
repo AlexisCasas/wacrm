@@ -59,12 +59,6 @@ interface ConversationListProps {
   tagCatalogVersion?: number;
 }
 
-const STATUS_COLORS: Record<ConversationStatus, string> = {
-  open: "bg-primary",
-  pending: "bg-amber-500",
-  closed: "bg-muted-foreground",
-};
-
 
 
 type InboxFilter = ConversationStatus | "all" | "unread" | "needs_human";
