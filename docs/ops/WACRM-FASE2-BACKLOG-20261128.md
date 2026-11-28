@@ -6,8 +6,8 @@
 
 ## Estado general
 
-- Hechos: **5/13**
-- Parciales: **7/13**
+- Hechos: **6/13**
+- Parciales: **6/13**
 - Pendientes: **1/13**
 
 > Estos estados reflejan el control funcional declarado del entregable. No sustituyen validación técnica, QA ni evidencia de producción.
@@ -23,7 +23,7 @@
 | 05 | Simplificación de campos | Hecho |
 | 06 | Adelantos y saldo automático | Hecho |
 | 07 | Accesorios y comisiones | Parcial |
-| 08 | Filtros para cobranza | Parcial |
+| 08 | Filtros para cobranza | Hecho |
 | 09 | Notificaciones Shalom | Parcial |
 | 10 | Eliminar campos innecesarios | Hecho |
 | 11 | Fotografías y evidencias | Parcial |
@@ -33,12 +33,23 @@
 ## Orden acordado para continuar
 
 ### Próximo
+**02 — Dos plantillas WhatsApp**
+
+Pendiente de definir/validar las dos plantillas, variables, idioma, disparadores y alcance de uso.
+
+### Cerrado recientemente
 **08 — Filtros para cobranza**
 
-Implementación preparada en `feat/cobranza-balance-filter-20261128` con filtros Todos / Con saldo / Sin pagar / Pago parcial / Pagado. Estado: **Parcial** hasta completar validación técnica y deploy.
+Desplegado en producción con commit `0c4e88bb0d52eac69a944a38c3d662f97d2425c4` e imagen `wacrm-app:cobranza-filters-0c4e88bb`.
 
-### Después
-**02 — Dos plantillas WhatsApp**
+Incluye:
+- Todos
+- Con saldo
+- Sin pagar
+- Pago parcial
+- Pagado
+
+Deploy validado con health/readiness/Caddy/crons/webhooks sin observaciones.
 
 Confirmar las dos plantillas, variables, idioma, disparadores, roles autorizados y necesidad de aprobación en Meta antes de desarrollo/despliegue.
 
@@ -81,3 +92,20 @@ Documentar:
 ## Decisión registrada
 
 **12 — Orden de mensajes** se marca como **Hecho** por decisión del producto. No se abrirá un nuevo desarrollo para este punto salvo que aparezca evidencia funcional nueva.
+
+
+## Producción — Cobranza
+
+- Commit: `0c4e88bb0d52eac69a944a38c3d662f97d2425c4`
+- Imagen: `wacrm-app:cobranza-filters-0c4e88bb`
+- Estado: DEPLOY PASS
+- Cutover: 2026-11-28 16:45 UTC
+- Reinicios: 0
+- Caddy: PASS
+- 502 post-cutover: 0
+- Crons: 0 respuestas no-200
+- Webhooks: 959 procesados, 0 atascados
+- Migrations: ninguna
+- QA visual autenticado: pendiente por falta de sesión segura; lógica cubierta por tests automatizados.
+
+Limitación conocida: solo los pedidos con fila en `order_financials` participan en los filtros financieros; pedidos históricos previos a `balance_trusted_since` aparecen solo en "Todos".
