@@ -203,6 +203,38 @@ El `voucher_envio_shalom` actual corresponde a otro momento operativo (guía/env
 
 Backend + UI preparados en la rama. La comunicación es independiente de Embalaje y usa un ledger propio.
 
-**Bloqueador deliberado antes de deploy:** si el voucher validado es PDF, "Enviar voucher al cliente" permanece deshabilitado hasta validar una conversión PDF→imagen estable en el contenedor productivo. "Enviar resumen" no depende del formato del archivo y sí puede operar con voucher PDF validado.
+El candidato V2 ya incorpora conversión PDF→imagen para el voucher: Poppler (`pdftoppm`) renderiza solo la primera página a JPG dentro del runtime, sin modificar el PDF original. La imagen derivada queda en el bucket privado y Meta recibe una URL firmada temporal.
 
 La migración nueva es aditiva y NO debe aplicarse hasta que el candidato completo pase auditoría, tests, build y QA.
+
+
+## Estado V2 sobre producción actual
+
+Base productiva incluida:
+- commit: `186d388a76bdb3b824ee508fa1860a8bb1852a8e`
+- imagen: `wacrm-app:inbox-phone-search-186d388a`
+- incluye el fix productivo de búsqueda por celular.
+
+Rama:
+`feat/order-summary-voucher-templates-v2-20261128`
+
+Cambios cerrados en V2:
+- migración renumerada a `20261205000008_order_customer_templates.sql`;
+- permisos de la tabla endurecidos: `authenticated` recibe solo SELECT;
+- migración registrada en `migration-manifest.json`;
+- doble clic/reintento concurrente serializado con advisory lock;
+- errores de red ambiguos (`fetch failed`, timeout, ECONNRESET, etc.) pasan a `uncertain` y no habilitan reenvío automático;
+- vouchers imagen se envían directamente;
+- vouchers PDF se convierten a JPG (primera página) usando Poppler;
+- PDF original permanece intacto;
+- ambos botones se habilitan únicamente con voucher validado;
+- Comercial/Viewer quedan bloqueados por el resolver de acceso de Logística;
+- los envíos no cambian `order_logistics.status` ni usan el ledger de Embalaje.
+
+Pendiente antes de deploy:
+1. auditoría final de la V2;
+2. tests del render PDF en el contenedor real;
+3. typecheck/lint/build;
+4. creación y aprobación de las dos plantillas Meta;
+5. configuración por cuenta;
+6. migration + candidate + dry-run + deploy controlado.
