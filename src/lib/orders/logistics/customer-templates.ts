@@ -4,13 +4,13 @@ import { ForbiddenError } from '@/lib/auth/account'
 import { assertConversationOperationalAccess } from '@/lib/conversations/operational-access'
 import { CONFIRMED_ITEM_COLUMNS, CONFIRMED_ORDER_COLUMNS, toOrder } from '@/lib/orders/confirmed-orders'
 import type { LogisticsCaller } from '@/lib/orders/logistics/access'
-import { ORDER_DOCS_BUCKET } from '@/lib/orders/logistics/constants'
 import { fail, mapRpcError, type ServiceResult } from '@/lib/orders/logistics/documents'
 import { isUuid } from '@/lib/orders/logistics/files'
 import { resolveOrderBalance, formatSoles, balanceErrorCode } from '@/lib/orders/payments/balance'
 import { resolveTemplateRow } from '@/lib/whatsapp/template-body'
 import { extractVariableIndices } from '@/lib/whatsapp/template-validators'
 import { sendMessageToConversation } from '@/lib/whatsapp/send-message'
+import { voucherImageSignedUrl } from '@/lib/orders/logistics/voucher-preview'
 
 type Kind = 'summary' | 'voucher'
 type SendFn = typeof sendMessageToConversation
@@ -157,10 +157,9 @@ export async function sendOrderCustomerTemplate(
   }else{
     params=[order.customer_name,order.customer_name,destination]
     if(extractVariableIndices(template.body_text).length!==params.length)return preFail('template_params_mismatch')
-    if(!doc.mime_type.startsWith('image/'))return preFail('voucher_image_required',409)
-    const {data:signed,error:signError}=await admin.storage.from(ORDER_DOCS_BUCKET).createSignedUrl(doc.storage_path,600)
-    if(signError||!signed?.signedUrl)return preFail('storage_failed',502)
-    headerMediaUrl=signed.signedUrl
+    const media=await voucherImageSignedUrl(admin,{storagePath:doc.storage_path,mimeType:doc.mime_type})
+    if(!media.ok)return preFail(media.error,media.status)
+    headerMediaUrl=media.body.url
   }
 
   const {data:marked,error:markError}=await admin.rpc('mark_order_customer_template_sending',{p_account:ctx.accountId,p_actor:ctx.userId,p_dispatch:claimed.dispatch_id})

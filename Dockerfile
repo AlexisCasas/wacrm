@@ -44,7 +44,9 @@ ENV NODE_ENV=production \
     PORT=3000 \
     HOSTNAME=0.0.0.0
 
-RUN addgroup -S nextjs && adduser -S nextjs -G nextjs
+RUN apk add --no-cache poppler-utils \
+    && addgroup -S nextjs \
+    && adduser -S nextjs -G nextjs
 
 COPY --from=builder --chown=nextjs:nextjs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nextjs /app/.next/static ./.next/static
