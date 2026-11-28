@@ -127,6 +127,9 @@ export function ConversationList({
   });
 
   useEffect(() => {
+    // Do not issue a broad fallback query while tenancy is still resolving.
+    if (!accountId) return;
+
     const supabase = createClient();
     let cancelled = false;
     // Cancels this run's in-flight requests when a newer search/resync
@@ -139,11 +142,11 @@ export function ConversationList({
       const finishTimer = startSearchTimer("inbox", term.length);
       let requests = 0;
       const baseQuery = () => {
-        let query = supabase
+        const query = supabase
           .from("conversations")
           .select(INBOX_CONVERSATION_SELECT)
-          .eq("contact.blocked", false);
-        if (accountId) query = query.eq("account_id", accountId);
+          .eq("contact.blocked", false)
+          .eq("account_id", accountId);
         return query
           .order("last_message_at", { ascending: false })
           .order("id", { ascending: true })
@@ -204,11 +207,11 @@ export function ConversationList({
               return { rows: [] as InboxRows, truncated: false };
             }
             requests++;
-            let orderQuery = supabase
+            const orderQuery = supabase
               .from("order_confirmations")
               .select("contact_id")
-              .in("phone", orderPhones);
-            if (accountId) orderQuery = orderQuery.eq("account_id", accountId);
+              .in("phone", orderPhones)
+              .eq("account_id", accountId);
             const { data: orders, error: orderError } = await orderQuery
               .not("contact_id", "is", null)
               .order("confirmed_at", { ascending: false })
@@ -306,12 +309,16 @@ export function ConversationList({
   // an existing tag never touches this dependency, so it never
   // refetches for that.
   useEffect(() => {
+    if (!accountId) return;
+
     const supabase = createClient();
     let cancelled = false;
     (async () => {
-      let query = supabase.from("tags").select("*");
-      if (accountId) query = query.eq("account_id", accountId);
-      const { data } = await query.order("name");
+      const { data } = await supabase
+        .from("tags")
+        .select("*")
+        .eq("account_id", accountId)
+        .order("name");
       if (!cancelled && data) setTags(data as Tag[]);
     })();
     return () => {

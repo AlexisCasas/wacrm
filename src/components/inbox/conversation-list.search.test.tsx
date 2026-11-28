@@ -22,7 +22,7 @@ const h = vi.hoisted(() => ({
   orFilters: [] as string[],
   ilikePatterns: [] as string[],
   ranges: [] as { source: string; from: number; to: number }[],
-  eqCalls: [] as [string, unknown][],
+  eqCalls: [] as [string, string, unknown][],
 }));
 
 vi.mock("@/lib/supabase/client", () => ({
@@ -37,7 +37,7 @@ vi.mock("@/lib/supabase/client", () => ({
           return b;
         },
         not: () => b,
-        eq: (c: string, v: unknown) => (table === "conversations" && h.eqCalls.push([c, v]), b),
+        eq: (c: string, v: unknown) => (h.eqCalls.push([table, c, v]), b),
         order: () => b,
         abortSignal: () => b,
         or: (f: string) => ((source = "contact"), h.orFilters.push(f), b),
@@ -149,8 +149,53 @@ describe("Inbox search (FIX-01)", () => {
     render(<Harness />);
     await type("ana");
     await waitFor(() => expect(h.ranges.length).toBeGreaterThan(0));
-    expect(h.eqCalls).toContainEqual(["account_id", "acct-1"]);
-    expect(h.eqCalls).toContainEqual(["contact.blocked", false]);
+    expect(h.eqCalls).toContainEqual(["conversations", "account_id", "acct-1"]);
+    expect(h.eqCalls).toContainEqual(["conversations", "contact.blocked", false]);
+  });
+
+  it("uses the account supplied to the component for a second tenant", async () => {
+    function AccountBHarness() {
+      const [list, setList] = useState<Conversation[]>([]);
+      return (
+        <ConversationList
+          accountId="acct-b"
+          activeConversationId={null}
+          onSelect={() => {}}
+          conversations={list}
+          onConversationsLoaded={setList}
+        />
+      );
+    }
+    render(<AccountBHarness />);
+    await type("ana");
+    await waitFor(() =>
+      expect(h.eqCalls).toContainEqual(["conversations", "account_id", "acct-b"]),
+    );
+  });
+
+  it("does not query conversations or tags before accountId is resolved", async () => {
+    const [list] = [([] as Conversation[])];
+    render(
+      <ConversationList
+        accountId={null}
+        activeConversationId={null}
+        onSelect={() => {}}
+        conversations={list}
+        onConversationsLoaded={() => {}}
+      />,
+    );
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(h.eqCalls).toEqual([]);
+    expect(h.orderQueries).toBe(0);
+  });
+
+  it("scopes the order lookup to the current account", async () => {
+    h.orders = [{ contact_id: "ct-b1" }];
+    h.rows.order = [mk("b1", "Order Match", "")];
+    render(<Harness />);
+    await type("987654321");
+    await waitFor(() => expect(h.orderQueries).toBe(1));
+    expect(h.eqCalls).toContainEqual(["order_confirmations", "account_id", "acct-1"]);
   });
 
   it("pages each branch past 1000 rows", async () => {

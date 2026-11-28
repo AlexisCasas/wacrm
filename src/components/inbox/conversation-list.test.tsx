@@ -33,6 +33,7 @@ vi.mock("next-intl", () => ({
 const h = vi.hoisted(() => ({
   tagsCatalog: [] as { id: string; name: string; color: string }[],
   tagsFetchCount: 0,
+  eqCalls: [] as [string, string, unknown][],
   contactSearchRows: [] as Conversation[],
   messageSearchRows: [] as Conversation[],
   searchedRanges: [] as { source: "contact" | "message"; from: number; to: number }[],
@@ -49,7 +50,10 @@ vi.mock("@/lib/supabase/client", () => ({
         select: () => builder,
         in: () => builder,
         not: () => builder,
-        eq: () => builder,
+        eq: (column: string, value: unknown) => {
+          h.eqCalls.push([table, column, value]);
+          return builder;
+        },
         order: (column: string) => {
           if (table === "conversations") h.conversationOrderColumns.push(column);
           return builder;
@@ -90,6 +94,7 @@ vi.mock("@/lib/supabase/client", () => ({
 beforeEach(() => {
   h.tagsCatalog = [];
   h.tagsFetchCount = 0;
+  h.eqCalls = [];
   h.contactSearchRows = [];
   h.messageSearchRows = [];
   h.searchedRanges = [];
@@ -167,6 +172,7 @@ const NORMAL_CONV = conv({
 function renderList(conversations: Conversation[]) {
   return render(
     <ConversationList
+     accountId="acct-1"
       accountId="acct-1"
       activeConversationId={null}
       onSelect={() => {}}
@@ -180,6 +186,15 @@ afterEach(() => {
   // vitest.config.ts doesn't set `test.globals: true`, so RTL's
   // automatic per-test cleanup never registers — do it explicitly.
   cleanup();
+});
+
+describe("ConversationList — account scoping", () => {
+  it("scopes tag catalog reads to the current account", async () => {
+    renderList([NORMAL_CONV]);
+    await waitFor(() => expect(h.tagsFetchCount).toBe(1));
+    expect(h.eqCalls).toContainEqual(["tags", "account_id", "acct-1"]);
+    expect(h.eqCalls).toContainEqual(["conversations", "account_id", "acct-1"]);
+  });
 });
 
 describe('ConversationList — "Needs human" indicator (test #17, #18)', () => {
@@ -227,6 +242,7 @@ describe("ConversationList — database-backed search", () => {
 
     render(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[]}
@@ -258,6 +274,7 @@ describe("ConversationList — database-backed search", () => {
     const onConversationsLoaded = vi.fn();
     render(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[]}
@@ -283,6 +300,7 @@ describe("ConversationList — database-backed search", () => {
     const onConversationsLoaded = vi.fn();
     render(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[]}
@@ -304,6 +322,7 @@ describe("ConversationList — database-backed search", () => {
     const onConversationsLoaded = vi.fn();
     const { unmount } = render(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[]}
@@ -466,6 +485,7 @@ describe("ConversationList — tagCatalogVersion invalidation (P3 adversarial re
   function renderWithVersion(version: number) {
     return render(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[]}
@@ -492,6 +512,7 @@ describe("ConversationList — tagCatalogVersion invalidation (P3 adversarial re
     ];
     rerender(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[]}
@@ -508,6 +529,7 @@ describe("ConversationList — tagCatalogVersion invalidation (P3 adversarial re
     h.tagsCatalog = [{ id: "t1", name: "Favoritos", color: "#f59e0b" }];
     const { rerender } = render(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[]}
@@ -520,6 +542,7 @@ describe("ConversationList — tagCatalogVersion invalidation (P3 adversarial re
 
     rerender(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[]}
@@ -546,6 +569,7 @@ describe("ConversationList — tagCatalogVersion invalidation (P3 adversarial re
 
     const { rerender } = render(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[conversation]}
@@ -567,6 +591,7 @@ describe("ConversationList — tagCatalogVersion invalidation (P3 adversarial re
     h.tagsCatalog = [...h.tagsCatalog, { id: "t3", name: "Reclamo", color: "#ec4899" }];
     rerender(
       <ConversationList
+        accountId="acct-1"
         activeConversationId={null}
         onSelect={() => {}}
         conversations={[conversation]}
