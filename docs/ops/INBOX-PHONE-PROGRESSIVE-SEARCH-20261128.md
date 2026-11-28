@@ -196,3 +196,20 @@ Con una sesión autenticada, buscar en Inbox:
 y confirmar visualmente que aparece la conversación esperada.
 
 Hasta esa comprobación, el deploy técnico queda cerrado y el QA visual queda pendiente.
+
+
+## Cierre funcional
+
+Validación visual confirmada por usuario en producción:
+
+- búsqueda por número: **PASS**
+- caso real: conversación encontrada
+- percepción de velocidad: mejora visible / mucho más rápida
+- búsqueda por nombre y texto: sin cambios intencionales
+- estado final: **CERRADO**
+
+Producción:
+- commit: `186d388a76bdb3b824ee508fa1860a8bb1852a8e`
+- imagen: `wacrm-app:inbox-phone-search-186d388a`
+
+No quedan pendientes funcionales dentro de este fix. La optimización de búsquedas sin coincidencia / rama ancha queda como mejora de performance separada.
