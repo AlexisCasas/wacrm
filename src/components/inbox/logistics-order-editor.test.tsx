@@ -364,7 +364,7 @@ describe('LogisticsOrderEditor: saving never rewrites what the person did not ch
     expect(firstOrderRegisters[1].request_key).toBe(firstKey)
   })
 
-  it('replays the exact order edit snapshot together with an uncertain payment after remount', async () => {
+  it('does not repeat a completed order edit when recovering an uncertain payment after remount', async () => {
     const posts: Body[] = []
     let registerCount = 0
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: RequestInit) => {
@@ -394,8 +394,8 @@ describe('LogisticsOrderEditor: saving never rewrites what the person did not ch
     await waitFor(() => expect(h.ok).toHaveBeenCalled())
     const edits = posts.filter((p) => p.action === 'edit_order')
     const registers = posts.filter((p) => p.action === 'register')
-    expect(edits).toHaveLength(2)
-    expect(edits[1].fields).toEqual(firstEdit?.fields)
+    expect(edits).toHaveLength(1)
+    expect(edits[0].fields).toEqual(firstEdit?.fields)
     expect(registers[1].request_key).toBe(firstRegister?.request_key)
     expect(registers[1].amount).toBe(firstRegister?.amount)
   })
