@@ -318,25 +318,56 @@ describe("ConversationList — database-backed search", () => {
   });
 });
 
-describe('ConversationList — badges alongside the indicator (test #20, #21)', () => {
-  it("the unread badge still appears next to the Needs-human indicator", async () => {
+describe('ConversationList — unread / Needs-human without status dot', () => {
+  it("A: read/open renders no unread badge and no status dot", async () => {
+    renderList([
+      conv({
+        ...NORMAL_CONV,
+        id: "conv-read-open",
+        contact: contact("Read Open"),
+        unread_count: 0,
+        status: "open",
+      }),
+    ]);
+    expect(await screen.findByText("Read Open")).toBeInTheDocument();
+    expect(screen.queryByTitle("open")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("needsHumanAttention")).not.toBeInTheDocument();
+  });
+
+  it("B: read/pending renders no status dot", async () => {
+    renderList([
+      conv({
+        ...NORMAL_CONV,
+        id: "conv-read-pending",
+        contact: contact("Read Pending"),
+        unread_count: 0,
+        status: "pending",
+      }),
+    ]);
+    expect(await screen.findByText("Read Pending")).toBeInTheDocument();
+    expect(screen.queryByTitle("pending")).not.toBeInTheDocument();
+  });
+
+  it("C: unread badge renders without a status dot", async () => {
+    renderList([
+      conv({
+        ...NORMAL_CONV,
+        id: "conv-unread",
+        contact: contact("Unread Person"),
+        unread_count: 5,
+        status: "pending",
+      }),
+    ]);
+    expect(await screen.findByText("5")).toBeInTheDocument();
+    expect(screen.queryByTitle("pending")).not.toBeInTheDocument();
+    expect(screen.queryByTitle("needsHumanAttention")).not.toBeInTheDocument();
+  });
+
+  it("D: Needs-human and unread remain visible without a status dot", async () => {
     renderList([HANDOFF_CONV]);
     expect(await screen.findByTitle("needsHumanAttention")).toBeInTheDocument();
-    expect(screen.getByText("3")).toBeInTheDocument(); // unread_count
-  });
-
-  it("the status dot still appears next to the Needs-human indicator", async () => {
-    renderList([HANDOFF_CONV]);
-    await screen.findByTitle("needsHumanAttention");
-    // STATUS_COLORS keys the dot's title to the raw status value.
-    expect(screen.getByTitle("open")).toBeInTheDocument();
-  });
-
-  it("the unread badge still render normally with no handoff present", async () => {
-    renderList([conv({ ...NORMAL_CONV, unread_count: 5, status: "pending" })]);
-    expect(await screen.findByText("5")).toBeInTheDocument();
-    expect(screen.getByTitle("pending")).toBeInTheDocument();
-    expect(screen.queryByTitle("needsHumanAttention")).not.toBeInTheDocument();
+    expect(screen.getByText("3")).toBeInTheDocument();
+    expect(screen.queryByTitle("open")).not.toBeInTheDocument();
   });
 });
 
