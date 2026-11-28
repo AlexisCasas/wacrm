@@ -414,7 +414,7 @@ export function LogisticsOrderEditor({
           throw new Error("payment_register_failed");
         }
 
-        if (registered.status !== "confirmed") {
+        if (registered.status === "recorded") {
           const confirmRes = await fetch(
             `/api/orders/payments/orders/${orderId}`,
             {
@@ -429,6 +429,16 @@ export function LogisticsOrderEditor({
           );
 
           if (!confirmRes.ok) throw new Error("payment_confirm_failed");
+        } else if (registered.status !== "confirmed") {
+          if (registered.status === "rejected" || registered.status === "voided") {
+            clearPendingPaymentAttempt(orderId);
+            setPendingPaymentAttempt(null);
+            setPaymentAmount("");
+            await load();
+            toast.error("El intento anterior quedó rechazado o anulado. Revisa el historial antes de registrar un nuevo pago.");
+            return;
+          }
+          throw new Error("payment_status_unresolved");
         }
 
         clearPendingPaymentAttempt(orderId);
