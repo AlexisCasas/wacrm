@@ -11,6 +11,21 @@ vi.mock('next-intl', () => ({
 
 import { ConfirmedOrdersWorkspace } from './confirmed-orders-workspace'
 
+async function chooseSelect(label: string, optionText: string) {
+  const trigger = screen.getByLabelText(label)
+  fireEvent.pointerDown(trigger)
+  fireEvent.mouseDown(trigger)
+  fireEvent.pointerUp(trigger)
+  fireEvent.mouseUp(trigger)
+  fireEvent.click(trigger)
+  const option = await screen.findByText(optionText)
+  fireEvent.pointerDown(option)
+  fireEvent.mouseDown(option)
+  fireEvent.pointerUp(option)
+  fireEvent.mouseUp(option)
+  fireEvent.click(option)
+}
+
 const CONV = '33333333-3333-4333-8333-333333333333'
 const order = (over: Record<string, unknown> = {}) => ({
   id: '11111111-1111-4111-8111-111111111111',
@@ -196,8 +211,7 @@ describe('ConfirmedOrdersWorkspace: Cobranza financial filters, id search', () =
     const f = answer({ orders: [order()], next_cursor: null })
     render(<ConfirmedOrdersWorkspace />)
     await screen.findByText('Cliente Uno')
-    fireEvent.click(screen.getByLabelText('financialFilter'))
-    fireEvent.click(await screen.findByText(label))
+    await chooseSelect('financialFilter', label)
     await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).includes(`financial=${value}`))).toBe(true))
   })
 
@@ -206,8 +220,7 @@ describe('ConfirmedOrdersWorkspace: Cobranza financial filters, id search', () =
     render(<ConfirmedOrdersWorkspace />)
     await screen.findByText('Cliente Uno')
     expect(screen.getByText('financialAll')).toBeTruthy()
-    fireEvent.click(screen.getByLabelText('financialFilter'))
-    fireEvent.click(await screen.findByText('financial.paid'))
+    await chooseSelect('financialFilter', 'financial.paid')
     await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).includes('financial=paid'))).toBe(true))
     fireEvent.click(screen.getByRole('button', { name: 'clearFilters' }))
     await waitFor(() => expect(String(f.mock.calls[f.mock.calls.length - 1][0])).not.toContain('financial='))
@@ -217,8 +230,7 @@ describe('ConfirmedOrdersWorkspace: Cobranza financial filters, id search', () =
     const f = answer({ orders: [order()], next_cursor: null })
     render(<ConfirmedOrdersWorkspace />)
     await screen.findByText('Cliente Uno')
-    fireEvent.click(screen.getByLabelText('financialFilter'))
-    fireEvent.click(await screen.findByText('financial.balance'))
+    await chooseSelect('financialFilter', 'financial.balance')
     await waitFor(() => expect(f.mock.calls.some(([u]) => String(u).includes('financial=balance'))).toBe(true))
     const before = f.mock.calls.length
     window.dispatchEvent(new CustomEvent('wacrm:payments-changed', { detail: { orderId: order().id } }))
